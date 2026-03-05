@@ -1,6 +1,7 @@
+#include <bit>
 #include <Functions/FunctionBinaryArithmetic.h>
 #include <Functions/FunctionFactory.h>
-#include <bit>
+#include <Common/TargetSpecific.h>
 
 
 namespace DB
@@ -46,6 +47,152 @@ struct BitHammingDistanceImpl
     static constexpr bool compilable = false; /// special type handling, some other time
 #endif
 };
+
+namespace
+{
+template <typename A, typename B, typename ResultType>
+struct BitHammingDistanceTargetSpecificImpl
+{
+    using Op = BitHammingDistanceImpl<A, B>;
+
+    /// Keep these kernels as straightforward scalar loops and rely on compiler auto-vectorization.
+    /// For `d = popcount(a ^ b)`, modern x86 backends lower `std::popcount` over vectors to fast SIMD-friendly
+    /// sequences (e.g. nibble-LUT + shuffle + horizontal sum), which is typically as good as or better
+    /// than handwritten intrinsics while staying portable across target levels selected by multiversioning.
+    MULTITARGET_FUNCTION_X86_V4_V3(
+    MULTITARGET_FUNCTION_HEADER(static void NO_INLINE), vectorVectorKernel, MULTITARGET_FUNCTION_BODY(( /// NOLINT
+        const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
+    {
+        for (size_t i = 0; i < size; ++i)
+            c[i] = Op::template apply<ResultType>(a[i], b[i]);
+    }))
+
+    MULTITARGET_FUNCTION_X86_V4_V3(
+    MULTITARGET_FUNCTION_HEADER(static void NO_INLINE), leftConstantKernel, MULTITARGET_FUNCTION_BODY(( /// NOLINT
+        const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
+    {
+        for (size_t i = 0; i < size; ++i)
+            c[i] = Op::template apply<ResultType>(*a, b[i]);
+    }))
+
+    MULTITARGET_FUNCTION_X86_V4_V3(
+    MULTITARGET_FUNCTION_HEADER(static void NO_INLINE), rightConstantKernel, MULTITARGET_FUNCTION_BODY(( /// NOLINT
+        const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
+    {
+        for (size_t i = 0; i < size; ++i)
+            c[i] = Op::template apply<ResultType>(a[i], *b);
+    }))
+};
+}
+
+namespace impl_
+{
+template <typename A, typename B, typename ResultType>
+struct BinaryOperationImpl<A, B, BitHammingDistanceImpl<A, B>, ResultType>
+{
+    using Base = BinaryOperation<A, B, BitHammingDistanceImpl<A, B>, ResultType>;
+    using TargetSpecificImpl = BitHammingDistanceTargetSpecificImpl<A, B, ResultType>;
+
+    template <OpCase op_case>
+    static void NO_INLINE
+    process(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size, const NullMap * right_nullmap = nullptr)
+    {
+        if constexpr (is_big_int_v<A> || is_big_int_v<B>)
+        {
+            Base::template process<op_case>(a, b, c, size, right_nullmap);
+        }
+        else if constexpr (op_case == OpCase::Vector)
+        {
+            if (right_nullmap)
+            {
+                for (size_t i = 0; i < size; ++i)
+                {
+                    if ((*right_nullmap)[i])
+                        c[i] = ResultType();
+                    else
+                        c[i] = BitHammingDistanceImpl<A, B>::template apply<ResultType>(a[i], b[i]);
+                }
+                return;
+            }
+
+            processVectorVector(a, b, c, size);
+        }
+        else if constexpr (op_case == OpCase::LeftConstant)
+        {
+            if (right_nullmap)
+            {
+                for (size_t i = 0; i < size; ++i)
+                {
+                    if ((*right_nullmap)[i])
+                        c[i] = ResultType();
+                    else
+                        c[i] = BitHammingDistanceImpl<A, B>::template apply<ResultType>(*a, b[i]);
+                }
+                return;
+            }
+
+            processLeftConstant(a, b, c, size);
+        }
+        else
+        {
+            if (right_nullmap && (*right_nullmap)[0])
+                return;
+
+            processRightConstant(a, b, c, size);
+        }
+    }
+
+    static ResultType process(A a, B b)
+    {
+        return BitHammingDistanceImpl<A, B>::template apply<ResultType>(a, b);
+    }
+
+private:
+    template <typename FDefault, typename FV3, typename FV4>
+    static ALWAYS_INLINE void
+    dispatchX86V4V3(const FDefault & fn_default, [[maybe_unused]] const FV3 & fn_v3, [[maybe_unused]] const FV4 & fn_v4)
+    {
+#if USE_MULTITARGET_CODE
+        if (isArchSupported(TargetArch::x86_64_v4))
+        {
+            fn_v4();
+            return;
+        }
+
+        if (isArchSupported(TargetArch::x86_64_v3))
+        {
+            fn_v3();
+            return;
+        }
+#endif
+        fn_default();
+    }
+
+    static void NO_INLINE processVectorVector(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
+    {
+        dispatchX86V4V3(
+            [&] { TargetSpecificImpl::vectorVectorKernel(a, b, c, size); },
+            [&] { TargetSpecificImpl::vectorVectorKernel_x86_64_v3(a, b, c, size); },
+            [&] { TargetSpecificImpl::vectorVectorKernel_x86_64_v4(a, b, c, size); });
+    }
+
+    static void NO_INLINE processLeftConstant(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
+    {
+        dispatchX86V4V3(
+            [&] { TargetSpecificImpl::leftConstantKernel(a, b, c, size); },
+            [&] { TargetSpecificImpl::leftConstantKernel_x86_64_v3(a, b, c, size); },
+            [&] { TargetSpecificImpl::leftConstantKernel_x86_64_v4(a, b, c, size); });
+    }
+
+    static void NO_INLINE processRightConstant(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
+    {
+        dispatchX86V4V3(
+            [&] { TargetSpecificImpl::rightConstantKernel(a, b, c, size); },
+            [&] { TargetSpecificImpl::rightConstantKernel_x86_64_v3(a, b, c, size); },
+            [&] { TargetSpecificImpl::rightConstantKernel_x86_64_v4(a, b, c, size); });
+    }
+};
+}
 
 struct NameBitHammingDistance
 {

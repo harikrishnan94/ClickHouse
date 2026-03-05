@@ -2,6 +2,21 @@ SELECT bitHammingDistance(1, 5);
 SELECT bitHammingDistance(100, 100000);
 SELECT bitHammingDistance(-1, 1);
 
+SELECT countIf(
+    bitHammingDistance(toUInt64(number * 6364136223846793005), toUInt64(number * 1442695040888963407 + 1))
+    != bitCount(bitXor(toUInt64(number * 6364136223846793005), toUInt64(number * 1442695040888963407 + 1))))
+FROM numbers(1000000);
+
+SELECT countIf(
+    bitHammingDistance(toUInt64(0x0123456789ABCDEF), toUInt64(number * 11400714819323198485 + 0x9E3779B97F4A7C15))
+    != bitCount(bitXor(toUInt64(0x0123456789ABCDEF), toUInt64(number * 11400714819323198485 + 0x9E3779B97F4A7C15))))
+FROM numbers(1000000);
+
+SELECT countIf(
+    bitHammingDistance(toUInt64(number * 2862933555777941757 + 3037000493), toUInt64(0xF0F0F0F0F0F0F0F0))
+    != bitCount(bitXor(toUInt64(number * 2862933555777941757 + 3037000493), toUInt64(0xF0F0F0F0F0F0F0F0))))
+FROM numbers(1000000);
+
 DROP TABLE IF EXISTS defaults;
 CREATE TABLE defaults
 (
