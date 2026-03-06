@@ -1,6 +1,9 @@
 SELECT bitHammingDistance(1, 5);
 SELECT bitHammingDistance(100, 100000);
 SELECT bitHammingDistance(-1, 1);
+SELECT bitHammingDistance(-1, NULL);
+SELECT bitHammingDistance(NULL, 1);
+SELECT bitHammingDistance(NULL, NULL);
 
 SELECT countIf(
     bitHammingDistance(toUInt64(number * 6364136223846793005), toUInt64(number * 1442695040888963407 + 1))
@@ -57,3 +60,46 @@ SELECT bitHammingDistance('hello', s2) FROM test_string;
 SELECT bitHammingDistance(s4, toFixedString('hello', 10)) FROM test_string;
 
 DROP TABLE test_string;
+
+DROP TABLE IF EXISTS test_nullable_int;
+
+CREATE TABLE test_nullable_int
+(
+    left_nullable Nullable(UInt64),
+    right_nullable Nullable(UInt64)
+) ENGINE = Memory;
+
+INSERT INTO test_nullable_int
+SELECT
+    if(cityHash64(number, 1) % 4 = 0, NULL, cityHash64(rand())),
+    if(cityHash64(number, 2) % 5 = 0, NULL, cityHash64(rand()))
+FROM numbers(100000);
+
+SELECT countIf((isNull(lhs) != isNull(rhs)) OR (isNotNull(lhs) AND lhs != rhs))
+FROM
+(
+    SELECT
+        bitHammingDistance(left_nullable, right_nullable) AS lhs,
+        bitCount(bitXor(left_nullable, right_nullable)) AS rhs
+    FROM test_nullable_int
+);
+
+SELECT countIf((isNull(lhs) != isNull(rhs)) OR (isNotNull(lhs) AND lhs != rhs))
+FROM
+(
+    SELECT
+        bitHammingDistance(toUInt64(0x0123456789ABCDEF), right_nullable) AS lhs,
+        bitCount(bitXor(toUInt64(0x0123456789ABCDEF), right_nullable)) AS rhs
+    FROM test_nullable_int
+);
+
+SELECT countIf((isNull(lhs) != isNull(rhs)) OR (isNotNull(lhs) AND lhs != rhs))
+FROM
+(
+    SELECT
+        bitHammingDistance(left_nullable, toUInt64(0xF0F0F0F0F0F0F0F0)) AS lhs,
+        bitCount(bitXor(left_nullable, toUInt64(0xF0F0F0F0F0F0F0F0))) AS rhs
+    FROM test_nullable_int
+);
+
+DROP TABLE test_nullable_int;

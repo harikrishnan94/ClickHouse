@@ -95,51 +95,16 @@ struct BinaryOperationImpl<A, B, BitHammingDistanceImpl<A, B>, ResultType>
 
     template <OpCase op_case>
     static void NO_INLINE
-    process(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size, const NullMap * right_nullmap = nullptr)
+    process(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size, const NullMap * = nullptr)
     {
         if constexpr (is_big_int_v<A> || is_big_int_v<B>)
-        {
-            Base::template process<op_case>(a, b, c, size, right_nullmap);
-        }
+            Base::template process<op_case>(a, b, c, size);
         else if constexpr (op_case == OpCase::Vector)
-        {
-            if (right_nullmap)
-            {
-                for (size_t i = 0; i < size; ++i)
-                {
-                    if ((*right_nullmap)[i])
-                        c[i] = ResultType();
-                    else
-                        c[i] = BitHammingDistanceImpl<A, B>::template apply<ResultType>(a[i], b[i]);
-                }
-                return;
-            }
-
             processVectorVector(a, b, c, size);
-        }
         else if constexpr (op_case == OpCase::LeftConstant)
-        {
-            if (right_nullmap)
-            {
-                for (size_t i = 0; i < size; ++i)
-                {
-                    if ((*right_nullmap)[i])
-                        c[i] = ResultType();
-                    else
-                        c[i] = BitHammingDistanceImpl<A, B>::template apply<ResultType>(*a, b[i]);
-                }
-                return;
-            }
-
             processLeftConstant(a, b, c, size);
-        }
         else
-        {
-            if (right_nullmap && (*right_nullmap)[0])
-                return;
-
             processRightConstant(a, b, c, size);
-        }
     }
 
     static ResultType process(A a, B b)
@@ -148,48 +113,53 @@ struct BinaryOperationImpl<A, B, BitHammingDistanceImpl<A, B>, ResultType>
     }
 
 private:
-    template <typename FDefault, typename FV3, typename FV4>
-    static ALWAYS_INLINE void
-    dispatchX86V4V3(const FDefault & fn_default, [[maybe_unused]] const FV3 & fn_v3, [[maybe_unused]] const FV4 & fn_v4)
+    template <typename FV3, typename FV4>
+    static ALWAYS_INLINE bool dispatchX86V4V3([[maybe_unused]] const FV3 & fn_v3, [[maybe_unused]] const FV4 & fn_v4)
     {
 #if USE_MULTITARGET_CODE
         if (isArchSupported(TargetArch::x86_64_v4))
         {
             fn_v4();
-            return;
+            return true;
         }
 
         if (isArchSupported(TargetArch::x86_64_v3))
         {
             fn_v3();
-            return;
+            return true;
         }
 #endif
-        fn_default();
+        return false;
     }
 
     static void NO_INLINE processVectorVector(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
     {
-        dispatchX86V4V3(
-            [&] { TargetSpecificImpl::vectorVectorKernel(a, b, c, size); },
-            [&] { TargetSpecificImpl::vectorVectorKernel_x86_64_v3(a, b, c, size); },
-            [&] { TargetSpecificImpl::vectorVectorKernel_x86_64_v4(a, b, c, size); });
+#if USE_MULTITARGET_CODE
+        if (!dispatchX86V4V3(
+                [&] { TargetSpecificImpl::vectorVectorKernel_x86_64_v3(a, b, c, size); },
+                [&] { TargetSpecificImpl::vectorVectorKernel_x86_64_v4(a, b, c, size); }))
+#endif
+            TargetSpecificImpl::vectorVectorKernel(a, b, c, size);
     }
 
     static void NO_INLINE processLeftConstant(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
     {
-        dispatchX86V4V3(
-            [&] { TargetSpecificImpl::leftConstantKernel(a, b, c, size); },
-            [&] { TargetSpecificImpl::leftConstantKernel_x86_64_v3(a, b, c, size); },
-            [&] { TargetSpecificImpl::leftConstantKernel_x86_64_v4(a, b, c, size); });
+#if USE_MULTITARGET_CODE
+        if (!dispatchX86V4V3(
+                [&] { TargetSpecificImpl::leftConstantKernel_x86_64_v3(a, b, c, size); },
+                [&] { TargetSpecificImpl::leftConstantKernel_x86_64_v4(a, b, c, size); }))
+#endif
+            TargetSpecificImpl::leftConstantKernel(a, b, c, size);
     }
 
     static void NO_INLINE processRightConstant(const A * __restrict a, const B * __restrict b, ResultType * __restrict c, size_t size)
     {
-        dispatchX86V4V3(
-            [&] { TargetSpecificImpl::rightConstantKernel(a, b, c, size); },
-            [&] { TargetSpecificImpl::rightConstantKernel_x86_64_v3(a, b, c, size); },
-            [&] { TargetSpecificImpl::rightConstantKernel_x86_64_v4(a, b, c, size); });
+#if USE_MULTITARGET_CODE
+        if (!dispatchX86V4V3(
+                [&] { TargetSpecificImpl::rightConstantKernel_x86_64_v3(a, b, c, size); },
+                [&] { TargetSpecificImpl::rightConstantKernel_x86_64_v4(a, b, c, size); }))
+#endif
+            TargetSpecificImpl::rightConstantKernel(a, b, c, size);
     }
 };
 }
