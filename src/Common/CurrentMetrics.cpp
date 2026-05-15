@@ -308,6 +308,8 @@
     M(PartsCompact, "Compact parts.") \
     M(MMappedFiles, "Total number of mmapped files.") \
     M(MMappedFileBytes, "Sum size of mmapped file regions.") \
+    M(ShmActiveRegions, "Number of currently attached producer shared-memory regions used by the experimental shm() table function.") \
+    M(ShmAdoptedBytesCurrent, "Number of bytes currently retained from producer shared-memory regions and charged to the active MemoryTracker chain by adopted columns (includes safe-read padding).") \
     M(AsynchronousReadWait, "Number of threads waiting for asynchronous read.") \
     M(PendingAsyncInsert, "Number of asynchronous inserts that are waiting for flush.") \
     M(KafkaConsumers, "Number of active Kafka consumers") \
