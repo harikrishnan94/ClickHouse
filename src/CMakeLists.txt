@@ -164,6 +164,18 @@ add_headers_and_sources(dbms Core/Streaming)
 add_headers_and_sources(dbms Storages/Streaming)
 add_headers_and_sources(dbms Storages/MergeTree/Streaming)
 
+add_headers_and_sources(dbms Storages/SharedMemorySource/Wire)
+add_headers_and_sources(dbms Storages/SharedMemorySource/Adoption)
+add_headers_and_sources(dbms Storages/SharedMemorySource/Tracker)
+add_headers_and_sources(dbms Storages/SharedMemorySource/Source)
+
+# Test-only in-process producer. Kept out of dbms on release builds so the test harness
+# code does not ship in the main library. The standalone utils/shm-producer binary
+# compiles InProcessProducer.cpp directly when ENABLE_TESTS=OFF (see utils/shm-producer/CMakeLists.txt).
+if (ENABLE_TESTS)
+    add_headers_and_sources(dbms Storages/SharedMemorySource/TestProducer)
+endif ()
+
 if (TARGET ch_contrib::amqp_cpp)
     add_headers_and_sources(dbms Storages/RabbitMQ)
 endif()
