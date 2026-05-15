@@ -57,6 +57,15 @@ void throwColumnConvertNotSupported(std::string_view type_name, const char * as_
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Cannot get the value of {} as {}", type_name, as_type);
 }
 
+void throwAdoptedColumnAccessor(const char * accessor_name)
+{
+    throw Exception(ErrorCodes::LOGICAL_ERROR,
+        "Non-const accessor {} called on an adopted (zero-copy SHM) column; such columns are "
+        "read-only. Call IColumn::mutate() first to COW-materialize. "
+        "See adoption-layer spec I3.",
+        accessor_name);
+}
+
 bool IColumn::Options::notFull(WriteBufferFromOwnString & buf) const
 {
     return optimize_const_name_size < 0 || static_cast<Int64>(buf.count()) <= optimize_const_name_size;

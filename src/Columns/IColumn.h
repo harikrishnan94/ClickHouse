@@ -93,6 +93,13 @@ struct ColumnsWithRowNumbers
 [[noreturn]] void throwCannotPopBack(size_t n, const std::string & column_name, size_t column_size);
 [[noreturn]] void throwColumnConvertNotSupported(std::string_view type_name, const char * as_type);
 
+/// Raised by non-const column accessors that would otherwise return a mutable reference into
+/// producer-owned memory wrapped by an adopted (zero-copy SHM) column. `accessor_name` is a
+/// human-readable accessor identifier (e.g. "ColumnVector::getData()") embedded in the message.
+/// See adoption-layer spec I3 (Adopted memory is immutable) and §Materialization-on-mutation
+/// contract: callers must route through `IColumn::mutate()` to COW-materialize first.
+[[noreturn]] void throwAdoptedColumnAccessor(const char * accessor_name);
+
 /// Declares interface to store columns in memory.
 class IColumn : public COW<IColumn>
 {
