@@ -49,7 +49,11 @@ struct MergeTreeSource::AsyncReadingState
         /// We are using EventFD here.
         /// Thread from background pool writes to fd when task is finished.
         /// Working thread should read from fd when task is finished or canceled to wait for bg thread.
-        EventFD event;
+        /// Constructed with flags=0 (blocking + inheritable) so that the
+        /// `event.read()` in `~AsyncReadingState` BLOCKS the destructor
+        /// until the background thread finishes — the EventFD default of
+        /// non-blocking + CLOEXEC would silently no-op this wait.
+        EventFD event{0};
         std::atomic<Stage> stage = Stage::NotStarted;
 
         ChunkAndProgress chunk;
