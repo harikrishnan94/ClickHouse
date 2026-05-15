@@ -54,6 +54,10 @@ namespace ErrorCodes
 template <typename T>
 void ColumnVector<T>::deserializeAndInsertFromArena(ReadBuffer & in, const IColumn::SerializationSettings *)
 {
+    /// Intentionally not guarded by assertOwnedForMutation: Arena deserialization is the
+    /// "consumer of a freshly-default-constructed column" pattern called out in the F3
+    /// review (see spec §Materialization-on-mutation). Adopted columns never enter via
+    /// this path.
     T element{};
     readBinaryLittleEndian<T>(element, in);
     data.emplace_back(std::move(element));
@@ -534,6 +538,21 @@ size_t ColumnVector<T>::estimateCardinalityInPermutedRange(const IColumn::Permut
 }
 
 template <typename T>
+typename COWHelper<IColumnHelper<ColumnVector<T>, ColumnFixedSizeHelper>, ColumnVector<T>>::MutablePtr
+ColumnVector<T>::createAdopted(
+    T * adopted_data, size_t adopted_n,
+    std::shared_ptr<void> retain_token,
+    std::shared_ptr<void> charge_handle)
+{
+    if (!retain_token || !charge_handle)
+        throw Exception(ErrorCodes::LOGICAL_ERROR,
+            "ColumnVector::createAdopted requires non-null retain_token and charge_handle "
+            "(adoption-layer spec §Retain and charge handle semantics)");
+    auto holder = std::make_unique<AdoptionHolder>(std::move(retain_token), std::move(charge_handle));
+    return Self::create(adopted_data, adopted_n, std::move(holder));
+}
+
+template <typename T>
 MutableColumnPtr ColumnVector<T>::cloneResized(size_t size) const
 {
     auto res = this->create(size);
@@ -591,6 +610,7 @@ Float32 ColumnVector<T>::getFloat32(size_t n [[maybe_unused]]) const
 template <typename T>
 bool ColumnVector<T>::tryInsert(const DB::Field & x)
 {
+    assertOwnedForMutation("ColumnVector::tryInsert");
     NearestFieldType<T> value;
     if (!x.tryGet<NearestFieldType<T>>(value))
     {
@@ -617,6 +637,7 @@ void ColumnVector<T>::insertRangeFrom(const IColumn & src, size_t start, size_t 
 void ColumnVector<T>::doInsertRangeFrom(const IColumn & src, size_t start, size_t length)
 #endif
 {
+    assertOwnedForMutation("ColumnVector::insertRangeFrom");
     const ColumnVector & src_vec = assert_cast<const ColumnVector &>(src);
 
     if (start + length > src_vec.data.size())
@@ -880,6 +901,9 @@ ColumnPtr ColumnVector<T>::filter(const IColumn::Filter & filt, ssize_t result_s
 template <typename T>
 void ColumnVector<T>::filter(const IColumn::Filter & filt)
 {
+    /// In-place filter: writes through `data` (the const ColumnPtr filter(Filter, ssize_t)
+    /// overload above produces a NEW column and is safe to call on adopted instances).
+    assertOwnedForMutation("ColumnVector::filter");
     const auto size = data.size();
     const auto filter_size = filt.size();
 
@@ -918,12 +942,14 @@ void ColumnVector<T>::filter(const IColumn::Filter & filt)
 template <typename T>
 void ColumnVector<T>::expand(const IColumn::Filter & mask, bool inverted)
 {
+    assertOwnedForMutation("ColumnVector::expand");
     expandDataByMask<T>(data, mask, inverted);
 }
 
 template <typename T>
 void ColumnVector<T>::applyZeroMap(const IColumn::Filter & filt, bool inverted)
 {
+    assertOwnedForMutation("ColumnVector::applyZeroMap");
     size_t size = data.size();
     if (size != filt.size())
         throw Exception(ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH, "Size of filter ({}) doesn't match size of column ({})", filt.size(), size);
@@ -1141,6 +1167,7 @@ ColumnPtr ColumnVector<T>::createWithOffsets(const IColumn::Offsets & offsets, c
 template <typename T>
 void ColumnVector<T>::updateAt(const IColumn & src, size_t dst_pos, size_t src_pos)
 {
+    assertOwnedForMutation("ColumnVector::updateAt");
     const auto & src_data = assert_cast<const Self &>(src).getData();
     data[dst_pos] = src_data[src_pos];
 }
@@ -1295,6 +1322,7 @@ ColumnPtr ColumnVector<T>::indexImpl(const PaddedPODArray<Type> & indexes, size_
 template <typename T>
 std::span<char> ColumnVector<T>::insertRawUninitialized(size_t count)
 {
+    assertOwnedForMutation("ColumnVector::insertRawUninitialized");
     size_t start = data.size();
     data.resize(start + count);
     return {reinterpret_cast<char *>(data.data() + start), count * sizeof(T)};

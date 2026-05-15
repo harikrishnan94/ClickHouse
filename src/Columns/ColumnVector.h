@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Columns/AdoptionHolder.h>
 #include <Columns/ColumnFixedSizeHelper.h>
 #include <Columns/IColumn.h>
 #include <Columns/IColumnImpl.h>
@@ -11,6 +12,7 @@
 #include <base/unaligned.h>
 
 #include <bit>
+#include <memory>
 
 #include "config.h"
 
@@ -44,11 +46,34 @@ private:
     ColumnVector() = default;
     explicit ColumnVector(const size_t n) : data(n) {}
     ColumnVector(const size_t n, const ValueType x) : data(n, x) {}
+
+    /// COW clone(): always produces a heap-owned copy via the iterator-range PODArray ctor,
+    /// regardless of whether `src.data` is in adopted mode (the iterator-range ctor allocates
+    /// fresh storage and copies element-wise — see PODArray::PODArray(it, it)). The clone's
+    /// `adoption_` deliberately default-constructs to null so the cloned column is fully
+    /// mutable; the original column retains its producer hold via its own holder. See
+    /// adoption-layer spec §Materialization-on-mutation contract and I3.
     ColumnVector(const ColumnVector & src) : data(src.data.begin(), src.data.end()) {}
     ColumnVector(Container::const_iterator begin, Container::const_iterator end) : data(begin, end) { }
 
     /// Sugar constructor.
     ColumnVector(std::initializer_list<T> il) : data{il} {}
+
+    /// Adopted-mode ctor: wraps an externally-owned buffer of `adopted_n` `T` values starting
+    /// at `adopted_data`. `adoption` must be non-null and its two handles must each be
+    /// non-null (the public `createAdopted` factory validates and throws; the chassert here
+    /// pins the contract in debug builds). The PODArray adopted-mode ctor stores
+    /// `&adopted_data` as an opaque non-null owner marker — its value is never dereferenced
+    /// (see PODArrayBase `external_owner` docs).
+    ColumnVector(T * adopted_data, size_t adopted_n,
+                 std::unique_ptr<AdoptionHolder> adoption)
+        : data(adopted_data, adopted_n, &adopted_data)
+        , adoption_(std::move(adoption))
+    {
+        chassert(adoption_ != nullptr);
+        chassert(adoption_->retain_token != nullptr);
+        chassert(adoption_->charge_handle != nullptr);
+    }
 
 public:
     bool isNumeric() const override { return is_arithmetic_v<T>; }
@@ -58,12 +83,36 @@ public:
         return data.size();
     }
 
+    /// Construct a ColumnVector wrapping producer-owned memory. The buffer at `adopted_data`
+    /// must:
+    ///   - hold exactly `adopted_n` elements of type T;
+    ///   - satisfy ClickHouse's column-storage alignment for T (typically alignof(T));
+    ///   - include at least `PaddedPODArray<T>::pad_right` bytes of safely-readable trailing
+    ///     padding.
+    /// Ownership of `retain_token` and `charge_handle` transfers into the returned column;
+    /// both are released exactly once at adopted-state final drop (the last column reference
+    /// or COW alias). Both must be non-null; the factory throws LOGICAL_ERROR otherwise.
+    ///
+    /// Spec authority: adoption-layer spec §Interfaces & contracts (Adopt entry point), I1,
+    /// I3, I4; system spec I5, I10; memory-tracker-integration spec I7.
+    ///
+    /// Return type spelled out (rather than the inherited `MutablePtr` short alias) because
+    /// ColumnVector<T> sees two `MutablePtr` aliases through its base chain (COWHelper's
+    /// derived-typed one and ColumnFixedSizeHelper -> IColumn's IColumn-typed one); the
+    /// unqualified name resolves ambiguously in this class template's scope.
+    static typename COWHelper<IColumnHelper<Self, ColumnFixedSizeHelper>, Self>::MutablePtr
+    createAdopted(
+        T * adopted_data, size_t adopted_n,
+        std::shared_ptr<void> retain_token,
+        std::shared_ptr<void> charge_handle);
+
 #if !defined(DEBUG_OR_SANITIZER_BUILD)
     void insertFrom(const IColumn & src, size_t n) override
 #else
     void doInsertFrom(const IColumn & src, size_t n) override
 #endif
     {
+        assertOwnedForMutation("ColumnVector::insertFrom");
         data.push_back(assert_cast<const Self &>(src).getData()[n]);
     }
 
@@ -73,32 +122,38 @@ public:
     void doInsertManyFrom(const IColumn & src, size_t position, size_t length) override
 #endif
     {
+        assertOwnedForMutation("ColumnVector::insertManyFrom");
         ValueType v = assert_cast<const Self &>(src).getData()[position];
         data.resize_fill(data.size() + length, v);
     }
 
     void insertMany(const Field & field, size_t length) override
     {
+        assertOwnedForMutation("ColumnVector::insertMany");
         data.resize_fill(data.size() + length, static_cast<T>(field.safeGet<T>()));
     }
 
     void insertData(const char * pos, size_t) override
     {
+        assertOwnedForMutation("ColumnVector::insertData");
         data.emplace_back(unalignedLoad<T>(pos));
     }
 
     void insertDefault() override
     {
+        assertOwnedForMutation("ColumnVector::insertDefault");
         data.push_back(T());
     }
 
     void insertManyDefaults(size_t length) override
     {
+        assertOwnedForMutation("ColumnVector::insertManyDefaults");
         data.resize_fill(data.size() + length, T());
     }
 
     void popBack(size_t n) override
     {
+        assertOwnedForMutation("ColumnVector::popBack");
         if (n > size())
             throwCannotPopBack(n, this->getName(), size());
 
@@ -138,6 +193,7 @@ public:
 
     void insertValue(const T value)
     {
+        assertOwnedForMutation("ColumnVector::insertValue");
         data.push_back(value);
     }
 
@@ -210,6 +266,7 @@ public:
 
     void reserve(size_t n) override
     {
+        assertOwnedForMutation("ColumnVector::reserve");
         data.reserve_exact(n);
     }
 
@@ -220,6 +277,7 @@ public:
 
     void shrinkToFit() override
     {
+        assertOwnedForMutation("ColumnVector::shrinkToFit");
         data.shrink_to_fit();
     }
 
@@ -275,6 +333,7 @@ public:
 
     void insert(const Field & x) override
     {
+        assertOwnedForMutation("ColumnVector::insert");
         data.push_back(static_cast<T>(x.safeGet<T>()));
     }
 
@@ -357,8 +416,14 @@ public:
     void applyZeroMap(const IColumn::Filter & filt, bool inverted = false);
 
     /** More efficient methods of manipulation - to manipulate with data directly. */
+    /// Guarded against direct mutation of adopted (producer-owned) memory: per VC1 and
+    /// adoption-layer spec I3, callers that try to mutate via this non-const accessor are
+    /// considered misuse and must instead route through `IColumn::mutate()` to COW-materialize
+    /// a heap-owned copy first. The const overload below (the AC1 hot path for sum() batch
+    /// aggregation) deliberately stays unguarded.
     Container & getData()
     {
+        assertOwnedForMutation("ColumnVector::getData()");
         return data;
     }
 
@@ -372,13 +437,49 @@ public:
         return data[n];
     }
 
+    /// Guarded for the same reason as the non-const getData(): the returned reference
+    /// is a writable handle into the (potentially producer-owned) value buffer. Per the
+    /// adoption-layer §Materialization-on-mutation contract any path that yields a
+    /// writable reference to an adopted column's storage is misuse and must instead go
+    /// through IColumn::mutate(). The const overload above is the read hot path.
     T & getElement(size_t n)
     {
+        assertOwnedForMutation("ColumnVector::getElement");
         return data[n];
     }
 
 protected:
     Container data;
+
+private:
+    /// Heap-allocated adoption holder. Non-null iff this column wraps externally-owned
+    /// (producer) memory; null on default-constructed and on COW-cloned columns. The
+    /// holder owns the retain_token (pins producer SHM region for the column's lifetime)
+    /// and charge_handle (releases adopted bytes back to MemoryTracker on destruction);
+    /// both shared_ptrs are released exactly once when the column is destroyed, satisfying
+    /// system spec I5 (Retain correctness) and memory-tracker-integration spec I7
+    /// (charge/release pairing). See adoption-layer spec §Retain and charge handle
+    /// semantics and AdoptionHolder.h.
+    ///
+    /// Single 8-byte member rather than two ~16-byte std::shared_ptr<void> inline members:
+    /// this matters because ColumnVector<T> is the most-used column type in ClickHouse and
+    /// every owned (non-adopted) instance pays the layout cost.
+    ///
+    /// Trailing underscore disambiguates from the constructor's homonymous parameter; the
+    /// project-wide convention permits this with NOLINT (see ChargeHandle.h for precedent).
+    std::unique_ptr<AdoptionHolder> adoption_; // NOLINT(readability-identifier-naming)
+
+    /// Defense-in-depth guard called at the top of every public direct mutator (any
+    /// method that writes through `data` outside the COW `mutate()` entry point). Adopted
+    /// columns wrap producer-owned storage; mutation through them would silently corrupt
+    /// the producer's memory and violate adoption-layer spec I3 + §Materialization-on-
+    /// mutation contract. Out-of-line via the existing `throwAdoptedColumnAccessor` helper
+    /// in IColumn.cpp so this header does not need to include Exception.h.
+    void assertOwnedForMutation(const char * method) const
+    {
+        if (adoption_)
+            throwAdoptedColumnAccessor(method);
+    }
 };
 
 template <class TCol>
