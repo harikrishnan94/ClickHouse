@@ -79,6 +79,10 @@ void registerTableFunctions()
     registerTableFunctionYTsaurus(factory);
 #endif
 
+#if defined(OS_LINUX)
+    registerTableFunctionShm(factory);
+#endif
+
 }
 
 }

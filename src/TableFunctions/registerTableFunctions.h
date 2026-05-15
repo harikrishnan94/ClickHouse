@@ -28,6 +28,9 @@ void registerTableFunctionMongoDB(TableFunctionFactory & factory);
 #if USE_YTSAURUS
 void registerTableFunctionYTsaurus(TableFunctionFactory & factory);
 #endif
+#if defined(OS_LINUX)
+void registerTableFunctionShm(TableFunctionFactory & factory);
+#endif
 void registerTableFunctionRedis(TableFunctionFactory & factory);
 
 #if USE_ARROWFLIGHT
