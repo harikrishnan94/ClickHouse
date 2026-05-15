@@ -25,6 +25,21 @@ namespace ErrorCodes
     extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
     extern const int LOGICAL_ERROR;
     extern const int INCORRECT_DATA;
+    extern const int SHM_BUFFER_LAYOUT_INVALID;
+}
+
+void ColumnString::throwAdoptedFactoryRequiresHandles()
+{
+    throw Exception(ErrorCodes::LOGICAL_ERROR,
+        "ColumnString::createAdopted requires non-null retain_token and charge_handle");
+}
+
+void ColumnString::throwAdoptedAccessorWrite(const char * which)
+{
+    throw Exception(ErrorCodes::LOGICAL_ERROR,
+        "Non-const ColumnString::{}() called on an adopted (zero-copy SHM) column; "
+        "such columns are read-only. Call IColumn::mutate() first to COW-materialise "
+        "a fully owned copy. See adoption-layer spec I3.", which);
 }
 
 
@@ -47,6 +62,7 @@ void ColumnString::insertManyFrom(const IColumn & src, size_t position, size_t l
 void ColumnString::doInsertManyFrom(const IColumn & src, size_t position, size_t length)
 #endif
 {
+    assertOwnedForMutation("insertManyFrom");
     /// Inserting zero copies is a no-op regardless of `position`. Returning early avoids
     /// eagerly reading `offsets[position - 1]` below, which would go out of bounds on
     /// a caller-side garbage `position` (e.g. from a `size_t` underflow).
@@ -134,6 +150,7 @@ void ColumnString::insertRangeFrom(const IColumn & src, size_t start, size_t len
 void ColumnString::doInsertRangeFrom(const IColumn & src, size_t start, size_t length)
 #endif
 {
+    assertOwnedForMutation("insertRangeFrom");
     if (length == 0)
         return;
 
@@ -214,6 +231,10 @@ ColumnPtr ColumnString::filter(const Filter & filt, ssize_t result_size_hint) co
 
 void ColumnString::filter(const Filter & filt)
 {
+    /// In-place variant: writes through `chars` and `offsets`. The const
+    /// `filter(Filter, ssize_t) const` overload above produces a fresh column and is
+    /// safe to call on adopted instances.
+    assertOwnedForMutation("filter");
     if (offsets.empty())
         return;
 
@@ -222,6 +243,10 @@ void ColumnString::filter(const Filter & filt)
 
 void ColumnString::expand(const IColumn::Filter & mask, bool inverted)
 {
+    /// Although expand() also obtains a non-const Offsets& via getOffsets() (already
+    /// guarded), making the guard implicit, we surface it at the top for clarity and
+    /// so the error message names the actual public mutator.
+    assertOwnedForMutation("expand");
     auto & offsets_data = getOffsets();
     if (mask.size() < offsets_data.size())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Mask size should be no less than data size.");
@@ -269,6 +294,7 @@ void ColumnString::updateCheckpoint(ColumnCheckpoint & checkpoint) const
 
 void ColumnString::rollback(const ColumnCheckpoint & checkpoint)
 {
+    assertOwnedForMutation("rollback");
     offsets.resize_assume_reserved(checkpoint.size);
     chars.resize_assume_reserved(assert_cast<const ColumnCheckpointWithNested &>(checkpoint).nested->size);
 }
@@ -612,6 +638,7 @@ ColumnPtr ColumnString::replicate(const Offsets & replicate_offsets) const
 
 void ColumnString::reserve(size_t n)
 {
+    assertOwnedForMutation("reserve");
     offsets.reserve_exact(n);
 }
 
@@ -622,6 +649,7 @@ size_t ColumnString::capacity() const
 
 void ColumnString::prepareForSquashing(const VectorWithMemoryTracking<ColumnPtr> & source_columns, size_t factor)
 {
+    assertOwnedForMutation("prepareForSquashing");
     size_t new_size = size();
     size_t new_chars_size = chars.size();
     for (const auto & source_column : source_columns)
@@ -637,6 +665,7 @@ void ColumnString::prepareForSquashing(const VectorWithMemoryTracking<ColumnPtr>
 
 void ColumnString::shrinkToFit()
 {
+    assertOwnedForMutation("shrinkToFit");
     chars.shrink_to_fit();
     offsets.shrink_to_fit();
 }
@@ -812,6 +841,34 @@ void ColumnString::validate() const
         throw Exception(ErrorCodes::LOGICAL_ERROR,
                         "ColumnString validation failed: size mismatch (internal logical error) {} != {}",
                         last_offset, chars.size());
+}
+
+void ColumnString::validateAdoptedOffsets() const
+{
+    const size_t rows = offsets.size();
+    if (rows == 0)
+        return;
+
+    /// Precondition 21: offsets are non-decreasing. offsets[-1] is the implicit zero
+    /// sentinel guaranteed by the adopted factory's input contract (producer ABI lays
+    /// it out as the pad_left slot — see ColumnString::createAdopted docstring).
+    Offset prev = 0;
+    for (size_t i = 0; i < rows; ++i)
+    {
+        const Offset cur = offsets[i];
+        if (cur < prev)
+            throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
+                "ColumnString adopted offsets are not monotonically non-decreasing: "
+                "offsets[{}] = {} < previous = {}",
+                i, cur, prev);
+        prev = cur;
+    }
+
+    /// Precondition 22: terminal offset equals the chars buffer size.
+    if (offsets[rows - 1] != chars.size())
+        throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
+            "ColumnString adopted terminal offset {} does not equal chars buffer size {}",
+            offsets[rows - 1], chars.size());
 }
 
 void ColumnString::updateHashWithValue(size_t n, SipHash & hash) const

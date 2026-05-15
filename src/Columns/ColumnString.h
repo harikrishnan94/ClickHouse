@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstring>
+#include <memory>
+#include <utility>
 
 #include <IO/WriteHelpers.h>
+#include <Columns/AdoptionHolder.h>
 #include <Columns/IColumn.h>
 #include <Columns/IColumnImpl.h>
 #include <Common/PODArray.h>
@@ -40,6 +43,34 @@ private:
     /// Bytes of strings, placed contiguously. Note that strings are not zero-terminated and could contain zero bytes in the middle.
     Chars chars;
 
+    /// Heap-allocated adoption holder. Non-null iff this column wraps producer-owned (SHM)
+    /// memory via createAdopted(). Owns the retain_token (pins producer SHM region for the
+    /// column's lifetime) and charge_handle (releases adopted bytes back to MemoryTracker
+    /// on destruction); both shared_ptrs are released exactly once at this column's
+    /// destruction (or on the COW clone path: the clone leaves this null, so producer
+    /// memory release is gated only on outstanding references to the originally adopted
+    /// instance). See adoption-layer spec §Retain and charge handle semantics, system
+    /// spec I5, and AdoptionHolder.h.
+    ///
+    /// Single 8-byte member rather than two ~16-byte std::shared_ptr<void> inline members:
+    /// non-adopted ColumnString instances (the common case) pay only 8 bytes of layout
+    /// overhead for this feature.
+    ///
+    /// Trailing underscore disambiguates from constructor parameters; matches the
+    /// convention established in T2.1's ColumnVector and T1.4's ChargeHandle.
+    std::unique_ptr<AdoptionHolder> adoption_; // NOLINT(readability-identifier-naming)
+
+    /// Defense-in-depth guard called at the top of every public direct mutator (any method
+    /// that writes through `chars` or `offsets` outside the COW `mutate()` entry point).
+    /// Adopted columns wrap producer-owned storage; mutation through them would silently
+    /// corrupt producer memory and violate adoption-layer spec I3 + §Materialization-on-
+    /// mutation contract. Inline here so the guard compiles down to a single null-check.
+    void assertOwnedForMutation(const char * method) const
+    {
+        if (adoption_)
+            throwAdoptedAccessorWrite(method);
+    }
+
     size_t ALWAYS_INLINE offsetAt(ssize_t i) const { return offsets[i - 1]; }
 
     /// Size of i-th element
@@ -67,6 +98,29 @@ private:
 
     ColumnString() = default;
     ColumnString(const ColumnString & src);
+
+    /// Adopted-mode constructor. Wraps externally-owned (typically SHM-producer) chars and
+    /// offsets buffers without copying. Both PaddedPODArrays are constructed in adopted
+    /// mode (mutators throw, dealloc is a no-op); the producer-side lifetime is pinned by
+    /// `adoption`'s retain_token / charge_handle which RAII-release on this column's
+    /// destruction. The opaque owner markers are the addresses of the parameter pointers
+    /// themselves; PaddedPODArray treats them as void * sentinels and never dereferences
+    /// them.
+    ColumnString(UInt8 * adopted_chars, size_t adopted_chars_size,
+                 UInt64 * adopted_offsets, size_t adopted_rows,
+                 std::unique_ptr<AdoptionHolder> adoption)
+        : offsets(adopted_offsets, adopted_rows, &adopted_offsets)
+        , chars(adopted_chars, adopted_chars_size, &adopted_chars)
+        , adoption_(std::move(adoption))
+    {
+        chassert(adoption_ != nullptr);
+        chassert(adoption_->retain_token != nullptr);
+        chassert(adoption_->charge_handle != nullptr);
+    }
+
+    /// Throw helpers (kept out-of-line so this header does not need Exception.h).
+    [[noreturn]] static void throwAdoptedFactoryRequiresHandles();
+    [[noreturn]] static void throwAdoptedAccessorWrite(const char * which);
 
 public:
     const char * getFamilyName() const override { return "String"; }
@@ -129,6 +183,7 @@ public:
 
     void insert(const Field & x) override
     {
+        assertOwnedForMutation("insert");
         const String & s = x.safeGet<String>();
         const size_t old_size = chars.size();
         const size_t size_to_append = s.size();
@@ -141,6 +196,7 @@ public:
 
     bool tryInsert(const Field & x) override
     {
+        assertOwnedForMutation("tryInsert");
         if (x.getType() != Field::Types::Which::String)
             return false;
 
@@ -154,6 +210,7 @@ public:
     void doInsertFrom(const IColumn & src_, size_t n) override
 #endif
     {
+        assertOwnedForMutation("insertFrom");
         const ColumnString & src = assert_cast<const ColumnString &>(src_);
         const size_t size_to_append = src.sizeAt(n);
 
@@ -182,6 +239,7 @@ public:
 
     void insertData(const char * pos, size_t length) override
     {
+        assertOwnedForMutation("insertData");
         const size_t old_size = chars.size();
         const size_t new_size = old_size + length;
 
@@ -193,6 +251,7 @@ public:
 
     void popBack(size_t n) override
     {
+        assertOwnedForMutation("popBack");
         if (n > size())
             throwCannotPopBack(n, getName(), size());
 
@@ -246,12 +305,14 @@ public:
 
     void insertDefault() override
     {
+        assertOwnedForMutation("insertDefault");
         auto last = offsets.back();
         offsets.push_back(last);
     }
 
     void insertManyDefaults(size_t length) override
     {
+        assertOwnedForMutation("insertManyDefaults");
         auto last = offsets.back();
         for (size_t i = 0; i < length; ++i)
             offsets.push_back(last);
@@ -308,14 +369,87 @@ public:
         return typeid(rhs) == typeid(ColumnString);
     }
 
-    Chars & getChars() { return chars; }
+    /// Construct a ColumnString wrapping producer-owned chars and offsets buffers without
+    /// copying. Returned column carries a retain_token (pins producer SHM region for the
+    /// column's lifetime) and a charge_handle (returns adopted bytes to MemoryTracker on
+    /// destruction); both are RAII-released exactly once when the last reference to the
+    /// adopted state drops (the COW clone path materialises a fully owned copy and does
+    /// not propagate either handle — see [adoption-layer spec §Retain and charge handle
+    /// semantics](file:///home/hari/auto_click/specs/adoption-layer.md#interfaces--contracts)
+    /// and system spec I5).
+    ///
+    /// Requirements on inputs (the caller — the adoption layer T3.1 — must enforce these
+    /// via per-column descriptor validation before calling; createAdopted does not
+    /// re-validate, the contract puts the burden on the producer ABI documentation per
+    /// [shm-block-stream spec §Per-type buffer layout](file:///home/hari/auto_click/specs/shm-block-stream.md#per-type-buffer-layout)):
+    ///   - adopted_chars[0 .. adopted_chars_size + PaddedPODArray<UInt8>::pad_right - 1]
+    ///     is safely readable (column-storage trailing safe-read padding).
+    ///   - adopted_offsets[0 .. adopted_rows - 1] is safely readable, plus
+    ///     PaddedPODArray<UInt64>::pad_right bytes of trailing safe-read padding.
+    ///   - The byte 8 bytes BEFORE adopted_offsets[0] (i.e. adopted_offsets[-1] read as
+    ///     UInt64) MUST equal 0. ColumnString::offsetAt(0) is implemented as offsets[-1]
+    ///     and is exercised by every read of row 0. The producer ABI satisfies this as
+    ///     part of the safe-read padding contract — it places the offsets buffer 8 bytes
+    ///     into its allocated region and zero-initialises the preceding UInt64 slot. This
+    ///     mirrors PaddedPODArray<UInt64>'s own pad_left zero-init invariant. The SHM
+    ///     consumer-side enforcement of this invariant lives in `AdoptionLayer.cpp` —
+    ///     `validateStringDescriptor` rejects descriptors whose `offsets_offset < 8` and
+    ///     whose pre-offsets-buffer sentinel byte is non-zero with
+    ///     `SHM_BUFFER_LAYOUT_INVALID`; createAdopted therefore does not re-validate.
+    ///   - Content-level monotonicity (precondition 21) and terminal offset value
+    ///     (precondition 22) are NOT validated here. They are content-level, lazy, and
+    ///     surfaced via validateAdoptedOffsets() (called by the adoption layer or by the
+    ///     consumer-side read path that would otherwise observe the violation). Authority:
+    ///     adoption-layer §Constraints, I4.
+    ///   - adopted_chars and adopted_offsets are aligned to alignof(UInt8)==1 and
+    ///     alignof(UInt64)==8 respectively.
+    ///   - Both retain_token and charge_handle are non-null; LOGICAL_ERROR otherwise.
+    static MutablePtr createAdopted(
+        UInt8 * adopted_chars, size_t adopted_chars_size,
+        UInt64 * adopted_offsets, size_t adopted_rows,
+        std::shared_ptr<void> retain_token,
+        std::shared_ptr<void> charge_handle)
+    {
+        if (!retain_token || !charge_handle)
+            throwAdoptedFactoryRequiresHandles();
+        auto holder = std::make_unique<AdoptionHolder>(std::move(retain_token), std::move(charge_handle));
+        return create(adopted_chars, adopted_chars_size,
+                      adopted_offsets, adopted_rows,
+                      std::move(holder));
+    }
+
+    /// Non-const accessors throw on adopted columns: writing through getChars().data()[i]
+    /// or getOffsets().data()[i] would silently corrupt producer memory (see VC1 finding
+    /// and adoption-layer spec I3). Callers that need to mutate MUST first call
+    /// IColumn::mutate(), which COW-clones into a fresh owned ColumnString. The const
+    /// overloads are AC1 read-path hot lanes (cityHash64(), length()) and MUST remain
+    /// unguarded for performance.
+    Chars & getChars()
+    {
+        assertOwnedForMutation("getChars");
+        return chars;
+    }
     const Chars & getChars() const { return chars; }
 
-    Offsets & getOffsets() { return offsets; }
+    Offsets & getOffsets()
+    {
+        assertOwnedForMutation("getOffsets");
+        return offsets;
+    }
     const Offsets & getOffsets() const { return offsets; }
 
     // Throws an exception if offsets/chars are messed up
     void validate() const;
+
+    /// Lazy content-level validation for adopted columns: precondition 21 (offsets are
+    /// monotonically non-decreasing) and precondition 22 (terminal offset equals chars
+    /// buffer size). Throws SHM_BUFFER_LAYOUT_INVALID on violation. Const and idempotent;
+    /// safe to call repeatedly. Treats offsets[-1] as the implicit 0 sentinel (the adopted
+    /// factory's contract requires the producer ABI to satisfy this). The plain validate()
+    /// above only checks precondition 22 with LOGICAL_ERROR — it is kept for callers that
+    /// expect that contract; this method is additive for the SHM-adoption surface.
+    /// Authority: adoption-layer §Constraints, I4.
+    void validateAdoptedOffsets() const;
 
     bool isCollationSupported() const override { return true; }
 
