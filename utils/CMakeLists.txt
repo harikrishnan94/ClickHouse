@@ -6,6 +6,8 @@ if (ENABLE_CLICKHOUSE_SELF_EXTRACTING)
     add_subdirectory (self-extracting-executable)
 endif ()
 
+add_subdirectory (shm-producer)
+
 if (USE_BINARY_HASH)
     add_subdirectory (hash-binary)
 endif ()
