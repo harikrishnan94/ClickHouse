@@ -10,6 +10,7 @@ namespace ErrorCodes
 {
     extern const int CANNOT_MPROTECT;
     extern const int CANNOT_ALLOCATE_MEMORY;
+    extern const int LOGICAL_ERROR;
 }
 
 namespace PODArrayDetails
@@ -26,6 +27,14 @@ void protectMemoryRegion(void * addr, size_t len, int prot)
 void throw_alloc_error()
 {
     throw Exception(ErrorCodes::CANNOT_ALLOCATE_MEMORY, "Amount of memory requested to allocate is more than allowed");
+}
+
+void throwAdoptedMutation(const char * method)
+{
+    throw Exception(ErrorCodes::LOGICAL_ERROR,
+        "PODArray method '{}' called on an adopted (externally-owned) array; adopted arrays "
+        "are read-only. See adoption-layer spec I3 (Adopted memory is immutable).",
+        method);
 }
 
 }
