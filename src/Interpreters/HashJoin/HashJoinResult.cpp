@@ -1,14 +1,19 @@
+#include <Columns/ColumnReplicated.h>
+#include <Interpreters/HashJoin/HashJoinProbePhaseHooks.h>
 #include <Interpreters/HashJoin/HashJoinResult.h>
 #include <Interpreters/castColumn.h>
-#include <Columns/ColumnReplicated.h>
 #include <Common/memcpySmall.h>
+
+// Probe-point macro: fires the in-process phase callback used by the bench's
+// phase timing.  No SDT/USDT notes are emitted into dbms object files.
+#define PROBE_POINT(name) ::DB::HashProbeBench::fireProbePoint(::DB::HashProbeBench::ProbePoint::name)
 
 namespace DB
 {
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
+extern const int LOGICAL_ERROR;
 }
 
 static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nullable)
@@ -28,8 +33,7 @@ static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nulla
     }
 }
 
-static void correctNullabilityInplace(
-    ColumnWithTypeAndName & column, bool nullable, const IColumn::Filter & negative_null_map)
+static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nullable, const IColumn::Filter & negative_null_map)
 {
     if (nullable)
     {
@@ -208,6 +212,7 @@ Block HashJoinResult::generateBlock(
     const LazyOutput & lazy_output,
     const HashJoinResult::Properties & properties)
 {
+    PROBE_POINT(generate_block_start);
     size_t rows_added = 0;
     const auto * off_data = lazy_output.row_refs.data();
 
@@ -225,16 +230,20 @@ Block HashJoinResult::generateBlock(
 
     if (properties.is_join_get)
     {
-        lazy_output.buildJoinGetOutput(
-            state->rows_to_reserve, columns,
-            off_data + state->row_ref_begin, off_data + state->row_ref_end);
+        lazy_output.buildJoinGetOutput(state->rows_to_reserve, columns, off_data + state->row_ref_begin, off_data + state->row_ref_end);
     }
     else
     {
         rows_added = lazy_output.buildOutput(
-            state->rows_to_reserve, state->block, state->offsets, columns,
-            off_data + state->row_ref_begin, off_data + state->row_ref_end,
-            state->state_row_offset, state->state_row_limit, state->state_bytes_limit);
+            state->rows_to_reserve,
+            state->block,
+            state->offsets,
+            columns,
+            off_data + state->row_ref_begin,
+            off_data + state->row_ref_end,
+            state->state_row_offset,
+            state->state_row_limit,
+            state->state_bytes_limit);
     }
 
     IColumn::Offsets offsets;
@@ -262,17 +271,12 @@ Block HashJoinResult::generateBlock(
     }
 
 
-    appendRightColumns(
-        block,
-        std::move(columns),
-        offsets,
-        state->filter,
-        lazy_output.type_name,
-        properties);
+    appendRightColumns(block, std::move(columns), offsets, state->filter, lazy_output.type_name, properties);
 
     if (is_state_finished)
         state.reset();
 
+    PROBE_POINT(generate_block_end);
     return block;
 }
 
@@ -378,7 +382,8 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
     }
 
     size_t avg_bytes_per_row = properties.avg_joined_bytes_per_row + getAvgBytesPerRow(scattered_block->getSourceBlock());
-    auto num_lhs_rows = numLeftRowsForNextBlock(next_row, offsets, properties.max_joined_block_rows, properties.max_joined_block_bytes, avg_bytes_per_row);
+    auto num_lhs_rows = numLeftRowsForNextBlock(
+        next_row, offsets, properties.max_joined_block_rows, properties.max_joined_block_bytes, avg_bytes_per_row);
 
     if (num_lhs_rows == 0 || (next_row == 0 && num_lhs_rows >= scattered_block->rows()))
     {
@@ -388,19 +393,20 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
             scattered_block->filter(std::span<UInt64>{matched_rows});
         scattered_block->filterBySelector();
 
-        current_row_state.emplace(GenerateCurrentRowState{
-            .block = std::move(*scattered_block).getSourceBlock(),
-            .rows_to_reserve = lazy_output.row_count,
-            .row_ref_begin = 0,
-            .row_ref_end = lazy_output.row_refs.size(),
-            .columns = std::move(columns),
-            .offsets = std::move(offsets),
-            .filter = std::move(filter),
-            .matched_rows = std::span<UInt64>{matched_rows},
-            .is_last = true,
-            .state_row_limit = limit_rows_per_key,
-            .state_bytes_limit = limit_bytes_per_key,
-        });
+        current_row_state.emplace(
+            GenerateCurrentRowState{
+                .block = std::move(*scattered_block).getSourceBlock(),
+                .rows_to_reserve = lazy_output.row_count,
+                .row_ref_begin = 0,
+                .row_ref_end = lazy_output.row_refs.size(),
+                .columns = std::move(columns),
+                .offsets = std::move(offsets),
+                .filter = std::move(filter),
+                .matched_rows = std::span<UInt64>{matched_rows},
+                .is_last = true,
+                .state_row_limit = limit_rows_per_key,
+                .state_bytes_limit = limit_bytes_per_key,
+            });
 
         auto block = generateBlock(current_row_state, lazy_output, properties);
         scattered_block.reset();
@@ -471,14 +477,18 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
     if (!lazy_output.row_refs.empty())
     {
         if (next_row_ref > lazy_output.row_refs.size())
-            throw Exception(ErrorCodes::LOGICAL_ERROR,
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
                 "The number of joined row_refs {} is more than expected number of row_refs {}",
-                lazy_output.row_refs.size(), next_row_ref);
+                lazy_output.row_refs.size(),
+                next_row_ref);
 
         if (num_joined_rows > lazy_output.row_count)
-            throw Exception(ErrorCodes::LOGICAL_ERROR,
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
                 "The number or joined rows {} is more than expected number of rows {}",
-                num_joined_rows, lazy_output.row_count);
+                num_joined_rows,
+                lazy_output.row_count);
     }
 
     bool is_last = next_row >= offsets.size();
@@ -514,19 +524,20 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
         current_scattered_block.filter(partial_matched_rows);
     current_scattered_block.filterBySelector();
 
-    current_row_state.emplace(GenerateCurrentRowState{
-        .block = std::move(current_scattered_block).getSourceBlock(),
-        .rows_to_reserve = num_rhs_rows,
-        .row_ref_begin = row_ref_start,
-        .row_ref_end = next_row_ref,
-        .columns = std::move(rhs_columns),
-        .offsets = std::move(partial_offsets),
-        .filter = std::move(partial_filter),
-        .matched_rows = partial_matched_rows,
-        .is_last = is_last,
-        .state_row_limit = limit_rows_per_key,
-        .state_bytes_limit = limit_bytes_per_key,
-    });
+    current_row_state.emplace(
+        GenerateCurrentRowState{
+            .block = std::move(current_scattered_block).getSourceBlock(),
+            .rows_to_reserve = num_rhs_rows,
+            .row_ref_begin = row_ref_start,
+            .row_ref_end = next_row_ref,
+            .columns = std::move(rhs_columns),
+            .offsets = std::move(partial_offsets),
+            .filter = std::move(partial_filter),
+            .matched_rows = partial_matched_rows,
+            .is_last = is_last,
+            .state_row_limit = limit_rows_per_key,
+            .state_bytes_limit = limit_bytes_per_key,
+        });
 
     auto block = generateBlock(current_row_state, lazy_output, properties);
     if (is_last)

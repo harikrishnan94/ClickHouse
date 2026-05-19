@@ -467,6 +467,15 @@ public:
     void reuseJoinedData(const HashJoin & join);
 
     RightTableDataPtr getJoinedData() const { return data; }
+
+#ifdef HARNESS_OBSERVABILITY
+    // Read-only observability accessors for the hashprobe-bench harness.
+    // All are: const, by-value, [[maybe_unused]], unreachable from joinBlock/addBlockToJoin/next.
+    [[maybe_unused]] Type getResolvedMapType() const { return data ? data->type : Type::EMPTY; }
+    [[maybe_unused]] JoinStrictness getStrictnessAfterBuild() const { return strictness; }
+    [[maybe_unused]] size_t getMapEntryCount() const { return getTotalRowCount(); }
+#endif
+
     BlocksList releaseJoinedBlocks(bool restructure = false);
 
     /// Modify right block (update structure according to sample block) to save it in block list

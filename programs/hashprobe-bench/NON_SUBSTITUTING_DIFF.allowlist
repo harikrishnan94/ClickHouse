@@ -1,0 +1,40 @@
+# NON_SUBSTITUTING_DIFF.allowlist
+#
+# Each line names a file path (relative to repo root) and ONE symbol added or
+# modified in that file that qualifies as a non-substituting change per the
+# spec definition (Section A, "non-substituting change" definition).
+#
+# A non-substituting change must fall into exactly one of:
+#   (a) Instrumentation probe points (fireProbePoint call-sites in probe loops)
+#   (b) Read-only observability accessors gated by #ifdef HARNESS_OBSERVABILITY
+#
+# Any non-harness-source diff outside this allowlist FAILS requirement A1.
+#
+# Format:  <repo-relative-path>  <symbol_name>
+# One entry per symbol.  Comments (#) and blank lines are ignored.
+
+# ── Phase hooks infrastructure ────────────────────────────────────────────────
+# New header: ProbePoint enum + thread-local callback (setProbePointCallback,
+# clearProbePointCallback, fireProbePoint).  Always included via the PROBE_POINT
+# macro in HashJoinMethodsImpl.h and HashJoinResult.cpp.
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_enum
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  fireProbePoint
+
+# (b) Read-only observability accessors on HashJoin (gated by HARNESS_OBSERVABILITY).
+#     All accessors: const, by-value, [[maybe_unused]], unreachable from joinBlock/addBlockToJoin.
+src/Interpreters/HashJoin/HashJoin.h  HashJoin::getResolvedMapType
+src/Interpreters/HashJoin/HashJoin.h  HashJoin::getStrictnessAfterBuild
+src/Interpreters/HashJoin/HashJoin.h  HashJoin::getMapEntryCount
+
+# Probe-point call-sites in joinRightColumns and generateBlock.
+# PROBE_POINT(name) always calls fireProbePoint(); no SDT notes emitted.
+src/Interpreters/HashJoin/HashJoinMethodsImpl.h  PROBE_POINT_probe_loop_start
+src/Interpreters/HashJoin/HashJoinMethodsImpl.h  PROBE_POINT_probe_loop_end
+src/Interpreters/HashJoin/HashJoinResult.cpp  PROBE_POINT_generate_block_start
+src/Interpreters/HashJoin/HashJoinResult.cpp  PROBE_POINT_generate_block_end
+
+# ── Build system registration ─────────────────────────────────────────────────
+# programs/CMakeLists.txt: standard add_subdirectory registration for the new
+# harness binary.  Every ClickHouse program requires exactly this line to be
+# integrated into the top-level build.  Not a code-path change.
+programs/CMakeLists.txt  add_subdirectory_hashprobe_bench
