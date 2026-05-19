@@ -3,12 +3,12 @@
 #include <Columns/ColumnFixedSizeHelper.h>
 #include <Columns/IColumn.h>
 #include <Columns/IColumnImpl.h>
-#include <Common/assert_cast.h>
 #include <Core/CompareHelper.h>
 #include <Core/Field.h>
 #include <Core/TypeId.h>
 #include <base/TypeName.h>
 #include <base/unaligned.h>
+#include <Common/assert_cast.h>
 
 #include <bit>
 
@@ -42,21 +42,33 @@ public:
 
 private:
     ColumnVector() = default;
-    explicit ColumnVector(const size_t n) : data(n) {}
-    ColumnVector(const size_t n, const ValueType x) : data(n, x) {}
-    ColumnVector(const ColumnVector & src) : data(src.data.begin(), src.data.end()) {}
-    ColumnVector(Container::const_iterator begin, Container::const_iterator end) : data(begin, end) { }
+    explicit ColumnVector(const size_t n)
+        : data(n)
+    {
+    }
+    ColumnVector(const size_t n, const ValueType x)
+        : data(n, x)
+    {
+    }
+    ColumnVector(const ColumnVector & src)
+        : data(src.data.begin(), src.data.end())
+    {
+    }
+    ColumnVector(Container::const_iterator begin, Container::const_iterator end)
+        : data(begin, end)
+    {
+    }
 
     /// Sugar constructor.
-    ColumnVector(std::initializer_list<T> il) : data{il} {}
+    ColumnVector(std::initializer_list<T> il)
+        : data{il}
+    {
+    }
 
 public:
     bool isNumeric() const override { return is_arithmetic_v<T>; }
 
-    size_t size() const final
-    {
-        return data.size();
-    }
+    size_t size() const final { return data.size(); }
 
 #if !defined(DEBUG_OR_SANITIZER_BUILD)
     void insertFrom(const IColumn & src, size_t n) override
@@ -82,20 +94,13 @@ public:
         data.resize_fill(data.size() + length, static_cast<T>(field.safeGet<T>()));
     }
 
-    void insertData(const char * pos, size_t) override
-    {
-        data.emplace_back(unalignedLoad<T>(pos));
-    }
+    void insertData(const char * pos, size_t) override { data.emplace_back(unalignedLoad<T>(pos)); }
 
-    void insertDefault() override
-    {
-        data.push_back(T());
-    }
+    void insertDefault() override { data.push_back(T()); }
 
-    void insertManyDefaults(size_t length) override
-    {
-        data.resize_fill(data.size() + length, T());
-    }
+    void prefetchValueIntoCache(size_t n) const override { __builtin_prefetch(data.data() + n); }
+
+    void insertManyDefaults(size_t length) override { data.resize_fill(data.size() + length, T()); }
 
     void popBack(size_t n) override
     {
@@ -116,30 +121,15 @@ public:
 
     void updateHashFast(SipHash & hash) const override;
 
-    size_t byteSize() const override
-    {
-        return data.size() * sizeof(data[0]);
-    }
+    size_t byteSize() const override { return data.size() * sizeof(data[0]); }
 
-    size_t byteSizeAt(size_t) const override
-    {
-        return sizeof(data[0]);
-    }
+    size_t byteSizeAt(size_t) const override { return sizeof(data[0]); }
 
-    size_t allocatedBytes() const override
-    {
-        return data.allocated_bytes();
-    }
+    size_t allocatedBytes() const override { return data.allocated_bytes(); }
 
-    void protect() override
-    {
-        data.protect();
-    }
+    void protect() override { data.protect(); }
 
-    void insertValue(const T value)
-    {
-        data.push_back(value);
-    }
+    void insertValue(const T value) { data.push_back(value); }
 
     template <class U>
     constexpr int compareAtOther(size_t n, size_t m, const ColumnVector<U> & rhs, int nan_direction_hint) const
@@ -160,7 +150,7 @@ public:
     [[nodiscard]] Int64 compareTrackAt(size_t n, size_t m, const IColumn & rhs, int nan_direction_hint) const final
     {
 #if defined(DEBUG_OR_SANITIZER_BUILD)
-    #define compareAt doCompareAt
+#    define compareAt doCompareAt
 #endif
         Int64 res = compareAt(n, m, rhs, nan_direction_hint);
 
@@ -184,7 +174,7 @@ public:
         }
         return res;
 #if defined(DEBUG_OR_SANITIZER_BUILD)
-    #undef compareAt
+#    undef compareAt
 #endif
     }
 
@@ -192,36 +182,42 @@ public:
 
     bool isComparatorCompilable() const override;
 
-    llvm::Value * compileComparator(llvm::IRBuilderBase & /*builder*/, llvm::Value * /*lhs*/, llvm::Value * /*rhs*/, llvm::Value * /*nan_direction_hint*/) const override;
+    llvm::Value *
+    compileComparator(llvm::IRBuilderBase & /*builder*/, llvm::Value * /*lhs*/, llvm::Value * /*rhs*/, llvm::Value * /*nan_direction_hint*/)
+        const override;
 
 #endif
 
-    void compareColumn(const IColumn & rhs, size_t rhs_row_num,
-        PaddedPODArray<UInt64> * row_indexes, PaddedPODArray<Int8> & compare_results,
-        int direction, int nan_direction_hint) const override;
+    void compareColumn(
+        const IColumn & rhs,
+        size_t rhs_row_num,
+        PaddedPODArray<UInt64> * row_indexes,
+        PaddedPODArray<Int8> & compare_results,
+        int direction,
+        int nan_direction_hint) const override;
 
-    void getPermutation(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                    size_t limit, int nan_direction_hint, IColumn::Permutation & res) const override;
+    void getPermutation(
+        IColumn::PermutationSortDirection direction,
+        IColumn::PermutationSortStability stability,
+        size_t limit,
+        int nan_direction_hint,
+        IColumn::Permutation & res) const override;
 
-    void updatePermutation(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                    size_t limit, int nan_direction_hint, IColumn::Permutation & res, EqualRanges& equal_ranges) const override;
+    void updatePermutation(
+        IColumn::PermutationSortDirection direction,
+        IColumn::PermutationSortStability stability,
+        size_t limit,
+        int nan_direction_hint,
+        IColumn::Permutation & res,
+        EqualRanges & equal_ranges) const override;
 
     size_t estimateCardinalityInPermutedRange(const IColumn::Permutation & permutation, const EqualRange & equal_range) const override;
 
-    void reserve(size_t n) override
-    {
-        data.reserve_exact(n);
-    }
+    void reserve(size_t n) override { data.reserve_exact(n); }
 
-    size_t capacity() const override
-    {
-        return data.capacity();
-    }
+    size_t capacity() const override { return data.capacity(); }
 
-    void shrinkToFit() override
-    {
-        data.shrink_to_fit();
-    }
+    void shrinkToFit() override { data.shrink_to_fit(); }
 
     const char * getFamilyName() const override { return TypeName<T>.data(); }
     TypeIndex getDataType() const override { return TypeToTypeIndex<T>; }
@@ -235,10 +231,7 @@ public:
     }
 
 
-    void get(size_t n, Field & res) const override
-    {
-        res = (*this)[n];
-    }
+    void get(size_t n, Field & res) const override { res = (*this)[n]; }
 
     void getValueNameImpl(WriteBufferFromOwnString & name_buf, size_t n, const IColumn::Options &) const override;
 
@@ -273,10 +266,7 @@ public:
             throwColumnConvertNotSupported(TypeName<T>, "bool");
     }
 
-    void insert(const Field & x) override
-    {
-        data.push_back(static_cast<T>(x.safeGet<T>()));
-    }
+    void insert(const Field & x) override { data.push_back(static_cast<T>(x.safeGet<T>())); }
 
     bool tryInsert(const DB::Field & x) override;
 
@@ -308,10 +298,7 @@ public:
     size_t sizeOfValueIfFixed() const override { return sizeof(T); }
     std::span<char> insertRawUninitialized(size_t count) override;
 
-    std::string_view getRawData() const override
-    {
-        return {reinterpret_cast<const char*>(data.data()), byteSize()};
-    }
+    std::string_view getRawData() const override { return {reinterpret_cast<const char *>(data.data()), byteSize()}; }
 
     std::string_view getDataAt(size_t n) const override
     {
@@ -332,8 +319,7 @@ public:
             /// satisfying the requirement of std::bit_cast that both types have equal size.
             /// Unsigned integers are chosen because their value equals their bit pattern,
             /// making the comparison to 0 unambiguous.
-            using Bits = std::conditional_t<sizeof(T) == 2, UInt16,
-                         std::conditional_t<sizeof(T) == 4, UInt32, UInt64>>;
+            using Bits = std::conditional_t<sizeof(T) == 2, UInt16, std::conditional_t<sizeof(T) == 4, UInt32, UInt64>>;
             return std::bit_cast<Bits>(data[n]) == 0;
         }
         else
@@ -342,12 +328,10 @@ public:
         }
     }
 
-    bool structureEquals(const IColumn & rhs) const override
-    {
-        return typeid(rhs) == typeid(ColumnVector<T>);
-    }
+    bool structureEquals(const IColumn & rhs) const override { return typeid(rhs) == typeid(ColumnVector<T>); }
 
-    ColumnPtr createWithOffsets(const IColumn::Offsets & offsets, const ColumnConst & column_with_default_value, size_t total_rows, size_t shift) const override;
+    ColumnPtr createWithOffsets(
+        const IColumn::Offsets & offsets, const ColumnConst & column_with_default_value, size_t total_rows, size_t shift) const override;
 
     void updateAt(const IColumn & src, size_t dst_pos, size_t src_pos) override;
 
@@ -357,25 +341,13 @@ public:
     void applyZeroMap(const IColumn::Filter & filt, bool inverted = false);
 
     /** More efficient methods of manipulation - to manipulate with data directly. */
-    Container & getData()
-    {
-        return data;
-    }
+    Container & getData() { return data; }
 
-    const Container & getData() const
-    {
-        return data;
-    }
+    const Container & getData() const { return data; }
 
-    const T & getElement(size_t n) const
-    {
-        return data[n];
-    }
+    const T & getElement(size_t n) const { return data[n]; }
 
-    T & getElement(size_t n)
-    {
-        return data[n];
-    }
+    T & getElement(size_t n) { return data[n]; }
 
 protected:
     Container data;

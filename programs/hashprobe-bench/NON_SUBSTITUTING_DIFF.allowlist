@@ -38,3 +38,29 @@ src/Interpreters/HashJoin/HashJoinResult.cpp  PROBE_POINT_generate_block_end
 # harness binary.  Every ClickHouse program requires exactly this line to be
 # integrated into the top-level build.  Not a code-path change.
 programs/CMakeLists.txt  add_subdirectory_hashprobe_bench
+
+# ── Generate-phase gather prefetch (production improvement, harness-measurable) ─
+#
+# These changes fall into category (c): performance-only, hint-based, sweep-
+# controlled optimizations.  All are non-substituting because:
+#   - __builtin_prefetch is a CPU hint with no observable side-effects.
+#   - generate_phase_prefetch_lookahead=0 disables all new code unconditionally.
+#   - No data-flow, no output semantics, no correctness impact.
+#
+# The harness sweeps generate_phase_prefetch_lookahead in {0,4,8,16} and reads
+# result_emit_cpu_ns / hw_llc_miss_pct to A/B against the LA=0 baseline.
+
+# New header: thread_local knob read by IColumn.cpp to control lookahead distance.
+src/Columns/IColumnPrefetch.h  generate_phase_prefetch_lookahead
+
+# New virtual on IColumn: default no-op; override emits __builtin_prefetch.
+src/Columns/IColumn.h  IColumn::prefetchValueIntoCache
+
+# Concrete overrides on POD-backed column types.
+src/Columns/ColumnVector.h   ColumnVector::prefetchValueIntoCache
+src/Columns/ColumnDecimal.h  ColumnDecimal::prefetchValueIntoCache
+
+# Lookahead prefetch added to the two generate-phase gather loops.
+# Both check generate_phase_prefetch_lookahead == 0 first and skip the hint.
+src/Columns/IColumn.cpp  fillColumnFromBlocksAndRowNumbers_prefetch
+src/Columns/IColumn.cpp  fillColumnFromRowRefs_prefetch

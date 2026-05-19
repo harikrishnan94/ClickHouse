@@ -6,8 +6,8 @@
 /// Phases 1-4 add data-generation, build/probe drivers, oracle, sweep manager,
 /// and full measurement.  This file provides the CLI entry point.
 
-#include <hashprobe_bench/config.h>
 #include <hashprobe_bench/artifact.h>
+#include <hashprobe_bench/config.h>
 #include <hashprobe_bench/types.h>
 #include "sweep/sweep_manager.h"
 
@@ -37,7 +37,7 @@ static std::vector<uint32_t> parseUInt32List(const std::string & s)
     {
         // Trim whitespace
         auto start = tok.find_first_not_of(" \t");
-        auto end   = tok.find_last_not_of(" \t");
+        auto end = tok.find_last_not_of(" \t");
         if (start == std::string::npos)
             continue;
         tok = tok.substr(start, end - start + 1);
@@ -88,7 +88,7 @@ static void parseKeyShape(const std::string & s, ConfigType & cfg)
         throw std::runtime_error("--key_shape W must be 32 or 64; got: " + std::to_string(w));
 
     cfg.key_columns = n;
-    cfg.key_width   = (w == 32) ? KeyWidth::W32 : KeyWidth::W64;
+    cfg.key_width = (w == 32) ? KeyWidth::W32 : KeyWidth::W64;
 }
 
 /// Fail-loudly for unsupported configuration (A3, A4).
@@ -139,15 +139,16 @@ static ConfigType buildConfig(const po::variables_map & vm)
 
     // ── probe sweeps ──────────────────────────────────────────────────────
     cfg.probe_max_threads_sweep = parseUInt32List(vm["probe_max_threads_sweep"].as<std::string>());
-    cfg.probe_block_size_sweep  = parseUInt32List(vm["probe_block_size_sweep"].as<std::string>());
+    cfg.probe_block_size_sweep = parseUInt32List(vm["probe_block_size_sweep"].as<std::string>());
     cfg.probe_rows = vm["probe_rows"].as<uint64_t>();
+    cfg.generate_prefetch_lookahead_sweep = parseUInt32List(vm["generate_prefetch_lookahead_sweep"].as<std::string>());
 
     // ── block / join sizing ───────────────────────────────────────────────
-    cfg.block_size                 = vm["block_size"].as<uint32_t>();
+    cfg.block_size = vm["block_size"].as<uint32_t>();
     cfg.max_joined_block_size_rows = vm["max_joined_block_size_rows"].as<uint64_t>();
 
     // ── workload precision ────────────────────────────────────────────────
-    cfg.match_rate    = vm["match_rate"].as<double>();
+    cfg.match_rate = vm["match_rate"].as<double>();
     cfg.null_fraction = vm["null_fraction"].as<double>();
 
     if (cfg.match_rate < 0.0 || cfg.match_rate > 1.0)
@@ -194,86 +195,87 @@ int main(int argc, char ** argv)
     try
     {
         po::options_description visible("hashprobe-bench options");
-        visible.add_options()
-            ("help,h",
-                "Show this help message and exit.")
-            ("version",
-                "Print version and exit.")
+        visible.add_options()("help,h", "Show this help message and exit.")("version", "Print version and exit.")
 
             // ── Build-side ────────────────────────────────────────────────
             ("build_threads",
-                po::value<uint32_t>()->default_value(1),
-                "Number of build threads.  1 → HashJoin directly (G1);  "
-                ">1 → ConcurrentHashJoin with slots=max(build_threads, "
-                "max(probe_max_threads_sweep)) (G1).")
-            ("build_rows",
-                po::value<uint64_t>()->default_value(1'000'000),
-                "Total rows on the build side.")
+             po::value<uint32_t>()->default_value(1),
+             "Number of build threads.  1 → HashJoin directly (G1);  "
+             ">1 → ConcurrentHashJoin with slots=max(build_threads, "
+             "max(probe_max_threads_sweep)) (G1).")(
+                "build_rows", po::value<uint64_t>()->default_value(1'000'000), "Total rows on the build side.")
 
             // ── Key shape ─────────────────────────────────────────────────
             ("key_shape",
-                po::value<std::string>()->default_value("1x64"),
-                "Key shape: <N>x{32|64}[,nullable].  "
-                "E.g. \"1x64\", \"2x32\", \"4x64,nullable\".  "
-                "N ∈ {1,2,4}; nullable applies symmetrically to build+probe (J2, F6).")
+             po::value<std::string>()->default_value("1x64"),
+             "Key shape: <N>x{32|64}[,nullable].  "
+             "E.g. \"1x64\", \"2x32\", \"4x64,nullable\".  "
+             "N ∈ {1,2,4}; nullable applies symmetrically to build+probe (J2, F6).")
 
             // ── Join semantics (A3, A4) ───────────────────────────────────
             ("strictness",
-                po::value<std::string>()->default_value("ALL"),
-                "Join strictness: ALL | ANY | RIGHTANY.  "
-                "ASOF/SEMI/ANTI/UNSPECIFIED cause immediate fail-loudly exit (A4).")
-            ("kind",
+             po::value<std::string>()->default_value("ALL"),
+             "Join strictness: ALL | ANY | RIGHTANY.  "
+             "ASOF/SEMI/ANTI/UNSPECIFIED cause immediate fail-loudly exit (A4).")(
+                "kind",
                 po::value<std::string>()->default_value("Inner"),
                 "Join kind — must be Inner.  "
                 "Left/Right/Full/Cross/Comma/Paste cause fail-loudly exit (A3).")
 
             // ── Probe sweep ───────────────────────────────────────────────
             ("probe_max_threads_sweep",
-                po::value<std::string>()->default_value("1"),
-                "Comma-separated max_threads values for the probe sweep (G1, G2).  "
-                "E.g. \"1,2,4,8\".  ConcurrentHashJoin slots = "
-                "max(build_threads, max(probe_max_threads_sweep)).")
-            ("probe_rows",
-                po::value<uint64_t>()->default_value(1'000'000),
-                "Total rows on the probe side.")
-            ("probe_block_size_sweep",
+             po::value<std::string>()->default_value("1"),
+             "Comma-separated max_threads values for the probe sweep (G1, G2).  "
+             "E.g. \"1,2,4,8\".  ConcurrentHashJoin slots = "
+             "max(build_threads, max(probe_max_threads_sweep)).")(
+                "probe_rows", po::value<uint64_t>()->default_value(1'000'000), "Total rows on the probe side.")(
+                "probe_block_size_sweep",
                 po::value<std::string>()->default_value("65536"),
                 "Comma-separated block sizes for the probe sweep (C3/C4).  "
                 "E.g. \"4096,65536\".")
 
+            // ── Generate-phase prefetch sweep ─────────────────────────────
+            ("generate_prefetch_lookahead_sweep",
+             po::value<std::string>()->default_value("0,4,8,16"),
+             "Comma-separated generate_phase_prefetch_lookahead values to sweep.  "
+             "0 disables the generate-phase gather prefetch (baseline); "
+             ">0 issues __builtin_prefetch hints that many iterations ahead "
+             "in fillColumnFromBlocksAndRowNumbers and fillColumnFromRowRefs.  "
+             "E.g. \"0,8\" or \"0,4,8,16\".")
+
             // ── Block / join sizing ───────────────────────────────────────
             ("block_size",
-                po::value<uint32_t>()->default_value(65536),
-                "Default rows per block for both build and probe sides "
-                "(last block may be shorter, C3/C4).")
-            ("max_joined_block_size_rows",
+             po::value<uint32_t>()->default_value(65536),
+             "Default rows per block for both build and probe sides "
+             "(last block may be shorter, C3/C4).")(
+                "max_joined_block_size_rows",
                 po::value<uint64_t>()->default_value(65536),
                 "max_joined_block_size_rows setting passed to HashJoin "
                 "(controls the output-block splitter, C5).")
 
             // ── Workload precision ────────────────────────────────────────
             ("match_rate",
-                po::value<double>()->default_value(0.5),
-                "Fraction of probe rows that match at least one build key (F1).  "
-                "|measured − r| ≤ 0.01 over ≥10^7 rows.")
-            ("null_fraction",
+             po::value<double>()->default_value(0.5),
+             "Fraction of probe rows that match at least one build key (F1).  "
+             "|measured − r| ≤ 0.01 over ≥10^7 rows.")(
+                "null_fraction",
                 po::value<double>()->default_value(0.0),
                 "Null fraction per key column, applied symmetrically (F2).  "
                 "|measured − q| ≤ 0.01 per column over ≥10^7 rows.")
 
             // ── Reproducibility ───────────────────────────────────────────
             ("seed",
-                po::value<uint64_t>()->default_value(42),
-                "pcg64 RNG seed for key and null generation (I1).  "
-                "Same seed → identical block SHA-256 checksums across runs.")
+             po::value<uint64_t>()->default_value(42),
+             "pcg64 RNG seed for key and null generation (I1).  "
+             "Same seed → identical block SHA-256 checksums across runs.")
 
             // ── Timing / reps (H6, C7) ────────────────────────────────────
             ("reps",
-                po::value<uint32_t>()->default_value(1),
-                "Probe-phase repetitions per sweep cell (H6).  "
-                "The same HashJoin/ConcurrentHashJoin instance is reused — "
-                "no rebuild between reps (C7).")
-            ("cache_mode",
+             po::value<uint32_t>()->default_value(1),
+             "Probe-phase repetitions per sweep cell (H6).  "
+             "The same HashJoin/ConcurrentHashJoin instance is reused — "
+             "no rebuild between reps (C7).")(
+                "cache_mode",
                 po::value<std::string>()->default_value("cold"),
                 "Cache-warming mode before probe timing: "
                 "warm (walk hash table once, H5 def.) | "
@@ -281,21 +283,20 @@ int main(int argc, char ** argv)
 
             // ── Output ────────────────────────────────────────────────────
             ("output_dir",
-                po::value<std::string>()->default_value("."),
-                "Directory for: result artifact (JSON), per-block timing log (CSV/Parquet), "
-                "build.native, probe.native, oracle output.")
+             po::value<std::string>()->default_value("."),
+             "Directory for: result artifact (JSON), per-block timing log (CSV/Parquet), "
+             "build.native, probe.native, oracle output.")
 
             // ── Oracle verification (E-L0/L1/L2) ─────────────────────────────────
             ("verify-oracle",
-                po::bool_switch()->default_value(false),
-                "Enable oracle correctness verification (E-L0/L1/L2).  "
-                "Off by default; enables clickhouse-local invocations, "
-                "build.native/probe.native writes, and per-cell oracle checks.")
-            ("save-artifact",
+             po::bool_switch()->default_value(false),
+             "Enable oracle correctness verification (E-L0/L1/L2).  "
+             "Off by default; enables clickhouse-local invocations, "
+             "build.native/probe.native writes, and per-cell oracle checks.")(
+                "save-artifact",
                 po::bool_switch()->default_value(false),
                 "Write artifact.json to output_dir after the sweep.  "
-                "Off by default.")
-        ;
+                "Off by default.");
 
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, visible), vm);

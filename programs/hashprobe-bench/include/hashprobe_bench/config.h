@@ -31,8 +31,8 @@ enum class KeyWidth
 /// Cache-warming mode applied before each probe-phase timing run (H5 definitions).
 enum class CacheMode
 {
-    WARM,  ///< Walk hash table once sequentially to populate LLC.
-    COLD,  ///< Allocate 2×LLC and write it twice to evict all LLC contents.
+    WARM, ///< Walk hash table once sequentially to populate LLC.
+    COLD, ///< Allocate 2×LLC and write it twice to evict all LLC contents.
 };
 
 /// Full configuration for one harness invocation, populated from the CLI (T0.6).
@@ -40,13 +40,13 @@ enum class CacheMode
 struct ConfigType
 {
     // ── Build side (C1, C3, C6, G1) ──────────────────────────────────────
-    uint32_t build_threads   = 1;        ///< 1 → HashJoin; >1 → ConcurrentHashJoin (G1)
-    uint64_t build_rows      = 1'000'000;
+    uint32_t build_threads = 1; ///< 1 → HashJoin; >1 → ConcurrentHashJoin (G1)
+    uint64_t build_rows = 1'000'000;
 
     // ── Key shape (A2, F6) ────────────────────────────────────────────────
-    uint32_t key_columns     = 1;        ///< N ∈ {1, 2, 4}
-    KeyWidth key_width       = KeyWidth::W64;
-    bool     key_nullable    = false;    ///< Nullable applied symmetrically to build+probe (J2)
+    uint32_t key_columns = 1; ///< N ∈ {1, 2, 4}
+    KeyWidth key_width = KeyWidth::W64;
+    bool key_nullable = false; ///< Nullable applied symmetrically to build+probe (J2)
 
     // ── Join semantics (A3, A4, D1-D4) ───────────────────────────────────
     StrictnessConfig strictness = StrictnessConfig::ALL;
@@ -54,28 +54,33 @@ struct ConfigType
 
     // ── Probe sweep (C7, G1, G2) ──────────────────────────────────────────
     std::vector<uint32_t> probe_max_threads_sweep = {1};
-    std::vector<uint32_t> probe_block_size_sweep  = {65536};
+    std::vector<uint32_t> probe_block_size_sweep = {65536};
     uint64_t probe_rows = 1'000'000;
 
+    // ── Generate-phase prefetch lookahead sweep ───────────────────────────
+    /// Values of generate_phase_prefetch_lookahead to sweep across.
+    /// 0 = disabled (baseline), >0 = lookahead distance for the gather prefetch.
+    std::vector<uint32_t> generate_prefetch_lookahead_sweep = {0, 4, 8, 16};
+
     // ── Block / join sizing (C3, C4, C5) ──────────────────────────────────
-    uint32_t block_size                  = 65536;  ///< Rows per block (last may be shorter)
-    uint64_t max_joined_block_size_rows  = 65536;  ///< HashJoin output splitter limit
+    uint32_t block_size = 65536; ///< Rows per block (last may be shorter)
+    uint64_t max_joined_block_size_rows = 65536; ///< HashJoin output splitter limit
 
     // ── Workload precision (F1, F2, A2b) ──────────────────────────────────
-    double match_rate    = 0.5;   ///< Fraction of probe rows matching at least one build key
-    double null_fraction = 0.0;   ///< Null fraction per key column (both sides, F2)
+    double match_rate = 0.5; ///< Fraction of probe rows matching at least one build key
+    double null_fraction = 0.0; ///< Null fraction per key column (both sides, F2)
 
     // ── Reproducibility (I1) ──────────────────────────────────────────────
     uint64_t seed = 42;
 
     // ── Timing / reps (H6, C7) ────────────────────────────────────────────
-    uint32_t reps = 1;  ///< Probe-phase repetitions per sweep cell; no rebuild between reps
+    uint32_t reps = 1; ///< Probe-phase repetitions per sweep cell; no rebuild between reps
 
     // ── Cache mode (H5) ───────────────────────────────────────────────────
     CacheMode cache_mode = CacheMode::COLD;
 
     // ── Output ────────────────────────────────────────────────────────────
-    std::string output_dir = ".";  ///< Directory for artifact, logs, .native files
+    std::string output_dir = "."; ///< Directory for artifact, logs, .native files
 
     // ── Oracle verification (E-L0/L1/L2) ──────────────────────────────────
     /// When false (default) the oracle path is completely bypassed: no

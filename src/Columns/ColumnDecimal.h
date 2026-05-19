@@ -1,11 +1,11 @@
 #pragma once
 
-#include <base/TypeName.h>
-#include <Core/Field.h>
-#include <Core/TypeId.h>
-#include <Common/typeid_cast.h>
 #include <Columns/ColumnFixedSizeHelper.h>
 #include <Columns/IColumn.h>
+#include <Core/Field.h>
+#include <Core/TypeId.h>
+#include <base/TypeName.h>
+#include <Common/typeid_cast.h>
 
 namespace DB
 {
@@ -25,14 +25,16 @@ public:
 
 private:
     ColumnDecimal(const size_t n, UInt32 scale_)
-    :   data(n),
-        scale(scale_)
-    {}
+        : data(n)
+        , scale(scale_)
+    {
+    }
 
     ColumnDecimal(const ColumnDecimal & src)
-    :   data(src.data.begin(), src.data.end()),
-        scale(src.scale)
-    {}
+        : data(src.data.begin(), src.data.end())
+        , scale(src.scale)
+    {
+    }
 
 public:
     const char * getFamilyName() const override;
@@ -71,6 +73,8 @@ public:
 
     void insertData(const char * src, size_t /*length*/) override;
     void insertDefault() override { data.push_back(T()); }
+
+    void prefetchValueIntoCache(size_t n) const override { __builtin_prefetch(data.data() + n); }
     void insertManyDefaults(size_t length) override { data.resize_fill(data.size() + length); }
     void insert(const Field & x) override { data.push_back(x.safeGet<T>()); }
     bool tryInsert(const Field & x) override;
@@ -88,15 +92,9 @@ public:
         data.resize_assume_reserved(data.size() - n);
     }
 
-    std::string_view getRawData() const override
-    {
-        return {reinterpret_cast<const char*>(data.data()), byteSize()};
-    }
+    std::string_view getRawData() const override { return {reinterpret_cast<const char *>(data.data()), byteSize()}; }
 
-    std::string_view getDataAt(size_t n) const override
-    {
-        return {reinterpret_cast<const char *>(&data[n]), sizeof(data[n])};
-    }
+    std::string_view getDataAt(size_t n) const override { return {reinterpret_cast<const char *>(&data[n]), sizeof(data[n])}; }
 
     Float64 getFloat64(size_t n) const final;
 
@@ -111,10 +109,19 @@ public:
 #else
     int doCompareAt(size_t n, size_t m, const IColumn & rhs_, int nan_direction_hint) const override;
 #endif
-    void getPermutation(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                        size_t limit, int nan_direction_hint, IColumn::Permutation & res) const override;
-    void updatePermutation(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                        size_t limit, int, IColumn::Permutation & res, EqualRanges& equal_ranges) const override;
+    void getPermutation(
+        IColumn::PermutationSortDirection direction,
+        IColumn::PermutationSortStability stability,
+        size_t limit,
+        int nan_direction_hint,
+        IColumn::Permutation & res) const override;
+    void updatePermutation(
+        IColumn::PermutationSortDirection direction,
+        IColumn::PermutationSortStability stability,
+        size_t limit,
+        int,
+        IColumn::Permutation & res,
+        EqualRanges & equal_ranges) const override;
     size_t estimateCardinalityInPermutedRange(const IColumn::Permutation & permutation, const EqualRange & equal_range) const override;
 
 
@@ -122,7 +129,7 @@ public:
 
     Field operator[](size_t n) const override { return DecimalField<ValueType>(data[n], scale); }
     void get(size_t n, Field & res) const override { res = (*this)[n]; }
-    void getValueNameImpl(WriteBufferFromOwnString & name_buf, size_t n, const IColumn::Options &options) const override;
+    void getValueNameImpl(WriteBufferFromOwnString & name_buf, size_t n, const IColumn::Options & options) const override;
     bool getBool(size_t n) const override { return bool(data[n].value); }
     Int64 getInt(size_t n) const override { return Int64(data[n].value); }
     UInt64 get64(size_t n) const override;
@@ -166,17 +173,27 @@ protected:
 };
 
 template <class TCol>
-concept is_col_over_big_decimal = std::is_same_v<TCol, ColumnDecimal<typename TCol::ValueType>>
-    && is_decimal<typename TCol::ValueType> && is_over_big_int<typename TCol::NativeT>;
+concept is_col_over_big_decimal = std::is_same_v<TCol, ColumnDecimal<typename TCol::ValueType>> && is_decimal<typename TCol::ValueType>
+    && is_over_big_int<typename TCol::NativeT>;
 
 template <class TCol>
-concept is_col_int_decimal = std::is_same_v<TCol, ColumnDecimal<typename TCol::ValueType>>
-    && is_decimal<typename TCol::ValueType> && std::is_integral_v<typename TCol::NativeT>;
+concept is_col_int_decimal = std::is_same_v<TCol, ColumnDecimal<typename TCol::ValueType>> && is_decimal<typename TCol::ValueType>
+    && std::is_integral_v<typename TCol::NativeT>;
 
-template <class> class ColumnVector;
-template <class T> struct ColumnVectorOrDecimalT { using Col = ColumnVector<T>; };
-template <is_decimal T> struct ColumnVectorOrDecimalT<T> { using Col = ColumnDecimal<T>; };
-template <class T> using ColumnVectorOrDecimal = typename ColumnVectorOrDecimalT<T>::Col;
+template <class>
+class ColumnVector;
+template <class T>
+struct ColumnVectorOrDecimalT
+{
+    using Col = ColumnVector<T>;
+};
+template <is_decimal T>
+struct ColumnVectorOrDecimalT<T>
+{
+    using Col = ColumnDecimal<T>;
+};
+template <class T>
+using ColumnVectorOrDecimal = typename ColumnVectorOrDecimalT<T>::Col;
 
 template <is_decimal T>
 template <typename Type>
