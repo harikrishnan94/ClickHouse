@@ -9,8 +9,8 @@
 #include <hashprobe_bench/artifact.h>
 #include "../instrumentation/hw_counters.h"
 
-#include <Interpreters/IJoin.h>
 #include <Core/Block.h>
+#include <Interpreters/IJoin.h>
 
 #include <cstdint>
 #include <functional>
@@ -33,10 +33,10 @@ namespace DB::HashProbeBench
 ///   (c) per-TID intervals [joinblock_start_ns, last_next_end_ns] do not overlap
 struct CallerTidEntry
 {
-    uint64_t probe_block_idx    = 0;
-    uint64_t tid                = 0;   ///< gettid() from <sys/syscall.h>
-    uint64_t joinblock_start_ns = 0;   ///< CLOCK_MONOTONIC_RAW before joinBlock call
-    uint64_t last_next_end_ns   = 0;   ///< CLOCK_MONOTONIC_RAW after the final next() call
+    uint64_t probe_block_idx = 0;
+    uint64_t tid = 0; ///< gettid() from <sys/syscall.h>
+    uint64_t joinblock_start_ns = 0; ///< CLOCK_MONOTONIC_RAW before joinBlock call
+    uint64_t last_next_end_ns = 0; ///< CLOCK_MONOTONIC_RAW after the final next() call
 };
 
 /// ProbeDriver drives the probe phase of a HashJoin.
@@ -67,12 +67,34 @@ public:
 
     ProbeDriver(std::shared_ptr<IJoin> join, OutputSink sink);
 
-    /// Process one probe block through the full drain loop.
+    /// Process one probe block through the full drain loop (HashJoin / ConcurrentHashJoin).
     ///
     /// @param block           Probe (left-side) block.  Moved on entry (production line 246).
     /// @param probe_block_idx 0-based index of this block in the probe stream.
     /// @returns               Per-probe-block log entry (H2, C.4); also appended to getProbeBlockLog().
     ProbeBlockEntry drainBlock(Block block, uint64_t probe_block_idx, HwCounters * hw_counters = nullptr);
+
+    // ── PartitionedHashJoin path ──────────────────────────────────────────────
+
+    /// Phase 1 of the PHJ probe: scatter one left-side block into partitions via joinBlock().
+    ///
+    /// PHJ::joinBlock does NOT return actual result rows — it only scatters the probe
+    /// block into per-partition slices.  This method records the wall+CPU cost of that
+    /// scatter call and appends a ProbeBlockEntry to probe_block_log_ (with
+    /// result_emit_wall_ns = 0, phase_probe/phase_generate all-zero, output_rows = 0).
+    ///
+    /// Call drainDelayedBlocks() after all scatter calls to get actual results.
+    ProbeBlockEntry scatterPhjBlock(Block block, uint64_t probe_block_idx);
+
+    /// Phase 2 of the PHJ probe: drain the IBlocksStream from getDelayedBlocks().
+    ///
+    /// Each call to stream->next() processes one partition (build-HT + probe + gen).
+    /// The per-partition ProbePoint callbacks (phj_build_ht_start/end, phj_probe_start/end,
+    /// phj_gen_start/end) are fired by DelayedBlocks.cpp and captured here into
+    /// PhjPartitionEntry objects, which are appended to phj_partition_log_.
+    ///
+    /// Total output rows are accumulated into probe_block_log_ entries (amortised).
+    void drainDelayedBlocks(HwCounters * hw_counters = nullptr);
 
     // ── Log accessors ──────────────────────────────────────────────────────────
 
@@ -85,13 +107,17 @@ public:
     /// Per-output-block timing log (H2, C.4).  One entry per next() call across all blocks.
     const std::vector<OutputBlockEntry> & getOutputBlockLog() const { return output_block_log_; }
 
+    /// PHJ per-partition log.  Populated by drainDelayedBlocks(); empty for hash algorithms.
+    const std::vector<PhjPartitionEntry> & getPhjPartitionLog() const { return phj_partition_log_; }
+
 private:
     std::shared_ptr<IJoin> join_;
-    OutputSink             sink_;
+    OutputSink sink_;
 
-    std::vector<CallerTidEntry>   caller_tid_log_;
-    std::vector<ProbeBlockEntry>  probe_block_log_;
+    std::vector<CallerTidEntry> caller_tid_log_;
+    std::vector<ProbeBlockEntry> probe_block_log_;
     std::vector<OutputBlockEntry> output_block_log_;
+    std::vector<PhjPartitionEntry> phj_partition_log_;
 };
 
 } // namespace DB::HashProbeBench

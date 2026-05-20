@@ -35,12 +35,24 @@ enum class CacheMode
     COLD, ///< Allocate 2×LLC and write it twice to evict all LLC contents.
 };
 
+/// Join algorithm selection.
+/// hash          → HashJoin (build_threads==1) or ConcurrentHashJoin (build_threads>1)
+/// partitioned_hash → PartitionedHashJoin (build_threads controls ingest parallelism)
+enum class AlgorithmConfig
+{
+    HASH, ///< Default: HashJoin / ConcurrentHashJoin
+    PARTITIONED_HASH, ///< PartitionedHashJoin with radix-shuffle pipeline
+};
+
 /// Full configuration for one harness invocation, populated from the CLI (T0.6).
 /// Fields are grouped by the spec section they serve.
 struct ConfigType
 {
+    // ── Algorithm selection ───────────────────────────────────────────────
+    AlgorithmConfig algorithm = AlgorithmConfig::HASH; ///< hash | partitioned_hash
+
     // ── Build side (C1, C3, C6, G1) ──────────────────────────────────────
-    uint32_t build_threads = 1; ///< 1 → HashJoin; >1 → ConcurrentHashJoin (G1)
+    uint32_t build_threads = 1; ///< hash: 1→HashJoin, >1→ConcurrentHashJoin; phj: ingest concurrency
     uint64_t build_rows = 1'000'000;
 
     // ── Key shape (A2, F6) ────────────────────────────────────────────────

@@ -13,6 +13,21 @@
 namespace DB::HashProbeBench
 {
 
+struct PhaseMetrics
+{
+    double wall_ns = 0.0;
+    double cpu_ns = 0.0;
+    uint64_t hw_cycles = 0;
+    uint64_t hw_instructions = 0;
+    uint64_t hw_llc_miss = 0;
+    uint64_t hw_branch_miss = 0;
+    uint64_t hw_dtlb_miss = 0;
+    uint64_t hw_llc_load = 0;
+    uint64_t hw_branches = 0;
+    uint64_t hw_dtlb_load = 0;
+    bool hw_available = false;
+};
+
 // ── Key shape (F6, A2, J2) ────────────────────────────────────────────────────
 
 /// Describes the shape of the key columns on one join side.
@@ -58,6 +73,7 @@ struct BuildResult
     // --- Timing (H1) ---
     double   build_wall_ms       = 0.0;
     double   build_cpu_ms        = 0.0;
+    PhaseMetrics phase_build_ht;
 
     // --- Post-build type (A2) ---
     std::string resolved_map_type;       ///< "key32" | "key64" | "keys128" | etc.

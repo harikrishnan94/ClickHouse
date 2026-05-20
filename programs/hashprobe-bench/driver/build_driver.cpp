@@ -12,12 +12,15 @@
 
 #include "build_driver.h"
 
+#include "../instrumentation/hw_counters.h"
+
 // ── ClickHouse Interpreters ───────────────────────────────────────────────────
-#include <Interpreters/HashJoin/HashJoin.h>
-#include <Interpreters/ConcurrentHashJoin.h>
-#include <Interpreters/TableJoin.h>
-#include <Interpreters/HashTablesStatistics.h>
 #include <Core/Joins.h>
+#include <Interpreters/ConcurrentHashJoin.h>
+#include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashTablesStatistics.h>
+#include <Interpreters/PartitionedHashJoin.h>
+#include <Interpreters/TableJoin.h>
 #include <QueryPipeline/SizeLimits.h>
 
 // ── ClickHouse Core ───────────────────────────────────────────────────────────
@@ -25,24 +28,24 @@
 #include <Core/ColumnWithTypeAndName.h>
 
 // ── ClickHouse Columns ────────────────────────────────────────────────────────
-#include <Columns/ColumnsNumber.h>
 #include <Columns/ColumnNullable.h>
+#include <Columns/ColumnsNumber.h>
 
 // ── ClickHouse DataTypes ──────────────────────────────────────────────────────
-#include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeNullable.h>
+#include <DataTypes/DataTypesNumber.h>
 
 // ── Standard library ─────────────────────────────────────────────────────────
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <ctime>
 #include <iostream>
 #include <mutex>
 #include <queue>
 #include <set>
 #include <sstream>
 #include <thread>
-#include <ctime>
 #include <unistd.h>
 
 namespace DB::HashProbeBench
@@ -53,14 +56,45 @@ namespace DB::HashProbeBench
 namespace
 {
 
+static double timespecDiffNs(const struct timespec & begin, const struct timespec & end)
+{
+    return static_cast<double>((end.tv_sec - begin.tv_sec) * 1'000'000'000LL + (end.tv_nsec - begin.tv_nsec));
+}
+
+static void addHwCounters(PhaseMetrics & dst, HwCounters & counters)
+{
+    uint64_t cycles = 0;
+    uint64_t instructions = 0;
+    uint64_t llc_miss = 0;
+    uint64_t branch_miss = 0;
+    uint64_t dtlb_miss = 0;
+    uint64_t branches = 0;
+    uint64_t llc_load = 0;
+    uint64_t dtlb_load = 0;
+
+    counters.read(cycles, instructions, llc_miss, branch_miss, dtlb_miss, branches, llc_load, dtlb_load);
+    dst.hw_available = true;
+    dst.hw_cycles += cycles;
+    dst.hw_instructions += instructions;
+    dst.hw_llc_miss += llc_miss;
+    dst.hw_branch_miss += branch_miss;
+    dst.hw_dtlb_miss += dtlb_miss;
+    dst.hw_branches += branches;
+    dst.hw_llc_load += llc_load;
+    dst.hw_dtlb_load += dtlb_load;
+}
+
 /// Convert ConfigType strictness → ClickHouse JoinStrictness
 JoinStrictness toJoinStrictness(StrictnessConfig s)
 {
     switch (s)
     {
-        case StrictnessConfig::ALL:      return JoinStrictness::All;
-        case StrictnessConfig::ANY:      return JoinStrictness::Any;
-        case StrictnessConfig::RIGHTANY: return JoinStrictness::RightAny;
+        case StrictnessConfig::ALL:
+            return JoinStrictness::All;
+        case StrictnessConfig::ANY:
+            return JoinStrictness::Any;
+        case StrictnessConfig::RIGHTANY:
+            return JoinStrictness::RightAny;
     }
     return JoinStrictness::All;
 }
@@ -70,13 +104,20 @@ std::string joinStrictnessToString(JoinStrictness s)
 {
     switch (s)
     {
-        case JoinStrictness::Unspecified: return "UNSPECIFIED";
-        case JoinStrictness::RightAny:    return "RIGHTANY";
-        case JoinStrictness::Any:         return "ANY";
-        case JoinStrictness::All:         return "ALL";
-        case JoinStrictness::Asof:        return "ASOF";
-        case JoinStrictness::Semi:        return "SEMI";
-        case JoinStrictness::Anti:        return "ANTI";
+        case JoinStrictness::Unspecified:
+            return "UNSPECIFIED";
+        case JoinStrictness::RightAny:
+            return "RIGHTANY";
+        case JoinStrictness::Any:
+            return "ANY";
+        case JoinStrictness::All:
+            return "ALL";
+        case JoinStrictness::Asof:
+            return "ASOF";
+        case JoinStrictness::Semi:
+            return "SEMI";
+        case JoinStrictness::Anti:
+            return "ANTI";
     }
     return "UNKNOWN";
 }
@@ -106,18 +147,18 @@ Names makeBuildKeyNames(uint32_t n)
 /// stays at its in-class default of false (A2 requirement).
 std::shared_ptr<TableJoin> makeTableJoin(const ConfigType & config)
 {
-    Names left_key_names  = makeKeyNames(config.key_columns);       // probe side: k0, k1, ...
+    Names left_key_names = makeKeyNames(config.key_columns); // probe side: k0, k1, ...
     Names right_key_names = makeBuildKeyNames(config.key_columns); // build side: b_k0, b_k1, ...
 
     // SizeLimits-based constructor initialises:
     //   enable_join_fixed_hash_table_conversion = false  (in-class default, A2)
     //   allow_join_sorting = false                       (in-class default)
     auto table_join = std::make_shared<TableJoin>(
-        SizeLimits{},                               // no size limits
-        false,                                      // join_use_nulls
+        SizeLimits{}, // no size limits
+        false, // join_use_nulls
         JoinKind::Inner,
         toJoinStrictness(config.strictness),
-        right_key_names                             // populates clause[0].key_names_right
+        right_key_names // populates clause[0].key_names_right
     );
     // Left keys use probe column names (k0 etc.)
     table_join->setLeftKeys(left_key_names);
@@ -126,9 +167,8 @@ std::shared_ptr<TableJoin> makeTableJoin(const ConfigType & config)
     // This causes joinBlock to append build-side columns to the probe block output,
     // matching the oracle SQL schema: probe.k0, probe.payload, build.k0, build.payload.
     {
-        DataTypePtr key_dt = (config.key_width == KeyWidth::W32)
-            ? std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt32>())
-            : std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt64>());
+        DataTypePtr key_dt = (config.key_width == KeyWidth::W32) ? std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt32>())
+                                                                 : std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt64>());
         if (config.key_nullable)
             key_dt = std::make_shared<DataTypeNullable>(key_dt);
         auto payload_dt = std::make_shared<DataTypeUInt64>();
@@ -151,17 +191,18 @@ std::shared_ptr<TableJoin> makeTableJoin(const ConfigType & config)
 /// Resolve the HashJoin::Type for a given config without adding any data.
 /// Creates a short-lived reference HashJoin whose constructor sets data->type.
 /// Safe for ConcurrentHashJoin path (where sub-join types aren't public).
-std::string resolveMapTypeString(
-    const std::shared_ptr<TableJoin> & table_join,
-    const Block & sample_block,
-    bool use_two_level_maps = false)
+std::string resolveMapTypeString(const std::shared_ptr<TableJoin> & table_join, const Block & sample_block, bool use_two_level_maps = false)
 {
     // ConcurrentHashJoin creates sub-joins with use_two_level_maps=true (ConcurrentHashJoin.cpp:219),
     // so pass the same flag to get the correct resolved type for the artifact.
     auto sample_header = std::make_shared<const Block>(sample_block);
-    HashJoin ref_hj(table_join, sample_header,
-                    /*any_take_last_row=*/false, /*reserve_num=*/0,
-                    /*instance_id=*/"", use_two_level_maps);
+    HashJoin ref_hj(
+        table_join,
+        sample_header,
+        /*any_take_last_row=*/false,
+        /*reserve_num=*/0,
+        /*instance_id=*/"",
+        use_two_level_maps);
 
 #ifdef HARNESS_OBSERVABILITY
     return hashJoinTypeToString(ref_hj.getResolvedMapType());
@@ -178,10 +219,14 @@ std::string hashJoinTypeToString(HashJoin::Type type)
 {
     switch (type)
     {
-        case HashJoin::Type::EMPTY: return "EMPTY";
-        case HashJoin::Type::CROSS: return "CROSS";
-#define M(NAME) case HashJoin::Type::NAME: return #NAME;
-        APPLY_FOR_JOIN_VARIANTS(M)
+        case HashJoin::Type::EMPTY:
+            return "EMPTY";
+        case HashJoin::Type::CROSS:
+            return "CROSS";
+#define M(NAME) \
+    case HashJoin::Type::NAME: \
+        return #NAME;
+            APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
     }
     return "unknown";
@@ -189,11 +234,8 @@ std::string hashJoinTypeToString(HashJoin::Type type)
 
 bool isAllowedMapType(const std::string & type_str)
 {
-    static const std::set<std::string> kAllowed = {
-        "key32", "key64", "keys128", "keys256",
-        "two_level_key32", "two_level_key64",
-        "two_level_keys128", "two_level_keys256"
-    };
+    static const std::set<std::string> kAllowed
+        = {"key32", "key64", "keys128", "keys256", "two_level_key32", "two_level_key64", "two_level_keys128", "two_level_keys256"};
     return kAllowed.count(type_str) > 0;
 }
 
@@ -204,8 +246,7 @@ std::string checkMapTypeGate(const std::string & type_str)
     return "";
 }
 
-std::string checkStrictnessGate(const std::string & at_construction,
-                                const std::string & after_build)
+std::string checkStrictnessGate(const std::string & at_construction, const std::string & after_build)
 {
     if (at_construction == "ALL" && after_build != "ALL")
         return "[HARNESS_ERROR] unsupported_config: all_unique_keys_with_all_strictness_would_silently_promote_to_rightany";
@@ -216,9 +257,12 @@ std::string strictnessConfigToString(StrictnessConfig s)
 {
     switch (s)
     {
-        case StrictnessConfig::ALL:      return "ALL";
-        case StrictnessConfig::ANY:      return "ANY";
-        case StrictnessConfig::RIGHTANY: return "RIGHTANY";
+        case StrictnessConfig::ALL:
+            return "ALL";
+        case StrictnessConfig::ANY:
+            return "ANY";
+        case StrictnessConfig::RIGHTANY:
+            return "RIGHTANY";
     }
     return "UNKNOWN";
 }
@@ -228,57 +272,50 @@ std::string strictnessConfigToString(StrictnessConfig s)
 Block makeRightSampleBlock(const ConfigType & config)
 {
     Block block;
-    const uint32_t n        = config.key_columns;
-    const uint32_t w        = static_cast<uint32_t>(config.key_width);
-    const bool     nullable = config.key_nullable;
+    const uint32_t n = config.key_columns;
+    const uint32_t w = static_cast<uint32_t>(config.key_width);
+    const bool nullable = config.key_nullable;
 
     for (uint32_t i = 0; i < n; ++i)
     {
-        DataTypePtr base_type = (w == 32)
-            ? std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt32>())
-            : std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt64>());
+        DataTypePtr base_type = (w == 32) ? std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt32>())
+                                          : std::static_pointer_cast<IDataType>(std::make_shared<DataTypeUInt64>());
 
         DataTypePtr type;
-        ColumnPtr   col;
+        ColumnPtr col;
         if (nullable)
         {
             type = std::make_shared<DataTypeNullable>(base_type);
-            col  = type->createColumn();
+            col = type->createColumn();
         }
         else
         {
             type = base_type;
-            col  = type->createColumn();
+            col = type->createColumn();
         }
-        block.insert(ColumnWithTypeAndName{std::move(col), type,
-                                           "b_k" + std::to_string(i)});
+        block.insert(ColumnWithTypeAndName{std::move(col), type, "b_k" + std::to_string(i)});
     }
 
     // Payload column — named "b_payload" to avoid collision with probe-side "payload".
     auto payload_type = std::make_shared<DataTypeUInt64>();
-    block.insert(ColumnWithTypeAndName{
-        payload_type->createColumn(), payload_type, "b_payload"});
+    block.insert(ColumnWithTypeAndName{payload_type->createColumn(), payload_type, "b_payload"});
 
     return block;
 }
 
-Block makeBuildBlock(
-    const ConfigType & config,
-    size_t             num_rows,
-    uint64_t           start_key,
-    bool               duplicate_keys)
+Block makeBuildBlock(const ConfigType & config, size_t num_rows, uint64_t start_key, bool duplicate_keys)
 {
     Block block;
-    const uint32_t n        = config.key_columns;
-    const uint32_t w        = static_cast<uint32_t>(config.key_width);
-    const bool     nullable = config.key_nullable;
+    const uint32_t n = config.key_columns;
+    const uint32_t w = static_cast<uint32_t>(config.key_width);
+    const bool nullable = config.key_nullable;
 
     // Half-period for duplicate mode (must be at least 1)
     const size_t half = (num_rows >= 2) ? (num_rows / 2) : 1;
 
     for (uint32_t i = 0; i < n; ++i)
     {
-        ColumnPtr   col;
+        ColumnPtr col;
         DataTypePtr type;
 
         if (w == 32)
@@ -294,12 +331,12 @@ Block makeBuildBlock(
             if (nullable)
             {
                 auto null_map = ColumnUInt8::create(num_rows, static_cast<UInt8>(0)); // all not-null
-                col  = ColumnNullable::create(std::move(raw), std::move(null_map));
+                col = ColumnNullable::create(std::move(raw), std::move(null_map));
                 type = std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>());
             }
             else
             {
-                col  = std::move(raw);
+                col = std::move(raw);
                 type = std::make_shared<DataTypeUInt32>();
             }
         }
@@ -316,18 +353,17 @@ Block makeBuildBlock(
             if (nullable)
             {
                 auto null_map = ColumnUInt8::create(num_rows, static_cast<UInt8>(0));
-                col  = ColumnNullable::create(std::move(raw), std::move(null_map));
+                col = ColumnNullable::create(std::move(raw), std::move(null_map));
                 type = std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt64>());
             }
             else
             {
-                col  = std::move(raw);
+                col = std::move(raw);
                 type = std::make_shared<DataTypeUInt64>();
             }
         }
 
-        block.insert(ColumnWithTypeAndName{std::move(col), type,
-                                           "b_k" + std::to_string(i)});
+        block.insert(ColumnWithTypeAndName{std::move(col), type, "b_k" + std::to_string(i)});
     }
 
     // Payload column: sequential row index (named "b_payload" to match right sample block).
@@ -336,31 +372,28 @@ Block makeBuildBlock(
     for (size_t j = 0; j < num_rows; ++j)
         payload_data[j] = start_key + j;
 
-    block.insert(ColumnWithTypeAndName{
-        std::move(payload_col),
-        std::make_shared<DataTypeUInt64>(),
-        "b_payload"});
+    block.insert(ColumnWithTypeAndName{std::move(payload_col), std::make_shared<DataTypeUInt64>(), "b_payload"});
 
     return block;
 }
 
 // ── runBuildDriver ────────────────────────────────────────────────────────────
 
-BuildDriverOutput runBuildDriver(
-    const ConfigType &         config,
-    const std::vector<Block> & build_blocks,
-    uint64_t                   build_distinct_keys)
+BuildDriverOutput runBuildDriver(const ConfigType & config, const std::vector<Block> & build_blocks, uint64_t build_distinct_keys)
 {
     BuildDriverOutput output;
-    BuildResult &     result    = output.result;
-    auto &            lifecycle = output.lifecycle_log;
+    BuildResult & result = output.result;
+    auto & lifecycle = output.lifecycle_log;
 
     // ── B.1: Record strictness at construction ────────────────────────────────
     const std::string sc_at_construction = strictnessConfigToString(config.strictness);
-    result.strictness_at_construction    = sc_at_construction;
+    result.strictness_at_construction = sc_at_construction;
 
     // ── B.6 pre-check: ALL strictness + all-unique keys would silently promote ─
-    if (config.strictness == StrictnessConfig::ALL && build_distinct_keys > 0)
+    // PHJ delegates strictness handling to per-partition HashJoins; the
+    // promotion is per-partition and does not affect overall correctness.
+    // Gate only applies to the flat HashJoin / ConcurrentHashJoin paths.
+    if (config.algorithm == AlgorithmConfig::HASH && config.strictness == StrictnessConfig::ALL && build_distinct_keys > 0)
     {
         uint64_t total_rows = 0;
         for (const auto & blk : build_blocks)
@@ -377,14 +410,16 @@ BuildDriverOutput runBuildDriver(
     auto table_join = makeTableJoin(config);
 
     // ── B.1: Right sample block (schema only) ─────────────────────────────────
-    Block  sample_block  = makeRightSampleBlock(config);
-    auto   sample_header = std::make_shared<const Block>(sample_block);
+    Block sample_block = makeRightSampleBlock(config);
+    auto sample_header = std::make_shared<const Block>(sample_block);
 
     // ── B.5 early: Determine resolved type via reference HashJoin ────────────
-    // The type is set in the HashJoin constructor (before any addBlockToJoin).
-    // Pre-checking here avoids building a full join for unsupported schemas.
-    const std::string pre_type = resolveMapTypeString(table_join, sample_block,
-                                                       /*use_two_level_maps=*/config.build_threads > 1);
+    // Only applicable for hash algorithms.  PHJ uses its own per-partition
+    // hash-table resolution and does not expose a top-level map type.
+    const std::string pre_type = (config.algorithm == AlgorithmConfig::HASH)
+        ? resolveMapTypeString(table_join, sample_block, /*use_two_level_maps=*/config.build_threads > 1)
+        : std::string("partitioned");
+    if (config.algorithm == AlgorithmConfig::HASH)
     {
         const std::string err = checkMapTypeGate(pre_type);
         if (!err.empty())
@@ -395,45 +430,61 @@ BuildDriverOutput runBuildDriver(
     }
 
     // ── B.2: Engine selection (G1) ────────────────────────────────────────────
-    const bool is_concurrent = config.build_threads > 1;
-    uint32_t   slots         = 1;
+    // PHJ: PartitionedHashJoin with build_threads ingest concurrency.
+    // hash: HashJoin (build_threads==1) or ConcurrentHashJoin (>1).
+    const uint32_t max_probe_threads = config.probe_max_threads_sweep.empty()
+        ? 1u
+        : *std::max_element(config.probe_max_threads_sweep.begin(), config.probe_max_threads_sweep.end());
+    const bool is_concurrent = (config.algorithm == AlgorithmConfig::HASH) && (config.build_threads > 1);
+    uint32_t slots = 1;
 
-    if (is_concurrent)
+    if (config.algorithm == AlgorithmConfig::PARTITIONED_HASH)
     {
-        uint32_t max_probe_threads = 1;
-        if (!config.probe_max_threads_sweep.empty())
-            max_probe_threads = *std::max_element(
-                config.probe_max_threads_sweep.begin(),
-                config.probe_max_threads_sweep.end());
+        // PartitionedHashJoin: P=0 means auto-compute from build_rows estimate.
+        // build_threads controls the number of concurrent ingest threads.
+        // left_sample == right_sample (same key schema on both sides for INNER JOIN).
+        output.join = std::make_shared<PartitionedHashJoin>(
+            table_join,
+            sample_header, // right_sample_block
+            sample_header, // left_sample_block (same schema)
+            /*num_partitions=*/0, // auto-select P
+            static_cast<size_t>(config.build_threads));
+        output.join_engine = "PartitionedHashJoin";
+        output.slots = 1;
+    }
+    else if (is_concurrent)
+    {
         slots = std::max<uint32_t>(config.build_threads, max_probe_threads);
 
         // ConcurrentHashJoin manages internal locking; StatsCollectingParams{}
         // disables stats collection (key=0 ⇒ isCollectionAndUseEnabled()=false).
         output.join = std::make_shared<ConcurrentHashJoin>(
-            table_join,
-            slots,
-            sample_header,
-            StatsCollectingParams{}   // no stats collection for harness
+            table_join, slots, sample_header, StatsCollectingParams{} // no stats collection for harness
         );
         output.join_engine = "ConcurrentHashJoin";
-        output.slots       = slots;
+        output.slots = slots;
     }
     else
     {
         output.join = std::make_shared<HashJoin>(table_join, sample_header);
         output.join_engine = "HashJoin";
-        output.slots       = 1;
+        output.slots = 1;
     }
 
     // H1: record build-phase wall and CPU time (wraps B.3 + B.4)
     struct timespec t0_build_wall{}, t0_build_cpu{};
-    clock_gettime(CLOCK_MONOTONIC_RAW,     &t0_build_wall);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t0_build_wall);
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t0_build_cpu);
+    HwCounters main_hw;
+    const bool main_hw_ok = main_hw.open();
+    if (main_hw_ok)
+        main_hw.start();
 
     // ── B.3: Build worker pool ────────────────────────────────────────────────
     std::atomic<uint64_t> add_block_calls{0};
     const bool stderr_is_tty = isatty(STDERR_FILENO) != 0;
     const size_t total_build_blocks = build_blocks.size();
+    std::vector<PhaseMetrics> worker_phases(config.build_threads);
 
     if (!is_concurrent)
     {
@@ -457,15 +508,22 @@ BuildDriverOutput runBuildDriver(
         // Multi-thread path: thread-safe queue drained by build_threads workers.
         // ConcurrentHashJoin::addBlockToJoin handles internal locking; no
         // external lock is placed around the call (spec B.3).
-        std::mutex                             queue_mutex;
-        std::mutex                             log_mutex;
-        std::queue<std::pair<size_t, Block>>   block_queue;
+        std::mutex queue_mutex;
+        std::mutex log_mutex;
+        std::queue<std::pair<size_t, Block>> block_queue;
 
         for (size_t i = 0; i < build_blocks.size(); ++i)
             block_queue.push({i, build_blocks[i]});
 
-        auto worker = [&]()
+        auto worker = [&](uint32_t worker_idx)
         {
+            struct timespec t0_worker_cpu{}, t1_worker_cpu{};
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t0_worker_cpu);
+            HwCounters worker_hw;
+            const bool worker_hw_ok = worker_hw.open();
+            if (worker_hw_ok)
+                worker_hw.start();
+
             while (true)
             {
                 std::pair<size_t, Block> item;
@@ -497,12 +555,19 @@ BuildDriverOutput runBuildDriver(
                     }
                 }
             }
+
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t1_worker_cpu);
+            PhaseMetrics worker_phase;
+            worker_phase.cpu_ns = timespecDiffNs(t0_worker_cpu, t1_worker_cpu);
+            if (worker_hw_ok)
+                addHwCounters(worker_phase, worker_hw);
+            worker_phases[worker_idx] = worker_phase;
         };
 
         std::vector<std::thread> threads;
         threads.reserve(config.build_threads);
         for (uint32_t t = 0; t < config.build_threads; ++t)
-            threads.emplace_back(worker);
+            threads.emplace_back(worker, t);
         for (auto & th : threads)
             th.join();
         if (stderr_is_tty)
@@ -536,21 +601,43 @@ BuildDriverOutput runBuildDriver(
     // H1: compute build-phase wall and CPU timing
     {
         struct timespec t1_build_wall{}, t1_build_cpu{};
-        clock_gettime(CLOCK_MONOTONIC_RAW,     &t1_build_wall);
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t1_build_wall);
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t1_build_cpu);
-        auto ts_diff_ms = [](const struct timespec & a, const struct timespec & b)
+
+        PhaseMetrics build_phase;
+        build_phase.wall_ns = timespecDiffNs(t0_build_wall, t1_build_wall);
+        build_phase.cpu_ns = timespecDiffNs(t0_build_cpu, t1_build_cpu);
+        if (main_hw_ok)
+            addHwCounters(build_phase, main_hw);
+
+        for (const auto & worker_phase : worker_phases)
         {
-            return static_cast<double>(
-                (b.tv_sec - a.tv_sec) * 1000000000LL + (b.tv_nsec - a.tv_nsec)
-            ) / 1e6;
-        };
-        result.build_wall_ms = ts_diff_ms(t0_build_wall, t1_build_wall);
-        result.build_cpu_ms  = ts_diff_ms(t0_build_cpu,  t1_build_cpu);
+            build_phase.cpu_ns += worker_phase.cpu_ns;
+            build_phase.hw_available = build_phase.hw_available || worker_phase.hw_available;
+            build_phase.hw_cycles += worker_phase.hw_cycles;
+            build_phase.hw_instructions += worker_phase.hw_instructions;
+            build_phase.hw_llc_miss += worker_phase.hw_llc_miss;
+            build_phase.hw_branch_miss += worker_phase.hw_branch_miss;
+            build_phase.hw_dtlb_miss += worker_phase.hw_dtlb_miss;
+            build_phase.hw_branches += worker_phase.hw_branches;
+            build_phase.hw_llc_load += worker_phase.hw_llc_load;
+            build_phase.hw_dtlb_load += worker_phase.hw_dtlb_load;
+        }
+
+        result.phase_build_ht = build_phase;
+        result.build_wall_ms = build_phase.wall_ns / 1e6;
+        result.build_cpu_ms = build_phase.cpu_ns / 1e6;
     }
 
     // ── B.5: Post-build resolved-type gate (A2) ───────────────────────────────
+    // PHJ uses its own shuffle + per-partition HashJoin infrastructure;
+    // the map-type concept from HashJoin::Type does not apply.  Skip the gate.
     std::string type_str;
-    if (!is_concurrent)
+    if (config.algorithm == AlgorithmConfig::PARTITIONED_HASH)
+    {
+        type_str = "partitioned"; // informational; not validated by checkMapTypeGate
+    }
+    else if (!is_concurrent)
     {
         auto * hj = dynamic_cast<HashJoin *>(output.join.get());
         assert(hj != nullptr && "Expected HashJoin for single-thread engine");
@@ -570,6 +657,7 @@ BuildDriverOutput runBuildDriver(
         type_str = pre_type;
     }
 
+    if (config.algorithm != AlgorithmConfig::PARTITIONED_HASH)
     {
         const std::string err = checkMapTypeGate(type_str);
         if (!err.empty())
@@ -581,8 +669,16 @@ BuildDriverOutput runBuildDriver(
     result.resolved_map_type = type_str;
 
     // ── B.6: Strictness-preservation gate (A2b) ───────────────────────────────
+    // PHJ delegates strictness handling to the per-partition HashJoin;
+    // the gate still applies to the outer table_join metadata.
     std::string sc_after_build;
-    if (!is_concurrent)
+    if (config.algorithm == AlgorithmConfig::PARTITIONED_HASH)
+    {
+        // PHJ doesn't expose per-partition strictness at build time;
+        // report the construction-time value.
+        sc_after_build = sc_at_construction;
+    }
+    else if (!is_concurrent)
     {
         auto * hj = dynamic_cast<HashJoin *>(output.join.get());
         assert(hj != nullptr);
@@ -596,8 +692,7 @@ BuildDriverOutput runBuildDriver(
     {
         // ConcurrentHashJoin does not expose per-sub-join strictness.
         // Use table_join->strictness() which reflects the original setting.
-        sc_after_build = joinStrictnessToString(
-            output.join->getTableJoin().strictness());
+        sc_after_build = joinStrictnessToString(output.join->getTableJoin().strictness());
     }
     result.strictness_after_build = sc_after_build;
 
@@ -615,14 +710,10 @@ BuildDriverOutput runBuildDriver(
     for (const auto & blk : build_blocks)
         result.build_rows += blk.rows();
 
-    result.build_distinct_keys =
-        (build_distinct_keys > 0) ? build_distinct_keys
-                                   : output.join->getTotalRowCount();
+    result.build_distinct_keys = (build_distinct_keys > 0) ? build_distinct_keys : output.join->getTotalRowCount();
 
     if (result.build_distinct_keys > 0)
-        result.build_row_to_key_ratio =
-            static_cast<double>(result.build_rows) /
-            static_cast<double>(result.build_distinct_keys);
+        result.build_row_to_key_ratio = static_cast<double>(result.build_rows) / static_cast<double>(result.build_distinct_keys);
 
     return output;
 }

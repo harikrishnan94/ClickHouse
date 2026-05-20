@@ -406,6 +406,29 @@ IBlocksStreamPtr PartitionedHashJoin::getDelayedBlocks()
     return std::make_shared<PartitionedHashJoinDelayedBlocks>(*this);
 }
 
+void PartitionedHashJoin::resetForReprobe()
+{
+    // Allow getDelayedBlocks() to issue a fresh drain stream on the next call.
+    delayed_blocks_given.store(false, std::memory_order_release);
+    // Reset the partition cursor so nextImpl() starts from partition 0 again.
+    next_partition.store(0, std::memory_order_release);
+    // Clear the accumulated probe data from all slots so that the next scatter
+    // cycle starts with empty probe_parts (avoids probing the same rows twice).
+    const size_t n = num_slots_created.load(std::memory_order_acquire);
+    for (size_t s = 0; s < n; ++s)
+    {
+        ThreadSlot & slot = *slots[s];
+        if (slot.probe_initialised)
+        {
+            for (auto & pp : slot.probe_parts)
+            {
+                pp.slices.clear();
+                pp.total_rows = 0;
+            }
+        }
+    }
+}
+
 size_t PartitionedHashJoin::getTotalRowCount() const
 {
     return total_build_rows.load(std::memory_order_relaxed);

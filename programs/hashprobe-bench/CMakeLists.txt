@@ -115,3 +115,5 @@ target_compile_definitions(hashprobe-bench PRIVATE
 )
 
 message(STATUS "hashprobe-bench: GIT_COMMIT_HASH=${GIT_COMMIT_HASH}  BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+
+message(STATUS "hashprobe-bench: PHJ integration active (--algorithm partitioned_hash)")

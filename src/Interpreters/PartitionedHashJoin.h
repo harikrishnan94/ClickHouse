@@ -70,6 +70,12 @@ public:
     bool hasDelayedBlocks() const override { return true; }
     IBlocksStreamPtr getDelayedBlocks() override;
 
+    /// Harness-only: reset probe-side state so the same join can be probed again
+    /// in a fresh scatter+drain cycle (used by hashprobe-bench --reps > 1).
+    /// Does NOT touch the build side; the per-partition mini-HashJoins are
+    /// rebuilt from scratch on every drain cycle anyway.
+    void resetForReprobe();
+
     IBlocksStreamPtr
     getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
 

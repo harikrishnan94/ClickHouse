@@ -31,6 +31,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <hashprobe_bench/types.h>
 #include <string>
 #include <vector>
 
@@ -43,21 +44,6 @@ struct RepTiming
     double probe_wall_ms = std::numeric_limits<double>::quiet_NaN();
     double probe_cpu_ms = std::numeric_limits<double>::quiet_NaN();
     double throughput_rows_per_s = std::numeric_limits<double>::quiet_NaN();
-};
-
-struct PhaseMetrics
-{
-    double wall_ns = 0.0;
-    double cpu_ns = 0.0;
-    uint64_t hw_cycles = 0;
-    uint64_t hw_instructions = 0;
-    uint64_t hw_llc_miss = 0;
-    uint64_t hw_branch_miss = 0;
-    uint64_t hw_dtlb_miss = 0;
-    uint64_t hw_llc_load = 0;
-    uint64_t hw_branches = 0;
-    uint64_t hw_dtlb_load = 0;
-    bool hw_available = false;
 };
 
 /// Per-block-level timing entry (H2, per-probe-block view).
@@ -96,6 +82,34 @@ struct ProbeBlockEntry
     PhaseMetrics phase_generate;
 };
 
+/// Per-partition timing entry for PartitionedHashJoin (PHJ-specific, analogous to ProbeBlockEntry).
+/// One entry is emitted per partition processed by DelayedBlocks::nextImpl().
+/// The three sub-phases correspond to the PHJ_PHASE_POINT hooks in DelayedBlocks.cpp.
+struct PhjPartitionEntry
+{
+    uint32_t partition_idx = 0; ///< Partition index p ∈ [0, P)
+    uint64_t build_rows = 0; ///< Rows in the per-partition build side
+    uint64_t probe_rows = 0; ///< Rows in the per-partition probe side (across all probe slots)
+    uint64_t output_rows = 0; ///< Rows emitted from this partition's probe + gen phases
+
+    /// Build-HT phase: constructing the per-partition mini-HashJoin.
+    /// Wall/CPU/HW counters wrap phj_build_ht_start → phj_build_ht_end.
+    PhaseMetrics phase_build_ht;
+
+    /// Probe phase: all joinBlock() calls on the per-partition HashJoin.
+    /// Spans phj_probe_start → phj_probe_end.
+    /// The inner HashJoin fires its own probe_loop_start/end hooks inside
+    /// joinRightColumns, which are accumulated into phase_probe.hw_* when
+    /// the harness registers a ProbePointCallback.
+    PhaseMetrics phase_probe;
+
+    /// Gen phase: all next() drain calls on the per-partition HashJoin.
+    /// Spans phj_gen_start → phj_gen_end.
+    /// The inner HashJoin fires generate_block_start/end inside HashJoinResult.cpp,
+    /// accumulated into phase_gen.hw_*.
+    PhaseMetrics phase_gen;
+};
+
 /// Per-output-block timing entry (H2, per-output-block view).
 struct OutputBlockEntry
 {
@@ -132,6 +146,7 @@ struct BuildHeader
     // ── Build timing (H1) ───────────────────────────────────────────────
     double build_wall_ms = std::numeric_limits<double>::quiet_NaN();
     double build_cpu_ms = std::numeric_limits<double>::quiet_NaN();
+    PhaseMetrics phase_build_ht;
 
     // ── Post-build type gates (A2, A2b) ─────────────────────────────────
     std::string resolved_map_type_post_build; ///< E.g. "key64", "two_level_keys128"
@@ -145,8 +160,10 @@ struct BuildHeader
     // ── Drain mode (C8) ─────────────────────────────────────────────────
     std::string harness_drain_mode; ///< Always "tight_loop" (C8 structural deviation doc)
 
-    // ── Probe path (vectorized vs scalar) ────────────────────────────────
-    bool vectorized_probe_enabled = false; ///< false when CLICKHOUSE_VECTORIZED_JOIN_PROBE=0
+    // ── PHJ-specific shuffle timing ───────────────────────────────────────
+    /// For algorithm=partitioned_hash only; NaN for hash algorithms.
+    double shuffle_probe_wall_ms = std::numeric_limits<double>::quiet_NaN();
+    double shuffle_probe_cpu_ms = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// One probe sweep cell result.  N per invocation (N = sweep_grid_size × reps).
@@ -189,6 +206,9 @@ struct ProbeCellResult
     // ── Per-block timing logs (H2) ───────────────────────────────────────
     std::vector<ProbeBlockEntry> probe_block_log;
     std::vector<OutputBlockEntry> output_block_log;
+
+    // ── PHJ per-partition log (PHJ-only; empty for hash algorithm) ────────
+    std::vector<PhjPartitionEntry> phj_partition_log;
 
     // ── Oracle correctness (E-Auto, oracle def.) ─────────────────────────
     std::string oracle_sql; ///< Full SQL emitted for this cell (I4, oracle def.)

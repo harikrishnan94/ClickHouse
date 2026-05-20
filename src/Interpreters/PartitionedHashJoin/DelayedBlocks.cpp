@@ -10,9 +10,15 @@
 #include <Columns/IColumn.h>
 
 #include <Core/Block.h>
+#include <Interpreters/HashJoin/HashJoinProbePhaseHooks.h>
 #include <Common/assert_cast.h>
 
 #include <cstring>
+
+// PHJ per-partition phase hook: fires the harness probe-point callback.
+// The macro is a no-op unless the harness has registered a callback via
+// setProbePointCallback() — production builds see zero overhead.
+#define PHJ_PHASE_POINT(name) ::DB::HashProbeBench::fireProbePoint(::DB::HashProbeBench::ProbePoint::name)
 
 namespace DB
 {
@@ -130,7 +136,9 @@ Block PartitionedHashJoinDelayedBlocks::nextImpl()
 
         auto part_hj = std::make_shared<HashJoin>(join_.tableJoin(), join_.rightSampleBlock(), join_.anyTakeLastRow(), total_build);
 
-        // Feed build chunks.
+        // ── Phase: build_ht ──────────────────────────────────────────────
+        // Build the per-partition mini HashJoin from the shuffled build data.
+        PHJ_PHASE_POINT(phj_build_ht_start);
         bool any_build_added = false;
         for (size_t s = 0; s < n_slots; ++s)
         {
@@ -151,6 +159,7 @@ Block PartitionedHashJoinDelayedBlocks::nextImpl()
         part_hj->onBuildPhaseFinish();
         if (part_hj->hasPostBuildPhase())
             part_hj->runPostBuildPhase();
+        PHJ_PHASE_POINT(phj_build_ht_end);
 
         // Don't use alwaysReturnsEmptySet() as an early-out: for LEFT/FULL JOINs,
         // even an empty build side must be probed (left rows emit with NULLs).
@@ -174,6 +183,11 @@ Block PartitionedHashJoinDelayedBlocks::nextImpl()
             }
         }
 
+        // ── Phase: probe ─────────────────────────────────────────────────
+        // Probe the per-partition HashJoin with the scattered left-side blocks.
+        // phase_probe spans the joinBlock calls; the inner HashJoin fires
+        // its own probe_loop_start/end hooks inside joinRightColumns.
+        PHJ_PHASE_POINT(phj_probe_start);
         for (size_t s = 0; s < n_slots; ++s)
         {
             ThreadSlot & slot = join_.getSlot(s);
@@ -184,6 +198,11 @@ Block PartitionedHashJoinDelayedBlocks::nextImpl()
                 if (probe_blk.rows() == 0)
                     continue;
                 auto result = probe_hj->joinBlock(Block(probe_blk));
+
+                // ── Phase: gen ───────────────────────────────────────────
+                // Drain all result blocks from this joinBlock call.
+                // generate_block_start/end are fired inside HashJoinResult.cpp.
+                PHJ_PHASE_POINT(phj_gen_start);
                 while (result)
                 {
                     auto data = result->next();
@@ -192,8 +211,10 @@ Block PartitionedHashJoinDelayedBlocks::nextImpl()
                     if (data.is_last)
                         break;
                 }
+                PHJ_PHASE_POINT(phj_gen_end);
             }
         }
+        PHJ_PHASE_POINT(phj_probe_end);
 
         // Non-joined rows for RIGHT/FULL.
         if (part_hj->hasNonJoinedRows() && join_.hasNonJoinedHeaders())

@@ -15,6 +15,15 @@ enum class ProbePoint
     next_end,
     generate_block_start,
     generate_block_end,
+
+    /// PartitionedHashJoin per-partition phase boundaries.
+    /// Fired inside DelayedBlocks::nextImpl() once per partition.
+    phj_build_ht_start, ///< Entry of per-partition HashJoin build phase
+    phj_build_ht_end, ///< Exit  of per-partition HashJoin build phase
+    phj_probe_start, ///< Entry of per-partition probe loop (joinBlock calls)
+    phj_probe_end, ///< Exit  of per-partition probe loop
+    phj_gen_start, ///< Entry of per-partition generate/drain (next() calls)
+    phj_gen_end, ///< Exit  of per-partition generate/drain
 };
 
 using ProbePointCallback = void (*)(ProbePoint, void *);

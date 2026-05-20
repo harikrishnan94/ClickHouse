@@ -113,6 +113,17 @@ static ConfigType buildConfig(const po::variables_map & vm)
             failLoudly("kind", kind_str);
     }
 
+    // ── algorithm ─────────────────────────────────────────────────────────
+    {
+        auto al = vm["algorithm"].as<std::string>();
+        if (al == "hash")
+            cfg.algorithm = AlgorithmConfig::HASH;
+        else if (al == "partitioned_hash")
+            cfg.algorithm = AlgorithmConfig::PARTITIONED_HASH;
+        else
+            failLoudly("algorithm", al);
+    }
+
     // ── strictness (A4) ───────────────────────────────────────────────────
     {
         auto st = vm["strictness"].as<std::string>();
@@ -195,6 +206,13 @@ int main(int argc, char ** argv)
     {
         po::options_description visible("hashprobe-bench options");
         visible.add_options()("help,h", "Show this help message and exit.")("version", "Print version and exit.")
+
+            // ── Algorithm selection ───────────────────────────────────────
+            ("algorithm",
+             po::value<std::string>()->default_value("hash"),
+             "Join algorithm: hash | partitioned_hash.  "
+             "hash → HashJoin (build_threads==1) or ConcurrentHashJoin (>1);  "
+             "partitioned_hash → PartitionedHashJoin (build_threads controls ingest parallelism).")
 
             // ── Build-side ────────────────────────────────────────────────
             ("build_threads",

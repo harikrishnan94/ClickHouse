@@ -13,19 +13,19 @@
 
 #include "../instrumentation/perf_probes.h"
 
-#include <Common/ProfileEvents.h>
-#include <Interpreters/HashJoin/ScatteredBlock.h>
 #include <Interpreters/HashJoin/HashJoinProbePhaseHooks.h>
+#include <Interpreters/HashJoin/ScatteredBlock.h>
+#include <Common/ProfileEvents.h>
 
-#include <ctime>
 #include <cstdint>
-#include <sys/syscall.h>
+#include <ctime>
 #include <unistd.h>
+#include <sys/syscall.h>
 
 namespace ProfileEvents
 {
-    extern const Event JoinProbeTableRowCount;
-    extern const Event JoinResultRowCount;
+extern const Event JoinProbeTableRowCount;
+extern const Event JoinResultRowCount;
 }
 
 namespace DB::HashProbeBench
@@ -39,8 +39,7 @@ static uint64_t clock_ns_raw()
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL
-         + static_cast<uint64_t>(ts.tv_nsec);
+    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL + static_cast<uint64_t>(ts.tv_nsec);
 }
 
 /// Per-thread CPU-time nanosecond clock (C.4).
@@ -48,8 +47,7 @@ static uint64_t thread_cpu_ns()
 {
     struct timespec ts;
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL
-         + static_cast<uint64_t>(ts.tv_nsec);
+    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL + static_cast<uint64_t>(ts.tv_nsec);
 }
 
 /// Linux thread-ID via syscall (C.3, G2).
@@ -83,8 +81,8 @@ struct PhaseHookContext
     HwCounters * hw = nullptr;
     PhaseSnapshot probe_start;
     PhaseSnapshot generate_start;
-    PhaseMetrics  probe;
-    PhaseMetrics  generate;
+    PhaseMetrics probe;
+    PhaseMetrics generate;
 };
 
 static PhaseSnapshot takePhaseSnapshot(HwCounters * hw)
@@ -95,15 +93,7 @@ static PhaseSnapshot takePhaseSnapshot(HwCounters * hw)
     s.valid = true;
     if (hw && hw->isAvailable())
     {
-        s.hw_valid = hw->snapshot(
-            s.cycles,
-            s.instructions,
-            s.llc_miss,
-            s.branch_miss,
-            s.dtlb_miss,
-            s.branches,
-            s.llc_load,
-            s.dtlb_load);
+        s.hw_valid = hw->snapshot(s.cycles, s.instructions, s.llc_miss, s.branch_miss, s.dtlb_miss, s.branches, s.llc_load, s.dtlb_load);
     }
     return s;
 }
@@ -138,15 +128,9 @@ static void accumulatePhase(PhaseMetrics & dst, const PhaseSnapshot & begin, con
 class ProbePointCallbackGuard
 {
 public:
-    ProbePointCallbackGuard(ProbePointCallback callback, void * context)
-    {
-        setProbePointCallback(callback, context);
-    }
+    ProbePointCallbackGuard(ProbePointCallback callback, void * context) { setProbePointCallback(callback, context); }
 
-    ~ProbePointCallbackGuard()
-    {
-        clearProbePointCallback();
-    }
+    ~ProbePointCallbackGuard() { clearProbePointCallback(); }
 
     ProbePointCallbackGuard(const ProbePointCallbackGuard &) = delete;
     ProbePointCallbackGuard & operator=(const ProbePointCallbackGuard &) = delete;
@@ -162,11 +146,20 @@ static void phaseProbeHook(ProbePoint point, void * raw_context)
 
     switch (point)
     {
-        case ProbePoint::probe_loop_start:     ctx.probe_start = now; break;
-        case ProbePoint::probe_loop_end:       accumulatePhase(ctx.probe,    ctx.probe_start,    now); break;
-        case ProbePoint::generate_block_start: ctx.generate_start = now; break;
-        case ProbePoint::generate_block_end:   accumulatePhase(ctx.generate, ctx.generate_start, now); break;
-        default: break;
+        case ProbePoint::probe_loop_start:
+            ctx.probe_start = now;
+            break;
+        case ProbePoint::probe_loop_end:
+            accumulatePhase(ctx.probe, ctx.probe_start, now);
+            break;
+        case ProbePoint::generate_block_start:
+            ctx.generate_start = now;
+            break;
+        case ProbePoint::generate_block_end:
+            accumulatePhase(ctx.generate, ctx.generate_start, now);
+            break;
+        default:
+            break;
     }
 }
 
@@ -175,21 +168,22 @@ static void phaseProbeHook(ProbePoint point, void * raw_context)
 // ── ProbeDriver ────────────────────────────────────────────────────────────────
 
 ProbeDriver::ProbeDriver(std::shared_ptr<IJoin> join, OutputSink sink)
-    : join_(std::move(join)), sink_(std::move(sink))
+    : join_(std::move(join))
+    , sink_(std::move(sink))
 {
 }
 
 ProbeBlockEntry ProbeDriver::drainBlock(Block block, uint64_t probe_block_idx, HwCounters * hw_counters)
 {
     ProbeBlockEntry entry;
-    entry.probe_block_idx  = probe_block_idx;
+    entry.probe_block_idx = probe_block_idx;
     entry.probe_block_rows = block.rows();
 
     // C.3: TID and joinblock_start_ns captured before the joinBlock call
-    const uint64_t tid               = get_tid();
+    const uint64_t tid = get_tid();
     const uint64_t joinblock_start_ns = clock_ns_raw();
 
-    entry.caller_tid       = tid;
+    entry.caller_tid = tid;
     entry.joinblock_start_ns = static_cast<double>(joinblock_start_ns);
 
     PhaseHookContext phase_context;
@@ -204,31 +198,31 @@ ProbeBlockEntry ProbeDriver::drainBlock(Block block, uint64_t probe_block_idx, H
 
     // C.1: call joinBlock exactly once per probe block; block is moved (production line 246)
     const uint64_t t0_join_wall = clock_ns_raw();
-    const uint64_t t0_join_cpu  = thread_cpu_ns();
-    auto join_result            = join_->joinBlock(std::move(block));
-    entry.joinblock_probe_wall_ns = static_cast<double>(clock_ns_raw()      - t0_join_wall);
-    entry.joinblock_probe_cpu_ns  = static_cast<double>(thread_cpu_ns()     - t0_join_cpu);
+    const uint64_t t0_join_cpu = thread_cpu_ns();
+    auto join_result = join_->joinBlock(std::move(block));
+    entry.joinblock_probe_wall_ns = static_cast<double>(clock_ns_raw() - t0_join_wall);
+    entry.joinblock_probe_cpu_ns = static_cast<double>(thread_cpu_ns() - t0_join_cpu);
 
     // C.1: tight drain loop — NO BATCHING, NO SKIPPING next(), NO EARLY RESET
-    double   result_emit_wall_ns = 0.0;
-    double   result_emit_cpu_ns  = 0.0;
-    uint32_t output_block_idx    = 0;
+    double result_emit_wall_ns = 0.0;
+    double result_emit_cpu_ns = 0.0;
+    uint32_t output_block_idx = 0;
 
     while (true)
     {
         // C.4: per-output-block timing (H2) — wall and CPU time for every next() call
         const uint64_t t0_next_wall = clock_ns_raw();
-        const uint64_t t0_next_cpu  = thread_cpu_ns();
+        const uint64_t t0_next_cpu = thread_cpu_ns();
         auto data = join_result->next();
-        const double next_wall_ns = static_cast<double>(clock_ns_raw()  - t0_next_wall);
-        const double next_cpu_ns  = static_cast<double>(thread_cpu_ns() - t0_next_cpu);
+        const double next_wall_ns = static_cast<double>(clock_ns_raw() - t0_next_wall);
+        const double next_cpu_ns = static_cast<double>(thread_cpu_ns() - t0_next_cpu);
 
         result_emit_wall_ns += next_wall_ns;
-        result_emit_cpu_ns  += next_cpu_ns;
+        result_emit_cpu_ns += next_cpu_ns;
 
         // Save row count before block is moved into the sink
         const uint64_t out_rows = data.block.rows();
-        const bool     is_last  = data.is_last;
+        const bool is_last = data.is_last;
 
         // C.2: match production JoiningTransform::process() line 235
         if (out_rows > 0)
@@ -240,12 +234,12 @@ ProbeBlockEntry ProbeDriver::drainBlock(Block block, uint64_t probe_block_idx, H
         // H2: per-output-block log entry (C.4)
         {
             OutputBlockEntry out_entry;
-            out_entry.probe_block_idx   = probe_block_idx;
-            out_entry.output_block_idx  = output_block_idx;
+            out_entry.probe_block_idx = probe_block_idx;
+            out_entry.output_block_idx = output_block_idx;
             out_entry.output_block_rows = out_rows;
-            out_entry.next_wall_ns      = next_wall_ns;
-            out_entry.next_cpu_ns       = next_cpu_ns;
-            out_entry.is_last           = is_last;
+            out_entry.next_wall_ns = next_wall_ns;
+            out_entry.next_cpu_ns = next_cpu_ns;
+            out_entry.is_last = is_last;
             output_block_log_.push_back(out_entry);
         }
 
@@ -270,9 +264,9 @@ ProbeBlockEntry ProbeDriver::drainBlock(Block block, uint64_t probe_block_idx, H
     entry.last_next_end_ns = static_cast<double>(last_next_end_ns);
 
     entry.result_emit_wall_ns = result_emit_wall_ns;
-    entry.result_emit_cpu_ns  = result_emit_cpu_ns;
-    entry.output_block_count  = output_block_idx;
-    entry.phase_probe    = phase_context.probe;
+    entry.result_emit_cpu_ns = result_emit_cpu_ns;
+    entry.output_block_count = output_block_idx;
+    entry.phase_probe = phase_context.probe;
     entry.phase_generate = phase_context.generate;
 
     // Append to per-probe-block log (H2, C.4)
@@ -280,13 +274,152 @@ ProbeBlockEntry ProbeDriver::drainBlock(Block block, uint64_t probe_block_idx, H
 
     // Append to per-call TID log (G2, C.3)
     CallerTidEntry tid_entry;
-    tid_entry.probe_block_idx    = probe_block_idx;
-    tid_entry.tid                = tid;
+    tid_entry.probe_block_idx = probe_block_idx;
+    tid_entry.tid = tid;
     tid_entry.joinblock_start_ns = joinblock_start_ns;
-    tid_entry.last_next_end_ns   = last_next_end_ns;
+    tid_entry.last_next_end_ns = last_next_end_ns;
     caller_tid_log_.push_back(tid_entry);
 
     return entry;
+}
+
+// ── PartitionedHashJoin scatter phase ─────────────────────────────────────────
+
+ProbeBlockEntry ProbeDriver::scatterPhjBlock(Block block, uint64_t probe_block_idx)
+{
+    const uint64_t joinblock_start_ns = clock_ns_raw();
+    const uint64_t tid = static_cast<uint64_t>(syscall(SYS_gettid));
+
+    ProfileEvents::increment(ProfileEvents::JoinProbeTableRowCount, block.rows());
+
+    const auto t0_wall = static_cast<double>(clock_ns_raw());
+    const auto t0_cpu = static_cast<double>(thread_cpu_ns());
+
+    // PHJ::joinBlock scatters the probe block into per-partition slices.
+    // It returns an empty block (no result rows yet; they come via getDelayedBlocks).
+    auto result = join_->joinBlock(std::move(block));
+    // Drain the (empty) result to satisfy the interface contract.
+    while (result)
+    {
+        auto data = result->next();
+        if (data.is_last)
+            break;
+    }
+
+    const double scatter_wall_ns = static_cast<double>(clock_ns_raw()) - t0_wall;
+    const double scatter_cpu_ns = static_cast<double>(thread_cpu_ns()) - t0_cpu;
+
+    ProbeBlockEntry entry;
+    entry.probe_block_idx = probe_block_idx;
+    entry.probe_block_rows = 0; // actual rows not known yet (will be counted in drainDelayedBlocks)
+    entry.joinblock_probe_wall_ns = scatter_wall_ns;
+    entry.joinblock_probe_cpu_ns = scatter_cpu_ns;
+    entry.result_emit_wall_ns = 0.0;
+    entry.result_emit_cpu_ns = 0.0;
+    entry.output_block_count = 0;
+    entry.joinblock_start_ns = static_cast<double>(joinblock_start_ns);
+    entry.last_next_end_ns = static_cast<double>(clock_ns_raw());
+    entry.caller_tid = tid;
+
+    probe_block_log_.push_back(entry);
+
+    CallerTidEntry tid_entry;
+    tid_entry.probe_block_idx = probe_block_idx;
+    tid_entry.tid = tid;
+    tid_entry.joinblock_start_ns = joinblock_start_ns;
+    tid_entry.last_next_end_ns = static_cast<uint64_t>(entry.last_next_end_ns);
+    caller_tid_log_.push_back(tid_entry);
+
+    return entry;
+}
+
+// ── PartitionedHashJoin delayed-blocks drain ───────────────────────────────────
+
+void ProbeDriver::drainDelayedBlocks(HwCounters * hw_counters)
+{
+    // Per-partition phase accumulator.
+    // The phj_build_ht/probe/gen hooks are fired by DelayedBlocks.cpp inside
+    // the same thread that calls next(); we install a ProbePointCallback here.
+    // PartitionContext persists across all delayed->next() calls so that
+    // phase snapshots started in one call can be closed in a later call
+    // (the state machine may return a block mid-partition).  The entry is
+    // flushed to the log only when the *next* partition's phj_build_ht_start
+    // fires (or at the end of the loop), so all phase data for one partition
+    // accumulates into a single PhjPartitionEntry regardless of how many
+    // calls delayed->next() takes to drain it.
+    struct PartitionContext
+    {
+        PhjPartitionEntry entry;
+        PhaseSnapshot build_ht_start{};
+        PhaseSnapshot probe_start{};
+        PhaseSnapshot gen_start{};
+        HwCounters * hw = nullptr;
+        uint32_t next_partition_idx = 0;
+        bool entry_active = false;
+        std::vector<PhjPartitionEntry> * log = nullptr;
+    };
+
+    PartitionContext ctx;
+    ctx.hw = hw_counters;
+    ctx.log = &phj_partition_log_;
+
+    auto phjCallback = [](ProbePoint pt, void * raw)
+    {
+        auto & c = *static_cast<PartitionContext *>(raw);
+        switch (pt)
+        {
+            case ProbePoint::phj_build_ht_start:
+                // A new partition is starting. Flush any completed entry first.
+                if (c.entry_active)
+                    c.log->push_back(c.entry);
+                c.entry = PhjPartitionEntry{};
+                c.entry.partition_idx = c.next_partition_idx++;
+                c.entry_active = true;
+                c.build_ht_start = takePhaseSnapshot(c.hw);
+                break;
+            case ProbePoint::phj_build_ht_end:
+                accumulatePhase(c.entry.phase_build_ht, c.build_ht_start, takePhaseSnapshot(c.hw));
+                break;
+            case ProbePoint::phj_probe_start:
+                c.probe_start = takePhaseSnapshot(c.hw);
+                break;
+            case ProbePoint::phj_probe_end:
+                accumulatePhase(c.entry.phase_probe, c.probe_start, takePhaseSnapshot(c.hw));
+                break;
+            case ProbePoint::phj_gen_start:
+                c.gen_start = takePhaseSnapshot(c.hw);
+                break;
+            case ProbePoint::phj_gen_end:
+                accumulatePhase(c.entry.phase_gen, c.gen_start, takePhaseSnapshot(c.hw));
+                break;
+            default:
+                break;
+        }
+    };
+
+    // phjCallback is a captureless lambda → safely coerces to function pointer
+    setProbePointCallback(+phjCallback, &ctx);
+
+    auto delayed = join_->getDelayedBlocks();
+
+    while (delayed && !delayed->isFinished())
+    {
+        Block out = delayed->next();
+
+        // Emit output to sink and count rows into the current partition entry.
+        if (!out.empty())
+        {
+            if (ctx.entry_active)
+                ctx.entry.output_rows += out.rows();
+            sink_(std::move(out));
+        }
+    }
+
+    // Flush the last partition entry (if any).
+    if (ctx.entry_active)
+        phj_partition_log_.push_back(ctx.entry);
+
+    clearProbePointCallback();
 }
 
 } // namespace DB::HashProbeBench

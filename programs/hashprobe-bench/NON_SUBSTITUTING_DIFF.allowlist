@@ -38,3 +38,28 @@ src/Interpreters/HashJoin/HashJoinResult.cpp  PROBE_POINT_generate_block_end
 # harness binary.  Every ClickHouse program requires exactly this line to be
 # integrated into the top-level build.  Not a code-path change.
 programs/CMakeLists.txt  add_subdirectory_hashprobe_bench
+
+# ── PHJ per-partition phase hooks ─────────────────────────────────────────────
+# New ProbePoint enum values added to HashJoinProbePhaseHooks.h.
+# These extend the existing callback mechanism (already allowlisted above) so
+# the harness can capture per-partition build-HT / probe / generate timings
+# inside DelayedBlocks::nextImpl().  All fire through the existing
+# g_probe_point_callback thread-local; production cost = one null-pointer
+# branch per hook when no callback is registered (i.e., always in production).
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_phj_build_ht_start
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_phj_build_ht_end
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_phj_probe_start
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_phj_probe_end
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_phj_gen_start
+src/Interpreters/HashJoin/HashJoinProbePhaseHooks.h  ProbePoint_phj_gen_end
+
+# PHJ_PHASE_POINT call-sites in DelayedBlocks::nextImpl().
+# The macro is a no-op unless a harness callback is registered.
+# Four sites: phj_build_ht_start, phj_build_ht_end, phj_probe_start,
+#             phj_probe_end, phj_gen_start, phj_gen_end.
+src/Interpreters/PartitionedHashJoin/DelayedBlocks.cpp  PHJ_PHASE_POINT_phj_build_ht_start
+src/Interpreters/PartitionedHashJoin/DelayedBlocks.cpp  PHJ_PHASE_POINT_phj_build_ht_end
+src/Interpreters/PartitionedHashJoin/DelayedBlocks.cpp  PHJ_PHASE_POINT_phj_probe_start
+src/Interpreters/PartitionedHashJoin/DelayedBlocks.cpp  PHJ_PHASE_POINT_phj_probe_end
+src/Interpreters/PartitionedHashJoin/DelayedBlocks.cpp  PHJ_PHASE_POINT_phj_gen_start
+src/Interpreters/PartitionedHashJoin/DelayedBlocks.cpp  PHJ_PHASE_POINT_phj_gen_end

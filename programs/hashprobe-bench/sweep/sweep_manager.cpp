@@ -18,6 +18,7 @@
 
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/IJoin.h>
+#include <Interpreters/PartitionedHashJoin.h>
 
 // Suppress -Wcovered-switch-default triggered by nlohmann-json inside ClickHouse builds.
 #ifdef __clang__
@@ -80,6 +81,13 @@ static uint64_t clockNsRaw()
     return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL + static_cast<uint64_t>(ts.tv_nsec);
 }
 
+static double threadCpuNs()
+{
+    struct timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return static_cast<double>(ts.tv_sec) * 1e9 + static_cast<double>(ts.tv_nsec);
+}
+
 // ── Key / config helpers ──────────────────────────────────────────────────────
 
 static KeyShape keyShapeFromConfig(const ConfigType & cfg)
@@ -136,6 +144,26 @@ static double computeMedian(std::vector<double> v)
     return (n % 2 == 0) ? (v[n / 2 - 1] + v[n / 2]) / 2.0 : v[n / 2];
 }
 
+static size_t medianRunIndexByWallTime(const std::vector<double> & wall_ms)
+{
+    std::vector<size_t> order(wall_ms.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(
+        order.begin(),
+        order.end(),
+        [&](size_t lhs, size_t rhs)
+        {
+            const double lhs_wall = wall_ms[lhs];
+            const double rhs_wall = wall_ms[rhs];
+            if (std::isnan(lhs_wall) != std::isnan(rhs_wall))
+                return !std::isnan(lhs_wall);
+            if (lhs_wall == rhs_wall)
+                return lhs < rhs;
+            return lhs_wall < rhs_wall;
+        });
+    return order.empty() ? 0 : order[order.size() / 2];
+}
+
 /// Coefficient of variation: stddev / mean.  Returns 0.0 for single-element arrays.
 static double computeCV(const std::vector<double> & v)
 {
@@ -158,15 +186,132 @@ struct ProbeRunResult
     double probe_wall_ms = 0.0;
     double probe_cpu_ms = 0.0;
     double throughput_rows_per_s = 0.0;
-    double joinblock_probe_wall_ms = 0.0;
-    double joinblock_probe_cpu_ms = 0.0;
-    double result_emit_wall_ms = 0.0;
-    double result_emit_cpu_ms = 0.0;
+    double joinblock_probe_wall_ms = 0.0; ///< For PHJ: scatter phase wall time
+    double joinblock_probe_cpu_ms = 0.0; ///< For PHJ: scatter phase cpu time
+    double result_emit_wall_ms = 0.0; ///< For PHJ: delayed-blocks drain wall time
+    double result_emit_cpu_ms = 0.0; ///< For PHJ: delayed-blocks drain cpu time
     uint64_t output_rows = 0;
     std::vector<ProbeBlockEntry> probe_block_log;
     std::vector<OutputBlockEntry> output_block_log;
+    std::vector<PhjPartitionEntry> phj_partition_log; ///< PHJ-only; empty for hash algorithms
     std::vector<Block> output_blocks; ///< populated when collect_blocks=true
 };
+
+/// Execute one PHJ probe rep.
+/// Phase 1 (scatter): partition proto_blocks across max_threads threads, each calling
+///   ProbeDriver::scatterPhjBlock() per block (fires joinBlock, measures scatter time).
+/// Phase 2 (delayed drain): single-threaded drain of getDelayedBlocks() stream,
+///   capturing per-partition build_ht/probe/gen timing.
+static ProbeRunResult runPhjProbe(
+    const std::shared_ptr<IJoin> & join,
+    const std::vector<Block> & proto_blocks,
+    uint32_t max_threads,
+    uint64_t probe_rows,
+    bool use_hw = false)
+{
+    ProbeRunResult result;
+    const size_t total_blocks = proto_blocks.size();
+
+    // ── Phase 1: multi-threaded scatter ──────────────────────────────────────
+    // Each thread scatters its slice via joinBlock (no output yet).
+    struct ThreadResult
+    {
+        double scatter_wall_ms = 0.0;
+        double scatter_cpu_ms = 0.0;
+        std::vector<ProbeBlockEntry> scatter_log;
+    };
+    std::vector<ThreadResult> thread_results(max_threads);
+    std::vector<std::thread> threads;
+    threads.reserve(max_threads);
+
+    // Common output sink (empty for scatter phase — no rows emitted here)
+    auto nullSink = [](Block /*b*/) { };
+
+    const uint64_t t0_scatter = clockNsRaw();
+    for (uint32_t t = 0; t < max_threads; ++t)
+    {
+        const size_t blk_start = (total_blocks * t) / max_threads;
+        const size_t blk_end = (t + 1 == max_threads) ? total_blocks : (total_blocks * (t + 1)) / max_threads;
+        threads.emplace_back(
+            [&join, &proto_blocks, &thread_results, t, blk_start, blk_end, &nullSink, use_hw]()
+            {
+                auto & tr = thread_results[t];
+                ProbeDriver driver(join, nullSink);
+                HwCounters hw_ctr;
+                const bool hw_ok = use_hw && hw_ctr.open();
+                for (size_t bi = blk_start; bi < blk_end; ++bi)
+                {
+                    Block blk = cloneBlock(proto_blocks[bi]);
+                    if (hw_ok)
+                        hw_ctr.start();
+                    auto entry = driver.scatterPhjBlock(std::move(blk), static_cast<uint64_t>(bi));
+                    if (hw_ok)
+                    {
+                        uint64_t cy = 0, ins = 0, llc = 0, br = 0, dtlb = 0, branches = 0, llc_load = 0, dtlb_load = 0;
+                        hw_ctr.read(cy, ins, llc, br, dtlb, branches, llc_load, dtlb_load);
+                        entry.hw_cycles = cy;
+                        entry.hw_instructions = ins;
+                        entry.hw_ipc = HwCounters::computeIpc(ins, cy);
+                        entry.hw_llc_miss = llc;
+                        entry.hw_branch_miss = br;
+                        entry.hw_dtlb_miss = dtlb;
+                        entry.hw_branches = branches;
+                        entry.hw_llc_load = llc_load;
+                        entry.hw_dtlb_load = dtlb_load;
+                    }
+                    tr.scatter_wall_ms += entry.joinblock_probe_wall_ns / 1e6;
+                    tr.scatter_cpu_ms += entry.joinblock_probe_cpu_ns / 1e6;
+                    tr.scatter_log.push_back(entry);
+                }
+            });
+    }
+    for (auto & th : threads)
+        th.join();
+    const uint64_t t1_scatter = clockNsRaw();
+
+    // Aggregate scatter phase timing
+    result.joinblock_probe_wall_ms = static_cast<double>(t1_scatter - t0_scatter) / 1e6;
+    for (auto & tr : thread_results)
+    {
+        result.joinblock_probe_cpu_ms += tr.scatter_cpu_ms;
+        for (auto & e : tr.scatter_log)
+            result.probe_block_log.push_back(std::move(e));
+    }
+
+    // ── Phase 2: single-threaded delayed-blocks drain ─────────────────────────
+    // The delayed-blocks stream is owned by the join and not thread-safe.
+    HwCounters hw_ctr;
+    const bool hw_ok = use_hw && hw_ctr.open();
+    // Enable the counter group now so it is running when the first
+    // PHJ_PHASE_POINT fires inside drainDelayedBlocks.  Without start(),
+    // the kernel never assigns a PMU register and snapshot() returns false.
+    if (hw_ok)
+        hw_ctr.start();
+
+    std::vector<Block> output_blocks_local;
+    ProbeDriver drain_driver(
+        join,
+        [&result, &output_blocks_local](Block b)
+        {
+            result.output_rows += b.rows();
+            output_blocks_local.push_back(std::move(b));
+        });
+
+    const double t0_drain_wall = static_cast<double>(clockNsRaw());
+    const double t0_drain_cpu = static_cast<double>(threadCpuNs());
+    drain_driver.drainDelayedBlocks(hw_ok ? &hw_ctr : nullptr);
+    result.result_emit_wall_ms = (static_cast<double>(clockNsRaw()) - t0_drain_wall) / 1e6;
+    result.result_emit_cpu_ms = (threadCpuNs() - t0_drain_cpu) / 1e6;
+
+    result.phj_partition_log = drain_driver.getPhjPartitionLog();
+
+    // Wall time = scatter + drain (both phases contribute to the end-to-end latency)
+    result.probe_wall_ms = result.joinblock_probe_wall_ms + result.result_emit_wall_ms;
+    result.probe_cpu_ms = result.joinblock_probe_cpu_ms + result.result_emit_cpu_ms;
+    result.throughput_rows_per_s = (result.probe_wall_ms > 0.0) ? static_cast<double>(probe_rows) / (result.probe_wall_ms / 1000.0) : 0.0;
+
+    return result;
+}
 
 /// Execute one probe rep: partition proto_blocks across max_threads threads,
 /// each draining its slice through its own ProbeDriver instance.
@@ -309,6 +454,8 @@ static std::string getCpuAffinity()
 
 // ── JSON serialisation ────────────────────────────────────────────────────────
 
+static nlohmann::json phaseMetricsToJson(const PhaseMetrics & p);
+
 static nlohmann::json buildHeaderToJson(const BuildHeader & h)
 {
     return nlohmann::json{
@@ -325,13 +472,15 @@ static nlohmann::json buildHeaderToJson(const BuildHeader & h)
         {"build_row_to_key_ratio", h.build_row_to_key_ratio},
         {"build_wall_ms", h.build_wall_ms},
         {"build_cpu_ms", h.build_cpu_ms},
+        {"phase_build_ht", phaseMetricsToJson(h.phase_build_ht)},
         {"resolved_map_type_post_build", h.resolved_map_type_post_build},
         {"strictness_at_construction", h.strictness_at_construction},
         {"strictness_after_build", h.strictness_after_build},
         {"build_invocations", h.build_invocations},
         {"probe_invocations", h.probe_invocations},
         {"harness_drain_mode", h.harness_drain_mode},
-        {"vectorized_probe_enabled", h.vectorized_probe_enabled},
+        {"shuffle_probe_wall_ms", h.shuffle_probe_wall_ms},
+        {"shuffle_probe_cpu_ms", h.shuffle_probe_cpu_ms},
     };
 }
 
@@ -449,6 +598,26 @@ static nlohmann::json probeCellToJson(const ProbeCellResult & c)
         for (const auto & e : c.output_block_log)
             obl.push_back(outputBlockEntryToJson(e));
         j["output_block_log"] = std::move(obl);
+
+        // PHJ-only: per-partition timing log
+        if (!c.phj_partition_log.empty())
+        {
+            auto pjl = nlohmann::json::array();
+            for (const auto & e : c.phj_partition_log)
+            {
+                pjl.push_back(
+                    nlohmann::json{
+                        {"partition_idx", e.partition_idx},
+                        {"build_rows", e.build_rows},
+                        {"probe_rows", e.probe_rows},
+                        {"output_rows", e.output_rows},
+                        {"phase_build_ht", phaseMetricsToJson(e.phase_build_ht)},
+                        {"phase_probe", phaseMetricsToJson(e.phase_probe)},
+                        {"phase_gen", phaseMetricsToJson(e.phase_gen)},
+                    });
+            }
+            j["phj_partition_log"] = std::move(pjl);
+        }
     }
 
     // H5: cache-mode fields (non-NaN only when cache_mode=cold)
@@ -567,17 +736,12 @@ namespace SummaryTable
 {
 constexpr int W_MT = 4;
 constexpr int W_BLKSZ = 6;
-constexpr int W_MODE = 4;
+constexpr int W_BUILD = 8;
+constexpr int W_SHUFFLE = 10;
 constexpr int W_WALL = 8;
-constexpr int W_CPU = 10;
-constexpr int W_MROWS = 8;
-constexpr int W_IPC = 6;
-constexpr int W_COUNTER = 14;
-constexpr int W_PCT = 9;
-constexpr int W_DTLB_LOAD = 15;
+constexpr int W_E2E = 8; ///< build_ms + probe_wall_ms (end-to-end wall time)
 
-constexpr int TOTAL_WIDTH = 2 + W_MT + 2 + W_BLKSZ + 2 + W_MODE + 2 + W_WALL + 2 + W_CPU + 2 + W_MROWS + 2 + W_IPC + 2
-    + W_COUNTER + 2 + W_PCT + 2 + W_COUNTER + 2 + W_PCT + 2 + W_DTLB_LOAD + 2 + W_PCT;
+constexpr int TOTAL_WIDTH = 2 + W_MT + 2 + W_BLKSZ + 2 + W_BUILD + 2 + W_SHUFFLE + 2 + W_WALL + 2 + W_E2E;
 
 static void printCol(const std::string & value, int width)
 {
@@ -587,22 +751,6 @@ static void printCol(const std::string & value, int width)
 static void printCol(double value, int width, int precision)
 {
     std::cout << "  " << std::right << std::fixed << std::setprecision(precision) << std::setw(width) << value;
-}
-
-static void printCol(uint64_t value, int width)
-{
-    printCol(fmtNum(value), width);
-}
-
-static void printHwNa()
-{
-    printCol("n/a", W_IPC);
-    printCol("n/a", W_COUNTER);
-    printCol("n/a", W_PCT);
-    printCol("n/a", W_COUNTER);
-    printCol("n/a", W_PCT);
-    printCol("n/a", W_DTLB_LOAD);
-    printCol("n/a", W_PCT);
 }
 
 } // namespace SummaryTable
@@ -636,8 +784,8 @@ static std::string strictnessStr(const ConfigType & cfg)
 ///   Build   <engine>  <shape>/<strictness>  rows=<n>  map=<type>  <ms>ms
 ///           git=<hash7>  threads=<n>  ...
 ///
-///   Probe cells (<cache>, <reps> rep[s]):
-///     mt  blksz   mode  wall_ms  cpu_ms  Mrows/s  IPC   llc_miss  br_miss dtlb_miss
+///   E2E stats (<cache>, <reps> rep[s]):
+///     mt  blksz   build_ms  shuffle_ms  probe_ms  e2e_ms
 ///   ...
 ///
 ///   Oracle: <status>
@@ -650,207 +798,208 @@ static void printSummary(const Artifact & artifact, const ConfigType & cfg)
 
     // ── Build summary ────────────────────────────────────────────────────
     std::cout << "Build   " << bld.join_engine << "  " << keyShapeStr(cfg) << "/" << strictnessStr(cfg) << "  "
-              << "rows=" << fmtNum(bld.build_rows) << "  map=" << bld.resolved_map_type_post_build
-              << "  probe=" << (bld.vectorized_probe_enabled ? "vectorized" : "scalar");
-    if (std::isfinite(bld.build_wall_ms))
-        std::cout << "  build=" << std::fixed << std::setprecision(1) << bld.build_wall_ms << "ms";
+              << "rows=" << fmtNum(bld.build_rows) << "  map=" << bld.resolved_map_type_post_build;
     std::cout << "\n";
     std::cout << "        git=" << bld.git_commit.substr(0, 7) << "  build_threads=" << bld.build_threads
               << "  probe_invocations=" << bld.probe_invocations << "\n\n";
 
-    // ── Probe cells table ────────────────────────────────────────────────
+    // ── E2E stats table ──────────────────────────────────────────────────
     const std::string cache_str = (cfg.cache_mode == CacheMode::WARM) ? "warm" : "cold";
     using namespace SummaryTable;
 
-    std::cout << "Probe cells (" << cache_str << " cache, " << cfg.reps << " rep" << (cfg.reps != 1 ? "s" : "") << "):\n";
+    std::cout << "E2E stats (" << cache_str << " cache, " << cfg.reps << " rep" << (cfg.reps != 1 ? "s" : "") << "):\n";
     printCol("mt", W_MT);
     printCol("blksz", W_BLKSZ);
-    printCol("mode", W_MODE);
-    printCol("wall_ms", W_WALL);
-    printCol("cpu_ns/row", W_CPU);
-    printCol("Mrows/s", W_MROWS);
-    printCol("IPC", W_IPC);
-    printCol("llc_load", W_COUNTER);
-    printCol("llc_miss%", W_PCT);
-    printCol("branches", W_COUNTER);
-    printCol("br_miss%", W_PCT);
-    printCol("dtlb_load", W_DTLB_LOAD);
-    printCol("dtlb_miss%", W_PCT);
+    printCol("build_ms", W_BUILD);
+    printCol("shuffle_ms", W_SHUFFLE);
+    printCol("probe_ms", W_WALL);
+    printCol("e2e_ms", W_E2E);
     std::cout << "\n";
     std::cout << "  " << std::string(TOTAL_WIDTH - 2, '-') << "\n";
 
     for (const auto & cell : artifact.probe_cells)
     {
-        // Aggregate hw counters from probe_block_log (sum across all blocks)
-        uint64_t sum_cy = 0, sum_ins = 0;
-        uint64_t sum_llc = 0, sum_br = 0, sum_dtlb = 0;
-        uint64_t sum_llc_load = 0, sum_branches = 0, sum_dtlb_load = 0;
-        for (const auto & pbe : cell.probe_block_log)
-        {
-            sum_cy += pbe.hw_cycles;
-            sum_ins += pbe.hw_instructions;
-            sum_llc += pbe.hw_llc_miss;
-            sum_br += pbe.hw_branch_miss;
-            sum_dtlb += pbe.hw_dtlb_miss;
-            sum_llc_load += pbe.hw_llc_load;
-            sum_branches += pbe.hw_branches;
-            sum_dtlb_load += pbe.hw_dtlb_load;
-        }
-        const bool has_hw = (cell.counter_mode == "hw") && (sum_cy > 0 || sum_ins > 0);
-        const double ipc = (has_hw && sum_cy > 0) ? static_cast<double>(sum_ins) / static_cast<double>(sum_cy) : 0.0;
-
-        const double mrows = std::isfinite(cell.throughput_rows_per_s) ? cell.throughput_rows_per_s / 1e6 : 0.0;
+        if (cell.counter_mode != "none")
+            continue;
 
         printCol(std::to_string(cell.max_threads), W_MT);
         printCol(std::to_string(cell.block_size), W_BLKSZ);
-        printCol(cell.counter_mode, W_MODE);
-        printCol(std::isfinite(cell.probe_wall_ms) ? cell.probe_wall_ms : 0.0, W_WALL, 2);
         {
-            const double cpu_ns_per_row = (cell.probe_rows > 0 && std::isfinite(cell.probe_cpu_ms))
-                ? cell.probe_cpu_ms * 1e6 / static_cast<double>(cell.probe_rows)
-                : 0.0;
-            printCol(cpu_ns_per_row, W_CPU, 1);
+            const double build_ms = std::isfinite(bld.build_wall_ms) ? bld.build_wall_ms : 0.0;
+            printCol(build_ms, W_BUILD, 2);
+            if (std::isfinite(bld.shuffle_probe_wall_ms))
+                printCol(bld.shuffle_probe_wall_ms, W_SHUFFLE, 2);
+            else
+                printCol("n/a", W_SHUFFLE);
+            const double probe_ms = std::isfinite(cell.probe_wall_ms) ? cell.probe_wall_ms : 0.0;
+            printCol(probe_ms, W_WALL, 2);
+            printCol(build_ms + probe_ms, W_E2E, 2);
         }
-        printCol(mrows, W_MROWS, 2);
-        if (has_hw)
-        {
-            const double llc_miss_pct = (sum_llc_load > 0) ? static_cast<double>(sum_llc) * 100.0 / static_cast<double>(sum_llc_load) : 0.0;
-            const double br_miss_pct = (sum_branches > 0) ? static_cast<double>(sum_br) * 100.0 / static_cast<double>(sum_branches) : 0.0;
-            const double dtlb_miss_pct
-                = (sum_dtlb_load > 0) ? static_cast<double>(sum_dtlb) * 100.0 / static_cast<double>(sum_dtlb_load) : 0.0;
-            printCol(ipc, W_IPC, 2);
-            printCol(sum_llc_load, W_COUNTER);
-            printCol(llc_miss_pct, W_PCT, 2);
-            printCol(sum_branches, W_COUNTER);
-            printCol(br_miss_pct, W_PCT, 2);
-            printCol(sum_dtlb_load, W_DTLB_LOAD);
-            printCol(dtlb_miss_pct, W_PCT, 2);
-        }
-        else
-            printHwNa();
         std::cout << "\n";
     }
-    std::cout << "\nPhase breakdown (last rep, all blocks summed):\n";
+    // Phase breakdown uses the per-block/per-partition logs from the selected
+    // median run, not the last repetition.
+    const bool is_phj_run = !artifact.probe_cells.empty() && !artifact.probe_cells.front().phj_partition_log.empty();
+    std::cout << "\nPhase breakdown (median run";
+    if (is_phj_run)
+        std::cout << ", all partitions summed";
+    std::cout << "):\n";
     {
         // Column widths for the per-phase breakdown table.
         constexpr int W_PH_MT = 4;
         constexpr int W_PH_BLKSZ = 5;
-        constexpr int W_PH_MODE = 4;
-        constexpr int W_PH_METRIC = 10;
-        constexpr int W_PH_VAL = 25;
+        constexpr int W_PH_METRIC = 13;
+        constexpr int W_PH_VAL = 21;
 
         auto phCol = [](const std::string & s, int w) { std::cout << "  " << std::right << std::setw(w) << s; };
+        auto addPhase = [](PhaseMetrics & dst, const PhaseMetrics & src)
+        {
+            dst.wall_ns += src.wall_ns;
+            dst.cpu_ns += src.cpu_ns;
+            dst.hw_cycles += src.hw_cycles;
+            dst.hw_instructions += src.hw_instructions;
+            dst.hw_llc_miss += src.hw_llc_miss;
+            dst.hw_branch_miss += src.hw_branch_miss;
+            dst.hw_dtlb_miss += src.hw_dtlb_miss;
+            dst.hw_llc_load += src.hw_llc_load;
+            dst.hw_branches += src.hw_branches;
+            dst.hw_dtlb_load += src.hw_dtlb_load;
+            dst.hw_available = dst.hw_available || src.hw_available;
+        };
+        auto addProbeBlockPhase = [](PhaseMetrics & dst, const ProbeBlockEntry & src)
+        {
+            dst.wall_ns += src.joinblock_probe_wall_ns;
+            dst.cpu_ns += src.joinblock_probe_cpu_ns;
+            dst.hw_cycles += src.hw_cycles;
+            dst.hw_instructions += src.hw_instructions;
+            dst.hw_llc_miss += src.hw_llc_miss;
+            dst.hw_branch_miss += src.hw_branch_miss;
+            dst.hw_dtlb_miss += src.hw_dtlb_miss;
+            dst.hw_llc_load += src.hw_llc_load;
+            dst.hw_branches += src.hw_branches;
+            dst.hw_dtlb_load += src.hw_dtlb_load;
+            dst.hw_available = dst.hw_available || src.hw_cycles > 0 || src.hw_instructions > 0;
+        };
+        auto formatDouble = [](double value, int precision) -> std::string
+        {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%.*f", precision, value);
+            return std::string(buf);
+        };
+        auto formatPct = [&](const PhaseMetrics & p, uint64_t num, uint64_t den) -> std::string
+        {
+            if (!p.hw_available)
+                return "n/a";
+            return formatDouble(den > 0 ? static_cast<double>(num) * 100.0 / static_cast<double>(den) : 0.0, 2) + "%";
+        };
+        auto formatCounter = [](const PhaseMetrics & p, uint64_t value) -> std::string
+        {
+            return p.hw_available ? fmtNum(value) : std::string("n/a");
+        };
+        auto formatInstructions = [](const PhaseMetrics & p) -> std::string
+        {
+            if (!p.hw_available)
+                return "n/a";
+            if (p.hw_cycles == 0)
+                return fmtNum(p.hw_instructions);
+            char buf[96];
+            snprintf(
+                buf,
+                sizeof(buf),
+                "%s (%.2f)",
+                fmtNum(p.hw_instructions).c_str(),
+                static_cast<double>(p.hw_instructions) / static_cast<double>(p.hw_cycles));
+            return std::string(buf);
+        };
 
         phCol("mt", W_PH_MT);
         phCol("blksz", W_PH_BLKSZ);
-        phCol("mode", W_PH_MODE);
         phCol("metric", W_PH_METRIC);
-        phCol("probe", W_PH_VAL);
-        phCol("generate", W_PH_VAL);
+        if (is_phj_run)
+        {
+            phCol("shuffle", W_PH_VAL);
+            phCol("build_ht", W_PH_VAL);
+            phCol("probe_ht", W_PH_VAL);
+            phCol("gen", W_PH_VAL);
+        }
+        else
+        {
+            phCol("build_ht", W_PH_VAL);
+            phCol("probe_ht", W_PH_VAL);
+            phCol("gen", W_PH_VAL);
+        }
         std::cout << "\n";
 
         for (const auto & cell : artifact.probe_cells)
         {
-            PhaseMetrics probe{}, gen{};
-            for (const auto & pbe : cell.probe_block_log)
+            if (cell.counter_mode != "hw")
+                continue;
+
+            std::vector<std::pair<std::string, PhaseMetrics>> named_phases;
+            if (!cell.phj_partition_log.empty())
             {
-                auto add = [](PhaseMetrics & dst, const PhaseMetrics & src)
+                PhaseMetrics shuffle{}, build_ht{}, probe_ht{}, gen{};
+                for (const auto & pbe : cell.probe_block_log)
+                    addProbeBlockPhase(shuffle, pbe);
+                for (const auto & pje : cell.phj_partition_log)
                 {
-                    dst.wall_ns += src.wall_ns;
-                    dst.cpu_ns += src.cpu_ns;
-                    dst.hw_cycles += src.hw_cycles;
-                    dst.hw_instructions += src.hw_instructions;
-                    dst.hw_llc_miss += src.hw_llc_miss;
-                    dst.hw_branch_miss += src.hw_branch_miss;
-                    dst.hw_dtlb_miss += src.hw_dtlb_miss;
-                    dst.hw_llc_load += src.hw_llc_load;
-                    dst.hw_branches += src.hw_branches;
-                    dst.hw_dtlb_load += src.hw_dtlb_load;
-                    dst.hw_available = dst.hw_available || src.hw_available;
-                };
-                add(probe, pbe.phase_probe);
-                add(gen, pbe.phase_generate);
+                    addPhase(build_ht, pje.phase_build_ht);
+                    addPhase(probe_ht, pje.phase_probe);
+                    addPhase(gen, pje.phase_gen);
+                }
+                named_phases = {{"shuffle", shuffle}, {"build_ht", build_ht}, {"probe_ht", probe_ht}, {"gen", gen}};
+            }
+            else
+            {
+                PhaseMetrics probe_ht{}, gen{};
+                for (const auto & pbe : cell.probe_block_log)
+                {
+                    addPhase(probe_ht, pbe.phase_probe);
+                    addPhase(gen, pbe.phase_generate);
+                }
+                named_phases = {{"build_ht", bld.phase_build_ht}, {"probe_ht", probe_ht}, {"gen", gen}};
             }
 
-            const double total_cpu_ns = probe.cpu_ns + gen.cpu_ns;
-            const bool has_hw = (cell.counter_mode == "hw") && (probe.hw_cycles > 0 || gen.hw_cycles > 0);
-
-            const PhaseMetrics * phases[2] = {&probe, &gen};
-
-            // Format a percentage string with two decimal places.
-            auto pctStr = [](double num, double den) -> std::string
-            {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "%.2f%%", den > 0.0 ? num * 100.0 / den : 0.0);
-                return std::string(buf);
-            };
-
-            // Print one metric row across both phases.
+            // Print one metric row across all phases.
             auto phRow = [&](const std::string & metric, auto valFn)
             {
                 phCol(std::to_string(cell.max_threads), W_PH_MT);
                 phCol(std::to_string(cell.block_size), W_PH_BLKSZ);
-                phCol(cell.counter_mode, W_PH_MODE);
                 phCol(metric, W_PH_METRIC);
-                for (const PhaseMetrics * pm : phases)
-                    phCol(valFn(*pm), W_PH_VAL);
+                for (const auto & [name, pm] : named_phases)
+                    phCol(valFn(name, pm), W_PH_VAL);
                 std::cout << "\n";
             };
 
-            auto nsRowPctStr = [&](double ns, double total_ns) -> std::string
+            auto rowsForPhase = [&](const std::string & name) -> uint64_t
             {
-                const double ns_per_row = (cell.probe_rows > 0) ? ns / static_cast<double>(cell.probe_rows) : 0.0;
-                const double pct = total_ns > 0.0 ? ns * 100.0 / total_ns : 0.0;
-                char buf[48];
-                snprintf(buf, sizeof(buf), "%.1fns/row (%.2f%%)", ns_per_row, pct);
-                return std::string(buf);
+                return name == "build_ht" ? bld.build_rows : cell.probe_rows;
             };
 
-            phRow("cpu", [&](const PhaseMetrics & p) { return nsRowPctStr(p.cpu_ns, total_cpu_ns); });
+            phRow(
+                "cpu (ns/row)",
+                [&](const std::string & name, const PhaseMetrics & p)
+                {
+                    const uint64_t rows = rowsForPhase(name);
+                    return formatDouble(rows > 0 ? p.cpu_ns / static_cast<double>(rows) : 0.0, 1);
+                });
 
-            if (has_hw)
-            {
-                phRow(
-                    "instructions",
-                    [](const PhaseMetrics & p) -> std::string
-                    {
-                        if (p.hw_instructions == 0)
-                            return "n/a";
-                        char buf[64];
-                        if (p.hw_cycles > 0)
-                            snprintf(
-                                buf,
-                                sizeof(buf),
-                                "%s (%.2f)",
-                                fmtNum(p.hw_instructions).c_str(),
-                                static_cast<double>(p.hw_instructions) / static_cast<double>(p.hw_cycles));
-                        else
-                            snprintf(buf, sizeof(buf), "%s", fmtNum(p.hw_instructions).c_str());
-                        return std::string(buf);
-                    });
-                phRow(
-                    "cycles",
-                    [](const PhaseMetrics & p) -> std::string
-                    {
-                        if (p.hw_cycles == 0)
-                            return "n/a";
-                        return fmtNum(p.hw_cycles);
-                    });
-                phRow("llc_load", [](const PhaseMetrics & p) { return fmtNum(p.hw_llc_load); });
-                phRow(
-                    "llc_miss%",
-                    [&](const PhaseMetrics & p) { return pctStr(static_cast<double>(p.hw_llc_miss), static_cast<double>(p.hw_llc_load)); });
-                phRow("branches", [](const PhaseMetrics & p) { return fmtNum(p.hw_branches); });
-                phRow(
-                    "br_miss%",
-                    [&](const PhaseMetrics & p)
-                    { return pctStr(static_cast<double>(p.hw_branch_miss), static_cast<double>(p.hw_branches)); });
-                phRow("dtlb_load", [](const PhaseMetrics & p) { return fmtNum(p.hw_dtlb_load); });
-                phRow(
-                    "dtlb_miss%",
-                    [&](const PhaseMetrics & p)
-                    { return pctStr(static_cast<double>(p.hw_dtlb_miss), static_cast<double>(p.hw_dtlb_load)); });
-            }
+            phRow(
+                "instructions",
+                [&](const std::string &, const PhaseMetrics & p) { return formatInstructions(p); });
+            phRow("cycles", [&](const std::string &, const PhaseMetrics & p) { return formatCounter(p, p.hw_cycles); });
+            phRow("llc_load", [&](const std::string &, const PhaseMetrics & p) { return formatCounter(p, p.hw_llc_load); });
+            phRow(
+                "llc_miss%",
+                [&](const std::string &, const PhaseMetrics & p) { return formatPct(p, p.hw_llc_miss, p.hw_llc_load); });
+            phRow("branches", [&](const std::string &, const PhaseMetrics & p) { return formatCounter(p, p.hw_branches); });
+            phRow(
+                "br_miss%",
+                [&](const std::string &, const PhaseMetrics & p) { return formatPct(p, p.hw_branch_miss, p.hw_branches); });
+            phRow("dtlb_load", [&](const std::string &, const PhaseMetrics & p) { return formatCounter(p, p.hw_dtlb_load); });
+            phRow(
+                "dtlb_miss%",
+                [&](const std::string &, const PhaseMetrics & p) { return formatPct(p, p.hw_dtlb_miss, p.hw_dtlb_load); });
         }
     }
     std::cout << "\n";
@@ -951,6 +1100,7 @@ Artifact SweepManager::run()
     hdr.build_row_to_key_ratio = bdo.result.build_row_to_key_ratio;
     hdr.build_wall_ms = bdo.result.build_wall_ms;
     hdr.build_cpu_ms = bdo.result.build_cpu_ms;
+    hdr.phase_build_ht = bdo.result.phase_build_ht;
 
     hdr.resolved_map_type_post_build = bdo.result.resolved_map_type;
     hdr.strictness_at_construction = bdo.result.strictness_at_construction;
@@ -958,10 +1108,6 @@ Artifact SweepManager::run()
 
     hdr.build_invocations = 1; // C7: exactly one build for any multi-sweep run
     hdr.harness_drain_mode = ProbeDriver::DRAIN_MODE;
-    {
-        const char * vp = std::getenv("CLICKHOUSE_VECTORIZED_JOIN_PROBE"); // NOLINT(concurrency-mt-unsafe)
-        hdr.vectorized_probe_enabled = !vp || vp[0] != '0';
-    }
 
     // ── Write build.native and probe.native for oracle comparison (D.3/D.4, E-Auto) ───
     // Re-generate with the same seed → identical deterministic blocks (I1).
@@ -1033,6 +1179,8 @@ Artifact SweepManager::run()
 
                     // G.3: run cfg_.reps repetitions per cell against the same built join (H6, C7)
                     std::vector<double> wall_ms_vec, cpu_ms_vec, tput_vec;
+                    std::vector<ProbeRunResult> rep_runs;
+                    rep_runs.reserve(cfg_.reps);
 
                     // INNER ANY and INNER ALL/RIGHTANY have different oracle-before-timing constraints:
                     //
@@ -1078,11 +1226,24 @@ Artifact SweepManager::run()
                         rep0_blocks = std::move(oracle_probe.output_blocks);
                     }
 
+                    const bool is_phj = (cfg_.algorithm == AlgorithmConfig::PARTITIONED_HASH);
+
                     for (uint32_t rep = 0; rep < cfg_.reps; ++rep)
                     {
+                        // For PHJ: reset probe-side state before each rep so that
+                        // every rep runs a full scatter+drain cycle.  Rep 0 needs no
+                        // reset (the join is freshly scattered); reps 1+ would otherwise
+                        // skip the drain because delayed_blocks_given is already true.
+                        if (is_phj && rep > 0)
+                        {
+                            if (auto * phj = dynamic_cast<PartitionedHashJoin *>(bdo.join.get()))
+                                phj->resetForReprobe();
+                        }
+
                         const bool hw_mode = (std::string(cm_cstr) == "hw");
                         prepareCache(bdo.join.get(), cfg_.cache_mode);
-                        auto run = runProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false, hw_mode);
+                        auto run = is_phj ? runPhjProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, hw_mode)
+                                          : runProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false, hw_mode);
 
                         RepTiming rt;
                         rt.probe_wall_ms = run.probe_wall_ms;
@@ -1095,18 +1256,7 @@ Artifact SweepManager::run()
                         tput_vec.push_back(run.throughput_rows_per_s);
 
                         probe_invocations++;
-
-                        // Retain per-block logs from the last rep (H2)
-                        if (rep + 1 == cfg_.reps)
-                        {
-                            cell.probe_block_log = std::move(run.probe_block_log);
-                            cell.output_block_log = std::move(run.output_block_log);
-                            cell.output_rows = run.output_rows;
-                            cell.joinblock_probe_wall_ms = run.joinblock_probe_wall_ms;
-                            cell.joinblock_probe_cpu_ms = run.joinblock_probe_cpu_ms;
-                            cell.result_emit_wall_ms = run.result_emit_wall_ms;
-                            cell.result_emit_cpu_ms = run.result_emit_cpu_ms;
-                        }
+                        rep_runs.push_back(std::move(run));
                     }
 
                     // G.3: aggregate statistics over reps (H6)
@@ -1120,6 +1270,18 @@ Artifact SweepManager::run()
                     cell.probe_cpu_ms_cv = computeCV(cpu_ms_vec);
                     cell.throughput_rows_per_s_cv = computeCV(tput_vec);
 
+                    const size_t median_run_index = medianRunIndexByWallTime(wall_ms_vec);
+                    ProbeRunResult & median_run = rep_runs[median_run_index];
+                    cell.rep_index = static_cast<uint32_t>(median_run_index);
+                    cell.probe_block_log = std::move(median_run.probe_block_log);
+                    cell.output_block_log = std::move(median_run.output_block_log);
+                    cell.phj_partition_log = std::move(median_run.phj_partition_log);
+                    cell.output_rows = median_run.output_rows;
+                    cell.joinblock_probe_wall_ms = median_run.joinblock_probe_wall_ms;
+                    cell.joinblock_probe_cpu_ms = median_run.joinblock_probe_cpu_ms;
+                    cell.result_emit_wall_ms = median_run.result_emit_wall_ms;
+                    cell.result_emit_cpu_ms = median_run.result_emit_cpu_ms;
+
                     // H5: cold/warm cache effect measurement (always populated per H5 spec).
                     // When cache_mode=cold, cell.probe_wall_ms IS the cold timing.
                     // When cache_mode=warm, we run an additional cold eviction pass for H5 data.
@@ -1130,7 +1292,8 @@ Artifact SweepManager::run()
                             cold_ms = cell.probe_wall_ms;
                             // Run one warm probe for the warm baseline.
                             prepareCache(bdo.join.get(), CacheMode::WARM);
-                            auto warm_run = runProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false, false);
+                            auto warm_run = is_phj ? runPhjProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false)
+                                                   : runProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false, false);
                             warm_ms = warm_run.probe_wall_ms;
                         }
                         else
@@ -1138,7 +1301,8 @@ Artifact SweepManager::run()
                             warm_ms = cell.probe_wall_ms;
                             // Run one cold eviction pass for H5 cold baseline.
                             prepareCache(bdo.join.get(), CacheMode::COLD);
-                            auto cold_run = runProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false, false);
+                            auto cold_run = is_phj ? runPhjProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false)
+                                                   : runProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, false, false);
                             cold_ms = cold_run.probe_wall_ms;
                         }
                         cell.warm_probe_wall_ms = warm_ms;
@@ -1246,6 +1410,25 @@ Artifact SweepManager::run()
     }
 
     hdr.probe_invocations = probe_invocations;
+
+    // For PHJ: populate shuffle_probe_wall_ms / cpu_ms from cell-level timings.
+    // Use the median across all probe cells as the representative value.
+    if (cfg_.algorithm == AlgorithmConfig::PARTITIONED_HASH && !artifact.probe_cells.empty())
+    {
+        std::vector<double> scatter_wall_vec;
+        std::vector<double> scatter_cpu_vec;
+        for (const auto & c : artifact.probe_cells)
+        {
+            if (std::isfinite(c.joinblock_probe_wall_ms))
+                scatter_wall_vec.push_back(c.joinblock_probe_wall_ms);
+            if (std::isfinite(c.joinblock_probe_cpu_ms))
+                scatter_cpu_vec.push_back(c.joinblock_probe_cpu_ms);
+        }
+        if (!scatter_wall_vec.empty())
+            hdr.shuffle_probe_wall_ms = computeMedian(scatter_wall_vec);
+        if (!scatter_cpu_vec.empty())
+            hdr.shuffle_probe_cpu_ms = computeMedian(scatter_cpu_vec);
+    }
 
     // G.2: log counters to stderr (C7)
     std::cerr << "[hashprobe-bench] build_invocations=" << hdr.build_invocations << " probe_invocations=" << hdr.probe_invocations
