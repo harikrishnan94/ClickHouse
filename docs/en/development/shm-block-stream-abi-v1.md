@@ -377,7 +377,7 @@ Stall-timer use: the consumer's stall-timer machinery samples
 configured `shm_source_stall_timeout_ms` elapses with NO observed
 delta across any slot AND at least one consumer-side wait is
 outstanding, the consumer surfaces `SHM_PRODUCER_STALL` per
-[`pollable-shm-source.md` I12](./pollable-shm-source.md#invariants).
+[`shm-pollable-source-spec.md` I12](./shm-pollable-source-spec.md#invariants).
 Because consumer drains also bump the counter, a healthy
 consumer-only drain (rare under steady-state load) does NOT mask a
 stalled producer: the stall timer fires only when neither side has
@@ -664,7 +664,7 @@ the wire would need to switch primitives in a new ABI version.
 The consumer-side guarantees the producer relies on. Each method on an
 adopted column is observationally indistinguishable from the same method
 on a copy-owned column of the same bytes; the canonical list is owned by
-the consumer-side adoption-layer spec (`adoption-layer.md` Covered
+the consumer-side adoption-layer spec (`shm-adoption-layer-spec.md` Covered
 IColumn method surface). Reproduced here for producer reference:
 
 For `ColumnVector<UInt64>`:
@@ -709,5 +709,5 @@ existing ClickHouse error codes (`SUPPORT_IS_DISABLED`,
 `MEMORY_LIMIT_EXCEEDED`).
 
 Precondition numbers refer to the enumerated list in
-`auto_click/specs/pollable-shm-source.md` Producer-side preconditions
+`shm-pollable-source-spec.md` Producer-side preconditions
 enumerated.
