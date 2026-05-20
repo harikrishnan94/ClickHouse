@@ -2,7 +2,7 @@
 description: 'Spec for the pollable SHM source component: async executor integration, block ingestion, table function, cancellation, and producer-misbehaviour coverage.'
 sidebar_label: 'SHM Pollable Source Spec'
 sidebar_position: 204
-slug: /development/shm-pollable-source-spec
+slug: /pg_auto_click/specs/pollable-source-spec
 title: 'Pollable SHM Source — Async Executor Integration'
 doc_type: 'reference'
 ---
@@ -11,7 +11,7 @@ doc_type: 'reference'
 
 This spec defines component (b) — sub-deliverable B — of the zero-copy SHM source feature: a new `IProcessor` that consumes producer-published SHM blocks via ClickHouse's async/poll path and emits `Chunk`s of adopted columns, reached from SQL via a new `shm()` table function.
 
-System mission, glossary, non-goals, cross-component invariants (I5, I10), and end-to-end ACs (AC1, AC7) are owned by [system spec](./shm-system-spec.md). The producer-facing wire is owned by [shm-block-stream spec](./shm-block-stream-spec.md). Column construction is owned by [adoption-layer spec](./shm-adoption-layer-spec.md). Memory accounting is owned by [memory-tracker-integration spec](./shm-memory-tracker-spec.md).
+System mission, glossary, non-goals, cross-component invariants (I5, I10), and end-to-end ACs (AC1, AC7) are owned by [system spec](./system-spec.md). The producer-facing wire is owned by [shm-block-stream spec](./shm-block-stream-spec.md). Column construction is owned by [adoption-layer spec](./adoption-layer-spec.md). Memory accounting is owned by [memory-tracker-integration spec](./memory-tracker-spec.md).
 
 ## Mission
 
@@ -27,13 +27,13 @@ The source is the only consumer-side reader of the control plane. It is the only
 
 ## Non-goals
 
-- The source does not own column construction. Each adopted `IColumn` is built by [adoption-layer spec — Interfaces & contracts](./shm-adoption-layer-spec.md#interfaces--contracts). The source's relationship to the byte plane is mediated entirely by the adoption layer.
+- The source does not own column construction. Each adopted `IColumn` is built by [adoption-layer spec — Interfaces & contracts](./adoption-layer-spec.md#interfaces--contracts). The source's relationship to the byte plane is mediated entirely by the adoption layer.
 - The source does not own the wire's per-type buffer layout, padding rules, framing, or version handshake. Those live in [shm-block-stream spec — Wire interfaces](./shm-block-stream-spec.md#wire-interfaces). The source observes the control plane; it does not define it.
-- The source does not own memory-accounting policy, the limit-enforcement decision, or the slack model; those live in [memory-tracker-integration spec — Interfaces & contracts](./shm-memory-tracker-spec.md#interfaces--contracts). The source orchestrates the per-block charge sequence per [Per-block adoption call](#interfaces--contracts) — it calls the memory-tracker-integration charge entry on retain acquisition and hands the resulting charge handle into adopt() — but it does not perform the accounting itself or interpose on the tracker chain. The adoption layer only carries the charge handle through adopted state; release is RAII via charge-handle destruction at adopted-state final drop.
-- The source exposes a single stream per instance in phase 1; no multi-stream parallelism inside the source (per [system spec — N11](./shm-system-spec.md#non-goals)). Pipeline parallelism is downstream's concern.
+- The source does not own memory-accounting policy, the limit-enforcement decision, or the slack model; those live in [memory-tracker-integration spec — Interfaces & contracts](./memory-tracker-spec.md#interfaces--contracts). The source orchestrates the per-block charge sequence per [Per-block adoption call](#interfaces--contracts) — it calls the memory-tracker-integration charge entry on retain acquisition and hands the resulting charge handle into adopt() — but it does not perform the accounting itself or interpose on the tracker chain. The adoption layer only carries the charge handle through adopted state; release is RAII via charge-handle destruction at adopted-state final drop.
+- The source exposes a single stream per instance in phase 1; no multi-stream parallelism inside the source (per [system spec — N11](./system-spec.md#non-goals)). Pipeline parallelism is downstream's concern.
 - The source does not modify ClickHouse's `IProcessor` or executor contract. It implements against the existing contract. If it cannot, [S2](#stop-conditions) fires.
 
-System-level non-goals — full text in [system spec — Non-goals](./shm-system-spec.md#non-goals). N3 (no general-purpose IPC framework — one source type, one direction), N8 (no operator changes outside the new source), and N11 (no multi-stream parallelism inside the source) are the system-level constraints that most directly bind this component.
+System-level non-goals — full text in [system spec — Non-goals](./system-spec.md#non-goals). N3 (no general-purpose IPC framework — one source type, one direction), N8 (no operator changes outside the new source), and N11 (no multi-stream parallelism inside the source) are the system-level constraints that most directly bind this component.
 
 ## Constraints
 
@@ -84,7 +84,7 @@ Memory-ordering and notification-ordering violations are *contracts* with no dir
 
 Consumer-side runtime asserts (e.g. that the consumer's atomic decrement of any retain refcount never produces a negative value) are by-construction discipline checks on the consumer side. They are not part of the producer-side detection enumeration above and do not count against [S5](#stop-conditions)'s finiteness obligation; their violation is a consumer bug, not a producer misbehaviour.
 
-Retain-protocol-violation by the producer (truncation, unmap, region alteration under live retain) is out of scope per [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**, and is not enumerated above.
+Retain-protocol-violation by the producer (truncation, unmap, region alteration under live retain) is out of scope per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**, and is not enumerated above.
 
 ### Failure scope
 
@@ -96,10 +96,10 @@ The phase-1 boundary for typed-exception coverage:
 - producer stall, per [I12](#invariants);
 - producer death before EOS, per [shm-block-stream spec — I11](./shm-block-stream-spec.md#invariants);
 - SHM attach-time failures per [Attach-time observable failures](#attach-time-observable-failures);
-- memory-limit failure at per-block retain-acquisition charge step, per [memory-tracker-integration spec — I8](./shm-memory-tracker-spec.md#invariants);
+- memory-limit failure at per-block retain-acquisition charge step, per [memory-tracker-integration spec — I8](./memory-tracker-spec.md#invariants);
 - feature-gate disabled, per [AC9](#acceptance-criteria).
 
-**Out of scope** — per [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**:
+**Out of scope** — per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**:
 
 - retain-protocol violation (truncation, unmap, backing-object alteration under live retain);
 - memory-ordering and notification-ordering contract violations — no direct detection point; downstream effects are caught only insofar as they manifest as bounds/format violations already enumerated above.
@@ -152,7 +152,7 @@ Authority for the joint property: [I6](#invariants). The contract is *implemente
 
 **Block ingestion — owed *to* and *from* [shm-block-stream spec — Wire interfaces](./shm-block-stream-spec.md#wire-interfaces).** The source observes the publication state machine and the notification contract through the wire. It distinguishes complete blocks from incomplete, stale, or aborted blocks per the wire's region-identity rules. Per the wire's memory-ordering contract, it observes payload before metadata under acquire/release. On end-of-stream it stops requesting blocks; on producer death without end-of-stream it raises a typed exception.
 
-**Per-block adoption call — owed *to* [adoption-layer spec — Interfaces & contracts](./shm-adoption-layer-spec.md#interfaces--contracts) and [memory-tracker-integration spec — Interfaces & contracts](./shm-memory-tracker-spec.md#interfaces--contracts).** For each drainable block the source executes the following RAII-guarded sequence:
+**Per-block adoption call — owed *to* [adoption-layer spec — Interfaces & contracts](./adoption-layer-spec.md#interfaces--contracts) and [memory-tracker-integration spec — Interfaces & contracts](./memory-tracker-spec.md#interfaces--contracts).** For each drainable block the source executes the following RAII-guarded sequence:
 
 1. Acquire the wire retain against the block (refcount 0 to 1).
 2. Call the memory-tracker-integration charge entry with the block's adopted byte count. If the charge would exceed `max_memory_usage`, the entry raises `memory-limit-exceeded` before recording the charge; the source's RAII releases the wire retain and the exception propagates.
@@ -160,11 +160,11 @@ Authority for the joint property: [I6](#invariants). The contract is *implemente
 
 On success, ownership of both handles transfers into the adopted columns returned by adopt(). The source receives back one `IColumn` per declared column and does not touch data-plane bytes itself.
 
-**`Chunk` emission — owed *to* downstream pipeline.** The source assembles adopted columns into a `Chunk` and emits it. Per [system spec — N8](./shm-system-spec.md#non-goals) and [adoption-layer spec — I1](./shm-adoption-layer-spec.md#invariants), adopted columns are consumable by the existing pipeline without semantic differences from copy-owned columns on the read paths exercised by [system spec — AC1](./shm-system-spec.md#end-to-end-acceptance-criteria). Rows within an emitted `Chunk` reflect the producer's buffer order for that block; the source makes no promise about the order in which chunks are emitted relative to producer publication order. Downstream operators receive blocks in drain order. Per [system spec — N12](./shm-system-spec.md#non-goals), downstream operators must not rely on any global row order across chunks.
+**`Chunk` emission — owed *to* downstream pipeline.** The source assembles adopted columns into a `Chunk` and emits it. Per [system spec — N8](./system-spec.md#non-goals) and [adoption-layer spec — I1](./adoption-layer-spec.md#invariants), adopted columns are consumable by the existing pipeline without semantic differences from copy-owned columns on the read paths exercised by [system spec — AC1](./system-spec.md#end-to-end-acceptance-criteria). Rows within an emitted `Chunk` reflect the producer's buffer order for that block; the source makes no promise about the order in which chunks are emitted relative to producer publication order. Downstream operators receive blocks in drain order. Per [system spec — N12](./system-spec.md#non-goals), downstream operators must not rely on any global row order across chunks.
 
 **Cancellation — owed *to* the executor.** On cancellation the source releases every retained SHM resource and closes the readiness fd within a bounded time `T` (the wire/adoption layers' resources are released RAII-style on retain drop and adopted-column destruction respectively). Producer cooperation is *not* required. Authority: [I9](#invariants); failure mode: [S4](#stop-conditions); test: [AC4](#acceptance-criteria) cancellation sub-test.
 
-**Producer-failure surfacing — owed *to* the query.** Every in-scope producer misbehaviour — malformed block, non-conforming buffer, mid-publication crash, stall (no publication progress within the configured budget), post-publish-pre-EOS death — surfaces as a typed exception drawn from a named failure class on the consumer side. The contractual coverage matrix is [AC6](#acceptance-criteria). The boundary's no-signal-handling guarantee is owed by [shm-block-stream spec — I11](./shm-block-stream-spec.md#invariants); the stall budget is owed by [I12](#invariants). Retain-protocol violation — region truncation/unmap under live retain — is out of scope per [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**, and per [AC6](#acceptance-criteria)'s OOS clause.
+**Producer-failure surfacing — owed *to* the query.** Every in-scope producer misbehaviour — malformed block, non-conforming buffer, mid-publication crash, stall (no publication progress within the configured budget), post-publish-pre-EOS death — surfaces as a typed exception drawn from a named failure class on the consumer side. The contractual coverage matrix is [AC6](#acceptance-criteria). The boundary's no-signal-handling guarantee is owed by [shm-block-stream spec — I11](./shm-block-stream-spec.md#invariants); the stall budget is owed by [I12](#invariants). Retain-protocol violation — region truncation/unmap under live retain — is out of scope per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**, and per [AC6](#acceptance-criteria)'s OOS clause.
 
 **Failure classes — owed *to* the query and to tests.** Every typed exception the source surfaces falls into exactly one of the named classes below. The class is the stable, test-assertable taxonomy. Tests and operators distinguish failure modes by class, not by exception string content.
 
@@ -178,7 +178,7 @@ On success, ownership of both handles transfers into the adopted columns returne
 | `buffer-layout-invalid` | preconditions 13–22 | per-column descriptor check (13–20) or post-adoption content check (21–22) |
 | `producer-stall` | [I12](#invariants) budget elapsed with no publication progress | source's stall timer |
 | `producer-death-before-eos` | producer detach observed before EOS while retains are live (precondition 25), per [shm-block-stream spec — I11](./shm-block-stream-spec.md#invariants) | control-plane heartbeat or backing-object re-check after wake |
-| `memory-limit-exceeded` | retain-acquisition charge rejected per [memory-tracker-integration spec — I8](./shm-memory-tracker-spec.md#invariants) | source's charge step (post-retain-acquisition, before adopt()) |
+| `memory-limit-exceeded` | retain-acquisition charge rejected per [memory-tracker-integration spec — I8](./memory-tracker-spec.md#invariants) | source's charge step (post-retain-acquisition, before adopt()) |
 
 Each AC6 scenario is bound to a specific class; the test asserts on the class identity.
 
@@ -192,8 +192,8 @@ Each AC6 scenario is bound to a specific class; the test asserts on the class id
 
 Cross-component and wire invariants — full text in the spec named in each link:
 
-- [system spec — I5 Retain correctness](./shm-system-spec.md#cross-component-invariants) — *the source owns block-reuse sequencing on the consumer side; together with the adoption layer's retain protocol this makes I5 hold*
-- [system spec — I10 Exception safety](./shm-system-spec.md#cross-component-invariants) — *the source owns fd lifetime across exception paths; failures during ingestion must close fds and release retains cleanly*
+- [system spec — I5 Retain correctness](./system-spec.md#cross-component-invariants) — *the source owns block-reuse sequencing on the consumer side; together with the adoption layer's retain protocol this makes I5 hold*
+- [system spec — I10 Exception safety](./system-spec.md#cross-component-invariants) — *the source owns fd lifetime across exception paths; failures during ingestion must close fds and release retains cleanly*
 - [shm-block-stream spec — I2 Producer satisfies the SHM-adoption ABI](./shm-block-stream-spec.md#invariants) — *the source is entitled to assume conformance; non-conforming buffers route to the adoption layer's typed-exception path*
 - [shm-block-stream spec — I11 Producer death is detected through the control plane](./shm-block-stream-spec.md#invariants) — *the source is the only consumer-side reader of the control plane; this is where producer death gets observed*
 
@@ -231,17 +231,17 @@ Every failure path surfaces a typed exception drawn from the named class. No han
 
 The test asserts on the failure class, not on string content or generic exception type. "Some exception" does not satisfy AC6.
 
-A producer that violates the retain/release contract (e.g. truncates or unmaps a region while consumer retains against it are live) is out of scope per [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**, and per [shm-block-stream spec — SHM primitive](./shm-block-stream-spec.md#shm-primitive)'s rationale; AC6 does not cover that case in phase 1.
+A producer that violates the retain/release contract (e.g. truncates or unmaps a region while consumer retains against it are live) is out of scope per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**, and per [shm-block-stream spec — SHM primitive](./shm-block-stream-spec.md#shm-primitive)'s rationale; AC6 does not cover that case in phase 1.
 
 **AC9. Feature gate.** The new `shm` table function is exposed behind an experimental setting (Bool, default `false`). The gate is checked at parse/resolve time of any `shm()` reference; if the setting is `false`, parsing fails with a typed exception. Phase 1 does not claim production hardening or multi-tenant safety.
 
 End-to-end and sibling acceptance criteria — full text in the spec named in each link:
 
-- [system spec — AC1 Functional correctness](./shm-system-spec.md#end-to-end-acceptance-criteria) — *the joint query the source emits chunks for*
-- [system spec — AC7 Safety / leak audit](./shm-system-spec.md#end-to-end-acceptance-criteria) — *the stable-fd / stable-SHM-segment check observes this source's lifecycle directly*
-- [adoption-layer spec — AC2 Type coverage](./shm-adoption-layer-spec.md#acceptance-criteria) — *the set of types the source feeds through the adoption layer end-to-end*
-- [adoption-layer spec — AC3 Adoption proof](./shm-adoption-layer-spec.md#acceptance-criteria) — *the pointer-identity check on chunks this source emits*
-- [memory-tracker-integration spec — AC5 MemoryTracker correctness](./shm-memory-tracker-spec.md#acceptance-criteria) — *the limit-failure sub-test of AC5 fires during this source's adopt path*
+- [system spec — AC1 Functional correctness](./system-spec.md#end-to-end-acceptance-criteria) — *the joint query the source emits chunks for*
+- [system spec — AC7 Safety / leak audit](./system-spec.md#end-to-end-acceptance-criteria) — *the stable-fd / stable-SHM-segment check observes this source's lifecycle directly*
+- [adoption-layer spec — AC2 Type coverage](./adoption-layer-spec.md#acceptance-criteria) — *the set of types the source feeds through the adoption layer end-to-end*
+- [adoption-layer spec — AC3 Adoption proof](./adoption-layer-spec.md#acceptance-criteria) — *the pointer-identity check on chunks this source emits*
+- [memory-tracker-integration spec — AC5 MemoryTracker correctness](./memory-tracker-spec.md#acceptance-criteria) — *the limit-failure sub-test of AC5 fires during this source's adopt path*
 - [shm-block-stream spec — AC8 Producer ABI documented in-tree](./shm-block-stream-spec.md#acceptance-criteria) — *the wire's notification/state-machine sub-bullets are what this source satisfies on the consumer side*
 - [shm-block-stream spec — AC10 Retain integrity under producer reuse](./shm-block-stream-spec.md#acceptance-criteria) — *the source sequences block reuse on the consumer side; AC10 is observed via this source plus the adoption layer's retain*
 

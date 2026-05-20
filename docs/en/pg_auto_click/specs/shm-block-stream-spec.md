@@ -2,16 +2,16 @@
 description: 'Wire contract between any conforming external SHM producer and the ClickHouse SHM consumer: layout, framing, ordering, notification, retain/release, and version negotiation.'
 sidebar_label: 'SHM Block-Stream Wire Contract'
 sidebar_position: 202
-slug: /development/shm-block-stream-spec
+slug: /pg_auto_click/specs/shm-block-stream-spec
 title: 'SHM Block-Stream Wire Contract'
 doc_type: 'reference'
 ---
 
 # SHM Block-Stream Wire Contract
 
-This is the boundary contract between any conforming external producer and the ClickHouse consumer of the zero-copy SHM source feature. It is satisfied by both sides: producers conform to it; the consumer (jointly satisfied by [adoption-layer spec](./shm-adoption-layer-spec.md) and [pollable-shm-source spec](./shm-pollable-source-spec.md)) is entitled to assume it. It is not a sub-deliverable — there is no spec for a specific producer implementation or a test harness, just this wire.
+This is the boundary contract between any conforming external producer and the ClickHouse consumer of the zero-copy SHM source feature. It is satisfied by both sides: producers conform to it; the consumer (jointly satisfied by [adoption-layer spec](./adoption-layer-spec.md) and [pollable-shm-source spec](./pollable-source-spec.md)) is entitled to assume it. It is not a sub-deliverable — there is no spec for a specific producer implementation or a test harness, just this wire.
 
-System mission, glossary, non-goals, and cross-component invariants live in [system spec](./shm-system-spec.md).
+System mission, glossary, non-goals, and cross-component invariants live in [system spec](./system-spec.md).
 
 ## Mission
 
@@ -25,17 +25,17 @@ Define the semantic obligations of the wire between any conforming external prod
 
 The wire spec covers the producer/consumer interface only. It does *not* cover:
 
-- the consumer's executor integration (lives in [pollable-shm-source spec](./shm-pollable-source-spec.md)),
-- the consumer's column construction (lives in [adoption-layer spec](./shm-adoption-layer-spec.md)),
-- ClickHouse's internal memory accounting (lives in [memory-tracker-integration spec](./shm-memory-tracker-spec.md)).
+- the consumer's executor integration (lives in [pollable-shm-source spec](./pollable-source-spec.md)),
+- the consumer's column construction (lives in [adoption-layer spec](./adoption-layer-spec.md)),
+- ClickHouse's internal memory accounting (lives in [memory-tracker-integration spec](./memory-tracker-spec.md)).
 
-The phase-1 trust model is owned by the system spec's glossary: see [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**. Verbatim restatement is not duplicated here. The wire-level consequences are:
+The phase-1 trust model is owned by the system spec's glossary: see [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**. Verbatim restatement is not duplicated here. The wire-level consequences are:
 
-- the consumer handles malformed metadata, bad layout declarations, premature stream termination, producer crash, and stall (bounded by [pollable-shm-source spec — I12 Stall is bounded](./shm-pollable-source-spec.md#invariants)) — as typed exceptions through the control plane;
+- the consumer handles malformed metadata, bad layout declarations, premature stream termination, producer crash, and stall (bounded by [pollable-shm-source spec — I12 Stall is bounded](./pollable-source-spec.md#invariants)) — as typed exceptions through the control plane;
 - the consumer does *not* sandbox a malicious producer with arbitrary capability to invalidate the backing object after publication; the retain protocol and the chosen SHM primitive bound that risk;
 - the consumer does *not* rely on catching SIGBUS or SIGSEGV for normal error handling (see [I11](#invariants)).
 
-Per-type coverage of the wire — i.e. which `IColumn` kinds the wire is obligated to carry in phase 1 — is set by [adoption-layer spec — AC2 Type coverage](./shm-adoption-layer-spec.md#acceptance-criteria). The wire carries exactly `ColumnVector<UInt64>` and `ColumnString`; producer schemas containing any other type are rejected at handshake cross-validation, with the SQL side rejecting at parse/resolve time per [pollable-shm-source spec — Producer-side preconditions enumerated](./shm-pollable-source-spec.md#producer-side-preconditions-enumerated). No copy fall-back path exists on the consumer side.
+Per-type coverage of the wire — i.e. which `IColumn` kinds the wire is obligated to carry in phase 1 — is set by [adoption-layer spec — AC2 Type coverage](./adoption-layer-spec.md#acceptance-criteria). The wire carries exactly `ColumnVector<UInt64>` and `ColumnString`; producer schemas containing any other type are rejected at handshake cross-validation, with the SQL side rejecting at parse/resolve time per [pollable-shm-source spec — Producer-side preconditions enumerated](./pollable-source-spec.md#producer-side-preconditions-enumerated). No copy fall-back path exists on the consumer side.
 
 ## Wire interfaces
 
@@ -49,14 +49,14 @@ The consumer's column-storage contract — ClickHouse's existing alignment, padd
 
 #### Semantic obligations per AC2 type
 
-For `ColumnVector<UInt64>` ([adoption-layer spec — Covered IColumn method surface](./shm-adoption-layer-spec.md#interfaces--contracts)):
+For `ColumnVector<UInt64>` ([adoption-layer spec — Covered IColumn method surface](./adoption-layer-spec.md#interfaces--contracts)):
 
 - Exactly one value buffer per column.
 - Alignment: the buffer's start offset must satisfy ClickHouse's column-storage alignment contract for `UInt64`.
 - Safe-read padding: a consumer-readable trailing padding region follows the last value, matching ClickHouse's `PaddedPODArray` padding contract. Padding bytes need not be zero-filled but must be safely readable (no fault on access).
 - The per-column metadata field declares the start offset (bytes into the SHM region) and the value count. The declared value count must equal the block's `row_count`.
 
-For `ColumnString` ([adoption-layer spec — Covered IColumn method surface](./shm-adoption-layer-spec.md#interfaces--contracts)):
+For `ColumnString` ([adoption-layer spec — Covered IColumn method surface](./adoption-layer-spec.md#interfaces--contracts)):
 
 - Two buffers per column: `chars` (concatenated string bytes, laid out per `ColumnString`'s representation) and `offsets` (array of unsigned past-end offsets matching `ColumnString::Offsets` convention).
 - Both buffers must satisfy ClickHouse's column-storage alignment and padding contracts.
@@ -66,7 +66,7 @@ For `ColumnString` ([adoption-layer spec — Covered IColumn method surface](./s
 
 The schema (ordered list of `(column-name, column-type)` entries) is declared in two places and cross-validated on attach:
 
-1. **SQL site.** The `shm()` table function takes a schema spec as one of its arguments (exact signature owned by [pollable-shm-source spec — Interfaces & contracts](./shm-pollable-source-spec.md#interfaces--contracts)). ClickHouse parses and resolves the schema from this spec at parse/resolve time, before executing the query. This is what fixes the chunk header structure downstream operators see.
+1. **SQL site.** The `shm()` table function takes a schema spec as one of its arguments (exact signature owned by [pollable-shm-source spec — Interfaces & contracts](./pollable-source-spec.md#interfaces--contracts)). ClickHouse parses and resolves the schema from this spec at parse/resolve time, before executing the query. This is what fixes the chunk header structure downstream operators see.
 2. **Control plane.** The producer publishes its own copy of the schema as part of the attach-time handshake (see [ABI version negotiation](#abi-version-negotiation)), preceding any block publication. The producer commits to publishing blocks whose column count, order, and types match this declaration.
 
 On attach, the consumer cross-validates the SQL-declared schema against the producer-published schema. Any of {column-count mismatch, column-name mismatch, column-type mismatch, column-order mismatch} surfaces as a typed exception, raised by the source before any block adoption.
@@ -122,7 +122,7 @@ How the consumer distinguishes a complete block from an incomplete, stale, or ab
 
 A level-triggered, drainable readiness fd integrates with the consumer's executor pollable-fd contract. Spurious wakes are admissible: the consumer must verify actual block availability against the publication state machine and not assume "fd readable ⇒ block ready." The producer's signal to the fd must be ordered after the release-store of the metadata that publishes the block (see [Memory ordering](#memory-ordering)).
 
-The consumer drains all currently-published blocks before re-arming readiness, and tolerates spurious wakeups. The pollable-source-side contract for honoring this is [pollable-shm-source spec — I6 Pollable contract](./shm-pollable-source-spec.md#invariants).
+The consumer drains all currently-published blocks before re-arming readiness, and tolerates spurious wakeups. The pollable-source-side contract for honoring this is [pollable-shm-source spec — I6 Pollable contract](./pollable-source-spec.md#invariants).
 
 The fd is created by the producer and passed to the consumer.
 
@@ -130,9 +130,9 @@ The fd is created by the producer and passed to the consumer.
 
 Token lifetime, refcount semantics.
 
-A retain token is acquired by the consumer at adoption time and released exactly once at adopted-state destruction. The producer is contracted not to alter the backing object's offset coverage for a region while its retain refcount is non-zero. The consumer-side mechanism that carries this token through every adopted-column lifetime is [adoption-layer spec — Interfaces & contracts](./shm-adoption-layer-spec.md#interfaces--contracts).
+A retain token is acquired by the consumer at adoption time and released exactly once at adopted-state destruction. The producer is contracted not to alter the backing object's offset coverage for a region while its retain refcount is non-zero. The consumer-side mechanism that carries this token through every adopted-column lifetime is [adoption-layer spec — Interfaces & contracts](./adoption-layer-spec.md#interfaces--contracts).
 
-This is a *protocol-level* obligation, not a kernel-enforced one. The phase-1 SHM primitive does not provide kernel-enforced non-truncation. Phase 1's trust model ([system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**) makes this assumption explicit; consumer-side defences against retain-protocol violation are out of scope.
+This is a *protocol-level* obligation, not a kernel-enforced one. The phase-1 SHM primitive does not provide kernel-enforced non-truncation. Phase 1's trust model ([system spec — Glossary](./system-spec.md#glossary), entry **Trust model**) makes this assumption explicit; consumer-side defences against retain-protocol violation are out of scope.
 
 ### SHM primitive
 
@@ -149,7 +149,7 @@ Per [I2](#invariants), changes to this ABI are explicit versioned bumps; produce
 An attach-time handshake region — written by the producer under release ordering before any block reaches the published state — establishes:
 
 - a magic sentinel identifying the object as a conforming SHM-adoption-ABI source;
-- the ABI version (phase 1 = version `1`); consumer rejects unknown versions (typed exception per [adoption-layer spec — I4](./shm-adoption-layer-spec.md#invariants));
+- the ABI version (phase 1 = version `1`); consumer rejects unknown versions (typed exception per [adoption-layer spec — I4](./adoption-layer-spec.md#invariants));
 - the ring bound `K`; consumer rejects values exceeding its implementation-defined upper bound;
 - the producer-declared schema (`column count`, ordered `(name, type_string)` pairs); consumer cross-validates against the SQL-declared schema per [Schema declaration and negotiation](#schema-declaration-and-negotiation);
 - a locator sufficient for the consumer to obtain the readiness fd before the first published block;
@@ -160,42 +160,42 @@ The consumer's first read of the handshake region is acquire-ordered and happens
 
 ### Covered `IColumn` method surface
 
-The read-side guarantees the consumer makes about adopted columns. The canonical statement and coverage list live in [adoption-layer spec — I1 Observability for supported read paths](./shm-adoption-layer-spec.md#invariants). The producer ABI doc references that list so an external producer knows what consumer-side read behaviour the published bytes must support; the guarantee itself is the adoption layer's.
+The read-side guarantees the consumer makes about adopted columns. The canonical statement and coverage list live in [adoption-layer spec — I1 Observability for supported read paths](./adoption-layer-spec.md#invariants). The producer ABI doc references that list so an external producer knows what consumer-side read behaviour the published bytes must support; the guarantee itself is the adoption layer's.
 
 ## Invariants
 
 **I2. Producer satisfies the SHM-adoption ABI.** The producer publishes buffers conforming to a versioned **SHM-adoption ABI** whose semantic obligations are defined by this spec and whose concrete encodings are defined by the AC8 versioned ABI artifact; together they specify per supported type the layout, alignment, padding, safe-read area, offset encoding, byte order, and lifetime rules. The ABI may mirror ClickHouse's current in-memory layouts where convenient, but does not commit ClickHouse's internal column-storage implementation to public-ABI status. Changes to the adoption ABI are explicit versioned bumps to the artifact per [AC8](#acceptance-criteria).
 
-**I11. Producer death is detected through the control plane, not by faulting on the data plane.** Under a producer that conforms to the [retain/release contract](#retainrelease-contract) (no truncate, unmap, or backing-object alteration of a region while its retain refcount is non-zero), the consumer's mapping is address-valid for the lifetime of every retain token. Producer death before a declared end-of-stream, framing errors, mid-stream aborts, and stalls (bounded by [pollable-shm-source spec — I12 Stall is bounded](./shm-pollable-source-spec.md#invariants)) are detected through the control channel and surfaced as typed exceptions. Producer death *after* publishing a complete stream and signalling end-of-stream is not an error: the consumer may drain remaining retained blocks as long as their retain tokens keep the mappings valid. The implementation must not rely on catching SIGBUS or SIGSEGV for normal error handling. Non-conforming producers (e.g. truncation under live retain) are out of scope per [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**; the chosen SHM primitive is not required to kernel-enforce non-truncation.
+**I11. Producer death is detected through the control plane, not by faulting on the data plane.** Under a producer that conforms to the [retain/release contract](#retainrelease-contract) (no truncate, unmap, or backing-object alteration of a region while its retain refcount is non-zero), the consumer's mapping is address-valid for the lifetime of every retain token. Producer death before a declared end-of-stream, framing errors, mid-stream aborts, and stalls (bounded by [pollable-shm-source spec — I12 Stall is bounded](./pollable-source-spec.md#invariants)) are detected through the control channel and surfaced as typed exceptions. Producer death *after* publishing a complete stream and signalling end-of-stream is not an error: the consumer may drain remaining retained blocks as long as their retain tokens keep the mappings valid. The implementation must not rely on catching SIGBUS or SIGSEGV for normal error handling. Non-conforming producers (e.g. truncation under live retain) are out of scope per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**; the chosen SHM primitive is not required to kernel-enforce non-truncation.
 
 Cross-component invariants and component-local invariants — full text in the spec named in each link:
 
-- [system spec — I5 Retain correctness](./shm-system-spec.md#cross-component-invariants) — *the consumer-side retain protocol that this wire's retain/release contract is paired with*
-- [system spec — I10 Exception safety](./shm-system-spec.md#cross-component-invariants) — *a failed adoption must roll back wire-side retain state along with the rest*
-- [adoption-layer spec — I1 Observability for supported read paths](./shm-adoption-layer-spec.md#invariants) — *the consumer-side read surface that the producer ABI promises to support*
-- [adoption-layer spec — I3 Adopted memory is immutable from ClickHouse](./shm-adoption-layer-spec.md#invariants) — *the producer can assume the consumer never writes through the wire*
-- [adoption-layer spec — I4 Malformed supported buffers fail loudly](./shm-adoption-layer-spec.md#invariants) — *consumer-side validation of wire conformance*
+- [system spec — I5 Retain correctness](./system-spec.md#cross-component-invariants) — *the consumer-side retain protocol that this wire's retain/release contract is paired with*
+- [system spec — I10 Exception safety](./system-spec.md#cross-component-invariants) — *a failed adoption must roll back wire-side retain state along with the rest*
+- [adoption-layer spec — I1 Observability for supported read paths](./adoption-layer-spec.md#invariants) — *the consumer-side read surface that the producer ABI promises to support*
+- [adoption-layer spec — I3 Adopted memory is immutable from ClickHouse](./adoption-layer-spec.md#invariants) — *the producer can assume the consumer never writes through the wire*
+- [adoption-layer spec — I4 Malformed supported buffers fail loudly](./adoption-layer-spec.md#invariants) — *consumer-side validation of wire conformance*
 
 ## Acceptance criteria
 
-**AC8. Producer ABI artifact.** A versioned ABI artifact checked in alongside the code that, together with this spec, is sufficient for an external producer to be implemented. The artifact's form (a markdown spec, a C++ header in the ClickHouse source tree, or both) is decided at implementation time; the artifact is versioned per I2 and covers the topics enumerated in [Wire interfaces](#wire-interfaces): per-type buffer layout; per-column row-count consistency; schema declaration / negotiation; schema-mismatch behaviour; block framing; size and row-count limit communication; backpressure / ring-full contract; publication state machine; memory ordering; region identity and reuse rules; notification contract; retain/release contract; ABI version negotiation; the covered `IColumn` method surface (the canonical list of which lives in [adoption-layer spec — I1](./shm-adoption-layer-spec.md#invariants)).
+**AC8. Producer ABI artifact.** A versioned ABI artifact checked in alongside the code that, together with this spec, is sufficient for an external producer to be implemented. The artifact's form (a markdown spec, a C++ header in the ClickHouse source tree, or both) is decided at implementation time; the artifact is versioned per I2 and covers the topics enumerated in [Wire interfaces](#wire-interfaces): per-type buffer layout; per-column row-count consistency; schema declaration / negotiation; schema-mismatch behaviour; block framing; size and row-count limit communication; backpressure / ring-full contract; publication state machine; memory ordering; region identity and reuse rules; notification contract; retain/release contract; ABI version negotiation; the covered `IColumn` method surface (the canonical list of which lives in [adoption-layer spec — I1](./adoption-layer-spec.md#invariants)).
 
 **AC10. Retain integrity under producer reuse.** While the test holds a still-live adopted `Chunk` from a published block `B`, the producer attempts to republish region `B` with different bytes and is sequenced behind the retain release — the attempt blocks (or is rejected) by the retain protocol until the held `Chunk` is released. The bytes visible through the held `Chunk` remain bit-identical to what was published when adoption occurred. After the test releases the `Chunk`, retain counters return to zero and the producer's republish completes. The republished bytes appear on subsequent adoptions of region `B`.
 
-Truncation, unmap, and other backing-object alterations under live retain are out of scope per [system spec — Glossary](./shm-system-spec.md#glossary), entry **Trust model**; the chosen SHM primitive does not kernel-enforce against them, and the wire relies on producer conformance. AC10 covers only retain-protocol-conforming reuse.
+Truncation, unmap, and other backing-object alterations under live retain are out of scope per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**; the chosen SHM primitive does not kernel-enforce against them, and the wire relies on producer conformance. AC10 covers only retain-protocol-conforming reuse.
 
 End-to-end and component-level acceptance criteria — full text in the spec named in each link:
 
-- [system spec — AC1 Functional correctness](./shm-system-spec.md#end-to-end-acceptance-criteria) — *the joint correctness check the wire participates in*
-- [system spec — AC7 Safety / leak audit](./shm-system-spec.md#end-to-end-acceptance-criteria) — *the leak/stability check; wire-side fds and SHM segments are within its scope*
-- [adoption-layer spec — AC2 Type coverage](./shm-adoption-layer-spec.md#acceptance-criteria) — *the set of types the wire is obligated to carry in phase 1*
-- [adoption-layer spec — AC3 Adoption proof](./shm-adoption-layer-spec.md#acceptance-criteria) — *the pointer-identity check that the wire's payload actually lands as the adopted column's bytes*
-- [pollable-shm-source spec — AC4 Pollable wiring works](./shm-pollable-source-spec.md#acceptance-criteria) — *the consumer-side honoring of the notification contract*
-- [pollable-shm-source spec — AC6 Producer-misbehaviour coverage](./shm-pollable-source-spec.md#acceptance-criteria) — *the producer-failure matrix this wire is graded against (I11 last-sentence trigger)*
+- [system spec — AC1 Functional correctness](./system-spec.md#end-to-end-acceptance-criteria) — *the joint correctness check the wire participates in*
+- [system spec — AC7 Safety / leak audit](./system-spec.md#end-to-end-acceptance-criteria) — *the leak/stability check; wire-side fds and SHM segments are within its scope*
+- [adoption-layer spec — AC2 Type coverage](./adoption-layer-spec.md#acceptance-criteria) — *the set of types the wire is obligated to carry in phase 1*
+- [adoption-layer spec — AC3 Adoption proof](./adoption-layer-spec.md#acceptance-criteria) — *the pointer-identity check that the wire's payload actually lands as the adopted column's bytes*
+- [pollable-shm-source spec — AC4 Pollable wiring works](./pollable-source-spec.md#acceptance-criteria) — *the consumer-side honoring of the notification contract*
+- [pollable-shm-source spec — AC6 Producer-misbehaviour coverage](./pollable-source-spec.md#acceptance-criteria) — *the producer-failure matrix this wire is graded against (I11 last-sentence trigger)*
 
 ## Stop conditions
 
 The following triggers halt-and-reopen on the wire side rather than silent workaround.
 
 - **Trust-model expansion to non-conforming producers.** If a future scope change brings non-conforming producers (truncate/unmap/reuse under live retain) into scope, the current SHM primitive does not kernel-enforce address-validity and the wire must be revisited — either by switching to a sealed primitive under an ABI version bump per [I2](#invariants), or by re-opening [I11](#invariants).
-- [pollable-shm-source spec — S5 Producer-side preconditions not finite/bounded](./shm-pollable-source-spec.md#stop-conditions) — *cross-referenced because the producer-side preconditions are wire-defined; the consumer-side detection bound lives in the pollable source spec*
+- [pollable-shm-source spec — S5 Producer-side preconditions not finite/bounded](./pollable-source-spec.md#stop-conditions) — *cross-referenced because the producer-side preconditions are wire-defined; the consumer-side detection bound lives in the pollable source spec*
