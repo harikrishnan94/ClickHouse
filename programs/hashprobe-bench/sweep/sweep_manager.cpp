@@ -15,6 +15,7 @@
 #include "generator/key_generator.h"
 #include "instrumentation/cache_mode.h"
 #include "instrumentation/hw_counters.h"
+#include "partitioned/phj_run.h"
 
 #include <Columns/IColumnPrefetch.h>
 #include <Interpreters/HashJoin/HashJoin.h>
@@ -874,28 +875,42 @@ static void printSummary(const Artifact & artifact, const ConfigType & cfg)
     }
     else
     {
-        uint32_t l0_pass = 0, l1_pass = 0, l2_pass = 0, l2_total = 0;
-        for (const auto & cell : artifact.probe_cells)
+        // Check if scale exceeds the oracle threshold (E-Auto skips checks above 20M rows).
+        const bool within_scale = (cfg.build_rows <= Verification::E_AUTO_MAX_ROWS) && (cfg.probe_rows <= Verification::E_AUTO_MAX_ROWS);
+
+        if (!within_scale)
         {
-            if (cell.oracle_l0_pass)
-                ++l0_pass;
-            if (cell.oracle_l1_pass)
-                ++l1_pass;
-            if (!cell.oracle_l2_pass && cell.oracle_l0_pass)
-            {
-                // l2 is only checked for single-thread cells
-            }
-            // l2_pass is only set when eligible (build_threads=1, max_threads=1)
-            if (cell.oracle_l2_pass)
-                ++l2_pass;
-            if (cell.max_threads == 1)
-                ++l2_total;
+            // Oracle skipped for large inputs — "0/N pass" would be misleading.
+            std::printf(
+                "Oracle: skipped  (build_rows=%llu and/or probe_rows=%llu "
+                "exceed the %llu-row auto-check limit;\n"
+                "        use --build_rows≤%llu --probe_rows≤%llu to enable)\n",
+                static_cast<unsigned long long>(cfg.build_rows),
+                static_cast<unsigned long long>(cfg.probe_rows),
+                static_cast<unsigned long long>(Verification::E_AUTO_MAX_ROWS),
+                static_cast<unsigned long long>(Verification::E_AUTO_MAX_ROWS),
+                static_cast<unsigned long long>(Verification::E_AUTO_MAX_ROWS));
         }
-        const uint32_t n = static_cast<uint32_t>(artifact.probe_cells.size());
-        std::cout << "Oracle: L0 " << l0_pass << "/" << n << " pass"
-                  << "  L1 " << l1_pass << "/" << n << " pass"
-                  << "  L2 " << l2_pass << "/" << l2_total << " pass"
-                  << "\n";
+        else
+        {
+            uint32_t l0_pass = 0, l1_pass = 0, l2_pass = 0, l2_total = 0;
+            for (const auto & cell : artifact.probe_cells)
+            {
+                if (cell.oracle_l0_pass)
+                    ++l0_pass;
+                if (cell.oracle_l1_pass)
+                    ++l1_pass;
+                if (cell.oracle_l2_pass)
+                    ++l2_pass;
+                if (cell.max_threads == 1)
+                    ++l2_total;
+            }
+            const uint32_t n = static_cast<uint32_t>(artifact.probe_cells.size());
+            std::cout << "Oracle: L0 " << l0_pass << "/" << n << " pass"
+                      << "  L1 " << l1_pass << "/" << n << " pass"
+                      << "  L2 " << l2_pass << "/" << l2_total << " pass"
+                      << "\n";
+        }
     }
 
     // ── Artifact path ────────────────────────────────────────────────────
@@ -903,6 +918,24 @@ static void printSummary(const Artifact & artifact, const ConfigType & cfg)
         std::cout << "Artifact: " << cfg.output_dir << "/artifact.json\n";
     else
         std::cout << "Artifact: disabled (pass --save-artifact to enable)\n";
+
+    // ── Wall time summary ─────────────────────────────────────────────────
+    // build is done once; best probe cell = minimum probe_wall_ms.
+    if (std::isfinite(bld.build_wall_ms) && !artifact.probe_cells.empty())
+    {
+        double best_probe_wall = std::numeric_limits<double>::max();
+        for (const auto & c : artifact.probe_cells)
+            if (std::isfinite(c.probe_wall_ms))
+                best_probe_wall = std::min(best_probe_wall, c.probe_wall_ms);
+        if (best_probe_wall < std::numeric_limits<double>::max())
+        {
+            std::printf("\nWall time summary (build-once + best probe cell):\n");
+            std::printf("  build      %8.0f ms\n", bld.build_wall_ms);
+            std::printf("  probe+gen  %8.0f ms\n", best_probe_wall);
+            std::printf("  ─────────────────────\n");
+            std::printf("  TOTAL      %8.0f ms\n", bld.build_wall_ms + best_probe_wall);
+        }
+    }
     std::cout << "\n";
     std::cout.flush();
 }
@@ -1272,6 +1305,160 @@ Artifact SweepManager::run()
 
     // ── Human-readable stdout summary ────────────────────────────────────────
     printSummary(artifact, cfg_);
+
+    // ── PHJ path: CLICKHOUSE_PARTITIONED_JOIN=1 ───────────────────────────────
+    // Uses the same build_blocks / proto_cache / cfg_ already in scope.
+    {
+        const char * phj_env = std::getenv("CLICKHOUSE_PARTITIONED_JOIN"); // NOLINT(concurrency-mt-unsafe)
+        if (phj_env && phj_env[0] != '0')
+        {
+            const Block right_sample = makeRightSampleBlock(cfg_);
+            const int P = computeAutoPPartitions(cfg_, cfg_.build_rows);
+
+            std::printf("\n=== Partitioned Hash Join (CLICKHOUSE_PARTITIONED_JOIN=1) ===\n");
+            std::printf(
+                "P=%d  (rows/part=%.0f → %.1f MB, target L2=2 MB)\n",
+                P,
+                static_cast<double>(cfg_.build_rows) / P,
+                static_cast<double>(cfg_.build_rows) / P * static_cast<double>(cfg_.key_columns + 1)
+                    * (cfg_.key_width == KeyWidth::W64 ? 8 : 4) / 1e6);
+
+            for (uint32_t mt : cfg_.probe_max_threads_sweep)
+            {
+                for (uint32_t bs : cfg_.probe_block_size_sweep)
+                {
+                    // Ensure probe proto blocks are available (reuse proto_cache).
+                    if (proto_cache.find(bs) == proto_cache.end())
+                    {
+                        KeyGenerator probe_gen2(kp);
+                        ConfigType pcfg2 = cfg_;
+                        pcfg2.block_size = bs;
+                        BlockBuilder probe_bb2(shape, pcfg2, probe_gen2);
+                        std::vector<Block> pblocks2;
+                        while (probe_bb2.hasProbeRows())
+                        {
+                            Block blk = probe_bb2.nextProbeBlock();
+                            if (blk.columns() > 0)
+                                pblocks2.push_back(std::move(blk));
+                        }
+                        proto_cache[bs] = std::move(pblocks2);
+                    }
+                    const auto & probe_proto = proto_cache.at(bs);
+
+                    // Accumulate over cfg_.reps; report median.
+                    std::vector<PHJPhaseMetrics> reps_m;
+                    reps_m.reserve(cfg_.reps);
+                    for (uint32_t rep = 0; rep < cfg_.reps; ++rep)
+                        reps_m.push_back(runPHJCell(cfg_, right_sample, build_blocks, probe_proto, mt, cfg_.build_rows, cfg_.probe_rows));
+
+                    auto med = [&](auto fn)
+                    {
+                        std::vector<double> v;
+                        for (const auto & r : reps_m)
+                            v.push_back(fn(r));
+                        std::sort(v.begin(), v.end());
+                        return v[v.size() / 2];
+                    };
+
+                    const double pb = med([](const PHJPhaseMetrics & r) { return r.part_build_cpu_ms; });
+                    const double bh = med([](const PHJPhaseMetrics & r) { return r.build_ht_cpu_ms; });
+                    const double pp = med([](const PHJPhaseMetrics & r) { return r.part_probe_cpu_ms; });
+                    const double prb = med([](const PHJPhaseMetrics & r) { return r.probe_cpu_ms; });
+                    const double gen = med([](const PHJPhaseMetrics & r) { return r.generate_cpu_ms; });
+                    const double wall = med([](const PHJPhaseMetrics & r) { return r.total_wall_ms; });
+
+                    const double rows = static_cast<double>(cfg_.probe_rows);
+                    const double T_d = static_cast<double>(mt);
+                    const double total_cpu = pb + bh + pp + prb + gen;
+
+                    // cpu_ns/row = cpu_ms_total × 1e6 / rows
+                    auto ns = [&](double ms) { return ms * 1e6 / rows; };
+                    // wall_ms for a phase = cpu_ms_total / T  (threads run in parallel)
+                    auto wms = [&](double ms) { return ms / T_d; };
+                    // percentage of total CPU
+                    auto pct = [&](double ms) { return (total_cpu > 0.0) ? ms * 100.0 / total_cpu : 0.0; };
+
+                    // Wall time for probe+gen is measured directly; phases 1-3 estimated via cpu/T.
+                    const double pb_wall = wms(pb);
+                    const double bh_wall = wms(bh);
+                    const double pp_wall = wms(pp);
+                    // probe+gen wall = directly measured total_wall_ms from runPHJCell phase 4.
+                    const double pg_wall = wall;
+                    const double tot_wall = pb_wall + bh_wall + pp_wall + pg_wall;
+
+                    // ── Per-phase table (mirrors "Phase breakdown" style) ──
+                    std::printf("\nPhase breakdown  mt=%u  blksz=%u  (%u reps, median):\n", mt, bs, cfg_.reps);
+                    std::printf("  %-16s  %10s  %6s  %10s\n", "phase", "cpu ns/row", "cpu %", "wall ms");
+                    std::printf("  %-16s  %10s  %6s  %10s\n", "─────────────────", "──────────", "──────", "────────");
+
+                    struct Row
+                    {
+                        const char * name;
+                        double cpu_ms;
+                        double wall_ms_v;
+                    };
+                    const Row rows_data[] = {
+                        {"part-build", pb, pb_wall},
+                        {"build-HT", bh, bh_wall},
+                        {"part-probe", pp, pp_wall},
+                        {"probe", prb, -1.0}, // probe+gen wall reported together
+                        {"generate", gen, -1.0},
+                    };
+                    for (const auto & row : rows_data)
+                    {
+                        if (row.wall_ms_v >= 0.0)
+                            std::printf("  %-16s  %10.3f  %5.1f%%  %8.0f\n", row.name, ns(row.cpu_ms), pct(row.cpu_ms), row.wall_ms_v);
+                        else
+                            // probe and generate share one wall-clock measurement
+                            std::printf("  %-16s  %10.3f  %5.1f%%  %8s\n", row.name, ns(row.cpu_ms), pct(row.cpu_ms), "*");
+                    }
+                    std::printf("  %-16s  %10s  %6s  %8.0f  (* probe+gen measured together)\n", "", "", "", pg_wall);
+                    std::printf("  %-16s  %10s  %6s  %10s\n", "─────────────────", "──────────", "──────", "────────");
+                    std::printf("  %-16s  %10.3f  %5.1f%%\n", "PHJ TOTAL", ns(total_cpu), 100.0);
+
+                    // ── Wall time summary for this cell ───────────────────
+                    std::printf("\nWall time summary (mt=%u, blksz=%u):\n", mt, bs);
+                    std::printf("  part-build   %7.0f ms\n", pb_wall);
+                    std::printf("  build-HT     %7.0f ms\n", bh_wall);
+                    std::printf("  part-probe   %7.0f ms\n", pp_wall);
+                    std::printf("  probe+gen    %7.0f ms\n", pg_wall);
+                    std::printf("  ───────────────────\n");
+                    const uint64_t phj_rows = reps_m[0].output_rows;
+                    std::printf("  TOTAL        %7.0f ms   (%llu output rows)\n", tot_wall, static_cast<unsigned long long>(phj_rows));
+
+                    // ── PHJ row-count sanity check vs CH join ─────────────────
+                    // Find a CH probe cell with the same (mt, bs) to compare.
+                    uint64_t ch_rows = 0;
+                    bool found_ch = false;
+                    for (const auto & cell : artifact.probe_cells)
+                    {
+                        if (cell.max_threads == mt && cell.block_size == bs && cell.output_rows > 0)
+                        {
+                            ch_rows = cell.output_rows;
+                            found_ch = true;
+                            break;
+                        }
+                    }
+                    if (found_ch)
+                    {
+                        if (phj_rows == ch_rows)
+                            std::printf(
+                                "  Row-count check: PHJ=%llu == CH=%llu  PASS\n",
+                                static_cast<unsigned long long>(phj_rows),
+                                static_cast<unsigned long long>(ch_rows));
+                        else
+                            std::printf(
+                                "  Row-count check: PHJ=%llu != CH=%llu  FAIL  "
+                                "(delta=%lld) [HARNESS_ERROR]\n",
+                                static_cast<unsigned long long>(phj_rows),
+                                static_cast<unsigned long long>(ch_rows),
+                                static_cast<long long>(phj_rows) - static_cast<long long>(ch_rows));
+                    }
+                    std::fflush(stdout);
+                }
+            }
+        }
+    }
 
     return artifact;
 }

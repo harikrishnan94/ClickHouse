@@ -115,3 +115,26 @@ target_compile_definitions(hashprobe-bench PRIVATE
 )
 
 message(STATUS "hashprobe-bench: GIT_COMMIT_HASH=${GIT_COMMIT_HASH}  BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+
+# ── Partitioned Hash Join module ──────────────────────────────────────────────
+target_sources(hashprobe-bench PRIVATE
+    partitioned/phj_run.cpp
+)
+message(STATUS "hashprobe-bench: PHJ partitioned module added")
+
+# ── Partitioned Hash Join POC ─────────────────────────────────────────────────
+clickhouse_add_executable(partitioned-join-poc
+    partitioned_join_poc.cpp
+)
+target_include_directories(partitioned-join-poc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(partitioned-join-poc PRIVATE
+    clickhouse_common_io
+    dbms
+    pcg_random
+)
+target_compile_definitions(partitioned-join-poc PRIVATE HARNESS_OBSERVABILITY=1)
+target_compile_options(partitioned-join-poc PRIVATE -march=native)
+message(STATUS "partitioned-join-poc: added")
