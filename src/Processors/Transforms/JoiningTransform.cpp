@@ -4,19 +4,19 @@
 #include <Interpreters/ExpressionAnalyzer.h>
 #include <Interpreters/GraceHashJoin.h>
 #include <Interpreters/JoinUtils.h>
-#include <Processors/Port.h>
 #include <Processors/Merges/Algorithms/MergeTreeReadInfo.h>
+#include <Processors/Port.h>
 
 namespace ProfileEvents
 {
-    extern const Event JoinBuildPostProcessingMicroseconds;
-    extern const Event JoinBuildTableRowCount;
-    extern const Event JoinProbeTableRowCount;
-    extern const Event JoinResultRowCount;
-    extern const Event JoinNonJoinedTransformBlockCount;
-    extern const Event JoinNonJoinedTransformRowCount;
-    extern const Event JoinDelayedJoinedTransformBlockCount;
-    extern const Event JoinDelayedJoinedTransformRowCount;
+extern const Event JoinBuildPostProcessingMicroseconds;
+extern const Event JoinBuildTableRowCount;
+extern const Event JoinProbeTableRowCount;
+extern const Event JoinResultRowCount;
+extern const Event JoinNonJoinedTransformBlockCount;
+extern const Event JoinNonJoinedTransformRowCount;
+extern const Event JoinDelayedJoinedTransformBlockCount;
+extern const Event JoinDelayedJoinedTransformRowCount;
 }
 
 namespace DB
@@ -24,7 +24,7 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
+extern const int LOGICAL_ERROR;
 }
 
 Block JoiningTransform::transformHeader(Block header, const JoinPtr & join)
@@ -164,8 +164,7 @@ void JoiningTransform::work()
                 return;
             }
 
-            non_joined_blocks = join->getNonJoinedBlocks(
-                inputs.front().getHeader(), outputs.front().getHeader(), max_block_size);
+            non_joined_blocks = join->getNonJoinedBlocks(inputs.front().getHeader(), outputs.front().getHeader(), max_block_size);
 
             if (!non_joined_blocks)
             {
@@ -243,7 +242,9 @@ Block JoiningTransform::readExecute(Chunk & chunk)
     {
         Block block = inputs.front().getHeader().cloneWithColumns(chunk.detachColumns());
         ProfileEvents::increment(ProfileEvents::JoinProbeTableRowCount, block.rows());
-        join_result = join->joinBlock(std::move(block));
+        if (!probe_ingest_handle)
+            probe_ingest_handle = join->createIngestHandle();
+        join_result = join->joinBlock(probe_ingest_handle.get(), std::move(block));
     }
 
     auto data = join_result->next();
@@ -261,7 +262,9 @@ Block JoiningTransform::readExecute(Chunk & chunk)
 }
 
 FillingRightJoinSideTransform::FillingRightJoinSideTransform(SharedHeader input_header, JoinPtr join_, FinishCounterPtr finish_counter_)
-    : IProcessor({input_header}, {Block()}), join(std::move(join_)), finish_counter(std::move(finish_counter_))
+    : IProcessor({input_header}, {Block()})
+    , join(std::move(join_))
+    , finish_counter(std::move(finish_counter_))
 {
     spillable = typeid_cast<GraceHashJoin *>(join.get());
 }
@@ -370,7 +373,9 @@ void FillingRightJoinSideTransform::work()
     else
     {
         ProfileEvents::increment(ProfileEvents::JoinBuildTableRowCount, num_rows);
-        stop_reading = !join->addBlockToJoin(block, num_rows, true);
+        if (!build_ingest_handle)
+            build_ingest_handle = join->createIngestHandle();
+        stop_reading = !join->addBlockToJoin(build_ingest_handle.get(), block, num_rows, true);
     }
 
     set_totals = for_totals;
@@ -405,8 +410,7 @@ bool FillingRightJoinSideTransform::spillOnSize(size_t bytes)
 }
 
 DelayedJoinedBlocksWorkerTransform::DelayedJoinedBlocksWorkerTransform(
-    SharedHeader output_header_,
-    NonJoinedStreamBuilder non_joined_stream_builder_)
+    SharedHeader output_header_, NonJoinedStreamBuilder non_joined_stream_builder_)
     : IProcessor(InputPorts{Block()}, OutputPorts{output_header_})
     , non_joined_stream_builder(std::move(non_joined_stream_builder_))
 {
@@ -602,12 +606,7 @@ IProcessor::Status DelayedJoinedBlocksTransform::prepare()
 }
 
 NonJoinedBlocksTransform::NonJoinedBlocksTransform(
-    SharedHeader output_header,
-    JoinPtr join_,
-    Block left_sample_block_,
-    UInt64 max_block_size_,
-    size_t stream_index_,
-    size_t num_streams_)
+    SharedHeader output_header, JoinPtr join_, Block left_sample_block_, UInt64 max_block_size_, size_t stream_index_, size_t num_streams_)
     : ISource(output_header)
     , join(std::move(join_))
     , left_sample_block(std::move(left_sample_block_))
@@ -625,8 +624,7 @@ Chunk NonJoinedBlocksTransform::generate()
 
     if (!non_joined_blocks)
     {
-        non_joined_blocks = join->getNonJoinedBlocks(
-            left_sample_block, result_sample_block, max_block_size, stream_index, num_streams);
+        non_joined_blocks = join->getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size, stream_index, num_streams);
 
         if (!non_joined_blocks)
             return {};

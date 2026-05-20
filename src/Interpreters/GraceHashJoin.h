@@ -63,7 +63,8 @@ public:
         size_t initial_num_buckets_,
         size_t max_num_buckets_,
         std::shared_ptr<TableJoin> table_join_,
-        SharedHeader left_sample_block_, SharedHeader right_sample_block_,
+        SharedHeader left_sample_block_,
+        SharedHeader right_sample_block_,
         TemporaryDataOnDiskScopePtr tmp_data_,
         bool any_take_last_row_ = false,
         size_t external_join_threshold_ = 0);
@@ -75,6 +76,8 @@ public:
 
     void initialize(const Block & sample_block) override;
 
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     bool addBlockToJoin(const Block & block, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;

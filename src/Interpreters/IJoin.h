@@ -12,7 +12,7 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int UNSUPPORTED_METHOD;
+extern const int UNSUPPORTED_METHOD;
 }
 
 class TableJoin;
@@ -76,15 +76,11 @@ public:
     virtual const TableJoin & getTableJoin() const = 0;
 
     /// Returns true if clone is supported
-    virtual bool isCloneSupported() const
-    {
-        return false;
-    }
+    virtual bool isCloneSupported() const { return false; }
 
     /// Clone underlying JOIN algorithm using table join, left sample block, right sample block
-    virtual std::shared_ptr<IJoin> clone(const std::shared_ptr<TableJoin> & table_join_,
-        SharedHeader left_sample_block_,
-        SharedHeader right_sample_block_) const
+    virtual std::shared_ptr<IJoin>
+    clone(const std::shared_ptr<TableJoin> & table_join_, SharedHeader left_sample_block_, SharedHeader right_sample_block_) const
     {
         (void)(table_join_);
         (void)(left_sample_block_);
@@ -92,9 +88,30 @@ public:
         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Clone method is not supported for {}", getName());
     }
 
-    virtual std::shared_ptr<IJoin> cloneNoParallel(const std::shared_ptr<TableJoin> & table_join_,
-        SharedHeader left_sample_block_,
-        SharedHeader right_sample_block_) const { return clone(table_join_, left_sample_block_, right_sample_block_); }
+    virtual std::shared_ptr<IJoin>
+    cloneNoParallel(const std::shared_ptr<TableJoin> & table_join_, SharedHeader left_sample_block_, SharedHeader right_sample_block_) const
+    {
+        return clone(table_join_, left_sample_block_, right_sample_block_);
+    }
+
+    /// Optional per-call-site ingest handle. Allows an algorithm to cache stream-local
+    /// state across many addBlockToJoin / joinBlock calls without per-call lookups.
+    ///
+    /// One handle is created per ingest "stream" (typically per JoiningTransform /
+    /// FillingRightJoinSideTransform processor instance). The caller passes the same
+    /// handle on every call from that stream; the algorithm reads/writes through it.
+    ///
+    /// Default-impl returns nullptr; only join algorithms that benefit from caching
+    /// (e.g. PartitionedHashJoin's per-thread shuffle slot) override this.
+    struct IngestHandle
+    {
+        virtual ~IngestHandle() = default;
+    };
+    using IngestHandlePtr = std::unique_ptr<IngestHandle>;
+
+    /// One per ingest stream (build side and probe side each get their own).
+    /// Lifetime is owned by the caller (e.g. JoiningTransform).
+    virtual IngestHandlePtr createIngestHandle() { return nullptr; }
 
     /// Add block of data from right hand of JOIN.
     /// @returns false, if some limit was exceeded and you should not insert more data.
@@ -110,17 +127,31 @@ public:
         return addBlockToJoin(block, check_limits);
     }
 
+    /// Cookie-aware overloads. Default-impl forwards to the non-cookie variant, so
+    /// algorithms that don't need per-stream state need not override.
+    virtual bool addBlockToJoin(IngestHandle * /*handle*/, const Block & block, bool check_limits = true)
+    {
+        return addBlockToJoin(block, check_limits);
+    }
+    virtual bool addBlockToJoin(IngestHandle * /*handle*/, const Block & block, size_t num_rows, bool check_limits = true)
+    {
+        return addBlockToJoin(block, num_rows, check_limits);
+    }
+
     /* Some initialization may be required before joinBlock() call.
      * It's better to done in in constructor, but left block exact structure is not known at that moment.
      * TODO: pass correct left block sample to the constructor.
      */
-    virtual void initialize(const Block & /* left_sample_block */) {}
+    virtual void initialize(const Block & /* left_sample_block */) { }
 
     virtual void checkTypesOfKeys(const Block & block) const = 0;
 
     /// Join the block with data from left hand of JOIN to the right hand data (that was previously built by calls to addBlockToJoin).
     /// Could be called from different threads in parallel.
     virtual JoinResultPtr joinBlock(Block block) = 0;
+
+    /// Cookie-aware overload. Default-impl forwards to the non-cookie variant.
+    virtual JoinResultPtr joinBlock(IngestHandle * /*handle*/, Block block) { return joinBlock(std::move(block)); }
 
     /** Set/Get totals for right table
       * Keep "totals" (separate part of dataset, see WITH TOTALS) to use later.
@@ -148,7 +179,7 @@ public:
     virtual bool hasDelayedBlocks() const { return false; }
 
     virtual IBlocksStreamPtr
-        getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const = 0;
+    getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const = 0;
 
     virtual bool supportParallelNonJoinedBlocksProcessing() const { return false; }
     /// This serves as a runtime check in JoiningTransform to decide whether to utilize the parallel processing of
@@ -163,8 +194,11 @@ public:
     /// stream_idx is in [0, num_streams), each stream must produce a disjoint subset of rows
     /// Default: stream 0 returns everything, others return nothing
     virtual IBlocksStreamPtr getNonJoinedBlocks(
-        const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
-        size_t stream_idx, size_t /*num_streams*/) const
+        const Block & left_sample_block,
+        const Block & result_sample_block,
+        UInt64 max_block_size,
+        size_t stream_idx,
+        size_t /*num_streams*/) const
     {
         if (stream_idx != 0)
             return {};
@@ -173,7 +207,7 @@ public:
 
     /// Notify the join that the query plan requires left-side read-in-order preservation.
     /// SpillingHashJoin overrides this to forbid switching to GraceHashJoin at runtime.
-    virtual void keepLeftPipelineInOrder() {}
+    virtual void keepLeftPipelineInOrder() { }
 
     /// Called by `FillingRightJoinSideTransform` after all data is inserted in join.
     virtual void onBuildPhaseFinish() { }
@@ -211,7 +245,6 @@ protected:
     virtual Block nextImpl() = 0;
 
     std::atomic_bool finished{false};
-
 };
 
 }

@@ -3,10 +3,10 @@
 #include <Core/Block.h>
 #include <Core/Block_fwd.h>
 #include <Interpreters/HashJoin/ScatteredBlock.h>
+#include <Interpreters/IJoin.h>
 #include <Processors/Chunk.h>
 #include <Processors/IProcessor.h>
 #include <Processors/ISource.h>
-#include <Interpreters/IJoin.h>
 
 namespace DB
 {
@@ -22,7 +22,10 @@ using IBlocksStreamPtr = std::shared_ptr<IBlocksStream>;
 class FinishCounter
 {
 public:
-    explicit FinishCounter(size_t total_) : total(total_) { }
+    explicit FinishCounter(size_t total_)
+        : total(total_)
+    {
+    }
 
     bool isLast() { return finished.fetch_add(1) + 1 >= total; }
 
@@ -82,6 +85,11 @@ private:
 
     JoinResultPtr join_result;
 
+    /// Per-stream cookie owned by this processor; lets the join algorithm cache
+    /// stream-local state (e.g. PartitionedHashJoin's per-thread shuffle slot)
+    /// without per-call mutex+map lookups. Created lazily on first use.
+    IJoin::IngestHandlePtr probe_ingest_handle;
+
     FinishCounterPtr finish_counter;
     IBlocksStreamPtr non_joined_blocks;
     size_t max_block_size;
@@ -108,6 +116,8 @@ public:
 
 private:
     JoinPtr join;
+    /// Per-stream cookie for the build side. See JoiningTransform::probe_ingest_handle.
+    IJoin::IngestHandlePtr build_ingest_handle;
     FinishCounterPtr finish_counter;
     Chunk chunk;
     bool stop_reading = false;
@@ -119,11 +129,11 @@ private:
 class DelayedBlocksTask : public ChunkInfoCloneable<DelayedBlocksTask>
 {
 public:
-
     DelayedBlocksTask() = default;
     DelayedBlocksTask(const DelayedBlocksTask & other) = default;
     explicit DelayedBlocksTask(IBlocksStreamPtr delayed_blocks_, FinishCounterPtr left_delayed_stream_finish_counter_)
-        : delayed_blocks(std::move(delayed_blocks_)), left_delayed_stream_finish_counter(left_delayed_stream_finish_counter_)
+        : delayed_blocks(std::move(delayed_blocks_))
+        , left_delayed_stream_finish_counter(left_delayed_stream_finish_counter_)
     {
     }
 
@@ -156,9 +166,7 @@ class DelayedJoinedBlocksWorkerTransform : public IProcessor
 {
 public:
     using NonJoinedStreamBuilder = std::function<IBlocksStreamPtr()>;
-    explicit DelayedJoinedBlocksWorkerTransform(
-        SharedHeader output_header_,
-        NonJoinedStreamBuilder non_joined_stream_builder_);
+    explicit DelayedJoinedBlocksWorkerTransform(SharedHeader output_header_, NonJoinedStreamBuilder non_joined_stream_builder_);
 
     String getName() const override { return "DelayedJoinedBlocksWorkerTransform"; }
 

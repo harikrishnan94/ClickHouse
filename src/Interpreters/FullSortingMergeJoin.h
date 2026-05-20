@@ -1,28 +1,27 @@
 #pragma once
 
+#include <DataTypes/DataTypeLowCardinality.h>
+#include <DataTypes/DataTypeNullable.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TableJoin.h>
-#include <DataTypes/DataTypeNullable.h>
-#include <DataTypes/DataTypeLowCardinality.h>
-#include <Common/logger_useful.h>
 #include <Poco/Logger.h>
+#include <Common/logger_useful.h>
 
 namespace DB
 {
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
-    extern const int NOT_IMPLEMENTED;
-    extern const int TYPE_MISMATCH;
+extern const int LOGICAL_ERROR;
+extern const int NOT_IMPLEMENTED;
+extern const int TYPE_MISMATCH;
 }
 
 /// Dummy class, actual joining is done by MergeTransform
 class FullSortingMergeJoin : public IJoin
 {
 public:
-    explicit FullSortingMergeJoin(std::shared_ptr<TableJoin> table_join_, SharedHeader & right_sample_block_,
-                                  int null_direction_ = 1)
+    explicit FullSortingMergeJoin(std::shared_ptr<TableJoin> table_join_, SharedHeader & right_sample_block_, int null_direction_ = 1)
         : table_join(table_join_)
         , right_sample_block(right_sample_block_)
         , null_direction(null_direction_)
@@ -34,19 +33,18 @@ public:
 
     const TableJoin & getTableJoin() const override { return *table_join; }
 
-    bool isCloneSupported() const override
-    {
-        return getTotals().empty();
-    }
+    bool isCloneSupported() const override { return getTotals().empty(); }
 
-    std::shared_ptr<IJoin> clone(const std::shared_ptr<TableJoin> & table_join_,
-        SharedHeader,
-        SharedHeader right_sample_block_) const override
+    std::shared_ptr<IJoin>
+    clone(const std::shared_ptr<TableJoin> & table_join_, SharedHeader, SharedHeader right_sample_block_) const override
     {
         return std::make_shared<FullSortingMergeJoin>(table_join_, right_sample_block_, null_direction);
     }
 
     int getNullDirection() const { return null_direction; }
+
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
 
     bool addBlockToJoin(const Block & /* block */, bool /* check_limits */) override
     {
@@ -63,8 +61,7 @@ public:
         const auto & on_expr = table_join->getOnlyClause();
         bool support_conditions = !on_expr.on_filter_condition_left && !on_expr.on_filter_condition_right;
 
-        if (!on_expr.analyzer_left_filter_condition_column_name.empty() ||
-            !on_expr.analyzer_right_filter_condition_column_name.empty())
+        if (!on_expr.analyzer_left_filter_condition_column_name.empty() || !on_expr.analyzer_right_filter_condition_column_name.empty())
             support_conditions = false;
 
         /// Key column can change nullability and it's not handled on type conversion stage, so algorithm should be aware of it
@@ -94,8 +91,10 @@ public:
                 throw DB::Exception(
                     ErrorCodes::TYPE_MISMATCH,
                     "Type mismatch of columns to JOIN by: {} :: {} at left, {} :: {} at right",
-                    onexpr.key_names_left[i], left_type->getName(),
-                    onexpr.key_names_right[i], right_type->getName());
+                    onexpr.key_names_left[i],
+                    left_type->getName(),
+                    onexpr.key_names_right[i],
+                    right_type->getName());
             }
         }
     }
@@ -124,8 +123,8 @@ public:
 
     bool alwaysReturnsEmptySet() const override { return false; }
 
-    IBlocksStreamPtr
-    getNonJoinedBlocks(const Block & /* left_sample_block */, const Block & /* result_sample_block */, UInt64 /* max_block_size */) const override
+    IBlocksStreamPtr getNonJoinedBlocks(
+        const Block & /* left_sample_block */, const Block & /* result_sample_block */, UInt64 /* max_block_size */) const override
     {
         throw Exception(ErrorCodes::LOGICAL_ERROR, "FullSortingMergeJoin::getNonJoinedBlocks should not be called");
     }

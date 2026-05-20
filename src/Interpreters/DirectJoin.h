@@ -20,9 +20,7 @@ class DirectKeyValueJoin : public IJoin
 {
 public:
     DirectKeyValueJoin(
-        std::shared_ptr<TableJoin> table_join_,
-        const Block & right_sample_block_,
-        std::shared_ptr<const IKeyValueEntity> storage_);
+        std::shared_ptr<TableJoin> table_join_, const Block & right_sample_block_, std::shared_ptr<const IKeyValueEntity> storage_);
 
     DirectKeyValueJoin(
         std::shared_ptr<TableJoin> table_join_,
@@ -32,6 +30,9 @@ public:
 
     std::string getName() const override { return "DirectKeyValueJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
+
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
 
     bool addBlockToJoin(const Block &, bool) override;
     void checkTypesOfKeys(const Block &) const override;
@@ -57,7 +58,6 @@ private:
     Block right_sample_block_with_storage_column_names;
     Block sample_block_with_columns_to_add;
     LoggerPtr log;
-
 };
 
 }

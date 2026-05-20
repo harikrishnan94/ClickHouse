@@ -1,18 +1,18 @@
 #pragma once
 
+#include <DataTypes/DataTypeLowCardinality.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TableJoin.h>
-#include <DataTypes/DataTypeLowCardinality.h>
-#include <Common/logger_useful.h>
 #include <Poco/Logger.h>
+#include <Common/logger_useful.h>
 
 namespace DB
 {
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
-    extern const int NOT_IMPLEMENTED;
+extern const int LOGICAL_ERROR;
+extern const int NOT_IMPLEMENTED;
 }
 
 /// Dummy class, actual joining is done by MergeTransform
@@ -29,6 +29,8 @@ public:
     std::string getName() const override { return "PasteJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
 
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     bool addBlockToJoin(const Block & /* block */, bool /* check_limits */) override
     {
         throw Exception(ErrorCodes::LOGICAL_ERROR, "PasteJoin::addBlockToJoin should not be called");
@@ -77,8 +79,8 @@ public:
 
     bool alwaysReturnsEmptySet() const override { return false; }
 
-    IBlocksStreamPtr
-    getNonJoinedBlocks(const Block & /* left_sample_block */, const Block & /* result_sample_block */, UInt64 /* max_block_size */) const override
+    IBlocksStreamPtr getNonJoinedBlocks(
+        const Block & /* left_sample_block */, const Block & /* result_sample_block */, UInt64 /* max_block_size */) const override
     {
         throw Exception(ErrorCodes::LOGICAL_ERROR, "PasteJoin::getNonJoinedBlocks should not be called");
     }

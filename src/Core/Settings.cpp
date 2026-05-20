@@ -7600,6 +7600,9 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
 When hash-based join algorithm is applied, this threshold helps to decide between using `hash` and `parallel_hash` (only if estimation of the right table size is available).
 The former is used when we know that the right table size is below the threshold.
 )", 0) \
+    DECLARE(UInt64, partitioned_hash_join_num_partitions, 0, R"(
+Number of partitions to use for the `partitioned_hash` join algorithm. 0 means auto-compute from the right-side row estimate and an L2 cache budget. Non-zero values are rounded up to the next power of two and clamped to [64, 1024].
+)", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.
 

@@ -37,6 +37,8 @@ public:
 
     std::string getName() const override { return "PartialMergeJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     bool addBlockToJoin(const Block & block, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;
@@ -49,7 +51,8 @@ public:
     /// Has to be called only after setTotals()/mergeRightBlocks()
     bool alwaysReturnsEmptySet() const override { return (is_right || is_inner) && min_max_right_blocks.empty(); }
 
-    IBlocksStreamPtr getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
+    IBlocksStreamPtr
+    getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
 
     static bool isSupported(const std::shared_ptr<TableJoin> & table_join);
     static bool isSupported(JoinKind kind, JoinStrictness strictness);
@@ -130,9 +133,14 @@ private:
     void addRightColumns(Block & block, MutableColumns && columns);
 
     template <bool is_all>
-    std::optional<NotProcessed> extraBlock(Block & processed, MutableColumns && left_columns, MutableColumns && right_columns,
-                             size_t left_position, size_t left_key_tail, size_t right_position,
-                             size_t right_block_number);
+    std::optional<NotProcessed> extraBlock(
+        Block & processed,
+        MutableColumns && left_columns,
+        MutableColumns && right_columns,
+        size_t left_position,
+        size_t left_key_tail,
+        size_t right_position,
+        size_t right_block_number);
 
     void mergeRightBlocks();
 
@@ -158,12 +166,26 @@ private:
     }
 
     template <bool is_all> /// ALL or ANY
-    bool leftJoin(MergeJoinCursor & left_cursor, const Block & left_block, RightBlockInfo & right_block_info,
-                  MutableColumns & left_columns, MutableColumns & right_columns, size_t & left_key_tail);
-    bool semiLeftJoin(MergeJoinCursor & left_cursor, const Block & left_block, const RightBlockInfo & right_block_info,
-                  MutableColumns & left_columns, MutableColumns & right_columns);
-    bool allInnerJoin(MergeJoinCursor & left_cursor, const Block & left_block, RightBlockInfo & right_block_info,
-                  MutableColumns & left_columns, MutableColumns & right_columns, size_t & left_key_tail);
+    bool leftJoin(
+        MergeJoinCursor & left_cursor,
+        const Block & left_block,
+        RightBlockInfo & right_block_info,
+        MutableColumns & left_columns,
+        MutableColumns & right_columns,
+        size_t & left_key_tail);
+    bool semiLeftJoin(
+        MergeJoinCursor & left_cursor,
+        const Block & left_block,
+        const RightBlockInfo & right_block_info,
+        MutableColumns & left_columns,
+        MutableColumns & right_columns);
+    bool allInnerJoin(
+        MergeJoinCursor & left_cursor,
+        const Block & left_block,
+        RightBlockInfo & right_block_info,
+        MutableColumns & left_columns,
+        MutableColumns & right_columns,
+        size_t & left_key_tail);
 
     Block modifyRightBlock(const Block & src_block) const;
     bool saveRightBlock(Block && block);

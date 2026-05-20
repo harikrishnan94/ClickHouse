@@ -294,6 +294,7 @@ public:
     }
 
     bool allowParallelHashJoin() const;
+    bool allowPartitionedHashJoin() const;
     void swapSides();
 
     bool joinUseNulls() const { return join_use_nulls; }

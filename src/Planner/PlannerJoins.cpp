@@ -43,6 +43,8 @@
 #include <Interpreters/MergeJoin.h>
 #include <Interpreters/PasteJoin.h>
 #include <Interpreters/SpillingHashJoin.h>
+#include <Interpreters/PartitionedHashJoin.h>
+#include <Interpreters/PartitionedHashJoin/Eligibility.h>
 
 #include <Planner/PlannerActionsVisitor.h>
 #include <Planner/PlannerContext.h>
@@ -67,6 +69,7 @@ namespace Setting
     extern const SettingsBool allow_general_join_planning;
     extern const SettingsJoinAlgorithm join_algorithm;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 partitioned_hash_join_num_partitions;
     extern const SettingsSeconds lock_acquire_timeout;
     extern const SettingsNonZeroUInt64 grace_hash_join_initial_buckets;
     extern const SettingsNonZeroUInt64 grace_hash_join_max_buckets;
@@ -1186,6 +1189,70 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             return std::make_shared<MergeJoin>(table_join, right_table_expression_header);
     }
 
+    /// PARTITIONED_HASH: radix-partition both sides into P partitions, work-steal partitions
+    /// at delayed-blocks time. Spec §2, §3.
+    if (algorithm == JoinAlgorithm::PARTITIONED_HASH)
+    {
+        if (!table_join->allowPartitionedHashJoin())
+            return nullptr;
+
+        /// Column-shape eligibility gate: key width ≤ 16 bytes, all columns fixed-width.
+        const auto & clause = table_join->getOnlyClause();
+        const Names key_names_right = clause.key_names_right;
+
+        /// Kept payload column names = all right-side columns that are not join keys.
+        Names kept_payload;
+        const std::unordered_set<std::string> key_set(
+            key_names_right.begin(), key_names_right.end());
+        for (size_t ci = 0; ci < right_table_expression_header->columns(); ++ci)
+        {
+            const auto & col = right_table_expression_header->getByPosition(ci);
+            if (!key_set.count(col.name))
+                kept_payload.push_back(col.name);
+        }
+
+        if (!isSupportedByColumns(*right_table_expression_header, key_names_right, kept_payload))
+            return nullptr;
+
+        /// Compute P: 0 = auto from row estimate, otherwise use user setting (clamped).
+        size_t num_parts = params.partitioned_hash_join_num_partitions;
+        if (num_parts == 0 && params.rhs_size_estimation)
+        {
+            /// Auto: target L2 residency (2 MiB per core).
+            /// Estimate bytes per row using key + payload column widths.
+            size_t row_bytes = 0;
+            for (const auto & name : key_names_right)
+            {
+                if (right_table_expression_header->has(name))
+                    row_bytes += fixedElemBytes(right_table_expression_header->getByName(name).type);
+            }
+            for (const auto & name : kept_payload)
+            {
+                if (right_table_expression_header->has(name))
+                    row_bytes += fixedElemBytes(right_table_expression_header->getByName(name).type);
+            }
+            if (row_bytes == 0)
+                row_bytes = 8; /// fallback
+            const size_t L2_bytes = 2ULL << 20; /// 2 MiB
+            const size_t raw_P = (*params.rhs_size_estimation * row_bytes + L2_bytes - 1) / L2_bytes;
+            /// Next power of two, clamped [64, 1024].
+            size_t P = 64;
+            while (P < raw_P && P < 1024)
+                P <<= 1;
+            num_parts = std::min(P, size_t(1024));
+        }
+        if (num_parts == 0)
+            num_parts = 256; /// default fallback when no estimate available
+
+        return std::make_shared<PartitionedHashJoin>(
+            table_join,
+            right_table_expression_header,
+            left_table_expression_header,
+            num_parts,
+            params.max_threads,
+            params.join_any_take_last_row);
+    }
+
     if (algorithm == JoinAlgorithm::HASH ||
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
         algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
@@ -1319,6 +1386,7 @@ JoinAlgorithmParams::JoinAlgorithmParams(const Context & context)
     max_entries_for_hash_table_stats = context.getServerSettings()[ServerSetting::max_entries_for_hash_table_stats];
     hash_table_key_hash = 0;
     parallel_hash_join_threshold = settings[Setting::parallel_hash_join_threshold];
+    partitioned_hash_join_num_partitions = settings[Setting::partitioned_hash_join_num_partitions];
 
     grace_hash_join_initial_buckets = settings[Setting::grace_hash_join_initial_buckets];
     grace_hash_join_max_buckets = settings[Setting::grace_hash_join_max_buckets];
@@ -1348,6 +1416,7 @@ JoinAlgorithmParams::JoinAlgorithmParams(
     max_entries_for_hash_table_stats = max_entries_for_hash_table_stats_;
     hash_table_key_hash = hash_table_key_hash_;
     parallel_hash_join_threshold = join_settings.parallel_hash_join_threshold;
+    partitioned_hash_join_num_partitions = join_settings.partitioned_hash_join_num_partitions;
 
     grace_hash_join_initial_buckets = join_settings.grace_hash_join_initial_buckets;
     grace_hash_join_max_buckets = join_settings.grace_hash_join_max_buckets;

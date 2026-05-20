@@ -122,17 +122,15 @@ public:
 
     const TableJoin & getTableJoin() const override { return *table_join; }
 
-    bool isCloneSupported() const override
-    {
-        return getTotals().empty() && getTotalRowCount() == 0;
-    }
+    bool isCloneSupported() const override { return getTotals().empty() && getTotalRowCount() == 0; }
 
-    std::shared_ptr<IJoin> clone(const std::shared_ptr<TableJoin> & table_join_,
-        SharedHeader,
-        SharedHeader right_sample_block_) const override
+    std::shared_ptr<IJoin>
+    clone(const std::shared_ptr<TableJoin> & table_join_, SharedHeader, SharedHeader right_sample_block_) const override
     {
         return std::make_shared<HashJoin>(table_join_, right_sample_block_, any_take_last_row, reserve_num, instance_id);
     }
+
+    using IJoin::addBlockToJoin;
 
     /** Add block of data from right hand of JOIN to the map.
       * Returns false, if some limit was exceeded and you should not insert more data.
@@ -178,12 +176,15 @@ public:
       * Use only after all calls to joinBlock was done.
       * left_sample_block is passed without account of 'use_nulls' setting (columns will be converted to Nullable inside).
       */
-    IBlocksStreamPtr getNonJoinedBlocks(
-        const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
+    IBlocksStreamPtr
+    getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
 
     IBlocksStreamPtr getNonJoinedBlocks(
-        const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
-        size_t bucket_idx, size_t num_buckets) const override;
+        const Block & left_sample_block,
+        const Block & result_sample_block,
+        UInt64 max_block_size,
+        size_t bucket_idx,
+        size_t num_buckets) const override;
 
     void onBuildPhaseFinish() override;
 
@@ -205,71 +206,71 @@ public:
 
     const ColumnWithTypeAndName & rightAsofKeyColumn() const;
 
-    /// Different types of keys for maps.
-    #define APPLY_FOR_JOIN_VARIANTS(M) \
-        M(key8)                        \
-        M(key16)                       \
-        M(key32)                       \
-        M(key64)                       \
-        M(key_string)                  \
-        M(key_fixed_string)            \
-        M(keys128)                     \
-        M(keys256)                     \
-        M(hashed)                      \
-        M(two_level_key32)             \
-        M(two_level_key64)             \
-        M(two_level_key_string)        \
-        M(two_level_key_fixed_string)  \
-        M(two_level_keys128)           \
-        M(two_level_keys256)           \
-        M(two_level_hashed)            \
-        M(range8_key32)                \
-        M(range16_key32)               \
-        M(range17_key32)               \
-        M(range18_key32)               \
-        M(range8_key64)                \
-        M(range16_key64)               \
-        M(range17_key64)               \
-        M(range18_key64)
+/// Different types of keys for maps.
+#define APPLY_FOR_JOIN_VARIANTS(M) \
+    M(key8) \
+    M(key16) \
+    M(key32) \
+    M(key64) \
+    M(key_string) \
+    M(key_fixed_string) \
+    M(keys128) \
+    M(keys256) \
+    M(hashed) \
+    M(two_level_key32) \
+    M(two_level_key64) \
+    M(two_level_key_string) \
+    M(two_level_key_fixed_string) \
+    M(two_level_keys128) \
+    M(two_level_keys256) \
+    M(two_level_hashed) \
+    M(range8_key32) \
+    M(range16_key32) \
+    M(range17_key32) \
+    M(range18_key32) \
+    M(range8_key64) \
+    M(range16_key64) \
+    M(range17_key64) \
+    M(range18_key64)
 
-    /// Used for reading from StorageJoin and applying joinGet function
-    #define APPLY_FOR_JOIN_VARIANTS_LIMITED(M) \
-        M(key8)                                \
-        M(key16)                               \
-        M(key32)                               \
-        M(key64)                               \
-        M(key_string)                          \
-        M(key_fixed_string)
+/// Used for reading from StorageJoin and applying joinGet function
+#define APPLY_FOR_JOIN_VARIANTS_LIMITED(M) \
+    M(key8) \
+    M(key16) \
+    M(key32) \
+    M(key64) \
+    M(key_string) \
+    M(key_fixed_string)
 
-    /// Used in ConcurrentHashJoin
-    #define APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M, ...)           \
-        M(two_level_key32 __VA_OPT__(,) __VA_ARGS__)            \
-        M(two_level_key64 __VA_OPT__(,) __VA_ARGS__)            \
-        M(two_level_key_string __VA_OPT__(,) __VA_ARGS__)       \
-        M(two_level_key_fixed_string __VA_OPT__(,) __VA_ARGS__) \
-        M(two_level_keys128 __VA_OPT__(,) __VA_ARGS__)          \
-        M(two_level_keys256 __VA_OPT__(,) __VA_ARGS__)          \
-        M(two_level_hashed __VA_OPT__(,) __VA_ARGS__)
+/// Used in ConcurrentHashJoin
+#define APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M, ...) \
+    M(two_level_key32 __VA_OPT__(, ) __VA_ARGS__) \
+    M(two_level_key64 __VA_OPT__(, ) __VA_ARGS__) \
+    M(two_level_key_string __VA_OPT__(, ) __VA_ARGS__) \
+    M(two_level_key_fixed_string __VA_OPT__(, ) __VA_ARGS__) \
+    M(two_level_keys128 __VA_OPT__(, ) __VA_ARGS__) \
+    M(two_level_keys256 __VA_OPT__(, ) __VA_ARGS__) \
+    M(two_level_hashed __VA_OPT__(, ) __VA_ARGS__)
 
     enum class Type : uint8_t
     {
         EMPTY,
         CROSS,
-        #define M(NAME) NAME,
-            APPLY_FOR_JOIN_VARIANTS(M)
-        #undef M
+#define M(NAME) NAME,
+        APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
     };
 
     bool twoLevelMapIsUsed() const
     {
         switch (data->type)
         {
-        #define M(NAME) \
-            case Type::NAME: \
-                return true;
+#define M(NAME) \
+    case Type::NAME: \
+        return true;
 
             APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M)
-        #undef M
+#undef M
 
             default:
                 return false;
@@ -283,46 +284,46 @@ public:
     {
         /// NOLINTBEGIN(bugprone-macro-parentheses)
         using MappedType = Mapped;
-        std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
-        std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
-        std::shared_ptr<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>           key32;
-        std::shared_ptr<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>           key64;
-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>              key_string;
-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>              key_fixed_string;
-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128HashCRC32>>           keys128;
-        std::shared_ptr<HashMap<UInt256, Mapped, UInt256HashCRC32>>           keys256;
-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>>         hashed;
-        std::shared_ptr<TwoLevelHashMap<UInt32, Mapped, HashCRC32<UInt32>>>   two_level_key32;
-        std::shared_ptr<TwoLevelHashMap<UInt64, Mapped, HashCRC32<UInt64>>>   two_level_key64;
-        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>>      two_level_key_string;
-        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>>      two_level_key_fixed_string;
-        std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128HashCRC32>>   two_level_keys128;
-        std::shared_ptr<TwoLevelHashMap<UInt256, Mapped, UInt256HashCRC32>>   two_level_keys256;
+        std::shared_ptr<FixedHashMap<UInt8, Mapped>> key8;
+        std::shared_ptr<FixedHashMap<UInt16, Mapped>> key16;
+        std::shared_ptr<HashMap<UInt32, Mapped, HashCRC32<UInt32>>> key32;
+        std::shared_ptr<HashMap<UInt64, Mapped, HashCRC32<UInt64>>> key64;
+        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>> key_string;
+        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>> key_fixed_string;
+        std::shared_ptr<HashMap<UInt128, Mapped, UInt128HashCRC32>> keys128;
+        std::shared_ptr<HashMap<UInt256, Mapped, UInt256HashCRC32>> keys256;
+        std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>> hashed;
+        std::shared_ptr<TwoLevelHashMap<UInt32, Mapped, HashCRC32<UInt32>>> two_level_key32;
+        std::shared_ptr<TwoLevelHashMap<UInt64, Mapped, HashCRC32<UInt64>>> two_level_key64;
+        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>> two_level_key_string;
+        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>> two_level_key_fixed_string;
+        std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128HashCRC32>> two_level_keys128;
+        std::shared_ptr<TwoLevelHashMap<UInt256, Mapped, UInt256HashCRC32>> two_level_keys256;
         std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128TrivialHash>> two_level_hashed;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>>          range8_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 16>>         range16_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 17>>         range17_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 18>>         range18_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 8>>          range8_key64;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 16>>         range16_key64;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 17>>         range17_key64;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 18>>         range18_key64;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>> range8_key32;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 16>> range16_key32;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 17>> range17_key32;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 18>> range18_key32;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 8>> range8_key64;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 16>> range16_key64;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 17>> range17_key64;
+        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 18>> range18_key64;
 
         void create(Type which, size_t reserve)
         {
             switch (which)
             {
-            #define M(NAME)                                                                                       \
-                case Type::NAME:                                                                                  \
-                    if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
-                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)         \
-                                       : std::make_shared<typename decltype(NAME)::element_type>();               \
-                    else                                                                                          \
-                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                         \
-                    break;
+#define M(NAME) \
+    case Type::NAME: \
+        if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
+            NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve) \
+                           : std::make_shared<typename decltype(NAME)::element_type>(); \
+        else \
+            NAME = std::make_shared<typename decltype(NAME)::element_type>(); \
+        break;
 
                 APPLY_FOR_JOIN_VARIANTS(M)
-            #undef M
+#undef M
 
                 default:
                     break;
@@ -333,13 +334,16 @@ public:
         {
             switch (which)
             {
-                case Type::EMPTY:            return 0;
-                case Type::CROSS:            return 0;
+                case Type::EMPTY:
+                    return 0;
+                case Type::CROSS:
+                    return 0;
 
-            #define M(NAME) \
-                case Type::NAME: return NAME ? NAME->size() : 0;
-                APPLY_FOR_JOIN_VARIANTS(M)
-            #undef M
+#define M(NAME) \
+    case Type::NAME: \
+        return NAME ? NAME->size() : 0;
+                    APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
             }
         }
 
@@ -347,13 +351,16 @@ public:
         {
             switch (which)
             {
-                case Type::EMPTY:            return 0;
-                case Type::CROSS:            return 0;
+                case Type::EMPTY:
+                    return 0;
+                case Type::CROSS:
+                    return 0;
 
-            #define M(NAME) \
-                case Type::NAME: return NAME ? NAME->getBufferSizeInBytes() : 0;
-                APPLY_FOR_JOIN_VARIANTS(M)
-            #undef M
+#define M(NAME) \
+    case Type::NAME: \
+        return NAME ? NAME->getBufferSizeInBytes() : 0;
+                    APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
             }
         }
 
@@ -361,16 +368,19 @@ public:
         {
             switch (which)
             {
-                case Type::EMPTY:            return 0;
-                case Type::CROSS:            return 0;
+                case Type::EMPTY:
+                    return 0;
+                case Type::CROSS:
+                    return 0;
 
-            #define M(NAME) \
-                case Type::NAME: return NAME ? NAME->getBufferSizeInCells() : 0;
-                APPLY_FOR_JOIN_VARIANTS(M)
-            #undef M
+#define M(NAME) \
+    case Type::NAME: \
+        return NAME ? NAME->getBufferSizeInCells() : 0;
+                    APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
             }
         }
-/// NOLINTEND(bugprone-macro-parentheses)
+        /// NOLINTEND(bugprone-macro-parentheses)
     };
 
     using MapsOne = MapsTemplate<RowRef>;
@@ -395,7 +405,8 @@ public:
 
         NullMapHolder() = default;
         explicit NullMapHolder(const ScatteredColumns * columns_, ColumnPtr column_)
-            : columns(columns_), column(column_)
+            : columns(columns_)
+            , column(column_)
         {
             // we can cache the selector size at construction to make the holder robust
             // even if columns are moved/cleared later
@@ -459,10 +470,7 @@ public:
 
     /// We keep correspondence between used_flags and hash table internal buffer.
     /// Hash table cannot be modified during HashJoin lifetime and must be protected with lock.
-    void setLock(TableLockHolder rwlock_holder)
-    {
-        storage_join_lock = rwlock_holder;
-    }
+    void setLock(TableLockHolder rwlock_holder) { storage_join_lock = rwlock_holder; }
 
     void reuseJoinedData(const HashJoin & join);
 

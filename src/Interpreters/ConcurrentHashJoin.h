@@ -1,15 +1,15 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <Analyzer/IQueryTreeNode.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashTablesStatistics.h>
 #include <Interpreters/IJoin.h>
+#include <Interpreters/TableJoin.h>
 #include <base/defines.h>
 #include <base/types.h>
 #include <Common/ThreadPool_fwd.h>
-#include <Interpreters/TableJoin.h>
-#include <atomic>
 
 namespace DB
 {
@@ -40,7 +40,6 @@ struct SelectQueryInfo;
  */
 class ConcurrentHashJoin : public IJoin
 {
-
 public:
     /// `external_join_threshold_` is the auto-spill memory cap supplied by `SpillingHashJoin`
     /// when this instance is wrapped. It bounds statistics-driven preallocation so the
@@ -59,6 +58,8 @@ public:
 
     std::string getName() const override { return "ConcurrentHashJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     bool addBlockToJoin(const Block & right_block_, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;
@@ -82,21 +83,23 @@ public:
     bool supportParallelNonJoinedBlocksProcessing() const override;
 
     IBlocksStreamPtr getNonJoinedBlocks(
-        const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
-        size_t stream_idx, size_t num_streams) const override;
+        const Block & left_sample_block,
+        const Block & result_sample_block,
+        UInt64 max_block_size,
+        size_t stream_idx,
+        size_t num_streams) const override;
 
-    bool isCloneSupported() const override
-    {
-        return getTotals().empty() && getTotalRowCount() == 0;
-    }
+    bool isCloneSupported() const override { return getTotals().empty() && getTotalRowCount() == 0; }
 
-    std::shared_ptr<IJoin> clone(const std::shared_ptr<TableJoin> & table_join_, SharedHeader, SharedHeader right_sample_block_) const override
+    std::shared_ptr<IJoin>
+    clone(const std::shared_ptr<TableJoin> & table_join_, SharedHeader, SharedHeader right_sample_block_) const override
     {
         return std::make_shared<ConcurrentHashJoin>(
             table_join_, slots, right_sample_block_, stats_collecting_params, any_take_last_row, external_join_threshold);
     }
 
-    std::shared_ptr<IJoin> cloneNoParallel(const std::shared_ptr<TableJoin> & table_join_, SharedHeader, SharedHeader right_sample_block_) const override
+    std::shared_ptr<IJoin>
+    cloneNoParallel(const std::shared_ptr<TableJoin> & table_join_, SharedHeader, SharedHeader right_sample_block_) const override
     {
         return std::make_shared<HashJoin>(table_join_, right_sample_block_, any_take_last_row);
     }

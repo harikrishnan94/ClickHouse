@@ -49,6 +49,7 @@ namespace Setting
     extern const SettingsBool collect_hash_table_stats_during_joins;
     extern const SettingsUInt64 max_size_to_preallocate_for_joins;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 partitioned_hash_join_num_partitions;
 
     extern const SettingsBool joined_block_split_single_row;
     extern const SettingsBool parallel_non_joined_rows_processing;
@@ -163,6 +164,7 @@ JoinSettings::JoinSettings(const Settings & query_settings)
     collect_hash_table_stats_during_joins = query_settings[Setting::collect_hash_table_stats_during_joins];
     max_size_to_preallocate_for_joins = query_settings[Setting::max_size_to_preallocate_for_joins];
     parallel_hash_join_threshold = query_settings[Setting::parallel_hash_join_threshold];
+    partitioned_hash_join_num_partitions = query_settings[Setting::partitioned_hash_join_num_partitions];
 
     temporary_files_codec = query_settings[Setting::temporary_files_codec];
     temporary_files_buffer_size = query_settings[Setting::temporary_files_buffer_size];
@@ -211,6 +213,7 @@ JoinSettings::JoinSettings(const QueryPlanSerializationSettings & settings)
     collect_hash_table_stats_during_joins = settings[QueryPlanSerializationSetting::collect_hash_table_stats_during_joins];
     max_size_to_preallocate_for_joins = settings[QueryPlanSerializationSetting::max_size_to_preallocate_for_joins];
     parallel_hash_join_threshold = settings[QueryPlanSerializationSetting::parallel_hash_join_threshold];
+    partitioned_hash_join_num_partitions = 0; /// not serialized in plan settings yet; defaults to auto
 
     joined_block_split_single_row = settings[QueryPlanSerializationSetting::joined_block_split_single_row];
     parallel_non_joined_rows_processing = settings[QueryPlanSerializationSetting::parallel_non_joined_rows_processing];

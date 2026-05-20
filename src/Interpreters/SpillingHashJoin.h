@@ -71,6 +71,8 @@ public:
     std::string getName() const override;
     const TableJoin & getTableJoin() const override { return *table_join; }
 
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     bool addBlockToJoin(const Block & block, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     void initialize(const Block & sample_block) override;

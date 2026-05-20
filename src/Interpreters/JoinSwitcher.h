@@ -21,45 +21,27 @@ public:
     std::string getName() const override { return "JoinSwitcher"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
 
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
+
     /// Add block of data from right hand of JOIN into current join object.
     /// If join-in-memory memory limit exceeded switches to join-on-disk and continue with it.
     /// @returns false, if join-on-disk disk limit exceeded
     bool addBlockToJoin(const Block & block, bool check_limits) override;
 
-    void checkTypesOfKeys(const Block & block) const override
-    {
-        join->checkTypesOfKeys(block);
-    }
+    void checkTypesOfKeys(const Block & block) const override { join->checkTypesOfKeys(block); }
 
-    JoinResultPtr joinBlock(Block block) override
-    {
-        return join->joinBlock(block);
-    }
+    JoinResultPtr joinBlock(Block block) override { return join->joinBlock(block); }
 
-    const Block & getTotals() const override
-    {
-        return join->getTotals();
-    }
+    const Block & getTotals() const override { return join->getTotals(); }
 
-    void setTotals(const Block & block) override
-    {
-        join->setTotals(block);
-    }
+    void setTotals(const Block & block) override { join->setTotals(block); }
 
-    size_t getTotalRowCount() const override
-    {
-        return join->getTotalRowCount();
-    }
+    size_t getTotalRowCount() const override { return join->getTotalRowCount(); }
 
-    size_t getTotalByteCount() const override
-    {
-        return join->getTotalByteCount();
-    }
+    size_t getTotalByteCount() const override { return join->getTotalByteCount(); }
 
-    bool alwaysReturnsEmptySet() const override
-    {
-        return join->alwaysReturnsEmptySet();
-    }
+    bool alwaysReturnsEmptySet() const override { return join->alwaysReturnsEmptySet(); }
 
     IBlocksStreamPtr
     getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override
@@ -67,15 +49,9 @@ public:
         return join->getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size);
     }
 
-    IBlocksStreamPtr getDelayedBlocks() override
-    {
-        return join->getDelayedBlocks();
-    }
+    IBlocksStreamPtr getDelayedBlocks() override { return join->getDelayedBlocks(); }
 
-    bool hasDelayedBlocks() const override
-    {
-        return join->hasDelayedBlocks();
-    }
+    bool hasDelayedBlocks() const override { return join->hasDelayedBlocks(); }
 
     void onBuildPhaseFinish() override { join->onBuildPhaseFinish(); }
 

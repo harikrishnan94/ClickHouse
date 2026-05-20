@@ -1222,6 +1222,31 @@ bool TableJoin::allowParallelHashJoin() const
     return ::DB::allowParallelHashJoin(join_algorithms, kind(), strictness(), isSpecialStorage(), oneDisjunct());
 }
 
+bool TableJoin::allowPartitionedHashJoin() const
+{
+    /// Spec §2.4 (v1-scope): single ON-disjunct required.
+    if (!oneDisjunct())
+        return false;
+
+    /// Spec §2.5 (v1-scope): no special storage (FilledRight semantics).
+    if (isSpecialStorage())
+        return false;
+
+    /// Spec §2.3: ASOF is not supported (requires ordered probe, not partition-based).
+    if (strictness() == JoinStrictness::Asof)
+        return false;
+
+    /// CROSS / COMMA / PASTE do not have equi-join keys.
+    if (kind() == JoinKind::Cross || kind() == JoinKind::Comma || kind() == JoinKind::Paste)
+        return false;
+
+    /// Check that the user explicitly listed partitioned_hash in join_algorithm.
+    if (std::ranges::none_of(join_algorithms, [](auto algo) { return algo == JoinAlgorithm::PARTITIONED_HASH; }))
+        return false;
+
+    return true;
+}
+
 ActionsDAG TableJoin::createJoinedBlockActions(ContextPtr context, PreparedSetsPtr prepared_sets) const
 {
     ASTPtr expression_list = rightKeysList();
