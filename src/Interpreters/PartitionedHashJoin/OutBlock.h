@@ -21,7 +21,7 @@ inline size_t nextOutBlockCap(size_t prev)
 }
 
 /// One slab in a partition's output chain.
-/// The header and all K column buffers are co-located in a single BumpArena bump.
+/// The header and all K column buffers are co-located in a single arena allocation.
 /// Layout: [OutBlock header (64-aligned)] [col[0] buffer] [col[1] buffer] ...
 struct alignas(64) OutBlock
 {

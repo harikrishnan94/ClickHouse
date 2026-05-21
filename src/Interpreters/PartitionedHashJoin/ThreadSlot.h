@@ -1,11 +1,11 @@
 #pragma once
 
-#include <Interpreters/PartitionedHashJoin/BumpArena.h>
 #include <Interpreters/PartitionedHashJoin/PartitionOutput.h>
 #include <Interpreters/PartitionedHashJoin/ProbePartitions.h>
 #include <Interpreters/PartitionedHashJoin/RadixShuffleColumn.h>
 #include <Interpreters/PartitionedHashJoin/ShuffleScratch.h>
 #include <Interpreters/PartitionedHashJoin/ShuffleSpec.h>
+#include <Common/Arena.h>
 
 #include <cstddef>
 #include <memory>
@@ -17,7 +17,13 @@ namespace DB
 struct ThreadSlot
 {
     ShuffleScratch scratch;
-    BumpArena arena;
+
+    /// Per-thread arena for OutBlock headers and column buffers.
+    /// Configured for flat 64 MiB chunks (no exponential ramp) to match the
+    /// allocation pattern PHJ was tuned against, and tracked by MemoryTracker
+    /// via Allocator<false>.
+    static constexpr size_t kArenaChunkSize = 64ULL << 20;
+    Arena arena{kArenaChunkSize, 1, kArenaChunkSize};
 
     /// Build side (right table): typed scatter into typed OutBlock chains.
     std::vector<PartitionOutput> build_parts;

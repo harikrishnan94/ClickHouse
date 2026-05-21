@@ -1,7 +1,7 @@
 #pragma once
 
-#include <Interpreters/PartitionedHashJoin/BumpArena.h>
 #include <Interpreters/PartitionedHashJoin/OutBlock.h>
+#include <Common/Arena.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -22,9 +22,10 @@ struct PartitionOutput
 
 /// Allocate a new OutBlock with K column buffers from `arena`, attach to the front of `po`.
 /// Each column buffer holds `cap` elements of size `elem_bytes[k]`.
+/// The allocation is 64-byte aligned (required by `alignas(64) OutBlock` and SWWC scatter).
 void growPartitionOutput(
     PartitionOutput & po,
-    BumpArena & arena,
+    Arena & arena,
     size_t cap,
     const size_t * elem_bytes, /// array of K element sizes in bytes
     size_t num_cols);

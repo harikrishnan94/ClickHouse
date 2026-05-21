@@ -39,7 +39,7 @@ static void shuffleBlockIntoPartitionsImpl(
     std::vector<PartitionOutput> & parts,
     std::vector<RadixShuffleColumnPtr> & cols,
     ShuffleScratch & scratch,
-    BumpArena & arena)
+    Arena & arena)
 {
     const size_t rows = block.rows();
     if (rows == 0)
@@ -165,7 +165,7 @@ void shuffleBlockIntoPartitions(
     std::vector<PartitionOutput> & parts,
     std::vector<RadixShuffleColumnPtr> & cols,
     ShuffleScratch & scratch,
-    BumpArena & arena)
+    Arena & arena)
 {
     if (spec.use_swwc)
         shuffleBlockIntoPartitionsImpl<true>(block, spec, parts, cols, scratch, arena);
