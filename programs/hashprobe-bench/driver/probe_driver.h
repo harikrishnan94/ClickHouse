@@ -83,18 +83,25 @@ public:
     /// scatter call and appends a ProbeBlockEntry to probe_block_log_ (with
     /// result_emit_wall_ns = 0, phase_probe/phase_generate all-zero, output_rows = 0).
     ///
-    /// Call drainDelayedBlocks() after all scatter calls to get actual results.
+    /// Call `drainDelayedBlocks` after all scatter calls to get actual results.
     ProbeBlockEntry scatterPhjBlock(Block block, uint64_t probe_block_idx);
 
-    /// Phase 2 of the PHJ probe: drain the IBlocksStream from getDelayedBlocks().
+    /// Phase 2 of the PHJ probe: drain the `IBlocksStream` from `getDelayedBlocks`.
     ///
-    /// Each call to stream->next() processes one partition (build-HT + probe + gen).
-    /// The per-partition ProbePoint callbacks (phj_build_ht_start/end, phj_probe_start/end,
-    /// phj_gen_start/end) are fired by DelayedBlocks.cpp and captured here into
-    /// PhjPartitionEntry objects, which are appended to phj_partition_log_.
+    /// Each call to `IBlocksStream::next` processes one partition (`build_ht` + `probe` + `gen`).
+    /// The per-partition `ProbePoint` callbacks (`phj_build_ht_start`/`phj_build_ht_end`,
+    /// `phj_probe_start`/`phj_probe_end`, `phj_gen_start`/`phj_gen_end`) are fired by
+    /// `DelayedBlocks.cpp` and captured here into `PhjPartitionEntry` objects, which are
+    /// appended to `phj_partition_log_`.
     ///
     /// Total output rows are accumulated into probe_block_log_ entries (amortised).
     void drainDelayedBlocks(HwCounters * hw_counters = nullptr);
+
+    /// Drain PHJ delayed blocks with one shared stream and `max_threads` worker threads.
+    ///
+    /// Returns summed worker CPU time in nanoseconds. Per-partition `build_ht`,
+    /// `probe`, and `gen` timing is captured through the PHJ probe hooks.
+    double drainDelayedBlocksParallel(uint32_t max_threads, bool use_hw_counters = false);
 
     // ── Log accessors ──────────────────────────────────────────────────────────
 
@@ -107,12 +114,14 @@ public:
     /// Per-output-block timing log (H2, C.4).  One entry per next() call across all blocks.
     const std::vector<OutputBlockEntry> & getOutputBlockLog() const { return output_block_log_; }
 
-    /// PHJ per-partition log.  Populated by drainDelayedBlocks(); empty for hash algorithms.
+    /// PHJ per-partition log.  Populated by `drainDelayedBlocks`; empty for hash algorithms.
     const std::vector<PhjPartitionEntry> & getPhjPartitionLog() const { return phj_partition_log_; }
 
 private:
     std::shared_ptr<IJoin> join_;
     OutputSink sink_;
+
+    double drainDelayedBlocksImpl(IBlocksStreamPtr delayed_blocks, uint32_t max_threads, bool use_hw_counters, HwCounters * hw_counters);
 
     std::vector<CallerTidEntry> caller_tid_log_;
     std::vector<ProbeBlockEntry> probe_block_log_;

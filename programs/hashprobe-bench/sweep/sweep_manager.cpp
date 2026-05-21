@@ -30,6 +30,7 @@
 #    pragma clang diagnostic pop
 #endif
 
+#include <atomic>
 #include <Formats/NativeWriter.h>
 #include <IO/WriteBufferFromFile.h>
 #include "../generator/native_writer.h"
@@ -56,6 +57,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <string>
 #include <thread>
@@ -79,13 +81,6 @@ static uint64_t clockNsRaw()
     struct timespec ts{};
     clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL + static_cast<uint64_t>(ts.tv_nsec);
-}
-
-static double threadCpuNs()
-{
-    struct timespec ts{};
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-    return static_cast<double>(ts.tv_sec) * 1e9 + static_cast<double>(ts.tv_nsec);
 }
 
 // ── Key / config helpers ──────────────────────────────────────────────────────
@@ -198,10 +193,10 @@ struct ProbeRunResult
 };
 
 /// Execute one PHJ probe rep.
-/// Phase 1 (scatter): partition proto_blocks across max_threads threads, each calling
-///   ProbeDriver::scatterPhjBlock() per block (fires joinBlock, measures scatter time).
-/// Phase 2 (delayed drain): single-threaded drain of getDelayedBlocks() stream,
-///   capturing per-partition build_ht/probe/gen timing.
+/// Phase 1 (scatter): partition `proto_blocks` across `max_threads` threads, each calling
+///   `ProbeDriver::scatterPhjBlock` per block (fires `joinBlock`, measures scatter time).
+/// Phase 2 (delayed drain): drain one shared `getDelayedBlocks` stream across
+///   `max_threads` workers, matching the production delayed-worker shape.
 static ProbeRunResult runPhjProbe(
     const std::shared_ptr<IJoin> & join,
     const std::vector<Block> & proto_blocks,
@@ -211,6 +206,9 @@ static ProbeRunResult runPhjProbe(
 {
     ProbeRunResult result;
     const size_t total_blocks = proto_blocks.size();
+
+    if (auto * phj = dynamic_cast<PartitionedHashJoin *>(join.get()))
+        phj->resetForReprobe();
 
     // ── Phase 1: multi-threaded scatter ──────────────────────────────────────
     // Each thread scatters its slice via joinBlock (no output yet).
@@ -278,30 +276,20 @@ static ProbeRunResult runPhjProbe(
             result.probe_block_log.push_back(std::move(e));
     }
 
-    // ── Phase 2: single-threaded delayed-blocks drain ─────────────────────────
-    // The delayed-blocks stream is owned by the join and not thread-safe.
-    HwCounters hw_ctr;
-    const bool hw_ok = use_hw && hw_ctr.open();
-    // Enable the counter group now so it is running when the first
-    // PHJ_PHASE_POINT fires inside drainDelayedBlocks.  Without start(),
-    // the kernel never assigns a PMU register and snapshot() returns false.
-    if (hw_ok)
-        hw_ctr.start();
-
-    std::vector<Block> output_blocks_local;
+    // ── Phase 2: parallel delayed-blocks drain ───────────────────────────────
+    std::atomic<uint64_t> output_rows{0};
     ProbeDriver drain_driver(
         join,
-        [&result, &output_blocks_local](Block b)
+        [&output_rows](Block b)
         {
-            result.output_rows += b.rows();
-            output_blocks_local.push_back(std::move(b));
+            output_rows.fetch_add(b.rows(), std::memory_order_relaxed);
         });
 
     const double t0_drain_wall = static_cast<double>(clockNsRaw());
-    const double t0_drain_cpu = static_cast<double>(threadCpuNs());
-    drain_driver.drainDelayedBlocks(hw_ok ? &hw_ctr : nullptr);
+    const double drain_cpu_ns = drain_driver.drainDelayedBlocksParallel(max_threads, use_hw);
     result.result_emit_wall_ms = (static_cast<double>(clockNsRaw()) - t0_drain_wall) / 1e6;
-    result.result_emit_cpu_ms = (threadCpuNs() - t0_drain_cpu) / 1e6;
+    result.result_emit_cpu_ms = drain_cpu_ns / 1e6;
+    result.output_rows = output_rows.load(std::memory_order_relaxed);
 
     result.phj_partition_log = drain_driver.getPhjPartitionLog();
 
@@ -1230,16 +1218,6 @@ Artifact SweepManager::run()
 
                     for (uint32_t rep = 0; rep < cfg_.reps; ++rep)
                     {
-                        // For PHJ: reset probe-side state before each rep so that
-                        // every rep runs a full scatter+drain cycle.  Rep 0 needs no
-                        // reset (the join is freshly scattered); reps 1+ would otherwise
-                        // skip the drain because delayed_blocks_given is already true.
-                        if (is_phj && rep > 0)
-                        {
-                            if (auto * phj = dynamic_cast<PartitionedHashJoin *>(bdo.join.get()))
-                                phj->resetForReprobe();
-                        }
-
                         const bool hw_mode = (std::string(cm_cstr) == "hw");
                         prepareCache(bdo.join.get(), cfg_.cache_mode);
                         auto run = is_phj ? runPhjProbe(bdo.join, proto_blocks, mt, cfg_.probe_rows, hw_mode)

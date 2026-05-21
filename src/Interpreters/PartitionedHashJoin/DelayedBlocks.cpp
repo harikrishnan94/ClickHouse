@@ -17,8 +17,8 @@
 
 // PHJ per-partition phase hook: fires the harness probe-point callback.
 // The macro is a no-op unless the harness has registered a callback via
-// setProbePointCallback() — production builds see zero overhead.
-#define PHJ_PHASE_POINT(name) ::DB::HashProbeBench::fireProbePoint(::DB::HashProbeBench::ProbePoint::name)
+// `setProbePointCallback` — production builds see zero overhead.
+#define PHJ_PHASE_POINT(partition, name) ::DB::HashProbeBench::fireProbePoint(::DB::HashProbeBench::ProbePoint::name, partition)
 
 namespace DB
 {
@@ -164,6 +164,8 @@ PartitionedHashJoinDelayedBlocks::~PartitionedHashJoinDelayedBlocks() = default;
 
 bool PartitionedHashJoinDelayedBlocks::initStateForPartition(WorkerState & state, size_t p) const
 {
+    state.partition = p;
+
     const ShuffleSpec & bspec = join_.buildSpec();
     /// Pipeline contract: getDelayedBlocks() is only called after all build- and
     /// probe-side ingest is done, so slots[] is stable here.  num_slots_created
@@ -188,7 +190,7 @@ bool PartitionedHashJoinDelayedBlocks::initStateForPartition(WorkerState & state
 
     auto part_hj = std::make_shared<HashJoin>(join_.tableJoin(), join_.rightSampleBlock(), join_.anyTakeLastRow(), total_build);
 
-    PHJ_PHASE_POINT(phj_build_ht_start);
+    PHJ_PHASE_POINT(state.partition, phj_build_ht_start);
     bool any_build_added = false;
     for (size_t s = 0; s < n_slots; ++s)
     {
@@ -208,7 +210,7 @@ bool PartitionedHashJoinDelayedBlocks::initStateForPartition(WorkerState & state
     part_hj->onBuildPhaseFinish();
     if (part_hj->hasPostBuildPhase())
         part_hj->runPostBuildPhase();
-    PHJ_PHASE_POINT(phj_build_ht_end);
+    PHJ_PHASE_POINT(state.partition, phj_build_ht_end);
 
     // LEFT/FULL with empty build: HashJoin::onBuildPhaseFinish() has promoted
     // ALL → RightAny (all_values_unique is true for an empty HT), which
@@ -288,7 +290,6 @@ bool PartitionedHashJoinDelayedBlocks::initStateForPartition(WorkerState & state
     }
 
     state.active = true;
-    state.partition = p;
     state.part_hj = std::move(part_hj);
     state.probe_hj = std::move(probe_hj);
     state.has_non_joined = state.part_hj->hasNonJoinedRows() && join_.hasNonJoinedHeaders();
@@ -312,11 +313,14 @@ Block PartitionedHashJoinDelayedBlocks::produceFromState(WorkerState & state) co
         if (data.is_last)
         {
             state.current_result.reset();
-            PHJ_PHASE_POINT(phj_gen_end);
-            PHJ_PHASE_POINT(phj_probe_end);
+            PHJ_PHASE_POINT(state.partition, phj_gen_end);
+            PHJ_PHASE_POINT(state.partition, phj_probe_end);
         }
         if (!data.block.empty())
+        {
+            ::DB::HashProbeBench::setProbePointPartition(state.partition);
             return std::move(data.block);
+        }
     }
 
     // 2) Advance through the coalesced probe blocks for this partition.
@@ -327,20 +331,23 @@ Block PartitionedHashJoinDelayedBlocks::produceFromState(WorkerState & state) co
         if (probe_blk.rows() == 0)
             continue;
 
-        PHJ_PHASE_POINT(phj_probe_start);
+        PHJ_PHASE_POINT(state.partition, phj_probe_start);
         state.current_result = state.probe_hj->joinBlock(std::move(probe_blk));
-        PHJ_PHASE_POINT(phj_gen_start);
+        PHJ_PHASE_POINT(state.partition, phj_gen_start);
         while (state.current_result)
         {
             auto data = state.current_result->next();
             if (data.is_last)
             {
                 state.current_result.reset();
-                PHJ_PHASE_POINT(phj_gen_end);
-                PHJ_PHASE_POINT(phj_probe_end);
+                PHJ_PHASE_POINT(state.partition, phj_gen_end);
+                PHJ_PHASE_POINT(state.partition, phj_probe_end);
             }
             if (!data.block.empty())
+            {
+                ::DB::HashProbeBench::setProbePointPartition(state.partition);
                 return std::move(data.block);
+            }
         }
         // current_result was exhausted without any non-empty block (empty probe
         // block or zero-match partition slice). The _end hooks already fired
@@ -361,7 +368,10 @@ Block PartitionedHashJoinDelayedBlocks::produceFromState(WorkerState & state) co
             {
                 Block b = state.non_joined_stream->next();
                 if (!b.empty())
+                {
+                    ::DB::HashProbeBench::setProbePointPartition(state.partition);
                     return b;
+                }
             }
             state.non_joined_stream.reset();
         }

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <limits>
+
 namespace DB::HashProbeBench
 {
 
@@ -28,8 +31,11 @@ enum class ProbePoint
 
 using ProbePointCallback = void (*)(ProbePoint, void *);
 
+inline constexpr size_t INVALID_PROBE_POINT_PARTITION = std::numeric_limits<size_t>::max();
+
 inline thread_local ProbePointCallback g_probe_point_callback = nullptr;
 inline thread_local void * g_probe_point_context = nullptr;
+inline thread_local size_t g_probe_point_partition = INVALID_PROBE_POINT_PARTITION;
 
 inline void setProbePointCallback(ProbePointCallback callback, void * context)
 {
@@ -43,10 +49,31 @@ inline void clearProbePointCallback()
     g_probe_point_context = nullptr;
 }
 
+inline void setProbePointPartition(size_t partition)
+{
+    g_probe_point_partition = partition;
+}
+
+inline void clearProbePointPartition()
+{
+    g_probe_point_partition = INVALID_PROBE_POINT_PARTITION;
+}
+
+inline size_t getProbePointPartition()
+{
+    return g_probe_point_partition;
+}
+
 inline void fireProbePoint(ProbePoint point)
 {
     if (g_probe_point_callback)
         g_probe_point_callback(point, g_probe_point_context);
+}
+
+inline void fireProbePoint(ProbePoint point, size_t partition)
+{
+    setProbePointPartition(partition);
+    fireProbePoint(point);
 }
 
 } // namespace DB::HashProbeBench

@@ -17,8 +17,15 @@
 #include <Interpreters/HashJoin/ScatteredBlock.h>
 #include <Common/ProfileEvents.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <ctime>
+#include <exception>
+#include <map>
+#include <mutex>
+#include <numeric>
+#include <stdexcept>
+#include <thread>
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -62,6 +69,7 @@ static uint64_t get_tid()
 
 struct PhaseSnapshot
 {
+    uint64_t tid = 0;
     uint64_t wall_ns = 0;
     uint64_t cpu_ns = 0;
     uint64_t cycles = 0;
@@ -88,6 +96,7 @@ struct PhaseHookContext
 static PhaseSnapshot takePhaseSnapshot(HwCounters * hw)
 {
     PhaseSnapshot s;
+    s.tid = get_tid();
     s.wall_ns = clock_ns_raw();
     s.cpu_ns = thread_cpu_ns();
     s.valid = true;
@@ -109,6 +118,10 @@ static void accumulatePhase(PhaseMetrics & dst, const PhaseSnapshot & begin, con
         return;
 
     dst.wall_ns += static_cast<double>(nonNegativeDelta(end.wall_ns, begin.wall_ns));
+
+    if (begin.tid != end.tid)
+        return;
+
     dst.cpu_ns += static_cast<double>(nonNegativeDelta(end.cpu_ns, begin.cpu_ns));
 
     if (!begin.hw_valid || !end.hw_valid)
@@ -335,91 +348,183 @@ ProbeBlockEntry ProbeDriver::scatterPhjBlock(Block block, uint64_t probe_block_i
 
 // ── PartitionedHashJoin delayed-blocks drain ───────────────────────────────────
 
-void ProbeDriver::drainDelayedBlocks(HwCounters * hw_counters)
+double ProbeDriver::drainDelayedBlocksImpl(
+    IBlocksStreamPtr delayed,
+    uint32_t max_threads,
+    bool use_hw_counters,
+    HwCounters * single_thread_hw_counters)
 {
-    // Per-partition phase accumulator.
-    // The phj_build_ht/probe/gen hooks are fired by DelayedBlocks.cpp inside
-    // the same thread that calls next(); we install a ProbePointCallback here.
-    // PartitionContext persists across all delayed->next() calls so that
-    // phase snapshots started in one call can be closed in a later call
-    // (the state machine may return a block mid-partition).  The entry is
-    // flushed to the log only when the *next* partition's phj_build_ht_start
-    // fires (or at the end of the loop), so all phase data for one partition
-    // accumulates into a single PhjPartitionEntry regardless of how many
-    // calls delayed->next() takes to drain it.
-    struct PartitionContext
+    if (!delayed)
+        return 0.0;
+
+    max_threads = std::max<uint32_t>(1, max_threads);
+
+    struct SharedPartitionContext
     {
-        PhjPartitionEntry entry;
-        PhaseSnapshot build_ht_start{};
-        PhaseSnapshot probe_start{};
-        PhaseSnapshot gen_start{};
-        HwCounters * hw = nullptr;
-        uint32_t next_partition_idx = 0;
-        bool entry_active = false;
-        std::vector<PhjPartitionEntry> * log = nullptr;
+        struct PartitionState
+        {
+            PhjPartitionEntry entry;
+            PhaseSnapshot build_ht_start{};
+            PhaseSnapshot probe_start{};
+            PhaseSnapshot gen_start{};
+        };
+
+        std::mutex mutex;
+        std::map<size_t, PartitionState> partitions;
+
+        void onProbePoint(ProbePoint pt, size_t partition, HwCounters * hw)
+        {
+            const PhaseSnapshot now = takePhaseSnapshot(hw);
+            std::lock_guard lock(mutex);
+
+            auto & state = partitions[partition];
+            state.entry.partition_idx = static_cast<uint32_t>(partition);
+
+            switch (pt)
+            {
+                case ProbePoint::phj_build_ht_start:
+                    state = PartitionState{};
+                    state.entry.partition_idx = static_cast<uint32_t>(partition);
+                    state.build_ht_start = now;
+                    break;
+                case ProbePoint::phj_build_ht_end:
+                    accumulatePhase(state.entry.phase_build_ht, state.build_ht_start, now);
+                    break;
+                case ProbePoint::phj_probe_start:
+                    state.probe_start = now;
+                    break;
+                case ProbePoint::phj_probe_end:
+                    accumulatePhase(state.entry.phase_probe, state.probe_start, now);
+                    break;
+                case ProbePoint::phj_gen_start:
+                    state.gen_start = now;
+                    break;
+                case ProbePoint::phj_gen_end:
+                    accumulatePhase(state.entry.phase_gen, state.gen_start, now);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        void addOutputRows(size_t partition, uint64_t rows)
+        {
+            std::lock_guard lock(mutex);
+            auto & state = partitions[partition];
+            state.entry.partition_idx = static_cast<uint32_t>(partition);
+            state.entry.output_rows += rows;
+        }
+
+        std::vector<PhjPartitionEntry> finish()
+        {
+            std::lock_guard lock(mutex);
+            std::vector<PhjPartitionEntry> result;
+            result.reserve(partitions.size());
+            for (const auto & [_, state] : partitions)
+                result.push_back(state.entry);
+            return result;
+        }
     };
 
-    PartitionContext ctx;
-    ctx.hw = hw_counters;
-    ctx.log = &phj_partition_log_;
+    struct ThreadPartitionContext
+    {
+        SharedPartitionContext * shared = nullptr;
+        HwCounters * hw = nullptr;
+    };
 
     auto phjCallback = [](ProbePoint pt, void * raw)
     {
-        auto & c = *static_cast<PartitionContext *>(raw);
-        switch (pt)
+        const size_t partition = getProbePointPartition();
+        if (partition == INVALID_PROBE_POINT_PARTITION)
+            return;
+
+        auto & c = *static_cast<ThreadPartitionContext *>(raw);
+        c.shared->onProbePoint(pt, partition, c.hw);
+    };
+
+    SharedPartitionContext shared_context;
+    std::vector<double> worker_cpu_ns(max_threads, 0.0);
+    std::vector<std::thread> threads;
+    threads.reserve(max_threads);
+
+    std::mutex exception_mutex;
+    std::exception_ptr first_exception;
+    auto captureException = [&]()
+    {
+        std::lock_guard lock(exception_mutex);
+        if (!first_exception)
+            first_exception = std::current_exception();
+    };
+
+    auto drainWorker = [&](uint32_t thread_idx, HwCounters * external_hw)
+    {
+        try
         {
-            case ProbePoint::phj_build_ht_start:
-                // A new partition is starting. Flush any completed entry first.
-                if (c.entry_active)
-                    c.log->push_back(c.entry);
-                c.entry = PhjPartitionEntry{};
-                c.entry.partition_idx = c.next_partition_idx++;
-                c.entry_active = true;
-                c.build_ht_start = takePhaseSnapshot(c.hw);
-                break;
-            case ProbePoint::phj_build_ht_end:
-                accumulatePhase(c.entry.phase_build_ht, c.build_ht_start, takePhaseSnapshot(c.hw));
-                break;
-            case ProbePoint::phj_probe_start:
-                c.probe_start = takePhaseSnapshot(c.hw);
-                break;
-            case ProbePoint::phj_probe_end:
-                accumulatePhase(c.entry.phase_probe, c.probe_start, takePhaseSnapshot(c.hw));
-                break;
-            case ProbePoint::phj_gen_start:
-                c.gen_start = takePhaseSnapshot(c.hw);
-                break;
-            case ProbePoint::phj_gen_end:
-                accumulatePhase(c.entry.phase_gen, c.gen_start, takePhaseSnapshot(c.hw));
-                break;
-            default:
-                break;
+            HwCounters local_hw;
+            HwCounters * hw = external_hw;
+            if (!hw && use_hw_counters)
+            {
+                if (local_hw.open())
+                {
+                    local_hw.start();
+                    hw = &local_hw;
+                }
+            }
+
+            ThreadPartitionContext ctx{&shared_context, hw};
+            ProbePointCallbackGuard phase_hook_guard(+phjCallback, &ctx);
+
+            const double t0_cpu = static_cast<double>(thread_cpu_ns());
+            while (!delayed->isFinished())
+            {
+                clearProbePointPartition();
+                Block out = delayed->next();
+                if (out.empty())
+                    continue;
+
+                const size_t partition = getProbePointPartition();
+                if (partition == INVALID_PROBE_POINT_PARTITION)
+                    throw std::runtime_error("[hashprobe-bench] PHJ delayed block had no partition attribution");
+
+                shared_context.addOutputRows(partition, out.rows());
+                sink_(std::move(out));
+            }
+            worker_cpu_ns[thread_idx] = static_cast<double>(thread_cpu_ns()) - t0_cpu;
+            clearProbePointPartition();
+        }
+        catch (...)
+        {
+            captureException();
         }
     };
 
-    // phjCallback is a captureless lambda → safely coerces to function pointer
-    setProbePointCallback(+phjCallback, &ctx);
-
-    auto delayed = join_->getDelayedBlocks();
-
-    while (delayed && !delayed->isFinished())
+    if (max_threads == 1)
     {
-        Block out = delayed->next();
-
-        // Emit output to sink and count rows into the current partition entry.
-        if (!out.empty())
-        {
-            if (ctx.entry_active)
-                ctx.entry.output_rows += out.rows();
-            sink_(std::move(out));
-        }
+        drainWorker(0, single_thread_hw_counters);
+    }
+    else
+    {
+        for (uint32_t t = 0; t < max_threads; ++t)
+            threads.emplace_back(drainWorker, t, nullptr);
+        for (auto & thread : threads)
+            thread.join();
     }
 
-    // Flush the last partition entry (if any).
-    if (ctx.entry_active)
-        phj_partition_log_.push_back(ctx.entry);
+    if (first_exception)
+        std::rethrow_exception(first_exception);
 
-    clearProbePointCallback();
+    phj_partition_log_ = shared_context.finish();
+    return std::accumulate(worker_cpu_ns.begin(), worker_cpu_ns.end(), 0.0);
+}
+
+void ProbeDriver::drainDelayedBlocks(HwCounters * hw_counters)
+{
+    drainDelayedBlocksImpl(join_->getDelayedBlocks(), 1, false, hw_counters);
+}
+
+double ProbeDriver::drainDelayedBlocksParallel(uint32_t max_threads, bool use_hw_counters)
+{
+    return drainDelayedBlocksImpl(join_->getDelayedBlocks(), max_threads, use_hw_counters, nullptr);
 }
 
 } // namespace DB::HashProbeBench
