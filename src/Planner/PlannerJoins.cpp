@@ -1214,19 +1214,38 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         if (!isSupportedByColumns(*right_table_expression_header, key_names_right, kept_payload))
             return nullptr;
 
-        /// Compute P: 0 = auto, otherwise use user setting (clamped downstream).
-        ///
-        /// Auto-pick targets 4 partitions per worker thread, floored at 64
-        /// (PartitionedHashJoin's minimum after nextPow2Clamped) and capped
-        /// at 1024. The previous L2-residency-driven heuristic ballooned P
-        /// to ~1024 on any non-tiny join (e.g. 200M-row build → 1024 mini
-        /// HashJoins per query), and the resulting per-partition alloc/free
-        /// churn dominated wall time via soft page faults. Smaller P keeps
-        /// each worker's per-partition cycle count low while leaving enough
-        /// stealable partitions to balance load.
+
+        /// Compute num_parts: 0 = auto from row estimate, otherwise use user setting (clamped).
         size_t num_parts = params.partitioned_hash_join_num_partitions;
+        if (num_parts == 0 && params.rhs_size_estimation)
+        {
+            /// Auto: target L2 residency (2 MiB per core).
+            /// Estimate bytes per row using key + payload column widths.
+            size_t row_bytes = 0;
+            for (const auto & name : key_names_right)
+            {
+                if (right_table_expression_header->has(name))
+                    row_bytes += fixedElemBytes(right_table_expression_header->getByName(name).type);
+            }
+            for (const auto & name : kept_payload)
+            {
+                if (right_table_expression_header->has(name))
+                    row_bytes += fixedElemBytes(right_table_expression_header->getByName(name).type);
+            }
+            if (row_bytes == 0)
+                row_bytes = 8; /// fallback
+            const size_t l2_bytes = 2ULL << 20; /// 2 MiB
+            const size_t raw_parts = (*params.rhs_size_estimation * row_bytes + l2_bytes - 1) / l2_bytes;
+            /// Next power of two, clamped [64, 1024].
+            size_t parts = 64;
+            while (parts < raw_parts && parts < 1024)
+                parts <<= 1;
+            num_parts = std::min(parts, size_t(1024));
+        }
         if (num_parts == 0)
-            num_parts = std::clamp<size_t>(params.max_threads * 4, 64, 1024);
+            num_parts = params.max_threads * 4; /// default fallback when no estimate available
+
+        num_parts = std::clamp<size_t>(roundUpToPowerOfTwoOrZero(num_parts), 64, 1024);
 
         return std::make_shared<PartitionedHashJoin>(
             table_join,
