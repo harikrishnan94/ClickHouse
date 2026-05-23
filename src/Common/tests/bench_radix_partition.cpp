@@ -2,11 +2,11 @@
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnsNumber.h>
-#include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
-#include <Common/RadixShuffle/RadixPartitioner.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
+#include <Common/RadixShuffle/RadixPartitioner.h>
 
 #include <algorithm>
 #include <atomic>
@@ -100,8 +100,7 @@ std::vector<ColumnSpec> buildColumnSpecs()
         {"UInt32", makeUInt32Col, std::make_shared<DataTypeUInt32>()},
         {"UInt64", makeUInt64Col, std::make_shared<DataTypeUInt64>()},
         {"String", makeStringCol, std::make_shared<DataTypeString>()},
-        {"Nullable(UInt32)", makeNullableUInt32Col,
-         std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>())},
+        {"Nullable(UInt32)", makeNullableUInt32Col, std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>())},
     };
 }
 
@@ -159,9 +158,7 @@ uint64_t runThread(
         part.process(cols);
         const auto t1 = std::chrono::steady_clock::now();
 
-        batch_times_ns.push_back(
-            static_cast<double>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+        batch_times_ns.push_back(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
 
         for (size_t k = 0; k < columns.size(); ++k)
             total_source_bytes += columns[k]->byteSize();
@@ -204,15 +201,13 @@ Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
     threads.reserve(T);
     for (size_t t = 0; t < T; ++t)
     {
-        threads.emplace_back([&, t]()
-        {
-            times_per_thread[t].reserve(batches_per_thread);
-            const uint64_t sb = runThread(
-                sp.schema, sp.primitives,
-                cols_per_thread[t], P, batches_per_thread, B,
-                times_per_thread[t]);
-            src_bytes_per_thread[t].store(sb);
-        });
+        threads.emplace_back(
+            [&, t]()
+            {
+                times_per_thread[t].reserve(batches_per_thread);
+                const uint64_t sb = runThread(sp.schema, sp.primitives, cols_per_thread[t], P, batches_per_thread, B, times_per_thread[t]);
+                src_bytes_per_thread[t].store(sb);
+            });
     }
     for (auto & thr : threads)
         thr.join();
@@ -231,9 +226,7 @@ Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
     uint64_t total_src_bytes = 0;
     for (const auto & s : src_bytes_per_thread)
         total_src_bytes += s.load();
-    const double bandwidth_gbs = (wall_sec > 0)
-        ? static_cast<double>(total_src_bytes) / wall_sec / 1e9
-        : 0.0;
+    const double bandwidth_gbs = (wall_sec > 0) ? static_cast<double>(total_src_bytes) / wall_sec / 1e9 : 0.0;
 
     return Result{spec.name, B, P, K, T, N, median_ns_per_row, bandwidth_gbs};
 }
@@ -262,15 +255,43 @@ CLIConfig parseCLI(int argc, char ** argv)
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
-        if (arg == "--csv" && i + 1 < argc)        { cfg.csv = true; cfg.csv_path = argv[++i]; }
-        else if (arg == "--csv")                    { cfg.csv = true; }
-        else if (arg == "--total-rows" && i + 1 < argc) { cfg.total_rows = std::stoull(argv[++i]); }
-        else if (arg == "--batch-size" && i + 1 < argc) { cfg.batch_sizes = {std::stoull(argv[++i])}; }
-        else if (arg == "--partitions" && i + 1 < argc) { cfg.partitions_list = {std::stoull(argv[++i])}; }
-        else if (arg == "--columns" && i + 1 < argc)    { cfg.columns_list = {std::stoull(argv[++i])}; }
-        else if (arg == "--threads" && i + 1 < argc)    { cfg.threads_list = {std::stoull(argv[++i])}; }
-        else if (arg == "--column-type" && i + 1 < argc) { cfg.column_type = argv[++i]; }
-        else if (arg == "--full-sweep")             { cfg.full_sweep = true; }
+        if (arg == "--csv" && i + 1 < argc)
+        {
+            cfg.csv = true;
+            cfg.csv_path = argv[++i];
+        }
+        else if (arg == "--csv")
+        {
+            cfg.csv = true;
+        }
+        else if (arg == "--total-rows" && i + 1 < argc)
+        {
+            cfg.total_rows = std::stoull(argv[++i]);
+        }
+        else if (arg == "--batch-size" && i + 1 < argc)
+        {
+            cfg.batch_sizes = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--partitions" && i + 1 < argc)
+        {
+            cfg.partitions_list = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--columns" && i + 1 < argc)
+        {
+            cfg.columns_list = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--threads" && i + 1 < argc)
+        {
+            cfg.threads_list = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--column-type" && i + 1 < argc)
+        {
+            cfg.column_type = argv[++i];
+        }
+        else if (arg == "--full-sweep")
+        {
+            cfg.full_sweep = true;
+        }
     }
     return cfg;
 }
@@ -280,8 +301,14 @@ void printHeader()
 {
     fmt::print(
         "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12} {:>14}\n",
-        "column_type", "batch", "P", "K", "T",
-        "total_rows", "ns/row(med)", "bandwidth_gbs");
+        "column_type",
+        "batch",
+        "P",
+        "K",
+        "T",
+        "total_rows",
+        "ns/row(med)",
+        "bandwidth_gbs");
     fmt::print("{}\n", std::string(80, '-'));
 }
 
@@ -289,8 +316,14 @@ void printResult(const Result & r)
 {
     fmt::print(
         "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12.2f} {:>14.2f}\n",
-        r.column_type, r.batch_size, r.partitions, r.columns, r.threads,
-        r.total_rows, r.median_ns_per_row, r.total_bandwidth_gbs);
+        r.column_type,
+        r.batch_size,
+        r.partitions,
+        r.columns,
+        r.threads,
+        r.total_rows,
+        r.median_ns_per_row,
+        r.total_bandwidth_gbs);
 }
 
 } // namespace

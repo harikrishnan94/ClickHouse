@@ -1031,10 +1031,7 @@ TEST(Reconstruct, PumpResume)
 
 
 /// Reconstruct column k from all buckets of a finished RadixPartitioner.
-MutableColumnPtr collectBuckets(
-    const rs::RadixPartitioner & part,
-    size_t col_k,
-    const IColumn & proto)
+MutableColumnPtr collectBuckets(const rs::RadixPartitioner & part, size_t col_k, const IColumn & proto)
 {
     MutableColumnPtr out = proto.cloneEmpty();
     out->reserve(0);
@@ -1056,10 +1053,7 @@ MutableColumnPtr collectBuckets(
                     sc2->getChars().reserve(bkt.total_varlen_bytes);
         }
         rs::ResumePosition pos{};
-        pos = part.primitives()[col_k].reconstruct(
-            part.primitives()[col_k], part.schema(),
-            bkt.views.data(), bkt.views.size(),
-            pos, *tmp);
+        pos = part.primitives()[col_k].reconstruct(part.primitives()[col_k], part.schema(), bkt.views.data(), bkt.views.size(), pos, *tmp);
         for (size_t r = 0; r < tmp->size(); ++r)
             out->insert((*tmp)[r]);
     }
@@ -1069,11 +1063,7 @@ MutableColumnPtr collectBuckets(
 
 /// Partition cols, reconstruct col_k from all buckets, assert multiset equality.
 void rxpRoundTrip(
-    const DB::Columns & cols,
-    const std::vector<DataTypePtr> & types,
-    size_t P,
-    size_t col_k,
-    const std::vector<size_t> & key_idxs = {0})
+    const DB::Columns & cols, const std::vector<DataTypePtr> & types, size_t P, size_t col_k, const std::vector<size_t> & key_idxs = {0})
 {
     const size_t N = cols[0]->size();
     auto sp = rs::buildSchemaAndPrimitives(types);
@@ -1119,9 +1109,7 @@ TEST(RadixPartitioner, MultiColumnUInt32String_RoundTrip)
     auto col0 = makeUInt32Column(N, 10);
     auto col1 = makeStringColumn(N, 11);
 
-    const std::vector<DataTypePtr> types = {
-        std::make_shared<DataTypeUInt32>(),
-        std::make_shared<DataTypeString>()};
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>(), std::make_shared<DataTypeString>()};
     DB::Columns cols{col0->getPtr(), col1->getPtr()};
 
     // Round-trip both columns independently.
@@ -1142,11 +1130,11 @@ TEST(RadixPartitioner, MultiKeyHash)
     auto c2 = makeUInt32Column(N, 3);
     auto c3 = makeFloat64Column(N, 4);
 
-    const std::vector<DataTypePtr> types = {
-        std::make_shared<DataTypeUInt32>(),
-        std::make_shared<DataTypeUInt64>(),
-        std::make_shared<DataTypeUInt32>(),
-        std::make_shared<DataTypeFloat64>()};
+    const std::vector<DataTypePtr> types
+        = {std::make_shared<DataTypeUInt32>(),
+           std::make_shared<DataTypeUInt64>(),
+           std::make_shared<DataTypeUInt32>(),
+           std::make_shared<DataTypeFloat64>()};
 
     auto sp = rs::buildSchemaAndPrimitives(types);
 
@@ -1163,8 +1151,7 @@ TEST(RadixPartitioner, MultiKeyHash)
 
     // Same per-partition row counts in both runs.
     for (size_t p = 0; p < P; ++p)
-        EXPECT_EQ(part1.bucket(p).total_rows, part2.bucket(p).total_rows)
-            << "partition " << p << " counts differ between runs";
+        EXPECT_EQ(part1.bucket(p).total_rows, part2.bucket(p).total_rows) << "partition " << p << " counts differ between runs";
 
     // Total == N.
     size_t total = 0;
@@ -1179,8 +1166,7 @@ TEST(RadixPartitioner, NullableStringRoundTrip)
     constexpr size_t N = 512;
     constexpr size_t P = 4;
     auto col = makeNullableStringColumn(N, 7);
-    const std::vector<DataTypePtr> types = {
-        std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>())};
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>())};
     DB::Columns cols{col->getPtr()};
     rxpRoundTrip(cols, types, P, 0);
 }

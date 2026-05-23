@@ -100,13 +100,13 @@ private:
     std::vector<ScatterState> scatter_states_;
 
     /// Per-batch scratch arrays (sized to batch_size_ at construction).
-    std::vector<uint32_t> hashes_;       ///< raw hash per row before reduction
-    std::vector<uint16_t> pids_;         ///< partition id per row
-    std::vector<size_t> hist_;           ///< row count per partition this batch
+    std::vector<uint32_t> hashes_; ///< raw hash per row before reduction
+    std::vector<uint16_t> pids_; ///< partition id per row
+    std::vector<size_t> hist_; ///< row count per partition this batch
     std::vector<size_t> varlen_per_part_; ///< varlen byte total per partition
     std::vector<PartReserveGrant> grants_; ///< allocation results from reserve
-    std::vector<PartReservation> dst_;     ///< flattened slice per partition
-    std::vector<uint64_t> stale_bitset_;   ///< ceil(P/64) stale-fixed-chunk words
+    std::vector<PartReservation> dst_; ///< flattened slice per partition
+    std::vector<uint64_t> stale_bitset_; ///< ceil(P/64) stale-fixed-chunk words
 
     std::vector<Bucket> buckets_; ///< accumulated per-partition output views
 };

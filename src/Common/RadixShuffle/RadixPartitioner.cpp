@@ -58,10 +58,7 @@ RadixPartitioner::RadixPartitioner(
     for (size_t idx : key_col_idxs_)
         if (idx >= prims_.size())
             throw Exception(
-                DB::ErrorCodes::BAD_ARGUMENTS,
-                "RadixPartitioner: key_col_idx {} out of range (prims size {})",
-                idx,
-                prims_.size());
+                DB::ErrorCodes::BAD_ARGUMENTS, "RadixPartitioner: key_col_idx {} out of range (prims size {})", idx, prims_.size());
 
     handle_ = allocator_.acquire();
 
@@ -145,8 +142,7 @@ void RadixPartitioner::processBatch(const DB::Columns & columns, size_t n)
     // Lemire's fast divisor: (hash × P) >> 32 maps [0, 2^32) → [0, P)
     // uniformly without a % operation.  Valid for any P ≤ 2^16 ≤ 2^32.
     for (size_t i = 0; i < n; ++i)
-        pids_[i] = static_cast<uint16_t>(
-            (static_cast<uint64_t>(hashes_[i]) * static_cast<uint64_t>(num_parts_)) >> 32);
+        pids_[i] = static_cast<uint16_t>((static_cast<uint64_t>(hashes_[i]) * static_cast<uint64_t>(num_parts_)) >> 32);
 
     // ───── Phase 2: per-partition histogram ─────
 
@@ -173,15 +169,7 @@ void RadixPartitioner::processBatch(const DB::Columns & columns, size_t n)
 
     for (size_t k = 0; k < prims_.size(); ++k)
         prims_[k].scatter(
-            prims_[k],
-            part_schema_,
-            *columns[k],
-            pids_.data(),
-            n,
-            num_parts_,
-            dst_.data(),
-            scatter_states_[k],
-            stale_bitset_.data());
+            prims_[k], part_schema_, *columns[k], pids_.data(), n, num_parts_, dst_.data(), scatter_states_[k], stale_bitset_.data());
 
     // ───── Bookkeeping: record PartReservationView per active partition ─────
 
@@ -189,14 +177,15 @@ void RadixPartitioner::processBatch(const DB::Columns & columns, size_t n)
     {
         if (dst_[p].reserved_rows == 0)
             continue;
-        buckets_[p].views.push_back(PartReservationView{
-            dst_[p].fixed,
-            dst_[p].begin_row,
-            dst_[p].begin_row + dst_[p].reserved_rows,
-            dst_[p].data,
-            dst_[p].begin_byte,
-            dst_[p].begin_byte + dst_[p].reserved_bytes,
-        });
+        buckets_[p].views.push_back(
+            PartReservationView{
+                dst_[p].fixed,
+                dst_[p].begin_row,
+                dst_[p].begin_row + dst_[p].reserved_rows,
+                dst_[p].data,
+                dst_[p].begin_byte,
+                dst_[p].begin_byte + dst_[p].reserved_bytes,
+            });
         buckets_[p].total_rows += dst_[p].reserved_rows;
         buckets_[p].total_varlen_bytes += dst_[p].reserved_bytes;
     }
