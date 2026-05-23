@@ -25,6 +25,7 @@
 #include <Common/RadixShuffle/HashCombiner.h>
 #include <Common/RadixShuffle/HashKernels.h>
 #include <Common/RadixShuffle/PartSchema.h>
+#include <Common/RadixShuffle/RadixPartitioner.h>
 
 #include <algorithm>
 #include <atomic>
@@ -1024,5 +1025,266 @@ TEST(Reconstruct, PumpResume)
         EXPECT_EQ(result->size(), total);
     }
 }
+
+
+// ───────────────────────── RadixPartitioner tests ─────────────────────────
+
+
+/// Reconstruct column k from all buckets of a finished RadixPartitioner.
+MutableColumnPtr collectBuckets(
+    const rs::RadixPartitioner & part,
+    size_t col_k,
+    const IColumn & proto)
+{
+    MutableColumnPtr out = proto.cloneEmpty();
+    out->reserve(0);
+
+    for (size_t p = 0; p < part.partitions(); ++p)
+    {
+        const auto & bkt = part.bucket(p);
+        if (bkt.total_rows == 0)
+            continue;
+
+        MutableColumnPtr tmp = proto.cloneEmpty();
+        tmp->reserve(bkt.total_rows);
+        if (part.schema().has_varlen_portion)
+        {
+            if (auto * sc = typeid_cast<ColumnString *>(tmp.get()))
+                sc->getChars().reserve(bkt.total_varlen_bytes);
+            else if (auto * nc = typeid_cast<ColumnNullable *>(tmp.get()))
+                if (auto * sc2 = typeid_cast<ColumnString *>(&nc->getNestedColumn()))
+                    sc2->getChars().reserve(bkt.total_varlen_bytes);
+        }
+        rs::ResumePosition pos{};
+        pos = part.primitives()[col_k].reconstruct(
+            part.primitives()[col_k], part.schema(),
+            bkt.views.data(), bkt.views.size(),
+            pos, *tmp);
+        for (size_t r = 0; r < tmp->size(); ++r)
+            out->insert((*tmp)[r]);
+    }
+    return out;
+}
+
+
+/// Partition cols, reconstruct col_k from all buckets, assert multiset equality.
+void rxpRoundTrip(
+    const DB::Columns & cols,
+    const std::vector<DataTypePtr> & types,
+    size_t P,
+    size_t col_k,
+    const std::vector<size_t> & key_idxs = {0})
+{
+    const size_t N = cols[0]->size();
+    auto sp = rs::buildSchemaAndPrimitives(types);
+    rs::RadixPartitioner part(sp.schema, sp.primitives, P, key_idxs);
+    part.process(cols);
+    part.finish();
+
+    MutableColumnPtr rec = collectBuckets(part, col_k, *cols[col_k]);
+    ASSERT_EQ(rec->size(), N);
+
+    std::vector<Field> sf, rf;
+    sf.reserve(N);
+    rf.reserve(N);
+    for (size_t i = 0; i < N; ++i)
+    {
+        sf.push_back((*cols[col_k])[i]);
+        rf.push_back((*rec)[i]);
+    }
+    std::sort(sf.begin(), sf.end());
+    std::sort(rf.begin(), rf.end());
+    EXPECT_EQ(sf, rf) << "multiset mismatch for col " << col_k;
+}
+
+
+TEST(RadixPartitioner, SingleColumnUInt32_RoundTrip)
+{
+    constexpr size_t N = 4096;
+    constexpr size_t P = 32;
+    auto col = makeUInt32Column(N, 1);
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
+    DB::Columns cols{col->getPtr()};
+    rxpRoundTrip(cols, types, P, 0);
+}
+
+
+TEST(RadixPartitioner, MultiColumnUInt32String_RoundTrip)
+{
+    // K=2 columns (UInt32 + String); key = col0.
+    // Verify both columns round-trip with multiset equality.
+    constexpr size_t N = 1024;
+    constexpr size_t P = 16;
+
+    auto col0 = makeUInt32Column(N, 10);
+    auto col1 = makeStringColumn(N, 11);
+
+    const std::vector<DataTypePtr> types = {
+        std::make_shared<DataTypeUInt32>(),
+        std::make_shared<DataTypeString>()};
+    DB::Columns cols{col0->getPtr(), col1->getPtr()};
+
+    // Round-trip both columns independently.
+    rxpRoundTrip(cols, types, P, 0);
+    rxpRoundTrip(cols, types, P, 1);
+}
+
+
+TEST(RadixPartitioner, MultiKeyHash)
+{
+    // K=4 columns, key_col_idxs = {0, 2}.
+    // Run twice with same data → same partition assignments (deterministic).
+    constexpr size_t N = 256;
+    constexpr size_t P = 8;
+
+    auto c0 = makeUInt32Column(N, 1);
+    auto c1 = makeUInt64Column(N, 2);
+    auto c2 = makeUInt32Column(N, 3);
+    auto c3 = makeFloat64Column(N, 4);
+
+    const std::vector<DataTypePtr> types = {
+        std::make_shared<DataTypeUInt32>(),
+        std::make_shared<DataTypeUInt64>(),
+        std::make_shared<DataTypeUInt32>(),
+        std::make_shared<DataTypeFloat64>()};
+
+    auto sp = rs::buildSchemaAndPrimitives(types);
+
+    // Run 1
+    rs::RadixPartitioner part1(sp.schema, sp.primitives, P, {0, 2});
+    DB::Columns cols{c0->getPtr(), c1->getPtr(), c2->getPtr(), c3->getPtr()};
+    part1.process(cols);
+    part1.finish();
+
+    // Run 2
+    rs::RadixPartitioner part2(sp.schema, sp.primitives, P, {0, 2});
+    part2.process(cols);
+    part2.finish();
+
+    // Same per-partition row counts in both runs.
+    for (size_t p = 0; p < P; ++p)
+        EXPECT_EQ(part1.bucket(p).total_rows, part2.bucket(p).total_rows)
+            << "partition " << p << " counts differ between runs";
+
+    // Total == N.
+    size_t total = 0;
+    for (size_t p = 0; p < P; ++p)
+        total += part1.bucket(p).total_rows;
+    EXPECT_EQ(total, N);
+}
+
+
+TEST(RadixPartitioner, NullableStringRoundTrip)
+{
+    constexpr size_t N = 512;
+    constexpr size_t P = 4;
+    auto col = makeNullableStringColumn(N, 7);
+    const std::vector<DataTypePtr> types = {
+        std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>())};
+    DB::Columns cols{col->getPtr()};
+    rxpRoundTrip(cols, types, P, 0);
+}
+
+
+TEST(RadixPartitioner, LargeBlockSlicing)
+{
+    // Input bigger than batch_size → internal slicing via IColumn::cut.
+    // batch_size_override=64 forces many slices on a small N.
+    constexpr size_t N = 512;
+    constexpr size_t P = 8;
+
+    auto col = makeUInt32Column(N, 99);
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
+    auto sp = rs::buildSchemaAndPrimitives(types);
+
+    rs::RadixPartitionerOptions opts;
+    opts.batch_size_override = 64;
+    rs::RadixPartitioner part(sp.schema, sp.primitives, P, {0}, opts);
+
+    DB::Columns cols{col->getPtr()};
+    part.process(cols);
+    part.finish();
+
+    // Total rows must equal N.
+    size_t total = 0;
+    for (size_t p = 0; p < P; ++p)
+        total += part.bucket(p).total_rows;
+    EXPECT_EQ(total, N);
+
+    // Multiset equality.
+    MutableColumnPtr rec = collectBuckets(part, 0, *col);
+    ASSERT_EQ(rec->size(), N);
+    std::vector<Field> sf, rf;
+    sf.reserve(N);
+    rf.reserve(N);
+    for (size_t i = 0; i < N; ++i)
+    {
+        sf.push_back((*col)[i]);
+        rf.push_back((*rec)[i]);
+    }
+    std::sort(sf.begin(), sf.end());
+    std::sort(rf.begin(), rf.end());
+    EXPECT_EQ(sf, rf);
+}
+
+
+TEST(RadixPartitioner, NonPowerOfTwoP)
+{
+    // P=100 exercises Lemire's fast modulo for non-power-of-2 P.
+    constexpr size_t N = 2000;
+    constexpr size_t P = 100;
+
+    auto col = makeUInt32Column(N, 55);
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
+    DB::Columns cols{col->getPtr()};
+    rxpRoundTrip(cols, types, P, 0);
+}
+
+
+TEST(RadixPartitioner, HistogramSumsToN)
+{
+    // sum(bucket(p).total_rows for p in 0..P) == N for every batch size.
+    constexpr size_t P = 32;
+
+    for (size_t N : {size_t{0}, size_t{1}, size_t{256}, size_t{4097}})
+    {
+        auto col = makeUInt32Column(N, 77);
+        const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
+        auto sp = rs::buildSchemaAndPrimitives(types);
+        rs::RadixPartitioner part(sp.schema, sp.primitives, P, {0});
+        if (N > 0)
+        {
+            DB::Columns cols{col->getPtr()};
+            part.process(cols);
+        }
+        part.finish();
+        size_t total = 0;
+        for (size_t p = 0; p < P; ++p)
+            total += part.bucket(p).total_rows;
+        EXPECT_EQ(total, N) << "N=" << N;
+    }
+}
+
+
+TEST(RadixPartitioner, LargeP)
+{
+    // P=4096: histogram and scatter scale; basic sanity check.
+    constexpr size_t N = 16384;
+    constexpr size_t P = 4096;
+
+    auto col = makeUInt64Column(N, 88);
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt64>()};
+    auto sp = rs::buildSchemaAndPrimitives(types);
+    rs::RadixPartitioner part(sp.schema, sp.primitives, P, {0});
+    DB::Columns cols{col->getPtr()};
+    part.process(cols);
+    part.finish();
+
+    size_t total = 0;
+    for (size_t p = 0; p < P; ++p)
+        total += part.bucket(p).total_rows;
+    EXPECT_EQ(total, N);
+}
+
 
 } // namespace
