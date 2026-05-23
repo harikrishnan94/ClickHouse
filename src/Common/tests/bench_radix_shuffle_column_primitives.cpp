@@ -6,10 +6,10 @@
 #include <Columns/ColumnsNumber.h>
 #include <Common/RadixShuffle/Allocator.h>
 #include <Common/RadixShuffle/ColumnPrimitives.h>
-#include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
-#include <Common/RadixShuffle/ColumnPrimitives/Nullable.h>
-#include <Common/RadixShuffle/ColumnPrimitives/String.h>
 #include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
+#include <DataTypes/DataTypeNullable.h>
+#include <DataTypes/DataTypeString.h>
+#include <DataTypes/DataTypesNumber.h>
 
 #include <algorithm>
 #include <atomic>
@@ -33,7 +33,6 @@ using namespace DB;
 namespace rs = DB::RadixShuffle;
 
 
-/// Workload configuration knob.
 struct Workload
 {
     size_t batch_size;
@@ -44,7 +43,6 @@ struct Workload
 };
 
 
-/// Reported numbers per configuration.
 struct Result
 {
     std::string column_type;
@@ -54,43 +52,78 @@ struct Result
     size_t threads = 0;
     size_t total_rows = 0;
     double median_ns_per_row = 0.0;
-    /// Source-side scatter bandwidth in GB/s, aggregated across all threads.
-    /// Computed as (total source bytes scattered) / wall_seconds / 1e9,
-    /// where "total source bytes" is the sum over (threads × columns ×
-    /// batches_per_thread) of the source column's `byteSize()`.
     double total_bandwidth_gbs = 0.0;
 };
 
 
-/// Column-type knob for the sweep.
 struct ColumnSpec
 {
     std::string name;
-    /// Factory: build one column with `n` rows from `seed`.
     std::function<MutableColumnPtr(size_t n, uint64_t seed)> make_column;
-    /// ColumnPrimitives triple for this column type.
-    std::function<rs::ColumnPrimitives()> make_column_primitives;
-    /// Per-row "byte cost" in the source column (variable-length only).
-    /// Returns 0 for fixed-width columns.
-    std::function<size_t(const IColumn &, size_t row)> row_bytes;
+    std::function<rs::SchemaAndPrimitives(size_t k)> make_schema_and_primitives;
+    std::function<size_t(const IColumn &, size_t row)> row_bytes; // 0 for fixed
 };
 
 
-/// Compute the per-(column × partition) byte cost from the source column,
-/// for variable-length columns. Returns the total bytes for each partition.
-std::vector<size_t> bytesPerPartition(const IColumn & col, const ColumnSpec & spec, const uint32_t * pids, size_t n, size_t P)
+// ───────────────────────── column builders ─────────────────────────
+
+
+MutableColumnPtr makeUInt32Col(size_t n, uint64_t seed)
 {
-    std::vector<size_t> out(P, 0);
-    if (!spec.row_bytes)
-        return out;
+    std::mt19937_64 rng(seed);
+    auto col = ColumnVector<UInt32>::create();
+    col->reserve(n);
     for (size_t i = 0; i < n; ++i)
-        out[pids[i]] += spec.row_bytes(col, i);
-    return out;
+        col->insertValue(static_cast<UInt32>(rng()));
+    return col;
+}
+
+MutableColumnPtr makeUInt64Col(size_t n, uint64_t seed)
+{
+    std::mt19937_64 rng(seed);
+    auto col = ColumnVector<UInt64>::create();
+    col->reserve(n);
+    for (size_t i = 0; i < n; ++i)
+        col->insertValue(rng());
+    return col;
+}
+
+MutableColumnPtr makeStringCol(size_t n, uint64_t seed)
+{
+    std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<size_t> len_dist(4, 32);
+    auto col = ColumnString::create();
+    std::string buf;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const size_t len = len_dist(rng);
+        buf.resize(len);
+        for (auto & c : buf)
+            c = static_cast<char>((rng() % 95) + 32);
+        col->insertData(buf.data(), buf.size());
+    }
+    return col;
+}
+
+MutableColumnPtr makeNullableUInt32Col(size_t n, uint64_t seed)
+{
+    std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<int> null_dist(0, 4);
+    auto nested = ColumnVector<UInt32>::create();
+    auto null_map = ColumnUInt8::create();
+    for (size_t i = 0; i < n; ++i)
+    {
+        null_map->insertValue(null_dist(rng) == 0 ? 1 : 0);
+        nested->insertValue(static_cast<UInt32>(rng()));
+    }
+    return ColumnNullable::create(std::move(nested), std::move(null_map));
 }
 
 
-/// Quickly build a histogram (pid counts) for one batch.
-void buildHistogram(const uint32_t * pids, size_t n, size_t P, std::vector<size_t> & out)
+// ───────────────────────── per-partition histogram ─────────────────────────
+
+
+void buildHistogram(const uint16_t * pids, size_t n, size_t P, std::vector<size_t> & out)
 {
     out.assign(P, 0);
     for (size_t i = 0; i < n; ++i)
@@ -98,562 +131,369 @@ void buildHistogram(const uint32_t * pids, size_t n, size_t P, std::vector<size_
 }
 
 
-/// Per-thread state used by the benchmark. The RNG is default-constructed
-/// here and explicitly seeded in `init` per-thread; the predictability of
-/// the default constructor is intentional (reproducible workloads).
-/// NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
-struct ThreadState
-{
-    std::mt19937_64 rng;
-    std::vector<uint32_t> pids;
-    std::vector<rs::ReservationRequest> requests;
-    std::vector<rs::Reservation> dst;
-    std::vector<size_t> histogram;
 
-    void init(size_t batch_size, size_t partitions, uint64_t seed)
-    {
-        rng.seed(seed);
-        pids.resize(batch_size);
-        requests.resize(partitions);
-        dst.resize(partitions);
-        histogram.resize(partitions);
-    }
-
-    /// Fill `pids` uniformly over [0, P).
-    void newPids(size_t P)
-    {
-        std::uniform_int_distribution<uint32_t> dist(0, static_cast<uint32_t>(P - 1));
-        for (auto & p : pids)
-            p = dist(rng);
-    }
-};
+// ───────────────────────── one-thread scatter kernel ─────────────────────────
 
 
-/// Run scatter for one column, one batch, on the calling thread. The
-/// per-thread state's `requests`, `dst`, and `histogram` are reused.
-double scatterOneBatch(
+/// Run one thread's worth of scatter batches.  Returns the number of source
+/// bytes scattered (for bandwidth computation).
+uint64_t runThread(
     rs::Handle * handle,
-    size_t col_idx,
-    const rs::ColumnPrimitives & primitives,
-    const IColumn & src,
-    ThreadState & ts,
+    const rs::PartSchema & schema,
+    const std::vector<rs::ColumnPrimitives> & primitives,
+    const std::vector<MutableColumnPtr> & columns, // K columns, each batch_size rows
+    const std::vector<uint16_t> & pids,
     size_t P,
-    const std::vector<size_t> & bytes_per_partition_for_this_batch)
+    size_t batches,
+    std::vector<double> & batch_times_ns)
 {
-    /// Build histogram.
-    buildHistogram(ts.pids.data(), ts.pids.size(), P, ts.histogram);
+    const size_t K = columns.size();
+    const size_t batch_size = pids.size();
 
-    for (size_t p = 0; p < P; ++p)
+    std::vector<size_t> hist(P);
+    std::vector<size_t> varlen(P, 0);
+    std::vector<rs::PartReserveGrant> grants(P);
+    std::vector<uint64_t> stale((P + 63) / 64, 0);
+
+    uint64_t total_source_bytes = 0;
+
+    for (size_t b = 0; b < batches; ++b)
     {
-        ts.requests[p].rows = ts.histogram[p];
-        ts.requests[p].bytes = bytes_per_partition_for_this_batch.empty() ? 0 : bytes_per_partition_for_this_batch[p];
-    }
-    handle->reserve(col_idx, ts.requests.data(), ts.dst.data());
+        buildHistogram(pids.data(), batch_size, P, hist);
 
-    const auto t0 = std::chrono::steady_clock::now();
-    primitives.scatter(primitives, src, ts.pids.data(), ts.pids.size(), P, ts.dst.data());
-    const auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double, std::nano>(t1 - t0).count();
-}
-
-
-/// Run one workload configuration (batch_size × P × columns × threads ×
-/// total_rows) for one column type. Returns the per-row median ns/row for
-/// scatter, plus the total threads × rows-per-second bandwidth.
-Result runConfig(const ColumnSpec & spec, const Workload & wl)
-{
-    const size_t batches_per_thread = std::max<size_t>(1, wl.total_rows / wl.threads / wl.batch_size);
-    const size_t rows_per_thread = batches_per_thread * wl.batch_size;
-
-    /// Pre-build per-thread source columns (one per column, reused across
-    /// batches). Each thread gets its own to avoid contention reading the
-    /// same column.
-    std::vector<std::vector<MutableColumnPtr>> per_thread_sources(wl.threads);
-    for (size_t t = 0; t < wl.threads; ++t)
-    {
-        per_thread_sources[t].reserve(wl.columns);
-        for (size_t c = 0; c < wl.columns; ++c)
-            per_thread_sources[t].push_back(spec.make_column(wl.batch_size, t * 1000 + c + 1));
-    }
-
-    /// Build column descs (same for every column — they are all the same type).
-    rs::ColumnPrimitives proto = spec.make_column_primitives();
-    std::vector<rs::ColumnDesc> descs(wl.columns, proto.column_desc);
-    rs::Allocator alloc(descs, wl.partitions, rows_per_thread * wl.threads);
-
-    /// Per-thread results: median scatter ns/row across batches.
-    std::vector<double> per_thread_median_ns_per_row(wl.threads, 0.0);
-    std::vector<double> per_thread_total_ns(wl.threads, 0.0);
-
-    /// Sync barrier for the start of the parallel section.
-    std::atomic<size_t> ready{0};
-    std::atomic<bool> go{false};
-
-    auto thread_fn = [&](size_t tid)
-    {
-        ThreadState ts;
-        ts.init(wl.batch_size, wl.partitions, /*seed=*/tid * 7919 + 1);
-
-        rs::Handle * h = alloc.acquire();
-
-        std::vector<rs::ColumnPrimitives> primitives(wl.columns, proto);
-
-        /// Wait for the launch signal.
-        ready.fetch_add(1, std::memory_order_release);
-        while (!go.load(std::memory_order_acquire))
-            std::this_thread::yield();
-
-        std::vector<double> samples;
-        samples.reserve(batches_per_thread);
-        double total_ns = 0.0;
-        for (size_t b = 0; b < batches_per_thread; ++b)
+        /// Compute varlen bytes if any column is String.
+        std::fill(varlen.begin(), varlen.end(), 0);
+        if (schema.has_varlen_portion)
         {
-            ts.newPids(wl.partitions);
-            for (size_t c = 0; c < wl.columns; ++c)
+            for (size_t k = 0; k < K; ++k)
             {
-                const IColumn & src = *per_thread_sources[tid][c];
-                std::vector<size_t> bpp;
-                if (spec.row_bytes)
-                    bpp = bytesPerPartition(src, spec, ts.pids.data(), wl.batch_size, wl.partitions);
-                const double ns = scatterOneBatch(h, c, primitives[c], src, ts, wl.partitions, bpp);
-                samples.push_back(ns);
-                total_ns += ns;
+                if (const auto * cs = typeid_cast<const ColumnString *>(columns[k].get()))
+                    for (size_t i = 0; i < batch_size; ++i)
+                    {
+                        const UInt64 end = cs->getOffsets()[i];
+                        const UInt64 prev = (i == 0) ? 0 : cs->getOffsets()[i - 1];
+                        varlen[pids[i]] += end - prev;
+                    }
+                else if (const auto * cn = typeid_cast<const ColumnNullable *>(columns[k].get()))
+                {
+                    if (const auto * cs2 = typeid_cast<const ColumnString *>(&cn->getNestedColumn()))
+                        for (size_t i = 0; i < batch_size; ++i)
+                        {
+                            const UInt64 end = cs2->getOffsets()[i];
+                            const UInt64 prev = (i == 0) ? 0 : cs2->getOffsets()[i - 1];
+                            varlen[pids[i]] += end - prev;
+                        }
+                }
             }
         }
 
-        alloc.release(h);
+        const auto t0 = std::chrono::steady_clock::now();
 
-        std::sort(samples.begin(), samples.end());
-        double median_ns_per_call = 0.0;
-        if (!samples.empty())
-        {
-            const size_t mid = samples.size() / 2;
-            median_ns_per_call = samples[mid];
-        }
-        per_thread_median_ns_per_row[tid] = median_ns_per_call / static_cast<double>(wl.batch_size);
-        per_thread_total_ns[tid] = total_ns;
-    };
+        std::fill(stale.begin(), stale.end(), 0);
+        handle->reserve(hist.data(), varlen.data(), grants.data(), stale.data());
+
+        std::vector<rs::PartReservation> dst(P);
+        for (size_t p = 0; p < P; ++p)
+            dst[p] = grants[p].slice;
+
+        for (size_t k = 0; k < K; ++k)
+            primitives[k].scatter(primitives[k], schema, *columns[k], pids.data(), batch_size, P, dst.data());
+
+        const auto t1 = std::chrono::steady_clock::now();
+        batch_times_ns.push_back(
+            static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+
+        for (size_t k = 0; k < K; ++k)
+            total_source_bytes += columns[k]->byteSize();
+    }
+
+    return total_source_bytes;
+}
+
+
+// ───────────────────────── benchmark runner ─────────────────────────
+
+
+Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
+{
+    const size_t N = wl.total_rows;
+    const size_t B = wl.batch_size;
+    const size_t P = wl.partitions;
+    const size_t K = wl.columns;
+    const size_t T = wl.threads;
+
+    auto sp = spec.make_schema_and_primitives(K);
+    const rs::PartSchema & schema = sp.schema;
+    std::vector<rs::ColumnPrimitives> & primitives = sp.primitives;
+
+    // Build pid arrays once per thread (different seeds)
+    std::vector<std::vector<uint16_t>> pids_per_thread(T);
+    for (size_t t = 0; t < T; ++t)
+    {
+        pids_per_thread[t].resize(B);
+        std::mt19937_64 rng(t * 1000 + 42);
+        std::uniform_int_distribution<uint16_t> dist(0, static_cast<uint16_t>(P - 1));
+        for (auto & p : pids_per_thread[t])
+            p = dist(rng);
+    }
+
+    // Build source columns per thread (K columns of B rows each)
+    std::vector<std::vector<MutableColumnPtr>> cols_per_thread(T);
+    for (size_t t = 0; t < T; ++t)
+    {
+        cols_per_thread[t].resize(K);
+        for (size_t k = 0; k < K; ++k)
+            cols_per_thread[t][k] = spec.make_column(B, t * 100 + k);
+    }
+
+    const size_t batches_per_thread = std::max<size_t>(1, N / (T * B));
+
+    std::vector<std::vector<double>> times_per_thread(T);
+    std::vector<std::atomic<uint64_t>> source_bytes_per_thread(T);
+    for (auto & sb : source_bytes_per_thread)
+        sb.store(0);
+
+    rs::Allocator alloc(schema, P, N);
+
+    const auto wall_t0 = std::chrono::steady_clock::now();
 
     std::vector<std::thread> threads;
-    threads.reserve(wl.threads);
-    for (size_t t = 0; t < wl.threads; ++t)
-        threads.emplace_back(thread_fn, t);
-
-    /// Wait until all threads are at the barrier.
-    while (ready.load(std::memory_order_acquire) < wl.threads)
-        std::this_thread::yield();
-
-    /// Launch.
-    const auto t_start = std::chrono::steady_clock::now();
-    go.store(true, std::memory_order_release);
-
-    for (auto & th : threads)
-        th.join();
-    const auto t_end = std::chrono::steady_clock::now();
-    const double wall_seconds = std::chrono::duration<double>(t_end - t_start).count();
-
-    /// Aggregate.
-    Result r;
-    r.column_type = spec.name;
-    r.batch_size = wl.batch_size;
-    r.partitions = wl.partitions;
-    r.columns = wl.columns;
-    r.threads = wl.threads;
-    r.total_rows = rows_per_thread * wl.threads;
-
-    /// Median across threads of the per-thread median ns/row.
-    std::vector<double> tmp = per_thread_median_ns_per_row;
-    std::sort(tmp.begin(), tmp.end());
-    r.median_ns_per_row = tmp[tmp.size() / 2];
-
-    /// Aggregate source-side scatter bandwidth in GB/s. Each thread reads
-    /// every per-thread source column `batches_per_thread` times; the
-    /// per-batch source byte cost is the source column's `byteSize()`.
-    double total_source_bytes = 0.0;
-    for (size_t t = 0; t < wl.threads; ++t)
-        for (size_t c = 0; c < wl.columns; ++c)
-            total_source_bytes += static_cast<double>(per_thread_sources[t][c]->byteSize()) * static_cast<double>(batches_per_thread);
-    r.total_bandwidth_gbs = total_source_bytes / wall_seconds / 1.0e9;
-    return r;
-}
-
-
-/// Helper: build a ColumnVector<T> of size `n` with deterministic random
-/// bytes derived from `seed`. Works for any trivially-copyable T.
-template <typename T>
-MutableColumnPtr makeVectorCol(size_t n, uint64_t seed)
-{
-    auto col = ColumnVector<T>::create();
-    auto & data = col->getData();
-    data.resize(n);
-    std::mt19937_64 rng(seed); // NOLINT(cert-msc32-c,cert-msc51-cpp)
-    auto * bytes = reinterpret_cast<unsigned char *>(data.data());
-    for (size_t i = 0; i < n * sizeof(T); i += sizeof(uint64_t))
+    threads.reserve(T);
+    for (size_t t = 0; t < T; ++t)
     {
-        const uint64_t w = rng();
-        const size_t k = std::min(sizeof(uint64_t), n * sizeof(T) - i);
-        std::memcpy(bytes + i, &w, k);
-    }
-    return col;
-}
-
-
-/// Helper: build a ColumnDecimal<T> of size `n` with deterministic random
-/// values derived from `seed`.
-template <typename T>
-MutableColumnPtr makeDecimalCol(size_t n, uint64_t seed)
-{
-    auto col = ColumnDecimal<T>::create(0, 4);
-    auto & data = col->getData();
-    data.resize(n);
-    std::mt19937_64 rng(seed); // NOLINT(cert-msc32-c,cert-msc51-cpp)
-    auto * bytes = reinterpret_cast<unsigned char *>(data.data());
-    for (size_t i = 0; i < n * sizeof(T); i += sizeof(uint64_t))
-    {
-        const uint64_t w = rng();
-        const size_t k = std::min(sizeof(uint64_t), n * sizeof(T) - i);
-        std::memcpy(bytes + i, &w, k);
-    }
-    return col;
-}
-
-
-/// Helper: build a ColumnFixedString(W) of size `n`.
-MutableColumnPtr makeFixedStringCol(size_t n, size_t width, uint64_t seed)
-{
-    auto col = ColumnFixedString::create(width);
-    auto & chars = col->getChars();
-    chars.resize(n * width);
-    std::mt19937_64 rng(seed); // NOLINT(cert-msc32-c,cert-msc51-cpp)
-    auto * bytes = reinterpret_cast<unsigned char *>(chars.data());
-    for (size_t i = 0; i < n * width; i += sizeof(uint64_t))
-    {
-        const uint64_t w = rng();
-        const size_t k = std::min(sizeof(uint64_t), n * width - i);
-        std::memcpy(bytes + i, &w, k);
-    }
-    return col;
-}
-
-
-/// Helper: build a ColumnString with strings of varying length.
-MutableColumnPtr makeStringCol(size_t n, uint64_t seed)
-{
-    auto col = ColumnString::create();
-    std::mt19937_64 rng(seed); // NOLINT(cert-msc32-c,cert-msc51-cpp)
-    std::uniform_int_distribution<size_t> dist(8, 24);
-    std::string buf;
-    for (size_t i = 0; i < n; ++i)
-    {
-        const size_t len = dist(rng);
-        buf.resize(len);
-        for (size_t k = 0; k < len; ++k)
-            buf[k] = static_cast<char>('a' + (rng() & 0x0f));
-        col->insertData(buf.data(), buf.size());
-    }
-    return col;
-}
-
-
-/// Helper: wrap any nested column in a ColumnNullable with a random null map.
-MutableColumnPtr wrapNullable(MutableColumnPtr nested, uint64_t seed)
-{
-    const size_t n = nested->size();
-    auto null_col = ColumnUInt8::create();
-    auto & nm = null_col->getData();
-    nm.resize(n);
-    std::mt19937_64 rng(seed); // NOLINT(cert-msc32-c,cert-msc51-cpp)
-    for (auto & b : nm)
-        b = (rng() & 0x1) ? 1u : 0u;
-    return ColumnNullable::create(std::move(nested), std::move(null_col));
-}
-
-
-/// Per-row byte cost for ColumnString (used to size the allocator's
-/// per-partition byte requests).
-size_t stringRowBytes(const IColumn & col, size_t row)
-{
-    const auto & sc = static_cast<const ColumnString &>(col);
-    const auto & offs = sc.getOffsets();
-    const UInt64 prev = (row == 0) ? 0 : offs[row - 1];
-    return offs[row] - prev;
-}
-
-
-/// Per-row byte cost for Nullable(String): defers to the nested string's
-/// per-row byte cost (the null map is fixed-width).
-size_t nullableStringRowBytes(const IColumn & col, size_t row)
-{
-    const auto & nc = static_cast<const ColumnNullable &>(col);
-    return stringRowBytes(nc.getNestedColumn(), row);
-}
-
-
-/// Build the column-spec table for the sweep. Coverage spans every scope-D
-/// leaf type (every `ColumnVector<T>`, every `ColumnDecimal<T>`,
-/// `ColumnFixedString` at several N, `ColumnString`) plus a representative
-/// sample of `ColumnNullable(X)` wrappers (one per category).
-std::vector<ColumnSpec> buildSpecs()
-{
-    std::vector<ColumnSpec> out;
-
-    /// ColumnVector<T> — every numeric T from scope D.
-    out.push_back({"ColumnVector<UInt8>", &makeVectorCol<UInt8>, []() { return rs::makeFixedWidth<UInt8>(); }, {}});
-    out.push_back({"ColumnVector<UInt16>", &makeVectorCol<UInt16>, []() { return rs::makeFixedWidth<UInt16>(); }, {}});
-    out.push_back({"ColumnVector<UInt32>", &makeVectorCol<UInt32>, []() { return rs::makeFixedWidth<UInt32>(); }, {}});
-    out.push_back({"ColumnVector<UInt64>", &makeVectorCol<UInt64>, []() { return rs::makeFixedWidth<UInt64>(); }, {}});
-    out.push_back({"ColumnVector<UInt128>", &makeVectorCol<UInt128>, []() { return rs::makeFixedWidth<UInt128>(); }, {}});
-    out.push_back({"ColumnVector<UInt256>", &makeVectorCol<UInt256>, []() { return rs::makeFixedWidth<UInt256>(); }, {}});
-    out.push_back({"ColumnVector<Int8>", &makeVectorCol<Int8>, []() { return rs::makeFixedWidth<Int8>(); }, {}});
-    out.push_back({"ColumnVector<Int16>", &makeVectorCol<Int16>, []() { return rs::makeFixedWidth<Int16>(); }, {}});
-    out.push_back({"ColumnVector<Int32>", &makeVectorCol<Int32>, []() { return rs::makeFixedWidth<Int32>(); }, {}});
-    out.push_back({"ColumnVector<Int64>", &makeVectorCol<Int64>, []() { return rs::makeFixedWidth<Int64>(); }, {}});
-    out.push_back({"ColumnVector<Int128>", &makeVectorCol<Int128>, []() { return rs::makeFixedWidth<Int128>(); }, {}});
-    out.push_back({"ColumnVector<Int256>", &makeVectorCol<Int256>, []() { return rs::makeFixedWidth<Int256>(); }, {}});
-    out.push_back({"ColumnVector<BFloat16>", &makeVectorCol<BFloat16>, []() { return rs::makeFixedWidth<BFloat16>(); }, {}});
-    out.push_back({"ColumnVector<Float32>", &makeVectorCol<Float32>, []() { return rs::makeFixedWidth<Float32>(); }, {}});
-    out.push_back({"ColumnVector<Float64>", &makeVectorCol<Float64>, []() { return rs::makeFixedWidth<Float64>(); }, {}});
-    out.push_back({"ColumnVector<UUID>", &makeVectorCol<UUID>, []() { return rs::makeFixedWidth<UUID>(); }, {}});
-    out.push_back({"ColumnVector<IPv4>", &makeVectorCol<IPv4>, []() { return rs::makeFixedWidth<IPv4>(); }, {}});
-    out.push_back({"ColumnVector<IPv6>", &makeVectorCol<IPv6>, []() { return rs::makeFixedWidth<IPv6>(); }, {}});
-
-    /// ColumnDecimal<T> — every Decimal width plus DateTime64 / Time64.
-    out.push_back({"ColumnDecimal<Decimal32>", &makeDecimalCol<Decimal32>, []() { return rs::makeDecimal<Decimal32>(); }, {}});
-    out.push_back({"ColumnDecimal<Decimal64>", &makeDecimalCol<Decimal64>, []() { return rs::makeDecimal<Decimal64>(); }, {}});
-    out.push_back({"ColumnDecimal<Decimal128>", &makeDecimalCol<Decimal128>, []() { return rs::makeDecimal<Decimal128>(); }, {}});
-    out.push_back({"ColumnDecimal<Decimal256>", &makeDecimalCol<Decimal256>, []() { return rs::makeDecimal<Decimal256>(); }, {}});
-    out.push_back({"ColumnDecimal<DateTime64>", &makeDecimalCol<DateTime64>, []() { return rs::makeDecimal<DateTime64>(); }, {}});
-    out.push_back({"ColumnDecimal<Time64>", &makeDecimalCol<Time64>, []() { return rs::makeDecimal<Time64>(); }, {}});
-
-    /// ColumnFixedString — a representative sweep of widths.
-    for (size_t w : {size_t{1}, size_t{4}, size_t{16}, size_t{32}, size_t{64}, size_t{128}})
-    {
-        out.push_back({
-            "ColumnFixedString(" + std::to_string(w) + ")",
-            [w](size_t n, uint64_t seed) { return makeFixedStringCol(n, w, seed); },
-            [w]() { return rs::makeFixedString(w); },
-            {},
+        threads.emplace_back([&, t]()
+        {
+            rs::Handle * h = alloc.acquire();
+            times_per_thread[t].reserve(batches_per_thread);
+            const uint64_t sb = runThread(
+                h, schema, primitives,
+                cols_per_thread[t], pids_per_thread[t], P,
+                batches_per_thread, times_per_thread[t]);
+            source_bytes_per_thread[t].store(sb);
+            alloc.release(h);
         });
     }
+    for (auto & thr : threads)
+        thr.join();
 
-    /// ColumnString.
-    out.push_back({
-        "ColumnString",
-        &makeStringCol,
-        []() { return rs::makeString(); },
-        &stringRowBytes,
-    });
+    const auto wall_t1 = std::chrono::steady_clock::now();
+    const double wall_sec = std::chrono::duration<double>(wall_t1 - wall_t0).count();
 
-    /// ColumnNullable(X) — a representative sample. One per category: small
-    /// fixed-width, medium fixed-width, wide fixed-width, decimal,
-    /// FixedString, and String. The composite-type contract is identical
-    /// across nested types, so this sample is sufficient to characterize
-    /// the wrapper's per-row overhead.
-    out.push_back({
-        "Nullable(UInt32)",
-        [](size_t n, uint64_t seed) { return wrapNullable(makeVectorCol<UInt32>(n, seed), seed ^ 0xa5a5ULL); },
-        []() { return rs::makeNullable(rs::makeFixedWidth<UInt32>()); },
-        {},
-    });
-    out.push_back({
-        "Nullable(Int64)",
-        [](size_t n, uint64_t seed) { return wrapNullable(makeVectorCol<Int64>(n, seed), seed ^ 0xa5a5ULL); },
-        []() { return rs::makeNullable(rs::makeFixedWidth<Int64>()); },
-        {},
-    });
-    out.push_back({
-        "Nullable(UInt128)",
-        [](size_t n, uint64_t seed) { return wrapNullable(makeVectorCol<UInt128>(n, seed), seed ^ 0xa5a5ULL); },
-        []() { return rs::makeNullable(rs::makeFixedWidth<UInt128>()); },
-        {},
-    });
-    out.push_back({
-        "Nullable(Decimal64)",
-        [](size_t n, uint64_t seed) { return wrapNullable(makeDecimalCol<Decimal64>(n, seed), seed ^ 0xa5a5ULL); },
-        []() { return rs::makeNullable(rs::makeDecimal<Decimal64>()); },
-        {},
-    });
-    out.push_back({
-        "Nullable(FixedString(16))",
-        [](size_t n, uint64_t seed) { return wrapNullable(makeFixedStringCol(n, 16, seed), seed ^ 0xa5a5ULL); },
-        []() { return rs::makeNullable(rs::makeFixedString(16)); },
-        {},
-    });
-    out.push_back({
-        "Nullable(String)",
-        [](size_t n, uint64_t seed) { return wrapNullable(makeStringCol(n, seed), seed ^ 0xa5a5ULL); },
-        []() { return rs::makeNullable(rs::makeString()); },
-        &nullableStringRowBytes,
-    });
+    // Aggregate per-batch times across all threads
+    std::vector<double> all_times;
+    for (const auto & tv : times_per_thread)
+        all_times.insert(all_times.end(), tv.begin(), tv.end());
 
-    return out;
+    std::sort(all_times.begin(), all_times.end());
+    double median_ns = all_times.empty() ? 0.0 : all_times[all_times.size() / 2];
+    double median_ns_per_row = (B > 0 && K > 0) ? median_ns / (static_cast<double>(B * K)) : 0.0;
+
+    uint64_t total_source_bytes = 0;
+    for (const auto & sb : source_bytes_per_thread)
+        total_source_bytes += sb.load();
+    const double bandwidth_gbs = (wall_sec > 0) ? static_cast<double>(total_source_bytes) / wall_sec / 1e9 : 0.0;
+
+    return Result{
+        spec.name,
+        B, P, K, T,
+        N,
+        median_ns_per_row,
+        bandwidth_gbs};
 }
 
 
-/// Parse `--key value` and `--key=value` pairs from argv. Returns empty
-/// optional if the flag is missing.
-std::optional<std::string> getArg(int argc, char ** argv, const std::string & key)
+// ───────────────────────── column spec registry ─────────────────────────
+
+
+std::vector<ColumnSpec> buildColumnSpecs()
 {
-    for (int i = 1; i < argc; ++i)
-    {
-        const std::string a = argv[i];
-        if (a == "--" + key)
+    return {
         {
-            if (i + 1 < argc)
-                return std::string(argv[i + 1]);
-            return std::string();
-        }
-        if (a.starts_with("--" + key + "="))
-            return a.substr(key.size() + 3);
-    }
-    return std::nullopt;
+            "UInt32",
+            makeUInt32Col,
+            [](size_t k) {
+                std::vector<DataTypePtr> types(k, std::make_shared<DataTypeUInt32>());
+                return rs::buildSchemaAndPrimitives(types);
+            },
+            nullptr},
+        {
+            "UInt64",
+            makeUInt64Col,
+            [](size_t k) {
+                std::vector<DataTypePtr> types(k, std::make_shared<DataTypeUInt64>());
+                return rs::buildSchemaAndPrimitives(types);
+            },
+            nullptr},
+        {
+            "String",
+            makeStringCol,
+            [](size_t k) {
+                std::vector<DataTypePtr> types(k, std::make_shared<DataTypeString>());
+                return rs::buildSchemaAndPrimitives(types);
+            },
+            [](const IColumn & col, size_t row) -> size_t {
+                const auto & cs = assert_cast<const ColumnString &>(col);
+                const auto & offs = cs.getOffsets();
+                return offs[row] - (row == 0 ? 0 : offs[row - 1]);
+            }},
+        {
+            "Nullable(UInt32)",
+            makeNullableUInt32Col,
+            [](size_t k) {
+                std::vector<DataTypePtr> types(
+                    k, std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>()));
+                return rs::buildSchemaAndPrimitives(types);
+            },
+            nullptr},
+    };
 }
 
 
-bool hasFlag(int argc, char ** argv, const std::string & key)
+// ───────────────────────── workload sweep definition ─────────────────────────
+
+
+// ───────────────────────── CLI parsing ─────────────────────────
+
+
+struct CLIConfig
 {
+    size_t total_rows = 8 * 1024 * 1024;
+    std::vector<size_t> batch_sizes = {1024, 4096, 16384};
+    std::vector<size_t> partitions_list = {4, 8, 16, 32, 64, 128, 256};
+    std::vector<size_t> columns_list = {1, 2, 4, 8};
+    std::vector<size_t> threads_list = {1, 4, 8, 16, 32, 48};
+    std::string column_type; // empty = all
+    bool csv = false;
+    std::string csv_path = "bench_radix_shuffle.csv";
+    bool full_sweep = false;
+};
+
+
+CLIConfig parseCLI(int argc, char ** argv)
+{
+    CLIConfig cfg;
     for (int i = 1; i < argc; ++i)
-        if (argv[i] == "--" + key)
-            return true;
-    return false;
-}
-
-
-void printResultsStdout(const std::vector<Result> & rows)
-{
-    std::cout << fmt::format(
-        "{:<22} {:>8} {:>4} {:>3} {:>3} {:>12} {:>16} {:>14}\n", "type", "batch", "P", "K", "T", "rows", "ns/row(median)", "GB/s(total)");
-    for (const auto & r : rows)
     {
-        std::cout << fmt::format(
-            "{:<22} {:>8} {:>4} {:>3} {:>3} {:>12} {:>16.3f} {:>14.3f}\n",
-            r.column_type,
-            r.batch_size,
-            r.partitions,
-            r.columns,
-            r.threads,
-            r.total_rows,
-            r.median_ns_per_row,
-            r.total_bandwidth_gbs);
+        const std::string arg = argv[i];
+        if (arg == "--csv" && i + 1 < argc)
+        {
+            cfg.csv = true;
+            cfg.csv_path = argv[++i];
+        }
+        else if (arg == "--csv")
+        {
+            cfg.csv = true;
+        }
+        else if (arg == "--total-rows" && i + 1 < argc)
+        {
+            cfg.total_rows = std::stoull(argv[++i]);
+        }
+        else if (arg == "--batch-size" && i + 1 < argc)
+        {
+            cfg.batch_sizes = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--partitions" && i + 1 < argc)
+        {
+            cfg.partitions_list = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--columns" && i + 1 < argc)
+        {
+            cfg.columns_list = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--threads" && i + 1 < argc)
+        {
+            cfg.threads_list = {std::stoull(argv[++i])};
+        }
+        else if (arg == "--column-type" && i + 1 < argc)
+        {
+            cfg.column_type = argv[++i];
+        }
+        else if (arg == "--full-sweep")
+        {
+            cfg.full_sweep = true;
+        }
     }
+    return cfg;
 }
 
 
-void printResultsCsv(const std::vector<Result> & rows, std::ostream & os)
+// ───────────────────────── output ─────────────────────────
+
+
+void printHeader()
 {
-    os << "type,batch,P,K,T,total_rows,ns_per_row_median,total_bandwidth_gbs\n";
-    for (const auto & r : rows)
-    {
-        os << r.column_type << ',' << r.batch_size << ',' << r.partitions << ',' << r.columns << ',' << r.threads << ',' << r.total_rows
-           << ',' << r.median_ns_per_row << ',' << r.total_bandwidth_gbs << '\n';
-    }
+    fmt::print(
+        "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12} {:>14}\n",
+        "column_type", "batch", "P", "K", "T",
+        "total_rows", "ns/row(med)", "bandwidth_gbs");
+    fmt::print("{}\n", std::string(80, '-'));
 }
 
-
-std::vector<size_t> parseList(const std::string & s)
+void printResult(const Result & r)
 {
-    std::vector<size_t> out;
-    size_t pos = 0;
-    while (pos < s.size())
-    {
-        size_t end = s.find(',', pos);
-        if (end == std::string::npos)
-            end = s.size();
-        if (end > pos)
-            out.push_back(std::stoull(s.substr(pos, end - pos)));
-        pos = end + 1;
-    }
-    return out;
+    fmt::print(
+        "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12.2f} {:>14.2f}\n",
+        r.column_type, r.batch_size, r.partitions, r.columns, r.threads,
+        r.total_rows, r.median_ns_per_row, r.total_bandwidth_gbs);
 }
 
+void writeCsvHeader(std::ostream & out)
+{
+    out << "column_type,batch_size,partitions,columns,threads,total_rows,"
+        << "median_ns_per_row,total_bandwidth_gbs\n";
 }
+
+void writeCsvRow(std::ostream & out, const Result & r)
+{
+    out << r.column_type << "," << r.batch_size << "," << r.partitions << ","
+        << r.columns << "," << r.threads << "," << r.total_rows << ","
+        << r.median_ns_per_row << "," << r.total_bandwidth_gbs << "\n";
+}
+
+} // namespace
 
 
 int main(int argc, char ** argv)
 {
-    if (hasFlag(argc, argv, "help") || hasFlag(argc, argv, "h"))
+    const CLIConfig cfg = parseCLI(argc, argv);
+    const std::vector<ColumnSpec> specs = buildColumnSpecs();
+
+    std::ofstream csv_out;
+    if (cfg.csv)
     {
-        std::cout << "bench_radix_shuffle_column_primitives — measure RadixShuffle column-primitive per-row cost\n"
-                  << "\nOptions:\n"
-                  << "  --total-rows N        Total rows per (column-type, configuration). Default 1'000'000.\n"
-                  << "  --batches  L          Batch-size sweep, comma-separated. Default 1024,4096,16384.\n"
-                  << "  --partitions L        Partition-count sweep. Default 4,8,16,32,64,128,256.\n"
-                  << "  --columns L           Column-count sweep. Default 1,2,4,8.\n"
-                  << "  --threads L           Thread-count sweep. Default 1,4,8,16,32,48.\n"
-                  << "  --types L             Column-type sweep (comma-separated names). Default: all scope-D types.\n"
-                  << "  --csv FILE            Write CSV output to FILE.\n"
-                  << "  --quick               Smoke-test mode: collapse the sweep to a small subset (one batch,\n"
-                  << "                        one P, one K, two T values, all types) so the bench finishes fast.\n"
-                  << "\nDefault sweep matches spec §4.1 (Batch ∈ {1024,4096,16384}, P ∈ {4,8,16,32,64,128,256}, K ∈ {1,2,4,8}, T ∈ "
-                     "{1,4,8,16,32,48}).\n";
-        return 0;
+        csv_out.open(cfg.csv_path);
+        writeCsvHeader(csv_out);
     }
 
-    const bool quick = hasFlag(argc, argv, "quick");
+    printHeader();
 
-    const size_t default_total_rows = quick ? 200000 : 1000000;
-    const size_t total_rows = std::stoull(getArg(argc, argv, "total-rows").value_or(std::to_string(default_total_rows)));
+    const auto hw_threads = std::thread::hardware_concurrency();
 
-    const std::vector<size_t> batches = parseList(getArg(argc, argv, "batches").value_or(quick ? "4096" : "1024,4096,16384"));
-    // NOLINTBEGIN(readability-identifier-naming) -- P, K, T match the spec's notation.
-    const std::vector<size_t> P_list = parseList(getArg(argc, argv, "partitions").value_or(quick ? "16" : "4,8,16,32,64,128,256"));
-    const std::vector<size_t> K_list = parseList(getArg(argc, argv, "columns").value_or(quick ? "1" : "1,2,4,8"));
-    const std::vector<size_t> T_list = parseList(getArg(argc, argv, "threads").value_or(quick ? "1,8" : "1,4,8,16,32,48"));
-    // NOLINTEND(readability-identifier-naming)
-
-    auto specs = buildSpecs();
-    std::optional<std::string> types_arg = getArg(argc, argv, "types");
-    if (types_arg)
-    {
-        std::vector<ColumnSpec> filtered;
-        const std::string & csv = *types_arg;
-        size_t pos = 0;
-        while (pos < csv.size())
-        {
-            size_t end = csv.find(',', pos);
-            if (end == std::string::npos)
-                end = csv.size();
-            std::string name = csv.substr(pos, end - pos);
-            for (auto & s : specs)
-                if (s.name == name)
-                    filtered.push_back(s);
-            pos = end + 1;
-        }
-        specs = std::move(filtered);
-    }
-
-    std::vector<Result> results;
     for (const auto & spec : specs)
     {
-        // NOLINTBEGIN(readability-identifier-naming) -- P, K, T match the spec's notation.
-        for (size_t batch : batches)
-            for (size_t P : P_list)
-                for (size_t K : K_list)
-                    for (size_t T : T_list)
-                    {
-                        Workload wl;
-                        wl.batch_size = batch;
-                        wl.partitions = P;
-                        wl.columns = K;
-                        wl.threads = T;
-                        wl.total_rows = total_rows;
-                        results.push_back(runConfig(spec, wl));
-                    }
-        // NOLINTEND(readability-identifier-naming)
-    }
+        if (!cfg.column_type.empty() && spec.name != cfg.column_type)
+            continue;
 
-    printResultsStdout(results);
-
-    auto csv_path = getArg(argc, argv, "csv");
-    if (csv_path)
-    {
-        std::ofstream f(*csv_path);
-        if (!f.is_open())
+        for (const size_t batch : cfg.batch_sizes)
         {
-            std::cerr << fmt::format("Failed to open CSV path: {}\n", *csv_path);
-            return 1;
+            for (const size_t P : cfg.partitions_list)
+            {
+                for (const size_t K : cfg.columns_list)
+                {
+                    for (const size_t T : cfg.threads_list)
+                    {
+                        if (T > hw_threads && !cfg.full_sweep)
+                            continue;
+
+                        const Workload wl{batch, P, K, T, cfg.total_rows};
+                        const Result r = runBenchmark(spec, wl);
+                        printResult(r);
+                        if (cfg.csv)
+                            writeCsvRow(csv_out, r);
+                    }
+                }
+            }
         }
-        printResultsCsv(results, f);
     }
 
     return 0;
