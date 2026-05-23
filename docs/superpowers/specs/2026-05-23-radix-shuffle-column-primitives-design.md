@@ -1,6 +1,15 @@
 # Radix Shuffle Type-Specific Column Primitives — Design Spec
 
-**Status:** Draft (awaiting user review)
+> **Status: SUPERSEDED.** This draft is kept for historical reference. The current
+> authoritative design lives in
+> [`docs/en/development/radix-shuffle-column-primitives.md`](/development/radix-shuffle-column-primitives)
+> (spec — contracts, invariants, acceptance criteria) and
+> [`docs/en/development/radix-shuffle-column-primitives-implementation.md`](/development/radix-shuffle-column-primitives-implementation)
+> (implementation notes — C++ types, function signatures, hash kernel internals, allocator
+> internals, migration checklist). The sections below contain the original v1 draft and
+> are no longer authoritative.
+
+**Status:** Draft (superseded — see notice above)
 **Reference baseline:** `/home/ubuntu/phj-bench` (the performance budget we must not exceed)
 
 ## 1. Goal
