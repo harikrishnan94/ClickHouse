@@ -49,8 +49,7 @@ constexpr size_t MAX_PARTITIONS = 1024;
             if (dst[p].fixed != nullptr)
             {
                 const size_t slot_off = dst[p].fixed->slot_byte_offsets[null_slot_idx];
-                state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
-                    + slot_off + dst[p].begin_row;
+                state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data) + slot_off + dst[p].begin_row;
             }
             else
             {
@@ -74,8 +73,7 @@ constexpr size_t MAX_PARTITIONS = 1024;
                     if (dst[p].fixed != nullptr)
                     {
                         const size_t slot_off = dst[p].fixed->slot_byte_offsets[null_slot_idx];
-                        state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
-                            + slot_off + dst[p].begin_row;
+                        state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data) + slot_off + dst[p].begin_row;
                     }
                     else
                     {
@@ -117,8 +115,7 @@ ResumePosition reconstructNullable(
     auto & nested_col = col.getNestedColumn();
 
     const size_t rows_before = nested_col.size();
-    const ResumePosition end_pos
-        = self.nested->reconstruct(*self.nested, schema, views, n_views, start, nested_col);
+    const ResumePosition end_pos = self.nested->reconstruct(*self.nested, schema, views, n_views, start, nested_col);
     const size_t rows_after = nested_col.size();
     const size_t rows_added = rows_after - rows_before;
 
@@ -140,8 +137,7 @@ ResumePosition reconstructNullable(
         const size_t take = std::min(available, rows_remaining);
 
         const size_t slot_off = v.fixed->slot_byte_offsets[null_slot_idx];
-        const uint8_t * chunk_null
-            = static_cast<const uint8_t *>(v.fixed->data) + slot_off + v.row_begin + in_view;
+        const uint8_t * chunk_null = static_cast<const uint8_t *>(v.fixed->data) + slot_off + v.row_begin + in_view;
         std::memcpy(null_dst, chunk_null, take);
         null_dst += take;
         rows_remaining -= take;
@@ -160,12 +156,7 @@ ResumePosition reconstructNullable(
 }
 
 
-void hashNullable(
-    const ColumnPrimitives & self,
-    const PartSchema & schema,
-    const IColumn & src_,
-    size_t n,
-    uint32_t * out)
+void hashNullable(const ColumnPrimitives & self, const PartSchema & schema, const IColumn & src_, size_t n, uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnNullable &>(src_);
     const auto & null_map = col.getNullMapData();

@@ -103,8 +103,7 @@ std::vector<rs::PartReservationView> scatterBatch(
 }
 
 /// Compute per-partition varlen byte totals for a ColumnString batch.
-std::vector<size_t> stringVarlenPerPart(
-    const ColumnString & col, const std::vector<uint16_t> & pids, size_t P)
+std::vector<size_t> stringVarlenPerPart(const ColumnString & col, const std::vector<uint16_t> & pids, size_t P)
 {
     std::vector<size_t> out(P, 0);
     const auto & offs = col.getOffsets();
@@ -148,8 +147,7 @@ void roundTripOne(
     }
 
     rs::ScatterState scatter_state(P);
-    const std::vector<rs::PartReservationView> views
-        = scatterBatch(handle, schema, prim, src, pids, varlen, scatter_state);
+    const std::vector<rs::PartReservationView> views = scatterBatch(handle, schema, prim, src, pids, varlen, scatter_state);
 
     // Build per-partition sorted row indices to know expected multiset.
     // Then reconstruct each partition into a fresh column and concatenate.
@@ -170,17 +168,15 @@ void roundTripOne(
         part_col->reserve(expected_rows);
         if (schema.has_varlen_portion)
             static_cast<ColumnString *>(
-                typeid_cast<ColumnNullable *>(part_col.get())
-                    ? &typeid_cast<ColumnNullable *>(part_col.get())->getNestedColumn()
-                    : part_col.get())
+                typeid_cast<ColumnNullable *>(part_col.get()) ? &typeid_cast<ColumnNullable *>(part_col.get())->getNestedColumn()
+                                                              : part_col.get())
                 ->getChars()
                 .reserve(views[p].byte_end - views[p].byte_begin);
 
         rs::ResumePosition pos{};
         const rs::PartReservationView single_view = views[p];
         pos = prim.reconstruct(prim, schema, &single_view, 1, pos, *part_col);
-        ASSERT_EQ(part_col->size(), expected_rows)
-            << "partition " << p << " reconstructed wrong row count";
+        ASSERT_EQ(part_col->size(), expected_rows) << "partition " << p << " reconstructed wrong row count";
 
         for (size_t r = 0; r < part_col->size(); ++r)
             reconstructed->insert((*part_col)[r]);
@@ -392,9 +388,7 @@ TEST(SchemaBuilder, FixedString)
 TEST(SchemaBuilder, MultiColumn)
 {
     // UInt32 + String → 2 slots (Values, Offsets)
-    const std::vector<DataTypePtr> types = {
-        std::make_shared<DataTypeUInt32>(),
-        std::make_shared<DataTypeString>()};
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>(), std::make_shared<DataTypeString>()};
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives(types);
 
     ASSERT_EQ(schema.fixed_slots.size(), 2u);
@@ -506,13 +500,10 @@ TEST(Allocator, WasteBound)
     const uint64_t allocated = alloc.totalAllocatedBytes();
     const uint64_t reserved = alloc.totalReservedBytes();
     const uint64_t active = alloc.activePartitions();
-    const uint64_t floor = active * (FLOOR_ROWS * schema.fixed_bytes_per_row
-                                     + rs::DEFAULT_MIN_CHUNK_FLOOR_BYTES);
+    const uint64_t floor = active * (FLOOR_ROWS * schema.fixed_bytes_per_row + rs::DEFAULT_MIN_CHUNK_FLOOR_BYTES);
 
     EXPECT_LE(allocated, floor + static_cast<uint64_t>(1.11 * static_cast<double>(reserved)))
-        << "waste bound violated: allocated=" << allocated
-        << " reserved=" << reserved
-        << " active=" << active;
+        << "waste bound violated: allocated=" << allocated << " reserved=" << reserved << " active=" << active;
 }
 
 TEST(Allocator, MultiThreadedNoBlocking)
@@ -528,24 +519,25 @@ TEST(Allocator, MultiThreadedNoBlocking)
 
     for (size_t t = 0; t < T; ++t)
     {
-        threads.emplace_back([&]()
-        {
-            rs::Handle * h = alloc.acquire();
-            std::vector<size_t> rows(P, 32);
-            std::vector<size_t> varlen(P, 0);
-            std::vector<rs::PartReserveGrant> grants(P);
-            std::vector<uint64_t> stale((P + 63) / 64, 0);
-            for (size_t b = 0; b < 50; ++b)
+        threads.emplace_back(
+            [&]()
             {
-                std::fill(stale.begin(), stale.end(), 0);
-                h->reserve(rows.data(), varlen.data(), grants.data(), stale.data());
-                uint64_t delta = 0;
-                for (size_t p = 0; p < P; ++p)
-                    delta += grants[p].granted_rows;
-                total_rows_reserved.fetch_add(delta, std::memory_order_relaxed);
-            }
-            alloc.release(h);
-        });
+                rs::Handle * h = alloc.acquire();
+                std::vector<size_t> rows(P, 32);
+                std::vector<size_t> varlen(P, 0);
+                std::vector<rs::PartReserveGrant> grants(P);
+                std::vector<uint64_t> stale((P + 63) / 64, 0);
+                for (size_t b = 0; b < 50; ++b)
+                {
+                    std::fill(stale.begin(), stale.end(), 0);
+                    h->reserve(rows.data(), varlen.data(), grants.data(), stale.data());
+                    uint64_t delta = 0;
+                    for (size_t p = 0; p < P; ++p)
+                        delta += grants[p].granted_rows;
+                    total_rows_reserved.fetch_add(delta, std::memory_order_relaxed);
+                }
+                alloc.release(h);
+            });
     }
     for (auto & thr : threads)
         thr.join();
@@ -698,10 +690,7 @@ TEST(RoundTrip, Float64_P32)
 
 TEST(RoundTrip, Decimal64_P32)
 {
-    testRoundTrip(
-        makeDecimal64Column(1024),
-        std::make_shared<DataTypeDecimal<Decimal64>>(18, 2),
-        32);
+    testRoundTrip(makeDecimal64Column(1024), std::make_shared<DataTypeDecimal<Decimal64>>(18, 2), 32);
 }
 
 TEST(RoundTrip, FixedString7_P32)
@@ -724,18 +713,12 @@ TEST(RoundTrip, String_P256)
 
 TEST(RoundTrip, NullableUInt32_P32)
 {
-    testRoundTrip(
-        makeNullableUInt32Column(1024),
-        std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>()),
-        32);
+    testRoundTrip(makeNullableUInt32Column(1024), std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>()), 32);
 }
 
 TEST(RoundTrip, NullableString_P32)
 {
-    testRoundTrip(
-        makeNullableStringColumn(1024),
-        std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()),
-        32);
+    testRoundTrip(makeNullableStringColumn(1024), std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()), 32);
 }
 
 TEST(RoundTrip, StringEmptyRows)
@@ -779,8 +762,7 @@ TEST(RoundTrip, MultiBatch)
             batch_col->insertValue(src.getData()[batch * N + i]);
 
         std::vector<size_t> varlen(P, 0);
-        const auto views
-            = scatterBatch(handle, schema, primitives[0], *batch_col, pids, varlen, scatter_state);
+        const auto views = scatterBatch(handle, schema, primitives[0], *batch_col, pids, varlen, scatter_state);
         for (size_t p = 0; p < P; ++p)
             if (views[p].row_end > views[p].row_begin)
                 all_views[p].push_back(views[p]);
@@ -801,10 +783,7 @@ TEST(RoundTrip, MultiBatch)
         auto part_col = ColumnVector<UInt32>::create();
         part_col->reserve(expected);
         rs::ResumePosition pos{};
-        pos = primitives[0].reconstruct(
-            primitives[0], schema,
-            all_views[p].data(), all_views[p].size(),
-            pos, *part_col);
+        pos = primitives[0].reconstruct(primitives[0], schema, all_views[p].data(), all_views[p].size(), pos, *part_col);
         EXPECT_EQ(part_col->size(), expected) << "partition " << p;
         total_reconstructed += part_col->size();
     }
@@ -831,9 +810,7 @@ TEST(Hash, CombinerUniformity)
 {
     // Composing hash calls across two columns in different orders should
     // produce different (but well-defined) results.
-    const std::vector<DataTypePtr> types = {
-        std::make_shared<DataTypeUInt32>(),
-        std::make_shared<DataTypeUInt64>()};
+    const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>(), std::make_shared<DataTypeUInt64>()};
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives(types);
 
     constexpr size_t N = 64;
@@ -935,15 +912,38 @@ TEST(Hash, StringRoundTripSameHash)
 TEST(Dispatcher, AllSupportedTypes)
 {
     const auto & factory = DataTypeFactory::instance();
-    const std::vector<std::string> names = {
-        "UInt8", "UInt16", "UInt32", "UInt64", "UInt128", "UInt256",
-        "Int8", "Int16", "Int32", "Int64", "Int128", "Int256",
-        "Float32", "Float64", "UUID", "IPv4", "IPv6",
-        "Decimal32(4)", "Decimal64(8)", "Decimal128(18)", "Decimal256(36)",
-        "DateTime64(3)", "Date", "Date32", "DateTime",
-        "Enum8('a'=1,'b'=2)", "Enum16('x'=1)",
-        "String", "FixedString(16)",
-        "Nullable(UInt32)", "Nullable(String)"};
+    const std::vector<std::string> names
+        = {"UInt8",
+           "UInt16",
+           "UInt32",
+           "UInt64",
+           "UInt128",
+           "UInt256",
+           "Int8",
+           "Int16",
+           "Int32",
+           "Int64",
+           "Int128",
+           "Int256",
+           "Float32",
+           "Float64",
+           "UUID",
+           "IPv4",
+           "IPv6",
+           "Decimal32(4)",
+           "Decimal64(8)",
+           "Decimal128(18)",
+           "Decimal256(36)",
+           "DateTime64(3)",
+           "Date",
+           "Date32",
+           "DateTime",
+           "Enum8('a'=1,'b'=2)",
+           "Enum16('x'=1)",
+           "String",
+           "FixedString(16)",
+           "Nullable(UInt32)",
+           "Nullable(String)"};
 
     for (const auto & name : names)
     {

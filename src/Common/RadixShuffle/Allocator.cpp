@@ -70,8 +70,7 @@ Handle::~Handle() = default;
 void * Handle::arenaAllocate(size_t bytes, size_t align)
 {
     if (arena_cursor == nullptr
-        || alignUp(reinterpret_cast<uintptr_t>(arena_cursor), align) + bytes
-               > reinterpret_cast<uintptr_t>(arena_end))
+        || alignUp(reinterpret_cast<uintptr_t>(arena_cursor), align) + bytes > reinterpret_cast<uintptr_t>(arena_end))
     {
         const size_t header = alignUp(sizeof(ArenaPage), alignof(std::max_align_t));
         const size_t needed = header + bytes + (align > alignof(std::max_align_t) ? align : 0);
@@ -119,8 +118,7 @@ bool Handle::ensureFixed(size_t p, size_t rows)
 
     if (num_slots > 0)
     {
-        chunk_offsets = static_cast<size_t *>(
-            arenaAllocate(sizeof(size_t) * num_slots, alignof(size_t)));
+        chunk_offsets = static_cast<size_t *>(arenaAllocate(sizeof(size_t) * num_slots, alignof(size_t)));
         size_t off = 0;
         for (size_t s = 0; s < num_slots; ++s)
         {
@@ -184,19 +182,15 @@ void Handle::ensureData(size_t p, size_t varlen_bytes)
 }
 
 
-void Handle::reserve(
-    const size_t * rows,
-    const size_t * varlen_bytes,
-    PartReserveGrant * grants,
-    uint64_t * stale_fixed_bitset)
+void Handle::reserve(const size_t * rows, const size_t * varlen_bytes, PartReserveGrant * grants, uint64_t * stale_fixed_bitset)
 {
     chassert(live);
 
     const PartSchema & sc = parent.schema();
-    const size_t P = parent.partitions();
+    const size_t partitions = parent.partitions();
     uint64_t reserved_delta = 0;
 
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < partitions; ++p)
     {
         const size_t row_req = rows[p];
         const size_t byte_req = varlen_bytes[p];
@@ -244,9 +238,7 @@ void Handle::reserve(
         if (sc.has_varlen_portion)
         {
             pc.data_next_byte += byte_req;
-            pc.data_remaining_bytes = (byte_req <= pc.data_remaining_bytes)
-                ? pc.data_remaining_bytes - byte_req
-                : 0;
+            pc.data_remaining_bytes = (byte_req <= pc.data_remaining_bytes) ? pc.data_remaining_bytes - byte_req : 0;
             pc.reserved_bytes += byte_req;
         }
 
@@ -257,11 +249,7 @@ void Handle::reserve(
 }
 
 
-Allocator::Allocator(
-    PartSchema schema_,
-    size_t partitions_,
-    size_t /*expected_total_rows*/,
-    AllocatorOptions options_)
+Allocator::Allocator(PartSchema schema_, size_t partitions_, size_t /*expected_total_rows*/, AllocatorOptions options_)
     : part_schema(std::move(schema_))
     , num_partitions(partitions_)
     , opts(options_)
@@ -271,9 +259,7 @@ Allocator::Allocator(
     for (const auto & slot : part_schema.fixed_slots)
     {
         if (slot.alignment == 0 || (slot.alignment & (slot.alignment - 1)) != 0)
-            throw Exception(
-                ErrorCodes::BAD_ARGUMENTS,
-                "RadixShuffle::Allocator: slot alignment must be a power of two");
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "RadixShuffle::Allocator: slot alignment must be a power of two");
     }
 }
 

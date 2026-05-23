@@ -4,12 +4,12 @@
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnsNumber.h>
-#include <Common/RadixShuffle/Allocator.h>
-#include <Common/RadixShuffle/ColumnPrimitives.h>
-#include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <Common/RadixShuffle/Allocator.h>
+#include <Common/RadixShuffle/ColumnPrimitives.h>
+#include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
 
 #include <algorithm>
 #include <atomic>
@@ -131,7 +131,6 @@ void buildHistogram(const uint16_t * pids, size_t n, size_t P, std::vector<size_
 }
 
 
-
 // ───────────────────────── one-thread scatter kernel ─────────────────────────
 
 
@@ -206,13 +205,10 @@ uint64_t runThread(
 
         for (size_t k = 0; k < K; ++k)
             primitives[k].scatter(
-                primitives[k], schema, *columns[k],
-                pids.data(), batch_size, P,
-                dst.data(), scatter_states[k], stale.data());
+                primitives[k], schema, *columns[k], pids.data(), batch_size, P, dst.data(), scatter_states[k], stale.data());
 
         const auto t1 = std::chrono::steady_clock::now();
-        batch_times_ns.push_back(
-            static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+        batch_times_ns.push_back(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
 
         for (size_t k = 0; k < K; ++k)
             total_source_bytes += columns[k]->byteSize();
@@ -272,17 +268,16 @@ Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
     threads.reserve(T);
     for (size_t t = 0; t < T; ++t)
     {
-        threads.emplace_back([&, t]()
-        {
-            rs::Handle * h = alloc.acquire();
-            times_per_thread[t].reserve(batches_per_thread);
-            const uint64_t sb = runThread(
-                h, schema, primitives,
-                cols_per_thread[t], pids_per_thread[t], P,
-                batches_per_thread, times_per_thread[t]);
-            source_bytes_per_thread[t].store(sb);
-            alloc.release(h);
-        });
+        threads.emplace_back(
+            [&, t]()
+            {
+                rs::Handle * h = alloc.acquire();
+                times_per_thread[t].reserve(batches_per_thread);
+                const uint64_t sb
+                    = runThread(h, schema, primitives, cols_per_thread[t], pids_per_thread[t], P, batches_per_thread, times_per_thread[t]);
+                source_bytes_per_thread[t].store(sb);
+                alloc.release(h);
+            });
     }
     for (auto & thr : threads)
         thr.join();
@@ -304,12 +299,7 @@ Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
         total_source_bytes += sb.load();
     const double bandwidth_gbs = (wall_sec > 0) ? static_cast<double>(total_source_bytes) / wall_sec / 1e9 : 0.0;
 
-    return Result{
-        spec.name,
-        B, P, K, T,
-        N,
-        median_ns_per_row,
-        bandwidth_gbs};
+    return Result{spec.name, B, P, K, T, N, median_ns_per_row, bandwidth_gbs};
 }
 
 
@@ -319,43 +309,43 @@ Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
 std::vector<ColumnSpec> buildColumnSpecs()
 {
     return {
-        {
-            "UInt32",
-            makeUInt32Col,
-            [](size_t k) {
-                std::vector<DataTypePtr> types(k, std::make_shared<DataTypeUInt32>());
-                return rs::buildSchemaAndPrimitives(types);
-            },
-            nullptr},
-        {
-            "UInt64",
-            makeUInt64Col,
-            [](size_t k) {
-                std::vector<DataTypePtr> types(k, std::make_shared<DataTypeUInt64>());
-                return rs::buildSchemaAndPrimitives(types);
-            },
-            nullptr},
-        {
-            "String",
-            makeStringCol,
-            [](size_t k) {
-                std::vector<DataTypePtr> types(k, std::make_shared<DataTypeString>());
-                return rs::buildSchemaAndPrimitives(types);
-            },
-            [](const IColumn & col, size_t row) -> size_t {
-                const auto & cs = assert_cast<const ColumnString &>(col);
-                const auto & offs = cs.getOffsets();
-                return offs[row] - (row == 0 ? 0 : offs[row - 1]);
-            }},
-        {
-            "Nullable(UInt32)",
-            makeNullableUInt32Col,
-            [](size_t k) {
-                std::vector<DataTypePtr> types(
-                    k, std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>()));
-                return rs::buildSchemaAndPrimitives(types);
-            },
-            nullptr},
+        {"UInt32",
+         makeUInt32Col,
+         [](size_t k)
+         {
+             std::vector<DataTypePtr> types(k, std::make_shared<DataTypeUInt32>());
+             return rs::buildSchemaAndPrimitives(types);
+         },
+         nullptr},
+        {"UInt64",
+         makeUInt64Col,
+         [](size_t k)
+         {
+             std::vector<DataTypePtr> types(k, std::make_shared<DataTypeUInt64>());
+             return rs::buildSchemaAndPrimitives(types);
+         },
+         nullptr},
+        {"String",
+         makeStringCol,
+         [](size_t k)
+         {
+             std::vector<DataTypePtr> types(k, std::make_shared<DataTypeString>());
+             return rs::buildSchemaAndPrimitives(types);
+         },
+         [](const IColumn & col, size_t row) -> size_t
+         {
+             const auto & cs = assert_cast<const ColumnString &>(col);
+             const auto & offs = cs.getOffsets();
+             return offs[row] - (row == 0 ? 0 : offs[row - 1]);
+         }},
+        {"Nullable(UInt32)",
+         makeNullableUInt32Col,
+         [](size_t k)
+         {
+             std::vector<DataTypePtr> types(k, std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>()));
+             return rs::buildSchemaAndPrimitives(types);
+         },
+         nullptr},
     };
 }
 
@@ -435,8 +425,14 @@ void printHeader()
 {
     fmt::print(
         "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12} {:>14}\n",
-        "column_type", "batch", "P", "K", "T",
-        "total_rows", "ns/row(med)", "bandwidth_gbs");
+        "column_type",
+        "batch",
+        "P",
+        "K",
+        "T",
+        "total_rows",
+        "ns/row(med)",
+        "bandwidth_gbs");
     fmt::print("{}\n", std::string(80, '-'));
 }
 
@@ -444,8 +440,14 @@ void printResult(const Result & r)
 {
     fmt::print(
         "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12.2f} {:>14.2f}\n",
-        r.column_type, r.batch_size, r.partitions, r.columns, r.threads,
-        r.total_rows, r.median_ns_per_row, r.total_bandwidth_gbs);
+        r.column_type,
+        r.batch_size,
+        r.partitions,
+        r.columns,
+        r.threads,
+        r.total_rows,
+        r.median_ns_per_row,
+        r.total_bandwidth_gbs);
 }
 
 void writeCsvHeader(std::ostream & out)
@@ -456,8 +458,7 @@ void writeCsvHeader(std::ostream & out)
 
 void writeCsvRow(std::ostream & out, const Result & r)
 {
-    out << r.column_type << "," << r.batch_size << "," << r.partitions << ","
-        << r.columns << "," << r.threads << "," << r.total_rows << ","
+    out << r.column_type << "," << r.batch_size << "," << r.partitions << "," << r.columns << "," << r.threads << "," << r.total_rows << ","
         << r.median_ns_per_row << "," << r.total_bandwidth_gbs << "\n";
 }
 

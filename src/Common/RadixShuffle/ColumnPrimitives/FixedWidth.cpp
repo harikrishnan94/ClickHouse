@@ -24,8 +24,7 @@ constexpr size_t MAX_PARTITIONS = 1024;
 
 /// Refresh the fixed-chunk write pointer for partition p.
 /// elem_size is in bytes (sizeof(T) for fixed-width, n for FixedString).
-[[gnu::always_inline]] inline void
-refreshFixedPtr(char * & ptr, size_t p, size_t slot_idx, const PartReservation * dst, size_t elem_size)
+[[gnu::always_inline]] inline void refreshFixedPtr(char *& ptr, size_t p, size_t slot_idx, const PartReservation * dst, size_t elem_size)
 {
     if (dst[p].fixed != nullptr)
     {
@@ -44,12 +43,8 @@ refreshFixedPtr(char * & ptr, size_t p, size_t slot_idx, const PartReservation *
 /// refreshed with an O(P) loop.  On subsequent calls only the stale
 /// partitions (flagged in stale_fixed_bitset) are touched.
 template <size_t ElemSize>
-[[gnu::always_inline]] inline void refreshFixedPtrs(
-    ScatterState & state,
-    size_t slot_idx,
-    size_t partitions,
-    const PartReservation * dst,
-    const uint64_t * stale_fixed_bitset)
+[[gnu::always_inline]] inline void
+refreshFixedPtrs(ScatterState & state, size_t slot_idx, size_t partitions, const PartReservation * dst, const uint64_t * stale_fixed_bitset)
 {
     if (!state.initialized)
     {
@@ -229,9 +224,7 @@ ResumePosition reconstructFixed(
         const size_t take = std::min(available, room);
 
         const size_t slot_off = v.fixed->slot_byte_offsets[slot_idx];
-        const T * src = reinterpret_cast<const T *>(
-                            static_cast<const char *>(v.fixed->data) + slot_off)
-            + v.row_begin + in_view;
+        const T * src = reinterpret_cast<const T *>(static_cast<const char *>(v.fixed->data) + slot_off) + v.row_begin + in_view;
 
         data.resize_assume_reserved(cur + take);
         std::memcpy(data.data() + cur, src, take * sizeof(T));
@@ -281,9 +274,7 @@ ResumePosition reconstructDecimal(
         const size_t take = std::min(available, room);
 
         const size_t slot_off = v.fixed->slot_byte_offsets[slot_idx];
-        const T * src = reinterpret_cast<const T *>(
-                            static_cast<const char *>(v.fixed->data) + slot_off)
-            + v.row_begin + in_view;
+        const T * src = reinterpret_cast<const T *>(static_cast<const char *>(v.fixed->data) + slot_off) + v.row_begin + in_view;
 
         data.resize_assume_reserved(cur + take);
         std::memcpy(data.data() + cur, src, take * sizeof(T));
@@ -333,8 +324,7 @@ ResumePosition reconstructFixedString(
         const size_t take = std::min(available, room);
 
         const size_t slot_off = v.fixed->slot_byte_offsets[slot_idx];
-        const auto * src = static_cast<const unsigned char *>(v.fixed->data) + slot_off
-            + (v.row_begin + in_view) * n;
+        const auto * src = static_cast<const unsigned char *>(v.fixed->data) + slot_off + (v.row_begin + in_view) * n;
 
         chars.resize_assume_reserved((cur_rows + take) * n);
         auto * dst_ptr = reinterpret_cast<unsigned char *>(chars.data()) + cur_rows * n;
@@ -357,12 +347,7 @@ ResumePosition reconstructFixedString(
 
 
 template <typename T>
-void hashFixed(
-    const ColumnPrimitives & /*self*/,
-    const PartSchema & /*schema*/,
-    const IColumn & src_,
-    size_t n,
-    uint32_t * out)
+void hashFixed(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n, uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnVector<T> &>(src_);
     const T * data = col.getData().data();
@@ -372,12 +357,7 @@ void hashFixed(
 
 
 template <typename T>
-void hashDecimal(
-    const ColumnPrimitives & /*self*/,
-    const PartSchema & /*schema*/,
-    const IColumn & src_,
-    size_t n,
-    uint32_t * out)
+void hashDecimal(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n, uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnDecimal<T> &>(src_);
     const auto & data = col.getData();
@@ -386,12 +366,7 @@ void hashDecimal(
 }
 
 
-void hashFixedString(
-    const ColumnPrimitives & /*self*/,
-    const PartSchema & /*schema*/,
-    const IColumn & src_,
-    size_t n_rows,
-    uint32_t * out)
+void hashFixedString(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n_rows, uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnFixedString &>(src_);
     const size_t n = col.getN();

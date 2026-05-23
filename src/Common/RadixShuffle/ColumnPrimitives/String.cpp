@@ -50,8 +50,7 @@ constexpr size_t MAX_PARTITIONS = 1024;
             if (dst[p].fixed != nullptr)
             {
                 const size_t slot_off = dst[p].fixed->slot_byte_offsets[offsets_slot_idx];
-                state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
-                    + slot_off + dst[p].begin_row * sizeof(uint64_t);
+                state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data) + slot_off + dst[p].begin_row * sizeof(uint64_t);
             }
             else
             {
@@ -75,8 +74,7 @@ constexpr size_t MAX_PARTITIONS = 1024;
                     if (dst[p].fixed != nullptr)
                     {
                         const size_t slot_off = dst[p].fixed->slot_byte_offsets[offsets_slot_idx];
-                        state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
-                            + slot_off + dst[p].begin_row * sizeof(uint64_t);
+                        state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data) + slot_off + dst[p].begin_row * sizeof(uint64_t);
                     }
                     else
                     {
@@ -96,9 +94,7 @@ constexpr size_t MAX_PARTITIONS = 1024;
     {
         if (dst[p].data != state.cached_data[p])
         {
-            state.data_ptrs[p] = (dst[p].data != nullptr)
-                ? dst[p].data->bytes + dst[p].begin_byte
-                : nullptr;
+            state.data_ptrs[p] = (dst[p].data != nullptr) ? dst[p].data->bytes + dst[p].begin_byte : nullptr;
             state.cached_data[p] = dst[p].data;
         }
     }
@@ -167,8 +163,7 @@ ResumePosition reconstructString(
         const size_t view_rows = v.row_end - v.row_begin;
 
         const size_t slot_off = v.fixed->slot_byte_offsets[offsets_slot_idx];
-        const uint64_t * chunk_offsets = reinterpret_cast<const uint64_t *>(
-            static_cast<const char *>(v.fixed->data) + slot_off);
+        const uint64_t * chunk_offsets = reinterpret_cast<const uint64_t *>(static_cast<const char *>(v.fixed->data) + slot_off);
 
         const unsigned char * chunk_chars = v.data->bytes;
 
@@ -211,12 +206,7 @@ ResumePosition reconstructString(
 }
 
 
-void hashString(
-    const ColumnPrimitives & /*self*/,
-    const PartSchema & /*schema*/,
-    const IColumn & src_,
-    size_t n,
-    uint32_t * out)
+void hashString(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n, uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnString &>(src_);
     const auto & offsets_src = col.getOffsets();

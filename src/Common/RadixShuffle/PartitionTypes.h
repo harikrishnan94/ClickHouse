@@ -122,7 +122,10 @@ struct ScatterState
     /// False until the first scatter call fully initialises fixed_ptrs.
     bool initialized = false;
 
-    explicit ScatterState(size_t P) : fixed_ptrs(P, nullptr) {}
+    explicit ScatterState(size_t P)
+        : fixed_ptrs(P, nullptr)
+    {
+    }
 
     ScatterState(const ScatterState &) = delete;
     ScatterState & operator=(const ScatterState &) = delete;
