@@ -1,11 +1,11 @@
-# Radix Shuffle Type-Specific Workers — Design Spec
+# Radix Shuffle Type-Specific Column Primitives — Design Spec
 
 **Status:** Draft (awaiting user review)
 **Reference baseline:** `/home/ubuntu/phj-bench` (the performance budget we must not exceed)
 
 ## 1. Goal
 
-Ship the **type-specific workers and bucket/chain seams** in `src/Common/RadixShuffle/` so that a future partitioned-hash-join (PHJ) shuffle inside ClickHouse can call them with the same per-row cost as the `phj-bench` reference. The PHJ algorithm itself (build/probe, hash table, multi-partition orchestration) is **out of scope for v1** — we are shipping the foundation it will sit on.
+Ship the **type-specific column primitives and bucket/chain seams** in `src/Common/RadixShuffle/` so that a future partitioned-hash-join (PHJ) shuffle inside ClickHouse can call them with the same per-row cost as the `phj-bench` reference. The PHJ algorithm itself (build/probe, hash table, multi-partition orchestration) is **out of scope for v1** — we are shipping the foundation it will sit on.
 
 Concretely, in scope:
 
@@ -13,14 +13,14 @@ Concretely, in scope:
 - Per-column-type **scatter** primitives (defined in §3.2).
 - Per-column-type **reconstruct** primitives (defined in §3.3).
 - Per-column-type **hash** primitives (defined in §3.4).
-- A dispatcher that resolves the worker triple `(scatter, reconstruct, hash)` from a `const IDataType &`.
+- A dispatcher (`resolveColumnPrimitives`) that resolves the column-primitive triple `(scatter, reconstruct, hash)` from a `const IDataType &` into a `ColumnPrimitives` value.
 
 ## 2. Non-goals (explicit)
 
 1. The full PHJ shuffle / build / probe driver.
 2. Pid computation, hashing-to-pids, or any radix policy.
-3. Histogram (row counts per partition) as part of the worker seam. Histogram is trivial; the RadixShuffle layer provides it. **Not a seam.**
-4. Byte-count sizing for variable-length columns as part of the worker seam. The per-(column × partition × batch) primary-byte totals consumed by the allocator's reservation API (§3.1) and required for target pre-allocation by reconstruct (§3.3) are operator bookkeeping — the RadixShuffle layer tracks them however it chooses (e.g., by accumulating what scatter wrote, by a separate sizing pass over source columns, or by maintaining a running counter alongside the row histogram). **Not a seam.**
+3. Histogram (row counts per partition) as part of the column-primitive seam. Histogram is trivial; the RadixShuffle layer provides it. **Not a seam.**
+4. Byte-count sizing for variable-length columns as part of the column-primitive seam. The per-(column × partition × batch) primary-byte totals consumed by the allocator's reservation API (§3.1) and required for target pre-allocation by reconstruct (§3.3) are operator bookkeeping — the RadixShuffle layer tracks them however it chooses (e.g., by accumulating what scatter wrote, by a separate sizing pass over source columns, or by maintaining a running counter alongside the row histogram). **Not a seam.**
 5. Column types beyond user-selected scope D: `ColumnVector<T>` / `ColumnDecimal<T>` / `ColumnFixedString` / `ColumnString` / `ColumnNullable(X)`. **No** `LowCardinality`, `Array`, `Tuple`, `Map`, `Variant`, `Dynamic`, `Object`, `AggregateFunction`.
 6. SWWC (software write-combining buffers), software prefetching, non-temporal stores — explicit non-goals in `phj-bench/README.md`; we honor that.
 7. NUMA awareness, multi-socket pinning, work-stealing.
@@ -38,7 +38,7 @@ Tracking which chunks belong to which partition (so that reconstruct can consume
 The allocator must balance three conflicting constraints:
 
 1. **High performance, low sync.** The hot path (per-batch reservation) MUST NOT block on cross-thread synchronization, and its per-call cost MUST NOT grow with the number of other threads concurrently using the allocator. Uncontended lock-free operations, atomic counters, and per-thread state are permitted; blocking primitives (mutexes, condition variables, semaphores) and any synchronization whose latency scales with contender count are forbidden on the hot path. Synchronization on the cold path (handle acquire / release / destruction) is permitted.
-2. **Low waste.** Total bytes the allocator has allocated MUST be no more than `max(MIN_CHUNK_FLOOR_BYTES, 1.10 * total_reserved_bytes)` (since reservation is the commit, reserved bytes equal "occupied" bytes from the allocator's accounting perspective). `MIN_CHUNK_FLOOR_BYTES` is the per-(column × partition) floor implied by constraint 3 — the minimum bytes the allocator allocates when it has to create a chunk at all. This bound must be achieved continuously through the lifetime of the allocator (i.e., without a separate compaction or trim step). The `max(...)` form acknowledges that for small-scale workloads (few reservations, large P, or skewed pids) the meaningful-rows floor dominates; once total reservations exceed `MIN_CHUNK_FLOOR_BYTES / 0.10` the 10% percentage bound dominates.
+2. **Low waste.** Total bytes the allocator has handed out via chunks MUST be no more than `active_chains * MIN_CHUNK_FLOOR_BYTES + 1.10 * total_reserved_bytes`, where `active_chains` is the number of (column × partition) chains that currently hold at least one chunk, and `MIN_CHUNK_FLOOR_BYTES` is the per-(column × partition) floor implied by constraint 3 — the minimum bytes the allocator allocates when it has to create a chunk at all. Since reservation is the commit, reserved bytes equal "occupied" bytes from the allocator's accounting perspective. This bound applies to bytes the allocator hands out via chunks; internal bump-allocator pages or per-chunk header bytes used by the implementation to back those chunks are NOT counted toward the bound (a bounded per-handle overhead, e.g., one arena page per active thread, is permitted). The bound must be achieved continuously through the lifetime of the allocator (i.e., without a separate compaction or trim step). The `active_chains * MIN_FLOOR` term acknowledges that for small-scale workloads (few reservations, large P, or skewed pids) the meaningful-rows floor dominates per-chain; once total reservations grow, the 10% percentage component dominates.
 3. **Meaningful rows per chunk (minimum row size rule).** Each chunk the allocator allocates MUST be sized to a minimum row count to amortize downstream per-batch fixed overhead. The minimum is a tunable; the default is at least 256 rows for fixed-width columns and an equivalent byte budget for variable-length. A trailing chunk (the final chunk of a sequence) MAY be smaller. This rule applies to chunk **allocation** size, not to caller **reservation** size — small reservations slice within larger chunks; the allocator does not round individual reservations up to the floor.
 
 **API surface (the seam):**
@@ -53,22 +53,22 @@ The allocator must balance three conflicting constraints:
 **Behavioral contract:**
 
 - Hot-path synchronization rule (constraint 1) holds: no blocking primitives, no contention-scaled latency on reservation. Implementation MAY use per-thread arenas, lock-free freelists, atomic counters, or similar.
-- Waste bound holds continuously throughout the allocator's lifetime: `total_allocated_bytes <= max(MIN_CHUNK_FLOOR_BYTES, 1.10 * total_reserved_bytes)`, without any separate compaction or trim step.
+- Waste bound holds continuously throughout the allocator's lifetime: `total_allocated_bytes <= active_chains * MIN_CHUNK_FLOOR_BYTES + 1.10 * total_reserved_bytes`, without any separate compaction or trim step.
 - Meaningful-rows bound holds for every chunk handed out by the allocator, modulo trailing chunks.
 - Each chunk's primary, offsets, and null-map regions meet the alignment required by the column type's element type.
 - The allocator never deallocates a chunk during its lifetime.
 
 ### 3.2 Scatter
 
-**Definition.** Scatter takes a source column of N rows, a per-row partition assignment `pids[]` of size N (each value in `[0, P)`), and a set of P per-partition writable destinations. It appends to each partition's destination, in the order they appear in the source, the rows of the source column for which `pids[j] == p`. The bytes written to each destination are whatever uniquely represent those rows for later reconstruction; the layout is private to the worker for that column type.
+**Definition.** Scatter takes a source column of N rows, a per-row partition assignment `pids[]` of size N (each value in `[0, P)`), and a set of P per-partition writable destinations. It appends to each partition's destination, in the order they appear in the source, the rows of the source column for which `pids[j] == p`. The bytes written to each destination are whatever uniquely represent those rows for later reconstruction; the layout is private to the column primitive for that column type.
 
 **Pre-conditions (caller's responsibility):**
 
 - `pids[j] < P` for all `j ∈ [0, N)`.
 - Each of the P destinations has sufficient capacity for the rows that will land in it.
-- The source column's concrete type matches the type the resolved worker was built for.
+- The source column's concrete type matches the type the resolved `ColumnPrimitives` was built for.
 
-**Post-conditions (worker's guarantee):**
+**Post-conditions (column primitive's guarantee):**
 
 - For every partition `p`, the destination contains, contiguously appended after any prior content, every row `j` with `pids[j] == p`, in ascending `j` order.
 - Total rows appended across all destinations equals `N`. The source column is unchanged.
@@ -84,12 +84,12 @@ The caller drives reconstruct as a pump: allocate target capacity, call reconstr
 
 **Pre-conditions (caller's responsibility):**
 
-- Target column has been pre-allocated to the desired capacity. **For variable-length column types** (`ColumnString`, and `ColumnNullable(ColumnString)`), pre-allocation means reserving BOTH the row-count capacity (e.g., `offsets`) AND the byte-content capacity (e.g., `chars`) sufficient to hold the data being reconstructed. The caller is responsible for sizing both; how the caller obtains the byte total is operator bookkeeping (§2 non-goal #4), not a worker-seam concern. Reconstruct stops when EITHER capacity is exhausted; the returned position reflects whichever stop boundary was reached first.
-- All chunks referenced by views in the input list were produced by scatter calls using the worker resolved for the same data type as the target.
+- Target column has been pre-allocated to the desired capacity. **For variable-length column types** (`ColumnString`, and `ColumnNullable(ColumnString)`), pre-allocation means reserving BOTH the row-count capacity (e.g., `offsets`) AND the byte-content capacity (e.g., `chars`) sufficient to hold the data being reconstructed. **For `ColumnNullable(X)`**, pre-allocation additionally requires that the null-map capacity be AT LEAST the nested column's row capacity (so the null map can absorb every row that reconstruct decides to append into the nested column). The caller is responsible for sizing every backing array such that this asymmetric-pre-reservation invariant holds; how the caller obtains byte totals is operator bookkeeping (§2 non-goal #4), not a column-primitive-seam concern. Reconstruct's stop decision is driven by the nested column's row capacity and (for variable-length nested columns) its byte capacity; the null map is a pure caller pre-condition, not a runtime stop dimension. The returned position reflects whichever stop boundary was reached first.
+- All chunks referenced by views in the input list were produced by scatter calls using the `ColumnPrimitives` resolved for the same data type as the target.
 - Each view's `[begin, end)` range covers rows that scatter actually wrote into the referenced chunk and nothing else. Constructing this range correctly (using the per-chunk written-row count the caller tracks per §3.1) is the caller's responsibility; reconstruct consumes the range verbatim and assumes it is correct.
 - The starting position `(view_index, rows_consumed_in_view)` is `(0, 0)` for the first call, or the value returned by a prior reconstruct call on the same input list.
 
-**Post-conditions (worker's guarantee):**
+**Post-conditions (column primitive's guarantee):**
 
 - Rows are appended into the target up to but not exceeding the target's pre-allocated capacity (rows AND, for variable-length types, bytes). The target's `size()` after the call reflects the number of rows actually appended.
 - Target capacity (in rows and in bytes) is unchanged.
@@ -100,17 +100,17 @@ The caller drives reconstruct as a pump: allocate target capacity, call reconstr
 
 ### 3.4 Hash
 
-**Definition.** Hash takes a source column of N rows and a caller-allocated output array of at least N UInt64s. It updates the output array such that, after the call, `out[i]` reflects the column's content for row `i`, mixed with the array's prior contents using a documented combiner. The combiner is the same across all workers resolved by the dispatcher, so a caller may chain hash calls across multiple columns to compute a composite per-row hash key.
+**Definition.** Hash takes a source column of N rows and a caller-allocated output array of at least N UInt64s. It updates the output array such that, after the call, `out[i]` reflects the column's content for row `i`, mixed with the array's prior contents using a documented combiner. The combiner is the same across all `ColumnPrimitives` resolved by the dispatcher, so a caller may chain hash calls across multiple columns to compute a composite per-row hash key.
 
 **Pre-conditions (caller's responsibility):**
 
 - Output array is pre-allocated with at least N entries.
 - Output array is initialized to whatever the caller intends as the starting value for the documented combiner (e.g., zero or a seed for fresh hashing; the result of a prior hash call for accumulation across columns).
-- Source column's concrete type matches the resolved worker.
+- Source column's concrete type matches the resolved `ColumnPrimitives`.
 
-**Post-conditions (worker's guarantee):**
+**Post-conditions (column primitive's guarantee):**
 
-- For every `i ∈ [0, N)`, `out[i]` equals `combiner(prior_out[i], h(src[i]))` where `h(.)` is the worker's per-row hash function for this column type. The combiner is uniform across workers.
+- For every `i ∈ [0, N)`, `out[i]` equals `combiner(prior_out[i], h(src[i]))` where `h(.)` is the column primitive's per-row hash function for this column type. The combiner is uniform across column primitives.
 - Source unchanged.
 
 ### 3.5 Round-trip invariant
@@ -127,11 +127,11 @@ yields a column whose multiset of rows equals the source's multiset of rows. The
 
 ### 4.1 Performance contract
 
-Workers are always called in batches. The benchmark measures, over a configurable workload, the per-row cost of each primitive.
+Column primitives are always called in batches. The benchmark (`bench_radix_shuffle_column_primitives`) measures, over a configurable workload, the per-row cost of each primitive.
 
 Workload parameters, all CLI-configurable:
 
-- **Batch size** (rows processed per worker invocation) — required sweep: `{1024, 4096, 16384}`.
+- **Batch size** (rows processed per column-primitive invocation) — required sweep: `{1024, 4096, 16384}`.
 - **Total number of rows** — CLI-configurable; defines how many batches run for each configuration.
 - **P** (partition count) — required sweep: `{4, 8, 16, 32, 64, 128, 256}`.
 - **K** (total columns) — required sweep: `{1, 2, 4, 8}`.
@@ -155,8 +155,8 @@ For variable-length and nullable types, the structural contract still applies:
 
 - **Round-trip identity (§3.5)** holds for every supported column type.
 - **Scatter, reconstruct, and hash primitives MUST NOT allocate.** The allocator (§3.1) is the sole source of allocation in this work; its reservation path MAY allocate (this is its purpose).
-- **Hash combiner is uniform** across workers: chaining hash calls across multiple columns of any supported types produces a deterministic result that depends only on the column contents and the combiner.
-- **Allocator waste bound** (§3.1, constraint 2) holds continuously throughout the allocator's lifetime — not just at end-of-phase — with no separate compaction or trim step: `total_allocated_bytes <= max(MIN_CHUNK_FLOOR_BYTES, 1.10 * total_reserved_bytes)`. The `MIN_CHUNK_FLOOR_BYTES` term is the only carve-out and exists solely to satisfy constraint 3 (minimum chunk size).
+- **Hash combiner is uniform** across column primitives: chaining hash calls across multiple columns of any supported types produces a deterministic result that depends only on the column contents and the combiner.
+- **Allocator waste bound** (§3.1, constraint 2) holds continuously throughout the allocator's lifetime — not just at end-of-phase — with no separate compaction or trim step: `total_allocated_bytes <= active_chains * MIN_CHUNK_FLOOR_BYTES + 1.10 * total_reserved_bytes`. The `active_chains * MIN_CHUNK_FLOOR_BYTES` term is the only carve-out and exists solely to satisfy constraint 3 (minimum chunk size per chain).
 - **Allocator meaningful-rows bound** (§3.1, constraint 3) holds for every chunk except the trailing chunk of each chain.
 - **Allocator hot-path synchronization rule** (§3.1, constraint 1) holds: no blocking primitives, no contention-scaled latency on reservation.
 
@@ -167,7 +167,7 @@ For variable-length and nullable types, the structural contract still applies:
 - Reconstruct's returned position correctly resumes when used as the start of a subsequent call on the same input list; assembling the final column across multiple bounded calls is byte-equivalent to a single sufficiently-allocated call.
 - Hash combiner is uniform: composing hash calls across columns of different types in different orders yields results that differ only by the well-defined combiner.
 - Scatter, reconstruct, and hash primitives do not allocate.
-- Allocator waste bound holds continuously throughout the allocator's lifetime (`allocated_bytes <= max(MIN_CHUNK_FLOOR_BYTES, 1.10 * reserved_bytes)`, per §3.1 constraint 2). The bound is verified at multiple intermediate points during the allocator's lifetime, not only at the end.
+- Allocator waste bound holds continuously throughout the allocator's lifetime (`allocated_bytes <= active_chains * MIN_CHUNK_FLOOR_BYTES + 1.10 * reserved_bytes`, per §3.1 constraint 2). The bound is verified at multiple intermediate points during the allocator's lifetime, not only at the end.
 - Allocator meaningful-rows bound holds for every chunk it hands out, except trailing chunks.
 - Allocator hot-path synchronization rule (§3.1, constraint 1) holds: no blocking primitives on reservation; per-call cost does not scale with the number of contending threads.
 - All `clang-tidy` warnings and errors in newly added files are fixed.
@@ -175,4 +175,3 @@ For variable-length and nullable types, the structural contract still applies:
 - Tests pass under both `-O3` (release) and `asan` builds.
 - Build succeeds via standard CH build flow.
 - Benchmark prints a stdout summary by default (per workload configuration and per type, the achieved ns/row and total bandwidth across threads). CSV output is supported via an opt-in CLI flag and is disabled by default.
-
