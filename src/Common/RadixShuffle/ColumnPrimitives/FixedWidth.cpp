@@ -22,9 +22,60 @@ namespace
 constexpr size_t MAX_PARTITIONS = 1024;
 
 
-/// Scatter for ColumnVector<T>.  Column-major layout: slot s's array is
-/// contiguous, so consecutive writes to the same partition bump a plain
-/// T* pointer without any stride arithmetic.
+/// Refresh the fixed-chunk write pointer for partition p.
+/// elem_size is in bytes (sizeof(T) for fixed-width, n for FixedString).
+[[gnu::always_inline]] inline void
+refreshFixedPtr(char * & ptr, size_t p, size_t slot_idx, const PartReservation * dst, size_t elem_size)
+{
+    if (dst[p].fixed != nullptr)
+    {
+        const size_t slot_off = dst[p].fixed->slot_byte_offsets[slot_idx];
+        ptr = static_cast<char *>(dst[p].fixed->data) + slot_off + dst[p].begin_row * elem_size;
+    }
+    else
+    {
+        ptr = nullptr;
+    }
+}
+
+
+/// Refresh all stale or uninitialised fixed-chunk write pointers.
+/// On the first call (state.initialized == false) every partition is
+/// refreshed with an O(P) loop.  On subsequent calls only the stale
+/// partitions (flagged in stale_fixed_bitset) are touched.
+template <size_t ElemSize>
+[[gnu::always_inline]] inline void refreshFixedPtrs(
+    ScatterState & state,
+    size_t slot_idx,
+    size_t partitions,
+    const PartReservation * dst,
+    const uint64_t * stale_fixed_bitset)
+{
+    if (!state.initialized)
+    {
+        for (size_t p = 0; p < partitions; ++p)
+            refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, ElemSize);
+        state.initialized = true;
+        return;
+    }
+
+    // Selective refresh: walk only set bits in the stale bitset.
+    const size_t words = (partitions + 63) / 64;
+    for (size_t word = 0; word < words; ++word)
+    {
+        uint64_t bits = stale_fixed_bitset[word];
+        while (bits)
+        {
+            const size_t bit = static_cast<size_t>(__builtin_ctzll(bits));
+            const size_t p = word * 64 + bit;
+            if (p < partitions)
+                refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, ElemSize);
+            bits &= bits - 1;
+        }
+    }
+}
+
+
 template <typename T>
 [[gnu::hot]] void scatterFixed(
     const ColumnPrimitives & self,
@@ -33,36 +84,90 @@ template <typename T>
     const uint16_t * pids,
     size_t n,
     size_t partitions,
-    PartReservation * dst)
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset)
 {
     const auto & col = assert_cast<const ColumnVector<T> &>(src_);
     const T * src = col.getData().data();
 
     const size_t slot_idx = self.fixed_slot_indices[0];
-
     chassert(partitions <= MAX_PARTITIONS);
+
+    refreshFixedPtrs<sizeof(T)>(state, slot_idx, partitions, dst, stale_fixed_bitset);
+
+    // Load cached pointers into a stack array for the branch-free inner loop.
     T * ptrs[MAX_PARTITIONS];
     for (size_t p = 0; p < partitions; ++p)
-    {
-        if (dst[p].fixed != nullptr)
-        {
-            const size_t slot_off = dst[p].fixed->slot_byte_offsets[slot_idx];
-            ptrs[p] = reinterpret_cast<T *>(static_cast<char *>(dst[p].fixed->data) + slot_off)
-                + dst[p].begin_row;
-        }
-        else
-        {
-            ptrs[p] = nullptr;
-        }
-    }
+        ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
 
     for (size_t j = 0; j < n; ++j)
         *ptrs[pids[j]]++ = src[j];
+
+    // Write back the advanced pointers so the cache is up-to-date for the next batch.
+    for (size_t p = 0; p < partitions; ++p)
+        state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
 }
 
 
-/// Scatter for ColumnDecimal<T>.  Same body as scatterFixed; ColumnDecimal
-/// stores Decimal<T> which is layout-compatible with its underlying type.
+[[gnu::hot]] void scatterFixedString(
+    const ColumnPrimitives & self,
+    const PartSchema & /*schema*/,
+    const IColumn & src_,
+    const uint16_t * pids,
+    size_t n_rows,
+    size_t partitions,
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset)
+{
+    const auto & col = assert_cast<const ColumnFixedString &>(src_);
+    const size_t n = col.getN();
+    const auto * src = reinterpret_cast<const unsigned char *>(col.getChars().data());
+
+    const size_t slot_idx = self.fixed_slot_indices[0];
+    chassert(partitions <= MAX_PARTITIONS);
+
+    // Element size is dynamic (n), so we cannot use the compile-time template.
+    if (!state.initialized)
+    {
+        for (size_t p = 0; p < partitions; ++p)
+            refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, n);
+        state.initialized = true;
+    }
+    else
+    {
+        const size_t words = (partitions + 63) / 64;
+        for (size_t word = 0; word < words; ++word)
+        {
+            uint64_t bits = stale_fixed_bitset[word];
+            while (bits)
+            {
+                const size_t bit = static_cast<size_t>(__builtin_ctzll(bits));
+                const size_t p = word * 64 + bit;
+                if (p < partitions)
+                    refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, n);
+                bits &= bits - 1;
+            }
+        }
+    }
+
+    unsigned char * ptrs[MAX_PARTITIONS];
+    for (size_t p = 0; p < partitions; ++p)
+        ptrs[p] = reinterpret_cast<unsigned char *>(state.fixed_ptrs[p]);
+
+    for (size_t j = 0; j < n_rows; ++j)
+    {
+        unsigned char * out = ptrs[pids[j]];
+        std::memcpy(out, src + j * n, n);
+        ptrs[pids[j]] = out + n;
+    }
+
+    for (size_t p = 0; p < partitions; ++p)
+        state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+}
+
+
 template <typename T>
 [[gnu::hot]] void scatterDecimal(
     const ColumnPrimitives & self,
@@ -71,73 +176,27 @@ template <typename T>
     const uint16_t * pids,
     size_t n,
     size_t partitions,
-    PartReservation * dst)
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset)
 {
     const auto & col = assert_cast<const ColumnDecimal<T> &>(src_);
     const T * src = col.getData().data();
 
     const size_t slot_idx = self.fixed_slot_indices[0];
-
     chassert(partitions <= MAX_PARTITIONS);
+
+    refreshFixedPtrs<sizeof(T)>(state, slot_idx, partitions, dst, stale_fixed_bitset);
+
     T * ptrs[MAX_PARTITIONS];
     for (size_t p = 0; p < partitions; ++p)
-    {
-        if (dst[p].fixed != nullptr)
-        {
-            const size_t slot_off = dst[p].fixed->slot_byte_offsets[slot_idx];
-            ptrs[p] = reinterpret_cast<T *>(static_cast<char *>(dst[p].fixed->data) + slot_off)
-                + dst[p].begin_row;
-        }
-        else
-        {
-            ptrs[p] = nullptr;
-        }
-    }
+        ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
 
     for (size_t j = 0; j < n; ++j)
         *ptrs[pids[j]]++ = src[j];
-}
 
-
-/// Scatter for ColumnFixedString(n).  Dynamic element size from self.aux;
-/// each row is a contiguous n-byte block.
-[[gnu::hot]] void scatterFixedString(
-    const ColumnPrimitives & self,
-    const PartSchema & /*schema*/,
-    const IColumn & src_,
-    const uint16_t * pids,
-    size_t n_rows,
-    size_t partitions,
-    PartReservation * dst)
-{
-    const auto & col = assert_cast<const ColumnFixedString &>(src_);
-    const size_t n = col.getN();
-    const auto * src = reinterpret_cast<const unsigned char *>(col.getChars().data());
-
-    const size_t slot_idx = self.fixed_slot_indices[0];
-
-    chassert(partitions <= MAX_PARTITIONS);
-    unsigned char * ptrs[MAX_PARTITIONS];
     for (size_t p = 0; p < partitions; ++p)
-    {
-        if (dst[p].fixed != nullptr)
-        {
-            const size_t slot_off = dst[p].fixed->slot_byte_offsets[slot_idx];
-            ptrs[p] = static_cast<unsigned char *>(dst[p].fixed->data) + slot_off
-                + dst[p].begin_row * n;
-        }
-        else
-        {
-            ptrs[p] = nullptr;
-        }
-    }
-
-    for (size_t j = 0; j < n_rows; ++j)
-    {
-        unsigned char * out = ptrs[pids[j]];
-        std::memcpy(out, src + j * n, n);
-        ptrs[pids[j]] = out + n;
-    }
+        state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
 }
 
 

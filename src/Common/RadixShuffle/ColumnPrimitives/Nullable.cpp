@@ -19,11 +19,6 @@ namespace
 constexpr size_t MAX_PARTITIONS = 1024;
 
 
-/// Nullable scatter: write the NullMap slot then delegate to the nested
-/// primitive for the remaining slots (and optional data chunk).
-///
-/// self.fixed_slot_indices[0] is always the NullMap slot index.
-/// The nested primitive owns its own fixed_slot_indices.
 [[gnu::hot]] void scatterNullable(
     const ColumnPrimitives & self,
     const PartSchema & schema,
@@ -31,34 +26,81 @@ constexpr size_t MAX_PARTITIONS = 1024;
     const uint16_t * pids,
     size_t n,
     size_t partitions,
-    PartReservation * dst)
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset)
 {
+    /// Lazy nested state init.
+    if (!state.nested && self.nested)
+        state.nested = std::make_unique<ScatterState>(partitions);
+
     const auto & col = assert_cast<const ColumnNullable &>(src_);
     const IColumn & nested_col = col.getNestedColumn();
     const auto & null_map = col.getNullMapData();
 
     const size_t null_slot_idx = self.fixed_slot_indices[0];
-
     chassert(partitions <= MAX_PARTITIONS);
-    uint8_t * null_ptrs[MAX_PARTITIONS];
-    for (size_t p = 0; p < partitions; ++p)
+
+    /// Refresh stale or uninitialised NullMap write pointers (fixed slot).
+    if (!state.initialized)
     {
-        if (dst[p].fixed != nullptr)
+        for (size_t p = 0; p < partitions; ++p)
         {
-            const size_t slot_off = dst[p].fixed->slot_byte_offsets[null_slot_idx];
-            null_ptrs[p] = static_cast<uint8_t *>(dst[p].fixed->data) + slot_off
-                + dst[p].begin_row;
+            if (dst[p].fixed != nullptr)
+            {
+                const size_t slot_off = dst[p].fixed->slot_byte_offsets[null_slot_idx];
+                state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
+                    + slot_off + dst[p].begin_row;
+            }
+            else
+            {
+                state.fixed_ptrs[p] = nullptr;
+            }
         }
-        else
+        state.initialized = true;
+    }
+    else
+    {
+        const size_t words = (partitions + 63) / 64;
+        for (size_t word = 0; word < words; ++word)
         {
-            null_ptrs[p] = nullptr;
+            uint64_t bits = stale_fixed_bitset[word];
+            while (bits)
+            {
+                const size_t bit = static_cast<size_t>(__builtin_ctzll(bits));
+                const size_t p = word * 64 + bit;
+                if (p < partitions)
+                {
+                    if (dst[p].fixed != nullptr)
+                    {
+                        const size_t slot_off = dst[p].fixed->slot_byte_offsets[null_slot_idx];
+                        state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
+                            + slot_off + dst[p].begin_row;
+                    }
+                    else
+                    {
+                        state.fixed_ptrs[p] = nullptr;
+                    }
+                }
+                bits &= bits - 1;
+            }
         }
     }
+
+    /// Scatter null map bytes.
+    uint8_t * null_ptrs[MAX_PARTITIONS];
+    for (size_t p = 0; p < partitions; ++p)
+        null_ptrs[p] = reinterpret_cast<uint8_t *>(state.fixed_ptrs[p]);
 
     for (size_t j = 0; j < n; ++j)
         *null_ptrs[pids[j]]++ = null_map[j];
 
-    self.nested->scatter(*self.nested, schema, nested_col, pids, n, partitions, dst);
+    for (size_t p = 0; p < partitions; ++p)
+        state.fixed_ptrs[p] = reinterpret_cast<char *>(null_ptrs[p]);
+
+    /// Delegate to nested scatter; it handles its own pointer cache and
+    /// uses the same stale bitset (same FixedChunk per partition).
+    self.nested->scatter(*self.nested, schema, nested_col, pids, n, partitions, dst, *state.nested, stale_fixed_bitset);
 }
 
 

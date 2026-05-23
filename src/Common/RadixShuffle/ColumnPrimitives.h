@@ -25,6 +25,18 @@ struct ColumnPrimitives;
 /// the fixed slots and (if writes_varlen) the data portion of
 /// dst[pids[j]].  The caller has pre-reserved each destination via
 /// Handle::reserve.  Must not allocate.
+///
+/// state holds the per-partition write-pointer cache for this column.
+/// On the first call (state.initialized == false) all P partitions are
+/// initialised from dst.  On subsequent calls only the partitions whose
+/// bit is set in stale_fixed_bitset are refreshed from dst; the rest
+/// reuse their cached pointers.  For varlen columns the data pointer is
+/// additionally refreshed whenever dst[p].data differs from the cached
+/// DataChunk pointer.
+///
+/// stale_fixed_bitset is ceil(P/64) uint64_t words returned by
+/// Handle::reserve; the caller passes the same array to every column's
+/// scatter for a given batch.
 using ScatterFn = void (*)(
     const ColumnPrimitives & self,
     const PartSchema & schema,
@@ -32,7 +44,9 @@ using ScatterFn = void (*)(
     const uint16_t * pids,
     size_t n,
     size_t partitions,
-    PartReservation * dst);
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset);
 
 
 /// Reconstruct primitive.  Appends rows from views[start..] into target
@@ -55,12 +69,7 @@ using ReconstructFn = ResumePosition (*)(
 /// where h(.) is the column primitive's per-row hash function and the
 /// combiner is uniform across all primitives resolved by
 /// resolveColumnPrimitives.  out is uint32_t.  Must not allocate.
-using HashFn = void (*)(
-    const ColumnPrimitives & self,
-    const PartSchema & schema,
-    const IColumn & src,
-    size_t n,
-    uint32_t * out);
+using HashFn = void (*)(const ColumnPrimitives & self, const PartSchema & schema, const IColumn & src, size_t n, uint32_t * out);
 
 
 /// Column-primitive triple resolved per column type.  After

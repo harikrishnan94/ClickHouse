@@ -183,18 +183,36 @@ Destruction frees all memory in a single act. There is no per-chunk or per-handl
 
 ## Scatter {#scatter}
 
-Scatter takes a source column of `n` rows, a per-row partition assignment `pids[]` (`uint16_t`, each value in `[0, P)`), and `P` per-partition writable destinations. It appends, in source order, the rows belonging to partition `p` into `dst[p]`'s fixed-slot regions (addressed via `PartSchema` + the primitive's `fixed_slot_indices`) and, for varlen column types, appends the corresponding character payloads to `dst[p].data->bytes + dst[p].begin_byte`.
+Scatter takes a source column of `n` rows, a per-row partition assignment `pids[]` (`uint16_t`, each value in `[0, P)`), per-partition writable destinations, a mutable `ScatterState` carrying the write-pointer cache, and the stale-pointer bitset returned by the same `reserve` call.
+
+Scatter appends, in source order, the rows belonging to partition `p` into `dst[p]`'s fixed-slot regions and, for varlen column types, into `dst[p].data->bytes + dst[p].begin_byte`.
+
+### ScatterState {#scatter-state}
+
+`ScatterState` is a per-thread, per-column mutable struct that caches the write pointer for each partition, eliminating the O(P) per-batch pointer setup in steady state.
+
+The cache is populated on the **first call** (all P pointers are initialised from `dst`) and selectively refreshed on subsequent calls:
+
+- **Fixed-slot pointers** are refreshed only for partitions whose bit is set in `stale_fixed_bitset`. A bit is set when `reserve` allocated a new `FixedChunk` for that partition; otherwise the cached pointer already points to the next free row in the same chunk.
+- **Data-chunk pointers** (varlen columns only) are refreshed when `dst[p].data` differs from the cached `DataChunk *` pointer. When the `DataChunk` has not changed, the cached pointer already points to the next free byte in the chunk, because the allocator advances its cursor by exactly the bytes written in the previous batch.
+
+For `Nullable(X)`, the outer `ScatterState` caches the `NullMap` write pointer; a nested `ScatterState` (lazily created on first call) handles `X`'s slots.
+
+`ScatterState` is not thread-safe; each producer thread owns one instance per column for the duration of its `Handle` ownership.
 
 **Pre-conditions (caller's responsibility):**
 
 - `pids[j] < P` for all `j ∈ [0, n)`.
 - Each destination `dst[p]` has been reserved (via `reserve`) with sufficient rows and varlen bytes to hold all rows where `pids[j] == p`.
+- `stale_fixed_bitset` is the array returned by the immediately preceding `reserve` call for this batch; it must not be reused across batches.
 - The source column's concrete type matches the resolved `ColumnPrimitives`.
+- `state` was constructed with the same `P` as `partitions`.
 
 **Post-conditions (primitive's guarantee):**
 
 - For every partition `p`, the fixed-slot arrays contain, appended after any prior content, every row `j` with `pids[j] == p`, in ascending `j` order.
 - Total rows appended across all partitions equals `n`. The source column is unchanged.
+- `state` holds valid write pointers for all partitions after the call; they are ready for the next batch without further initialisation (unless `reserve` sets stale bits).
 - Scatter must not allocate.
 
 ## Reconstruct {#reconstruct}

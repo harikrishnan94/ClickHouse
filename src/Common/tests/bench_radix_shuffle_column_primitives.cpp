@@ -155,6 +155,14 @@ uint64_t runThread(
     std::vector<rs::PartReserveGrant> grants(P);
     std::vector<uint64_t> stale((P + 63) / 64, 0);
 
+    /// One ScatterState per column, persisted across batches.
+    /// On the first batch all P pointers are initialised from dst.
+    /// On subsequent batches only stale partitions (from the bitset) are refreshed.
+    std::vector<rs::ScatterState> scatter_states;
+    scatter_states.reserve(K);
+    for (size_t k = 0; k < K; ++k)
+        scatter_states.emplace_back(P);
+
     uint64_t total_source_bytes = 0;
 
     for (size_t b = 0; b < batches; ++b)
@@ -197,7 +205,10 @@ uint64_t runThread(
             dst[p] = grants[p].slice;
 
         for (size_t k = 0; k < K; ++k)
-            primitives[k].scatter(primitives[k], schema, *columns[k], pids.data(), batch_size, P, dst.data());
+            primitives[k].scatter(
+                primitives[k], schema, *columns[k],
+                pids.data(), batch_size, P,
+                dst.data(), scatter_states[k], stale.data());
 
         const auto t1 = std::chrono::steady_clock::now();
         batch_times_ns.push_back(

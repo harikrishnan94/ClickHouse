@@ -120,6 +120,33 @@ struct ResumePosition
 };
 ```
 
+### ScatterState (`PartitionTypes.h`) {#scatter-state-type}
+
+```cpp
+/// Per-thread, per-column write-pointer cache for scatter.
+struct ScatterState
+{
+    /// Type-erased write pointer per partition (char *, cast by the scatter fn).
+    std::vector<char *> fixed_ptrs;
+
+    /// Data-chunk write-pointer cache (varlen columns; lazily populated).
+    std::vector<unsigned char *> data_ptrs;
+
+    /// Last DataChunk * per partition for staleness detection.
+    std::vector<const DataChunk *> cached_data;
+
+    /// Nested ScatterState for Nullable(X); null for leaf types (lazily created).
+    std::unique_ptr<ScatterState> nested;
+
+    /// False until the first scatter call fully initialises fixed_ptrs.
+    bool initialized = false;
+
+    explicit ScatterState(size_t P);
+};
+```
+
+`ScatterState` is constructed with the partition count `P` before the batch loop and passed to every `scatter` call in that loop.  The first call initialises all `P` fixed-chunk pointers from `dst`; subsequent calls walk only the set bits in `stale_fixed_bitset` (typically 0 in steady state).  For varlen columns the `data_ptrs` / `cached_data` arrays are lazily populated on the first call that needs them.  Nullable columns lazily create the nested `ScatterState` for their inner primitive.
+
 ### Column primitives type (`ColumnPrimitives.h`) {#column-primitives-type}
 
 ```cpp
@@ -150,6 +177,9 @@ struct ColumnPrimitives
 ```cpp
 /// Scatter primitive: routes n source rows into per-partition destinations.
 /// pids[j] ∈ [0, partitions) for all j.
+/// state holds the per-column write-pointer cache; pass the same instance
+/// for every batch in a shuffle phase.
+/// stale_fixed_bitset is the array returned by Handle::reserve for this batch.
 using ScatterFn = void (*)(
     const ColumnPrimitives & self,
     const PartSchema & schema,
@@ -157,7 +187,9 @@ using ScatterFn = void (*)(
     const uint16_t * pids,
     size_t n,
     size_t partitions,
-    PartReservation * dst);
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset);
 
 /// Reconstruct primitive: appends rows from views into target up to capacity.
 /// Returns the position of the first unconsumed row across the view list.

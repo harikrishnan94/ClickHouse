@@ -17,12 +17,6 @@ namespace
 constexpr size_t MAX_PARTITIONS = 1024;
 
 
-/// Scatter ColumnString into per-partition fixed (offsets) + data (chars).
-///
-/// Offsets slot (fixed_slot_indices[0]): per-row cumulative byte end-position
-/// within the DataChunk.  Multiple reservations within the same DataChunk
-/// share the same byte stream, so offsets are chunk-global (absolute within
-/// DataChunk::bytes).
 [[gnu::hot]] void scatterString(
     const ColumnPrimitives & self,
     const PartSchema & /*schema*/,
@@ -30,38 +24,95 @@ constexpr size_t MAX_PARTITIONS = 1024;
     const uint16_t * pids,
     size_t n,
     size_t partitions,
-    PartReservation * dst)
+    const PartReservation * dst,
+    ScatterState & state,
+    const uint64_t * stale_fixed_bitset)
 {
     const auto & col = assert_cast<const ColumnString &>(src_);
     const auto & offsets_src = col.getOffsets();
     const auto & chars_src = col.getChars();
 
     const size_t offsets_slot_idx = self.fixed_slot_indices[0];
-
     chassert(partitions <= MAX_PARTITIONS);
+
+    /// Lazy varlen state init.
+    if (state.data_ptrs.empty())
+    {
+        state.data_ptrs.assign(partitions, nullptr);
+        state.cached_data.assign(partitions, nullptr);
+    }
+
+    /// Refresh stale or uninitialised Offsets write pointers (fixed slot).
+    if (!state.initialized)
+    {
+        for (size_t p = 0; p < partitions; ++p)
+        {
+            if (dst[p].fixed != nullptr)
+            {
+                const size_t slot_off = dst[p].fixed->slot_byte_offsets[offsets_slot_idx];
+                state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
+                    + slot_off + dst[p].begin_row * sizeof(uint64_t);
+            }
+            else
+            {
+                state.fixed_ptrs[p] = nullptr;
+            }
+        }
+        state.initialized = true;
+    }
+    else
+    {
+        const size_t words = (partitions + 63) / 64;
+        for (size_t word = 0; word < words; ++word)
+        {
+            uint64_t bits = stale_fixed_bitset[word];
+            while (bits)
+            {
+                const size_t bit = static_cast<size_t>(__builtin_ctzll(bits));
+                const size_t p = word * 64 + bit;
+                if (p < partitions)
+                {
+                    if (dst[p].fixed != nullptr)
+                    {
+                        const size_t slot_off = dst[p].fixed->slot_byte_offsets[offsets_slot_idx];
+                        state.fixed_ptrs[p] = static_cast<char *>(dst[p].fixed->data)
+                            + slot_off + dst[p].begin_row * sizeof(uint64_t);
+                    }
+                    else
+                    {
+                        state.fixed_ptrs[p] = nullptr;
+                    }
+                }
+                bits &= bits - 1;
+            }
+        }
+    }
+
+    /// Refresh data-chunk (chars) write pointers on DataChunk change.
+    /// When DataChunk is the same, the cached pointer already equals
+    /// dst[p].data->bytes + dst[p].begin_byte (the allocator advances its
+    /// cursor by exactly the bytes written in the previous batch).
+    for (size_t p = 0; p < partitions; ++p)
+    {
+        if (dst[p].data != state.cached_data[p])
+        {
+            state.data_ptrs[p] = (dst[p].data != nullptr)
+                ? dst[p].data->bytes + dst[p].begin_byte
+                : nullptr;
+            state.cached_data[p] = dst[p].data;
+        }
+    }
+
+    /// Load into stack arrays for the inner loop.
     uint64_t * off_ptrs[MAX_PARTITIONS];
     unsigned char * char_ptrs[MAX_PARTITIONS];
     size_t abs_byte[MAX_PARTITIONS];
 
     for (size_t p = 0; p < partitions; ++p)
     {
-        if (dst[p].fixed != nullptr)
-        {
-            const size_t slot_off = dst[p].fixed->slot_byte_offsets[offsets_slot_idx];
-            off_ptrs[p] = reinterpret_cast<uint64_t *>(
-                              static_cast<char *>(dst[p].fixed->data) + slot_off)
-                + dst[p].begin_row;
-            char_ptrs[p] = (dst[p].data != nullptr)
-                ? dst[p].data->bytes + dst[p].begin_byte
-                : nullptr;
-            abs_byte[p] = dst[p].begin_byte;
-        }
-        else
-        {
-            off_ptrs[p] = nullptr;
-            char_ptrs[p] = nullptr;
-            abs_byte[p] = 0;
-        }
+        off_ptrs[p] = reinterpret_cast<uint64_t *>(state.fixed_ptrs[p]);
+        char_ptrs[p] = state.data_ptrs[p];
+        abs_byte[p] = dst[p].begin_byte; // always from reservation; no caching needed
     }
 
     const auto * chars_src_bytes = reinterpret_cast<const unsigned char *>(chars_src.data());
@@ -77,6 +128,13 @@ constexpr size_t MAX_PARTITIONS = 1024;
         abs_byte[p] += len;
         *off_ptrs[p]++ = abs_byte[p];
         prev = end;
+    }
+
+    /// Write back advanced pointers for the next batch.
+    for (size_t p = 0; p < partitions; ++p)
+    {
+        state.fixed_ptrs[p] = reinterpret_cast<char *>(off_ptrs[p]);
+        state.data_ptrs[p] = char_ptrs[p];
     }
 }
 
@@ -112,8 +170,6 @@ ResumePosition reconstructString(
         const uint64_t * chunk_offsets = reinterpret_cast<const uint64_t *>(
             static_cast<const char *>(v.fixed->data) + slot_off);
 
-        /// DataChunk base; offset values in chunk_offsets are absolute
-        /// positions within it.
         const unsigned char * chunk_chars = v.data->bytes;
 
         const size_t abs_start = v.row_begin + in_view;

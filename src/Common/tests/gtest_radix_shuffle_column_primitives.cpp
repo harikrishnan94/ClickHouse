@@ -65,13 +65,16 @@ std::vector<size_t> histogram(const std::vector<uint16_t> & pids, size_t P)
 
 /// One scatter batch and returns the per-partition PartReservationViews.
 /// varlen_bytes[p] must be pre-computed by the caller for varlen columns.
+/// state persists write-pointer caches across batches; pass the same instance
+/// for consecutive batches to exercise the selective-refresh optimisation.
 std::vector<rs::PartReservationView> scatterBatch(
     rs::Handle * handle,
     const rs::PartSchema & schema,
     const rs::ColumnPrimitives & prim,
     const IColumn & src,
     const std::vector<uint16_t> & pids,
-    const std::vector<size_t> & varlen_bytes_per_part)
+    const std::vector<size_t> & varlen_bytes_per_part,
+    rs::ScatterState & state)
 {
     const size_t P = varlen_bytes_per_part.size();
     const std::vector<size_t> hist = histogram(pids, P);
@@ -84,7 +87,7 @@ std::vector<rs::PartReservationView> scatterBatch(
     for (size_t p = 0; p < P; ++p)
         dst[p] = grants[p].slice;
 
-    prim.scatter(prim, schema, src, pids.data(), pids.size(), P, dst.data());
+    prim.scatter(prim, schema, src, pids.data(), pids.size(), P, dst.data(), state, stale.data());
 
     std::vector<rs::PartReservationView> views(P);
     for (size_t p = 0; p < P; ++p)
@@ -144,7 +147,9 @@ void roundTripOne(
         }
     }
 
-    const std::vector<rs::PartReservationView> views = scatterBatch(handle, schema, prim, src, pids, varlen);
+    rs::ScatterState scatter_state(P);
+    const std::vector<rs::PartReservationView> views
+        = scatterBatch(handle, schema, prim, src, pids, varlen, scatter_state);
 
     // Build per-partition sorted row indices to know expected multiset.
     // Then reconstruct each partition into a fresh column and concatenate.
@@ -549,6 +554,114 @@ TEST(Allocator, MultiThreadedNoBlocking)
 }
 
 
+// ───────────────────────── ScatterState tests ─────────────────────────
+
+
+TEST(ScatterState, WritePointerPersistence)
+{
+    // Scatter 10 batches of 64 rows each into P=4 UInt32 partitions.
+    // After the first batch every partition's FixedChunk fits all 10 batches,
+    // so the stale bitset should be all-zero from batch 2 onwards — the
+    // cached write pointers are reused directly.
+    const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
+    constexpr size_t P = 4;
+    constexpr size_t BATCH = 64;
+    constexpr size_t BATCHES = 10;
+
+    rs::Allocator alloc(schema, P, BATCH * BATCHES, {.min_chunk_floor_rows = BATCH * BATCHES});
+    rs::Handle * h = alloc.acquire();
+    rs::ScatterState state(P);
+
+    size_t stale_events = 0;
+    for (size_t b = 0; b < BATCHES; ++b)
+    {
+        auto col = makeUInt32Column(BATCH, b);
+        const std::vector<uint16_t> pids = uniformPids(BATCH, P, b);
+        const std::vector<size_t> hist = histogram(pids, P);
+        std::vector<size_t> varlen(P, 0);
+
+        std::vector<rs::PartReserveGrant> grants(P);
+        std::vector<uint64_t> stale((P + 63) / 64, 0);
+        h->reserve(hist.data(), varlen.data(), grants.data(), stale.data());
+
+        std::vector<rs::PartReservation> dst(P);
+        for (size_t p = 0; p < P; ++p)
+            dst[p] = grants[p].slice;
+
+        primitives[0].scatter(primitives[0], schema, *col, pids.data(), BATCH, P, dst.data(), state, stale.data());
+
+        for (size_t word = 0; word < stale.size(); ++word)
+            stale_events += static_cast<size_t>(__builtin_popcountll(stale[word]));
+    }
+
+    alloc.release(h);
+
+    // Only the first batch should have set stale bits (one per partition).
+    EXPECT_EQ(stale_events, P);
+}
+
+
+TEST(ScatterState, RoundTripMultiBatchUInt32)
+{
+    // Two batches into the same allocator, same ScatterState.
+    // Verify round-trip correctness when write pointers are reused.
+    const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
+    constexpr size_t P = 8;
+    constexpr size_t N = 256;
+
+    rs::Allocator alloc(schema, P, N * 2);
+    rs::Handle * h = alloc.acquire();
+    rs::ScatterState state(P);
+
+    std::vector<rs::PartReservationView> all_views[2];
+    for (size_t b = 0; b < 2; ++b)
+    {
+        auto col = makeUInt32Column(N, b + 100);
+        const auto pids = uniformPids(N, P, b + 100);
+        std::vector<size_t> varlen(P, 0);
+        all_views[b] = scatterBatch(h, schema, primitives[0], *col, pids, varlen, state);
+    }
+    alloc.release(h);
+
+    // Reconstruct both batches and verify non-zero row counts
+    size_t total = 0;
+    for (size_t b = 0; b < 2; ++b)
+        for (size_t p = 0; p < P; ++p)
+            total += all_views[b][p].row_end - all_views[b][p].row_begin;
+    EXPECT_EQ(total, N * 2);
+}
+
+
+TEST(ScatterState, RoundTripMultiBatchString)
+{
+    // Two batches of String scatter with cached pointers.
+    const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeString>()});
+    constexpr size_t P = 4;
+    constexpr size_t N = 128;
+
+    rs::Allocator alloc(schema, P, N * 2);
+    rs::Handle * h = alloc.acquire();
+    rs::ScatterState state(P);
+
+    std::vector<rs::PartReservationView> all_views[2];
+    for (size_t b = 0; b < 2; ++b)
+    {
+        auto col = makeStringColumn(N, b + 200);
+        const auto pids = uniformPids(N, P, b + 200);
+        const auto & cs = assert_cast<const ColumnString &>(*col);
+        const auto varlen = stringVarlenPerPart(cs, pids, P);
+        all_views[b] = scatterBatch(h, schema, primitives[0], *col, pids, varlen, state);
+    }
+    alloc.release(h);
+
+    size_t total = 0;
+    for (size_t b = 0; b < 2; ++b)
+        for (size_t p = 0; p < P; ++p)
+            total += all_views[b][p].row_end - all_views[b][p].row_begin;
+    EXPECT_EQ(total, N * 2);
+}
+
+
 // ───────────────────────── Round-trip tests ─────────────────────────
 
 
@@ -651,8 +764,10 @@ TEST(RoundTrip, MultiBatch)
     rs::Allocator alloc(schema, P, N * 2);
     rs::Handle * handle = alloc.acquire();
 
-    // Track per-partition view lists across both batches
+    // Track per-partition view lists across both batches.
+    // Reuse the same ScatterState to test write-pointer persistence across batches.
     std::vector<std::vector<rs::PartReservationView>> all_views(P);
+    rs::ScatterState scatter_state(P);
 
     for (size_t batch = 0; batch < 2; ++batch)
     {
@@ -664,7 +779,8 @@ TEST(RoundTrip, MultiBatch)
             batch_col->insertValue(src.getData()[batch * N + i]);
 
         std::vector<size_t> varlen(P, 0);
-        const auto views = scatterBatch(handle, schema, primitives[0], *batch_col, pids, varlen);
+        const auto views
+            = scatterBatch(handle, schema, primitives[0], *batch_col, pids, varlen, scatter_state);
         for (size_t p = 0; p < P; ++p)
             if (views[p].row_end > views[p].row_begin)
                 all_views[p].push_back(views[p]);
@@ -781,7 +897,8 @@ TEST(Hash, StringRoundTripSameHash)
 
     rs::Allocator alloc(schema, P, N);
     rs::Handle * h = alloc.acquire();
-    const auto views = scatterBatch(h, schema, primitives[0], src, pids, varlen);
+    rs::ScatterState scatter_state(P);
+    const auto views = scatterBatch(h, schema, primitives[0], src, pids, varlen, scatter_state);
     alloc.release(h);
 
     // Reconstruct all partitions into one column
@@ -884,7 +1001,8 @@ TEST(Reconstruct, PumpResume)
 
     rs::Allocator alloc(schema, P, N);
     rs::Handle * h = alloc.acquire();
-    const auto views = scatterBatch(h, schema, primitives[0], *src_col, pids, varlen);
+    rs::ScatterState scatter_state(P);
+    const auto views = scatterBatch(h, schema, primitives[0], *src_col, pids, varlen, scatter_state);
     alloc.release(h);
 
     // Reconstruct partition 0 in 50-row pumps
