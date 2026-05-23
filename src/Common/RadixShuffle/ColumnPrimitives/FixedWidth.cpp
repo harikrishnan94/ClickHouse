@@ -15,11 +15,11 @@ namespace DB::RadixShuffle
 namespace
 {
 
-/// Maximum partition count per scatter call.  The scatter primitives
-/// materialise one write pointer per partition in a stack array; this
-/// bound caps the array's size.  The v1 workload sweep tops out at
-/// P=256; 1024 gives slack for future configurations.
-constexpr size_t MAX_PARTITIONS = 1024;
+/// Partition threshold below which scatter uses a stack-allocated typed
+/// write-pointer array (fast path, stays L1-resident).  For partitions
+/// above this threshold scatter works directly through the char* pointers
+/// in ScatterState::fixed_ptrs (no stack VLA, slightly slower per row).
+constexpr size_t SCATTER_STACK_PTRS = 1024;
 
 
 /// Refresh the fixed-chunk write pointer for partition p.
@@ -87,21 +87,30 @@ template <typename T>
     const T * src = col.getData().data();
 
     const size_t slot_idx = self.fixed_slot_indices[0];
-    chassert(partitions <= MAX_PARTITIONS);
 
     refreshFixedPtrs<sizeof(T)>(state, slot_idx, partitions, dst, stale_fixed_bitset);
 
-    // Load cached pointers into a stack array for the branch-free inner loop.
-    T * ptrs[MAX_PARTITIONS];
-    for (size_t p = 0; p < partitions; ++p)
-        ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
-
-    for (size_t j = 0; j < n; ++j)
-        *ptrs[pids[j]]++ = src[j];
-
-    // Write back the advanced pointers so the cache is up-to-date for the next batch.
-    for (size_t p = 0; p < partitions; ++p)
-        state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+    if (partitions <= SCATTER_STACK_PTRS)
+    {
+        // Fast path: stack-allocated typed pointer array — stays L1-resident.
+        T * ptrs[SCATTER_STACK_PTRS];
+        for (size_t p = 0; p < partitions; ++p)
+            ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+        for (size_t j = 0; j < n; ++j)
+            *ptrs[pids[j]]++ = src[j];
+        for (size_t p = 0; p < partitions; ++p)
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+    }
+    else
+    {
+        // Large-P fallback: work directly through char* to avoid a stack VLA.
+        for (size_t j = 0; j < n; ++j)
+        {
+            const uint16_t p = pids[j];
+            std::memcpy(state.fixed_ptrs[p], &src[j], sizeof(T));
+            state.fixed_ptrs[p] += sizeof(T);
+        }
+    }
 }
 
 
@@ -121,7 +130,6 @@ template <typename T>
     const auto * src = reinterpret_cast<const unsigned char *>(col.getChars().data());
 
     const size_t slot_idx = self.fixed_slot_indices[0];
-    chassert(partitions <= MAX_PARTITIONS);
 
     // Element size is dynamic (n), so we cannot use the compile-time template.
     if (!state.initialized)
@@ -147,19 +155,29 @@ template <typename T>
         }
     }
 
-    unsigned char * ptrs[MAX_PARTITIONS];
-    for (size_t p = 0; p < partitions; ++p)
-        ptrs[p] = reinterpret_cast<unsigned char *>(state.fixed_ptrs[p]);
-
-    for (size_t j = 0; j < n_rows; ++j)
+    if (partitions <= SCATTER_STACK_PTRS)
     {
-        unsigned char * out = ptrs[pids[j]];
-        std::memcpy(out, src + j * n, n);
-        ptrs[pids[j]] = out + n;
+        unsigned char * ptrs[SCATTER_STACK_PTRS];
+        for (size_t p = 0; p < partitions; ++p)
+            ptrs[p] = reinterpret_cast<unsigned char *>(state.fixed_ptrs[p]);
+        for (size_t j = 0; j < n_rows; ++j)
+        {
+            unsigned char * out = ptrs[pids[j]];
+            std::memcpy(out, src + j * n, n);
+            ptrs[pids[j]] = out + n;
+        }
+        for (size_t p = 0; p < partitions; ++p)
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
     }
-
-    for (size_t p = 0; p < partitions; ++p)
-        state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+    else
+    {
+        for (size_t j = 0; j < n_rows; ++j)
+        {
+            const uint16_t p = pids[j];
+            std::memcpy(state.fixed_ptrs[p], src + j * n, n);
+            state.fixed_ptrs[p] += n;
+        }
+    }
 }
 
 
@@ -179,19 +197,28 @@ template <typename T>
     const T * src = col.getData().data();
 
     const size_t slot_idx = self.fixed_slot_indices[0];
-    chassert(partitions <= MAX_PARTITIONS);
 
     refreshFixedPtrs<sizeof(T)>(state, slot_idx, partitions, dst, stale_fixed_bitset);
 
-    T * ptrs[MAX_PARTITIONS];
-    for (size_t p = 0; p < partitions; ++p)
-        ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
-
-    for (size_t j = 0; j < n; ++j)
-        *ptrs[pids[j]]++ = src[j];
-
-    for (size_t p = 0; p < partitions; ++p)
-        state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+    if (partitions <= SCATTER_STACK_PTRS)
+    {
+        T * ptrs[SCATTER_STACK_PTRS];
+        for (size_t p = 0; p < partitions; ++p)
+            ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+        for (size_t j = 0; j < n; ++j)
+            *ptrs[pids[j]]++ = src[j];
+        for (size_t p = 0; p < partitions; ++p)
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+    }
+    else
+    {
+        for (size_t j = 0; j < n; ++j)
+        {
+            const uint16_t p = pids[j];
+            std::memcpy(state.fixed_ptrs[p], &src[j], sizeof(T));
+            state.fixed_ptrs[p] += sizeof(T);
+        }
+    }
 }
 
 

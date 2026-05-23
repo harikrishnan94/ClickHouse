@@ -14,7 +14,7 @@ namespace DB::RadixShuffle
 namespace
 {
 
-constexpr size_t MAX_PARTITIONS = 1024;
+constexpr size_t SCATTER_STACK_PTRS = 1024;
 
 
 [[gnu::hot]] void scatterString(
@@ -33,7 +33,6 @@ constexpr size_t MAX_PARTITIONS = 1024;
     const auto & chars_src = col.getChars();
 
     const size_t offsets_slot_idx = self.fixed_slot_indices[0];
-    chassert(partitions <= MAX_PARTITIONS);
 
     /// Lazy varlen state init.
     if (state.data_ptrs.empty())
@@ -99,38 +98,73 @@ constexpr size_t MAX_PARTITIONS = 1024;
         }
     }
 
-    /// Load into stack arrays for the inner loop.
-    uint64_t * off_ptrs[MAX_PARTITIONS];
-    unsigned char * char_ptrs[MAX_PARTITIONS];
-    size_t abs_byte[MAX_PARTITIONS];
-
-    for (size_t p = 0; p < partitions; ++p)
-    {
-        off_ptrs[p] = reinterpret_cast<uint64_t *>(state.fixed_ptrs[p]);
-        char_ptrs[p] = state.data_ptrs[p];
-        abs_byte[p] = dst[p].begin_byte; // always from reservation; no caching needed
-    }
-
     const auto * chars_src_bytes = reinterpret_cast<const unsigned char *>(chars_src.data());
-    UInt64 prev = 0;
-    for (size_t j = 0; j < n; ++j)
-    {
-        const UInt64 end = offsets_src[j];
-        const size_t len = end - prev;
-        const uint16_t p = pids[j];
-        if (len > 0)
-            std::memcpy(char_ptrs[p], chars_src_bytes + prev, len);
-        char_ptrs[p] += len;
-        abs_byte[p] += len;
-        *off_ptrs[p]++ = abs_byte[p];
-        prev = end;
-    }
 
-    /// Write back advanced pointers for the next batch.
-    for (size_t p = 0; p < partitions; ++p)
+    if (partitions <= SCATTER_STACK_PTRS)
     {
-        state.fixed_ptrs[p] = reinterpret_cast<char *>(off_ptrs[p]);
-        state.data_ptrs[p] = char_ptrs[p];
+        /// Fast path: stack-allocated pointer arrays.
+        uint64_t * off_ptrs[SCATTER_STACK_PTRS];
+        unsigned char * char_ptrs[SCATTER_STACK_PTRS];
+        size_t abs_byte[SCATTER_STACK_PTRS];
+
+        for (size_t p = 0; p < partitions; ++p)
+        {
+            off_ptrs[p] = reinterpret_cast<uint64_t *>(state.fixed_ptrs[p]);
+            char_ptrs[p] = state.data_ptrs[p];
+            abs_byte[p] = dst[p].begin_byte;
+        }
+
+        UInt64 prev = 0;
+        for (size_t j = 0; j < n; ++j)
+        {
+            const UInt64 end = offsets_src[j];
+            const size_t len = end - prev;
+            const uint16_t p = pids[j];
+            if (len > 0)
+                std::memcpy(char_ptrs[p], chars_src_bytes + prev, len);
+            char_ptrs[p] += len;
+            abs_byte[p] += len;
+            *off_ptrs[p]++ = abs_byte[p];
+            prev = end;
+        }
+
+        for (size_t p = 0; p < partitions; ++p)
+        {
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(off_ptrs[p]);
+            state.data_ptrs[p] = char_ptrs[p];
+        }
+    }
+    else
+    {
+        /// Large-P fallback: work directly through state pointers.
+        for (size_t p = 0; p < partitions; ++p)
+        {
+            // Initialise abs_byte from the reservation (not cached).
+            // We store a running abs_byte per-partition in a heap vector.
+            // For the large-P path we just re-derive it from the current
+            // state offset pointer and begin_byte.
+        }
+        // Use a heap vector for abs_byte (one size_t per partition).
+        // Since this is the slow path, the allocation cost is acceptable.
+        std::vector<size_t> abs_byte(partitions);
+        for (size_t p = 0; p < partitions; ++p)
+            abs_byte[p] = dst[p].begin_byte;
+
+        UInt64 prev = 0;
+        for (size_t j = 0; j < n; ++j)
+        {
+            const UInt64 end = offsets_src[j];
+            const size_t len = end - prev;
+            const uint16_t p = pids[j];
+            if (len > 0)
+                std::memcpy(state.data_ptrs[p], chars_src_bytes + prev, len);
+            state.data_ptrs[p] += len;
+            abs_byte[p] += len;
+            uint64_t abs = abs_byte[p];
+            std::memcpy(state.fixed_ptrs[p], &abs, sizeof(uint64_t));
+            state.fixed_ptrs[p] += sizeof(uint64_t);
+            prev = end;
+        }
     }
 }
 

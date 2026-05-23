@@ -16,7 +16,7 @@ namespace DB::RadixShuffle
 namespace
 {
 
-constexpr size_t MAX_PARTITIONS = 1024;
+constexpr size_t SCATTER_STACK_PTRS = 1024;
 
 
 [[gnu::hot]] void scatterNullable(
@@ -39,7 +39,6 @@ constexpr size_t MAX_PARTITIONS = 1024;
     const auto & null_map = col.getNullMapData();
 
     const size_t null_slot_idx = self.fixed_slot_indices[0];
-    chassert(partitions <= MAX_PARTITIONS);
 
     /// Refresh stale or uninitialised NullMap write pointers (fixed slot).
     if (!state.initialized)
@@ -86,15 +85,24 @@ constexpr size_t MAX_PARTITIONS = 1024;
     }
 
     /// Scatter null map bytes.
-    uint8_t * null_ptrs[MAX_PARTITIONS];
-    for (size_t p = 0; p < partitions; ++p)
-        null_ptrs[p] = reinterpret_cast<uint8_t *>(state.fixed_ptrs[p]);
-
-    for (size_t j = 0; j < n; ++j)
-        *null_ptrs[pids[j]]++ = null_map[j];
-
-    for (size_t p = 0; p < partitions; ++p)
-        state.fixed_ptrs[p] = reinterpret_cast<char *>(null_ptrs[p]);
+    if (partitions <= SCATTER_STACK_PTRS)
+    {
+        uint8_t * null_ptrs[SCATTER_STACK_PTRS];
+        for (size_t p = 0; p < partitions; ++p)
+            null_ptrs[p] = reinterpret_cast<uint8_t *>(state.fixed_ptrs[p]);
+        for (size_t j = 0; j < n; ++j)
+            *null_ptrs[pids[j]]++ = null_map[j];
+        for (size_t p = 0; p < partitions; ++p)
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(null_ptrs[p]);
+    }
+    else
+    {
+        for (size_t j = 0; j < n; ++j)
+        {
+            *reinterpret_cast<uint8_t *>(state.fixed_ptrs[pids[j]]) = null_map[j];
+            state.fixed_ptrs[pids[j]] += sizeof(uint8_t);
+        }
+    }
 
     /// Delegate to nested scatter; it handles its own pointer cache and
     /// uses the same stale bitset (same FixedChunk per partition).
