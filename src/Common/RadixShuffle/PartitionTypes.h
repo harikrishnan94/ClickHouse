@@ -97,8 +97,35 @@ struct ResumePosition
 /// Lifecycle: construct with ScatterState(P), pass to scatter on every
 /// batch.  The scatter function lazily initialises varlen fields (data_ptrs,
 /// cached_data) and the nested ScatterState on the first call.
+/// Members are ordered to group the fields accessed in the hot scatter loops into
+/// the first cache line of the struct, minimising cache-line fetches per call.
+///
+/// Cache-line 0 (bytes 0–63) — hot for ALL scatter paths:
+///   raw_write_ptrs  (8 B)   OutBlock write pointers; accessed every row in
+///                           scatterRawFixed and every kSlotsPerFlush rows in
+///                           scatterRawSwwcFixed.
+///   swwc_staging    (8 B)   Staging buffer pointer; accessed every row in
+///                           scatterRawSwwcFixed.
+///   fixed_ptrs     (24 B)   PartReservation write-pointer vector; accessed
+///                           every row in scatterFixed (RadixPartitioner path).
+///   data_ptrs      (24 B)   Varlen char* write pointers.
+///
+/// Cache-line 1 (bytes 64–127) — cold/init paths:
+///   cached_data, nested, initialized.
 struct ScatterState
 {
+    /// Per-partition write-pointer cache for the OutBlock raw scatter path.
+    /// Plain raw pointer (not std::vector) so it can be loaded once into a
+    /// callee-saved register at function entry and accessed as *(ptr+p) —
+    /// one load, same depth as the baseline's `T** out_` member in
+    /// `NumericScatterColumn`.  Lazily allocated by `on_grow_raw`.
+    void ** raw_write_ptrs = nullptr;
+
+    /// SWWC staging buffer — P partitions × 64 bytes each (one cache line per
+    /// partition regardless of element type).  Pre-allocated by `on_grow_raw`
+    /// so `scatter_raw_swwc` needs no lazy-init guard.
+    char * swwc_staging = nullptr;
+
     /// Type-erased write pointer per partition for the primary fixed slot.
     ///   - ColumnVector<T>  / ColumnDecimal<T>: stores T *
     ///   - ColumnString:                         stores uint64_t * (Offsets slot)
@@ -124,20 +151,6 @@ struct ScatterState
     /// False until the first scatter call fully initialises fixed_ptrs.
     bool initialized = false;
 
-    /// Per-partition write-pointer cache for the OutBlock raw scatter path.
-    /// Plain raw pointer (not std::vector) so it can be loaded once into a
-    /// callee-saved register at function entry and accessed as *(ptr+p) —
-    /// one load, same depth as the baseline's `T** out_` member in
-    /// `NumericScatterColumn`.  A std::vector would require an extra
-    /// `vector.data()` load per access, causing the pids/positions stack spill.
-    /// Lazily allocated by `on_grow_raw` on the first call.
-    void ** raw_write_ptrs = nullptr;
-
-    /// SWWC staging buffer — P partitions × 64 bytes each (one cache line per
-    /// partition regardless of element type).  Pre-allocated by `on_grow_raw`
-    /// on the first call so `scatter_raw_swwc` needs no lazy-init guard.
-    char * swwc_staging = nullptr;
-
     explicit ScatterState(size_t P)
         : fixed_ptrs(P, nullptr)
     {
@@ -147,13 +160,13 @@ struct ScatterState
     ScatterState & operator=(const ScatterState &) = delete;
 
     ScatterState(ScatterState && other) noexcept
-        : fixed_ptrs(std::move(other.fixed_ptrs))
+        : raw_write_ptrs(other.raw_write_ptrs)
+        , swwc_staging(other.swwc_staging)
+        , fixed_ptrs(std::move(other.fixed_ptrs))
         , data_ptrs(std::move(other.data_ptrs))
         , cached_data(std::move(other.cached_data))
         , nested(std::move(other.nested))
         , initialized(other.initialized)
-        , raw_write_ptrs(other.raw_write_ptrs)
-        , swwc_staging(other.swwc_staging)
     {
         other.raw_write_ptrs = nullptr;
         other.swwc_staging = nullptr;
@@ -165,13 +178,13 @@ struct ScatterState
         {
             std::free(raw_write_ptrs);
             std::free(swwc_staging);
+            raw_write_ptrs = other.raw_write_ptrs;
+            swwc_staging = other.swwc_staging;
             fixed_ptrs = std::move(other.fixed_ptrs);
             data_ptrs = std::move(other.data_ptrs);
             cached_data = std::move(other.cached_data);
             nested = std::move(other.nested);
             initialized = other.initialized;
-            raw_write_ptrs = other.raw_write_ptrs;
-            swwc_staging = other.swwc_staging;
             other.raw_write_ptrs = nullptr;
             other.swwc_staging = nullptr;
         }
