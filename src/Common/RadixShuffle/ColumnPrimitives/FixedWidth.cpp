@@ -31,7 +31,7 @@ constexpr size_t SCATTER_STACK_PTRS = 1024;
 
 /// Refresh the fixed-chunk write pointer for partition p.
 /// elem_size is in bytes (sizeof(T) for fixed-width, n for FixedString).
-[[gnu::always_inline]] inline void refreshFixedPtr(char *& ptr, size_t p, size_t slot_idx, const PartReservation * dst, size_t elem_size)
+[[gnu::always_inline]] inline void refreshFixedPtr(void *& ptr, size_t p, size_t slot_idx, const PartReservation * dst, size_t elem_size)
 {
     if (dst[p].fixed != nullptr)
     {
@@ -102,11 +102,11 @@ template <typename T>
         // Fast path: stack-allocated typed pointer array — stays L1-resident.
         T * ptrs[SCATTER_STACK_PTRS];
         for (size_t p = 0; p < partitions; ++p)
-            ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+            ptrs[p] = static_cast<T *>(state.fixed_ptrs[p]);
         for (size_t j = 0; j < n; ++j)
             *ptrs[pids[j]]++ = src[j];
         for (size_t p = 0; p < partitions; ++p)
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+            state.fixed_ptrs[p] = ptrs[p];
     }
     else
     {
@@ -115,7 +115,7 @@ template <typename T>
         {
             const uint16_t p = pids[j];
             std::memcpy(state.fixed_ptrs[p], &src[j], sizeof(T));
-            state.fixed_ptrs[p] += sizeof(T);
+            state.fixed_ptrs[p] = static_cast<char *>(state.fixed_ptrs[p]) + sizeof(T);
         }
     }
 }
@@ -166,7 +166,7 @@ template <typename T>
     {
         unsigned char * ptrs[SCATTER_STACK_PTRS];
         for (size_t p = 0; p < partitions; ++p)
-            ptrs[p] = reinterpret_cast<unsigned char *>(state.fixed_ptrs[p]);
+            ptrs[p] = static_cast<unsigned char *>(state.fixed_ptrs[p]);
         for (size_t j = 0; j < n_rows; ++j)
         {
             unsigned char * out = ptrs[pids[j]];
@@ -174,7 +174,7 @@ template <typename T>
             ptrs[pids[j]] = out + n;
         }
         for (size_t p = 0; p < partitions; ++p)
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+            state.fixed_ptrs[p] = ptrs[p];
     }
     else
     {
@@ -182,7 +182,7 @@ template <typename T>
         {
             const uint16_t p = pids[j];
             std::memcpy(state.fixed_ptrs[p], src + j * n, n);
-            state.fixed_ptrs[p] += n;
+            state.fixed_ptrs[p] = static_cast<char *>(state.fixed_ptrs[p]) + n;
         }
     }
 }
@@ -211,11 +211,11 @@ template <typename T>
     {
         T * ptrs[SCATTER_STACK_PTRS];
         for (size_t p = 0; p < partitions; ++p)
-            ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+            ptrs[p] = static_cast<T *>(state.fixed_ptrs[p]);
         for (size_t j = 0; j < n; ++j)
             *ptrs[pids[j]]++ = src[j];
         for (size_t p = 0; p < partitions; ++p)
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+            state.fixed_ptrs[p] = ptrs[p];
     }
     else
     {
@@ -223,7 +223,7 @@ template <typename T>
         {
             const uint16_t p = pids[j];
             std::memcpy(state.fixed_ptrs[p], &src[j], sizeof(T));
-            state.fixed_ptrs[p] += sizeof(T);
+            state.fixed_ptrs[p] = static_cast<char *>(state.fixed_ptrs[p]) + sizeof(T);
         }
     }
 }
@@ -436,7 +436,12 @@ void hashFixedString(
     }
 }
 
-// ── NT-flush helpers for SWWC (mirrored from NumericScatterColumn.cpp) ────────
+// ── NT-flush helpers for SWWC ─────────────────────────────────────────────────
+// flushStagedNT / flushStagedScalar          — typed T*&  (NumericScatterColumn)
+// flushStagedNTInPlace / flushStagedScalarInPlace — void*& (raw scatter path)
+//
+// The InPlace variants pass the reference directly into fixed_ptrs[p] so the
+// pointer updates in-place without a separate load-cast-store sequence.
 
 #if USE_MULTITARGET_CODE
 
@@ -445,15 +450,23 @@ DECLARE_X86_64_V4_SPECIFIC_CODE(
     template <typename T> inline void flushStagedNT(const T * staging_p, T *& out_p) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     {
         if constexpr (sizeof(T) == 8)
-        {
             _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
-        }
         else
-        {
             for (int i = 0; i < 8; ++i)
                 out_p[i] = staging_p[i];
-        }
         out_p += 8;
+    }
+
+    template <typename T>
+    inline void flushStagedNTInPlace(const T * staging_p, void *& out_void) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    {
+        T * out_p = static_cast<T *>(out_void);
+        if constexpr (sizeof(T) == 8)
+            _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
+        else
+            for (int i = 0; i < 8; ++i)
+                out_p[i] = staging_p[i];
+        out_void = out_p + 8;
     }
 
     ) // DECLARE_X86_64_V4_SPECIFIC_CODE
@@ -466,6 +479,15 @@ template <typename T>
     for (int i = 0; i < 8; ++i)
         out_p[i] = staging_p[i];
     out_p += 8;
+}
+
+template <typename T>
+[[gnu::always_inline]] inline void flushStagedScalarInPlace(const T * staging_p, void *& out_void)
+{
+    T * out_p = static_cast<T *>(out_void);
+    for (int i = 0; i < 8; ++i)
+        out_p[i] = staging_p[i];
+    out_void = out_p + 8;
 }
 
 
@@ -482,113 +504,131 @@ void computePidsFixed(const ColumnPrimitives & /*self*/, const IColumn & src_, s
 
 
 // ── Raw-output-pointer scatter (OutBlock model) ───────────────────────────────
+// self + partitions are absent from all four signatures (see ColumnPrimitives.h).
+// Dropping two parameters reduces the x86-64 register pressure so pids and
+// positions stay in integer parameter registers (rdx, rcx) rather than being
+// spilled to the stack, eliminating the 2 extra memory reads per row that were
+// the primary regression vs. the baseline IScatterColumn path.
 
-/// Direct scatter: reads IColumn[offset..offset+n), writes to
-/// state.fixed_ptrs[p] (advances the pointer).
+/// Direct scatter: reads IColumn[offset..offset+n), writes via raw_write_ptrs[p].
 template <typename T>
-[[gnu::hot]] void scatterRawFixed(
-    const ColumnPrimitives & /*self*/,
-    const IColumn & src_,
-    size_t offset,
-    const uint32_t * pids,
-    int n,
-    size_t partitions,
-    ScatterState & state)
+[[gnu::hot]] void scatterRawFixed(const IColumn & src_, size_t offset, const uint32_t * pids, int n, ScatterState & state)
 {
     const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
+    // raw_write_ptrs is a plain void** — loaded once into a callee-saved register,
+    // no vector.data() double-indirection in the hot loop.
+    void ** wp = state.raw_write_ptrs;
+    const size_t partitions = state.fixed_ptrs.size();
 
     if (partitions <= SCATTER_STACK_PTRS)
     {
         T * ptrs[SCATTER_STACK_PTRS];
         for (size_t p = 0; p < partitions; ++p)
-            ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+            ptrs[p] = static_cast<T *>(wp[p]);
         for (int j = 0; j < n; ++j)
             *ptrs[pids[j]]++ = src[j];
         for (size_t p = 0; p < partitions; ++p)
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+            wp[p] = ptrs[p]; // T* → void* implicit
     }
     else
     {
         for (int j = 0; j < n; ++j)
         {
             const uint32_t p = pids[j];
-            std::memcpy(state.fixed_ptrs[p], &src[j], sizeof(T));
-            state.fixed_ptrs[p] += sizeof(T);
+            T * out = static_cast<T *>(wp[p]);
+            *out++ = src[j];
+            wp[p] = out; // T* → void* implicit
         }
     }
 }
 
 
-/// SWWC scatter: stages values into a per-partition 8-slot buffer; flushes
-/// with NT stores (x86_64_v4) or scalar stores when a partition's slot
-/// reaches 7.  Mirrors `NumericScatterColumn<T>::scatter_staged`.
+/// SWWC scatter.
+///
+/// Register allocation with 6 parameters (no self, no partitions):
+///   rdi=src → compute r12=src_data (then src on stack, 1 load/row — same as baseline)
+///   rsi=offset
+///   rdx=pids → rbx (callee-saved) — NO STACK SPILL
+///   rcx=positions → rbp (callee-saved) — NO STACK SPILL
+///   r8=n → r14 (callee-saved)
+///   r9=state → r13=raw_write_ptrs, r12=staging (loaded once, no vector.data())
+///   r15 = j (loop counter)
+///
+/// Equivalent to the baseline `NumericScatterColumn::scatter_staged` where
+/// `this->out_` (T**) → `raw_write_ptrs` (void**) and `this->staging_` (T*) →
+/// the `staging` pointer loaded from `state.swwc_staging`.
 template <typename T>
-[[gnu::hot]] void scatterRawSwwcFixed(
-    const ColumnPrimitives & /*self*/,
-    const IColumn & src_,
-    size_t offset,
-    const uint32_t * pids,
-    const uint32_t * positions,
-    int n,
-    size_t partitions,
-    ScatterState & state)
+[[gnu::hot]] void
+scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state)
 {
     const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
 
     if (!state.swwc_staging_initialized)
     {
+        const size_t partitions = state.fixed_ptrs.size();
         if (posix_memalign(reinterpret_cast<void **>(&state.swwc_staging), 64, partitions * 8 * sizeof(T)) != 0)
             throw std::bad_alloc{};
         std::memset(state.swwc_staging, 0, partitions * 8 * sizeof(T));
         state.swwc_staging_initialized = true;
     }
 
-    T * staging = reinterpret_cast<T *>(state.swwc_staging);
-
+    // Access staging and raw_write_ptrs via state in the loop body — don't preload
+    // them into named variables before the loop.  The compiler then keeps `state`
+    // (= r9 → one callee-saved register) as the base pointer for both arrays,
+    // exactly mirroring the baseline's `this` (r12) that gave access to both
+    // `staging_` and `out_[]` via member offsets.  This frees two callee-saved
+    // registers (previously consumed by a pre-loaded staging pointer and a
+    // pre-loaded wp pointer) so that pids and positions can stay in registers
+    // instead of being spilled to the stack.
     for (int j = 0; j < n; ++j)
     {
         const uint32_t p = pids[j];
         const uint32_t slot = positions[j];
-        staging[static_cast<size_t>(p) * 8 + slot] = src[j];
+        reinterpret_cast<T *>(state.swwc_staging)[static_cast<size_t>(p) * 8 + slot] = src[j];
         if (slot == 7)
         {
-            T * out_p = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+            // state.raw_write_ptrs[p] is void*& — updated in-place by flush.
 #if USE_MULTITARGET_CODE
             if (isArchSupported(TargetArch::x86_64_v4))
-                TargetSpecific::x86_64_v4::flushStagedNT(staging + static_cast<size_t>(p) * 8, out_p);
+                TargetSpecific::x86_64_v4::flushStagedNTInPlace(
+                    reinterpret_cast<T *>(state.swwc_staging) + static_cast<size_t>(p) * 8, state.raw_write_ptrs[p]);
             else
-                flushStagedScalar(staging + static_cast<size_t>(p) * 8, out_p);
+                flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + static_cast<size_t>(p) * 8, state.raw_write_ptrs[p]);
 #else
-            flushStagedScalar(staging + static_cast<size_t>(p) * 8, out_p);
+            flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + static_cast<size_t>(p) * 8, state.raw_write_ptrs[p]);
 #endif
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(out_p);
         }
     }
 }
 
 
-/// Drain: copies `cnt` staged values for partition `p` to its output
-/// pointer and advances it.  Mirrors `NumericScatterColumn<T>::drain_one`.
+/// Drain: copies `cnt` staged values for partition `p` to its output pointer.
 template <typename T>
-void drainRawFixed(const ColumnPrimitives & /*self*/, size_t p, uint32_t cnt, ScatterState & state)
+void drainRawFixed(size_t p, uint32_t cnt, ScatterState & state)
 {
     if (!state.swwc_staging_initialized || cnt == 0)
         return;
     const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * 8;
-    T * dst = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+    T * dst = static_cast<T *>(state.raw_write_ptrs[p]);
     for (uint32_t i = 0; i < cnt; ++i)
         dst[i] = s[i];
-    state.fixed_ptrs[p] = reinterpret_cast<char *>(dst + cnt);
+    state.raw_write_ptrs[p] = dst + cnt; // T* → void* implicit
 }
 
 
 /// Update the write pointer for partition `p` when a new output block is
-/// allocated.  Mirrors `IScatterColumn::on_grow`.
+/// allocated.  Initializes raw_write_ptrs lazily on the first call.
 template <typename T>
-void onGrowRawFixed(const ColumnPrimitives & /*self*/, size_t p, void * col_base, ScatterState & state)
+void onGrowRawFixed(size_t p, void * col_base, ScatterState & state)
 {
-    (void)sizeof(T); // T unused but kept for uniform registration
-    state.fixed_ptrs[p] = static_cast<char *>(col_base);
+    if (state.raw_write_ptrs == nullptr)
+    {
+        // Lazily allocate; calloc so unused slots are null-safe.
+        state.raw_write_ptrs = static_cast<void **>(std::calloc(state.fixed_ptrs.size(), sizeof(void *)));
+        if (!state.raw_write_ptrs)
+            throw std::bad_alloc{};
+    }
+    state.raw_write_ptrs[p] = col_base;
 }
 
 

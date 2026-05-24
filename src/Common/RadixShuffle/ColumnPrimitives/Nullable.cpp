@@ -89,18 +89,18 @@ constexpr size_t SCATTER_STACK_PTRS = 1024;
     {
         uint8_t * null_ptrs[SCATTER_STACK_PTRS];
         for (size_t p = 0; p < partitions; ++p)
-            null_ptrs[p] = reinterpret_cast<uint8_t *>(state.fixed_ptrs[p]);
+            null_ptrs[p] = static_cast<uint8_t *>(state.fixed_ptrs[p]);
         for (size_t j = 0; j < n; ++j)
             *null_ptrs[pids[j]]++ = null_map[j];
         for (size_t p = 0; p < partitions; ++p)
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(null_ptrs[p]);
+            state.fixed_ptrs[p] = null_ptrs[p];
     }
     else
     {
         for (size_t j = 0; j < n; ++j)
         {
-            *reinterpret_cast<uint8_t *>(state.fixed_ptrs[pids[j]]) = null_map[j];
-            state.fixed_ptrs[pids[j]] += sizeof(uint8_t);
+            *static_cast<uint8_t *>(state.fixed_ptrs[pids[j]]) = null_map[j];
+            state.fixed_ptrs[pids[j]] = static_cast<char *>(state.fixed_ptrs[pids[j]]) + sizeof(uint8_t);
         }
     }
 

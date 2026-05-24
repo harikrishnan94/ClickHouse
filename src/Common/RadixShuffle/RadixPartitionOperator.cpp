@@ -88,16 +88,13 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
             {
                 for (int k = 0; k < K_; ++k)
                     col_prims_[static_cast<size_t>(k)].drain_raw(
-                        col_prims_[static_cast<size_t>(k)],
-                        static_cast<size_t>(p),
-                        cnt_[static_cast<size_t>(p)],
-                        scatter_states_[static_cast<size_t>(k)]);
+                        static_cast<size_t>(p), cnt_[static_cast<size_t>(p)], scatter_states_[static_cast<size_t>(k)]);
                 cnt_[static_cast<size_t>(p)] = 0;
             }
             growPart(ps, arena_, K_, sizeof(TKey), max_cap_);
             for (int k = 0; k < K_; ++k)
                 col_prims_[static_cast<size_t>(k)].on_grow_raw(
-                    col_prims_[static_cast<size_t>(k)], static_cast<size_t>(p), ps.cur->cols[k], scatter_states_[static_cast<size_t>(k)]);
+                    static_cast<size_t>(p), ps.cur->cols[k], scatter_states_[static_cast<size_t>(k)]);
         }
         ps.cur->filled += hist[p]; // pre-commit (thread-private, safe)
     }
@@ -118,14 +115,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         for (int k = 0; k < K_; ++k)
         {
             col_prims_[static_cast<size_t>(k)].scatter_raw_swwc(
-                col_prims_[static_cast<size_t>(k)],
-                *columns[static_cast<size_t>(k)],
-                start,
-                pids,
-                pos,
-                n,
-                static_cast<size_t>(P_),
-                scatter_states_[static_cast<size_t>(k)]);
+                *columns[static_cast<size_t>(k)], start, pids, pos, n, scatter_states_[static_cast<size_t>(k)]);
         }
     }
     else
@@ -134,13 +124,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         for (int k = 0; k < K_; ++k)
         {
             col_prims_[static_cast<size_t>(k)].scatter_raw(
-                col_prims_[static_cast<size_t>(k)],
-                *columns[static_cast<size_t>(k)],
-                start,
-                pids,
-                n,
-                static_cast<size_t>(P_),
-                scatter_states_[static_cast<size_t>(k)]);
+                *columns[static_cast<size_t>(k)], start, pids, n, scatter_states_[static_cast<size_t>(k)]);
         }
     }
 }
@@ -162,10 +146,7 @@ void RadixPartitionOperator<TKey>::finish()
             continue;
         for (int k = 0; k < K_; ++k)
             col_prims_[static_cast<size_t>(k)].drain_raw(
-                col_prims_[static_cast<size_t>(k)],
-                static_cast<size_t>(p),
-                cnt_[static_cast<size_t>(p)],
-                scatter_states_[static_cast<size_t>(k)]);
+                static_cast<size_t>(p), cnt_[static_cast<size_t>(p)], scatter_states_[static_cast<size_t>(k)]);
         cnt_[static_cast<size_t>(p)] = 0;
     }
 }

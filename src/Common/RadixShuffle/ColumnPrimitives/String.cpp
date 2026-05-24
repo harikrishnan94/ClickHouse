@@ -109,7 +109,7 @@ constexpr size_t SCATTER_STACK_PTRS = 1024;
 
         for (size_t p = 0; p < partitions; ++p)
         {
-            off_ptrs[p] = reinterpret_cast<uint64_t *>(state.fixed_ptrs[p]);
+            off_ptrs[p] = static_cast<uint64_t *>(state.fixed_ptrs[p]);
             char_ptrs[p] = state.data_ptrs[p];
             abs_byte[p] = dst[p].begin_byte;
         }
@@ -130,7 +130,7 @@ constexpr size_t SCATTER_STACK_PTRS = 1024;
 
         for (size_t p = 0; p < partitions; ++p)
         {
-            state.fixed_ptrs[p] = reinterpret_cast<char *>(off_ptrs[p]);
+            state.fixed_ptrs[p] = off_ptrs[p];
             state.data_ptrs[p] = char_ptrs[p];
         }
     }
@@ -162,7 +162,7 @@ constexpr size_t SCATTER_STACK_PTRS = 1024;
             abs_byte[p] += len;
             uint64_t abs = abs_byte[p];
             std::memcpy(state.fixed_ptrs[p], &abs, sizeof(uint64_t));
-            state.fixed_ptrs[p] += sizeof(uint64_t);
+            state.fixed_ptrs[p] = static_cast<char *>(state.fixed_ptrs[p]) + sizeof(uint64_t);
             prev = end;
         }
     }

@@ -104,9 +104,10 @@ struct ScatterState
     ///   - ColumnString:                         stores uint64_t * (Offsets slot)
     ///   - ColumnFixedString:                    stores unsigned char *
     ///   - ColumnNullable:                       stores uint8_t * (NullMap slot)
-    /// All stored as char * to avoid template bloat; scatter casts to the
-    /// concrete pointer type.
-    std::vector<char *> fixed_ptrs;
+    /// Stored as void* so `state.fixed_ptrs[p]` can be passed as `void*&` to
+    /// `flushStagedNTInPlace`, letting it update in-place without an explicit
+    /// load-cast-store round-trip.  Byte-level arithmetic uses a local char* cast.
+    std::vector<void *> fixed_ptrs;
 
     /// DataChunk write-pointer cache for varlen columns (lazily sized on
     /// the first scatter call that needs varlen state).
@@ -123,8 +124,17 @@ struct ScatterState
     /// False until the first scatter call fully initialises fixed_ptrs.
     bool initialized = false;
 
-    /// SWWC staging buffer for `scatter_raw_swwc`.  Lazily allocated by
-    /// `scatterRawSwwcFixed` on the first call; layout is [P × 8 × elem_size],
+    /// Per-partition write-pointer cache for the OutBlock raw scatter path.
+    /// Plain raw pointer (not std::vector) so it can be loaded once into a
+    /// callee-saved register at function entry and accessed as *(ptr+p) —
+    /// one load, same depth as the baseline's `T** out_` member in
+    /// `NumericScatterColumn`.  A std::vector would require an extra
+    /// `vector.data()` load per access, causing the pids/positions stack spill.
+    /// Lazily allocated by `on_grow_raw` on the first call.
+    void ** raw_write_ptrs = nullptr;
+
+    /// SWWC staging buffer for `scatter_raw_swwc`.  Lazily allocated on the
+    /// first `scatter_raw_swwc` call; layout is [P × 8 × elem_size],
     /// 64-byte aligned so that NT stores can address it.
     char * swwc_staging = nullptr;
     bool swwc_staging_initialized = false;
@@ -143,9 +153,11 @@ struct ScatterState
         , cached_data(std::move(other.cached_data))
         , nested(std::move(other.nested))
         , initialized(other.initialized)
+        , raw_write_ptrs(other.raw_write_ptrs)
         , swwc_staging(other.swwc_staging)
         , swwc_staging_initialized(other.swwc_staging_initialized)
     {
+        other.raw_write_ptrs = nullptr;
         other.swwc_staging = nullptr;
     }
 
@@ -153,20 +165,27 @@ struct ScatterState
     {
         if (this != &other)
         {
+            std::free(raw_write_ptrs);
             std::free(swwc_staging);
             fixed_ptrs = std::move(other.fixed_ptrs);
             data_ptrs = std::move(other.data_ptrs);
             cached_data = std::move(other.cached_data);
             nested = std::move(other.nested);
             initialized = other.initialized;
+            raw_write_ptrs = other.raw_write_ptrs;
             swwc_staging = other.swwc_staging;
             swwc_staging_initialized = other.swwc_staging_initialized;
+            other.raw_write_ptrs = nullptr;
             other.swwc_staging = nullptr;
         }
         return *this;
     }
 
-    ~ScatterState() { std::free(swwc_staging); }
+    ~ScatterState()
+    {
+        std::free(raw_write_ptrs);
+        std::free(swwc_staging);
+    }
 };
 
 }

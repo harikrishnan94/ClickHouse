@@ -90,40 +90,31 @@ using PidsFn = void (*)(const ColumnPrimitives & self, const IColumn & src, size
 
 
 /// Raw-output-pointer scatter primitives.  These write directly to per-partition
-/// `char *` write pointers held in `ScatterState::fixed_ptrs`, bypassing the
+/// void* write pointers held in `ScatterState::fixed_ptrs`, bypassing the
 /// `PartReservation` layer.  They are intended for use by callers that manage
 /// their own output storage (e.g. `RadixPartitionOperator` with `OutBlock`).
 ///
-/// `partitions` is P; required by the stack-pointer fast path.
-/// `ScatterState::fixed_ptrs[p]` must be initialised (via `RawOnGrowFn`) before
-/// the first scatter call and is advanced in-place as rows are written.
+/// `self` and `partitions` are intentionally absent from all four signatures.
+/// Removing them reduces the parameter count so that `pids` and `positions` both
+/// fit in x86-64 integer parameter registers (rdi/rsi/rdx/rcx/r8/r9) and are
+/// never spilled to the stack.  The stack-spill of those two pointers was the
+/// primary regression source vs. `IScatterColumn` (2 extra memory reads / row).
+/// Callee derives `partitions` from `state.fixed_ptrs.size()` when needed.
 
 /// Direct scatter (replaces `IScatterColumn::scatter_direct`).
-using RawScatterFn = void (*)(
-    const ColumnPrimitives & self,
-    const IColumn & src,
-    size_t offset,
-    const uint32_t * pids,
-    int n,
-    size_t partitions,
-    ScatterState & state);
+using RawScatterFn = void (*)(const IColumn & src, size_t offset, const uint32_t * pids, int n, ScatterState & state);
 
 /// SWWC scatter (replaces `IScatterColumn::scatter_staged`).
-using RawScatterSwwcFn = void (*)(
-    const ColumnPrimitives & self,
-    const IColumn & src,
-    size_t offset,
-    const uint32_t * pids,
-    const uint32_t * positions,
-    int n,
-    size_t partitions,
-    ScatterState & state);
+/// 6 parameters — rdi=src, rsi=offset, rdx=pids, rcx=positions, r8=n, r9=&state.
+/// All fit in registers; no stack spill for pids or positions.
+using RawScatterSwwcFn
+    = void (*)(const IColumn & src, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state);
 
 /// Partial SWWC drain (replaces `IScatterColumn::drain_one`).
-using RawDrainFn = void (*)(const ColumnPrimitives & self, size_t p, uint32_t cnt, ScatterState & state);
+using RawDrainFn = void (*)(size_t p, uint32_t cnt, ScatterState & state);
 
 /// Write-pointer update on new output block (replaces `IScatterColumn::on_grow`).
-using RawOnGrowFn = void (*)(const ColumnPrimitives & self, size_t p, void * col_base, ScatterState & state);
+using RawOnGrowFn = void (*)(size_t p, void * col_base, ScatterState & state);
 
 
 /// Column-primitive triple resolved per column type.  After
