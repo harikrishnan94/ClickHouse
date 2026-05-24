@@ -79,6 +79,13 @@ struct Stats
 };
 
 
+struct RadixBenchStats
+{
+    uint64_t allocated_bytes = 0;
+    uint64_t reserved_bytes = 0;
+};
+
+
 // ── input ─────────────────────────────────────────────────────────────────────
 
 BlockStream genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
@@ -110,12 +117,7 @@ BlockStream genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
 // pattern, block sizes, and arena usage therefore mirror the radix variant.
 
 void runMemcpy(
-    const BlockStream & blocks,
-    int K,
-    PartState & out,
-    BumpArena & arena,
-    size_t init_cap = kOutCapMin,
-    size_t max_cap = kOutCapMax)
+    const BlockStream & blocks, int K, PartState & out, BumpArena & arena, size_t init_cap = kOutCapMin, size_t max_cap = kOutCapMax)
 {
     out.next_cap = init_cap;
     for (const auto & blk : blocks)
@@ -142,14 +144,7 @@ void runMemcpy(
 
 // ── radix variant ─────────────────────────────────────────────────────────────
 
-void runSmartRadix(
-    const BlockStream & blocks,
-    int K,
-    int P,
-    std::vector<PartState> & parts,
-    BumpArena & arena,
-    size_t init_cap = kOutCapMin,
-    size_t max_cap = kOutCapMax)
+RadixBenchStats runSmartRadix(const BlockStream & blocks, int K, int P)
 {
     std::vector<std::unique_ptr<NumericScatterColumn<uint64_t>>> owned;
     std::vector<IScatterColumn *> ptrs;
@@ -161,11 +156,14 @@ void runSmartRadix(
         ptrs.push_back(owned.back().get());
     }
     const bool use_swwc = RadixPartitionOperator<uint64_t>::should_use_swwc(K, P);
-    RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), arena, use_swwc, init_cap, max_cap);
+    RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), use_swwc);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
-    parts = std::move(op.parts());
+    return RadixBenchStats{
+        .allocated_bytes = op.getAllocator().totalAllocatedBytes(),
+        .reserved_bytes = op.getAllocator().totalReservedBytes(),
+    };
 }
 
 
@@ -313,22 +311,16 @@ int main(int argc, char ** argv)
         streams[static_cast<size_t>(t)] = genBlocks(rpt, B, K, 42ULL + static_cast<uint64_t>(t));
     fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
 
-    // ── arenas + output state — reset() between reps for warm-page reuse ─────
-    // 64 MiB initial slab: at most a handful of allocations in rep 0.
-    // From rep 1 onward reset() rewinds to the same warm physical pages so
-    // both variants pay identical allocation and page-fault cost.
+    // ── memcpy arena + output state — reset() between reps for warm-page reuse ──
+    // The radix variant owns an Allocator inside RadixPartitionOperator and
+    // allocates fresh chunks per repetition.
     std::vector<BumpArena> mc_arenas;
-    std::vector<BumpArena> rd_arenas;
     mc_arenas.reserve(static_cast<size_t>(T));
-    rd_arenas.reserve(static_cast<size_t>(T));
     for (int t = 0; t < T; ++t)
-    {
         mc_arenas.emplace_back(kArenaSlabBytes);
-        rd_arenas.emplace_back(kArenaSlabBytes);
-    }
 
     std::vector<PartState> mc_parts(static_cast<size_t>(T));
-    std::vector<std::vector<PartState>> parts(static_cast<size_t>(T));
+    std::vector<RadixBenchStats> rd_stats(static_cast<size_t>(T));
 
     // GB/s = gbs_k / ns_per_row  (factor of 2 for read + write)
     const double gbs_k = 2.0 * static_cast<double>(K) * 8.0;
@@ -375,10 +367,7 @@ int main(int argc, char ** argv)
         // ── radix ─────────────────────────────────────────────────────────────
         {
             for (int t = 0; t < T; ++t)
-            {
-                parts[static_cast<size_t>(t)].clear();
-                rd_arenas[static_cast<size_t>(t)].reset();
-            }
+                rd_stats[static_cast<size_t>(t)] = {};
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(T));
@@ -388,14 +377,7 @@ int main(int argc, char ** argv)
                     [&, t]()
                     {
                         pinThread(t);
-                        runSmartRadix(
-                            streams[static_cast<size_t>(t)],
-                            K,
-                            P,
-                            parts[static_cast<size_t>(t)],
-                            rd_arenas[static_cast<size_t>(t)],
-                            cap_init,
-                            cap_max);
+                        rd_stats[static_cast<size_t>(t)] = runSmartRadix(streams[static_cast<size_t>(t)], K, P);
                     });
             }
             for (auto & th : ths)
@@ -426,9 +408,9 @@ int main(int argc, char ** argv)
         static_cast<double>(mc_arenas[0].allocatedBytes()) / 1048576.0);
     fmt::print(
         "  radix   used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
-        static_cast<double>(rd_arenas[0].usedBytes()) / 1048576.0,
-        static_cast<double>(rd_arenas[0].allocatedBytes()) / 1048576.0);
-    fmt::print("  (used > expected by OutBlock headers and partial-block waste)\n");
+        static_cast<double>(rd_stats[0].reserved_bytes) / 1048576.0,
+        static_cast<double>(rd_stats[0].allocated_bytes) / 1048576.0);
+    fmt::print("  (radix used is reserved payload bytes; alloc includes Allocator chunk waste)\n");
 
     // ── summary ───────────────────────────────────────────────────────────────
     const auto mc = computeStats(std::move(mc_ns));

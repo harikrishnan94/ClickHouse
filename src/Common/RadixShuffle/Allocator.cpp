@@ -110,6 +110,9 @@ bool Handle::ensureFixed(size_t p, size_t rows)
         const size_t k = (chunk_rows + rows - 1) / rows;
         chunk_rows = k * rows;
     }
+    /// Keep column slot starts 64-byte aligned for 8-byte values.  SWWC uses
+    /// `_mm512_stream_si512`, whose destination must be 64-byte aligned.
+    chunk_rows = (chunk_rows + 7) & ~size_t(7);
 
     /// Compute the column-major layout for this chunk and the total byte size.
     const size_t num_slots = sc.fixed_slots.size();

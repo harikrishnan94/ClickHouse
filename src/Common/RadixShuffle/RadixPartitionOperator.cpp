@@ -11,32 +11,61 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 
 namespace DB::RadixShuffle
 {
 
+namespace
+{
+
+template <typename TKey>
+PartSchema buildSchemaForType(int K)
+{
+    PartSchema schema;
+    size_t off = 0;
+    for (int k = 0; k < K; ++k)
+    {
+        schema.fixed_slots.push_back({static_cast<size_t>(k), SlotRole::Values, sizeof(TKey), sizeof(TKey)});
+        schema.slot_byte_offset.push_back(off);
+        off += sizeof(TKey);
+    }
+    schema.fixed_bytes_per_row = off;
+    schema.has_varlen_portion = false;
+    return schema;
+}
+
+} // namespace
+
 // ── RadixPartitionOperator implementation ────────────────────────────────────
 
 template <typename TKey>
-RadixPartitionOperator<TKey>::RadixPartitionOperator(
-    int P, int K, std::vector<IScatterColumn *> cols, BumpArena & arena, bool use_swwc, size_t init_cap, size_t max_cap)
+RadixPartitionOperator<TKey>::RadixPartitionOperator(int P, int K, std::vector<IScatterColumn *> cols, bool use_swwc)
     : P_(P)
     , K_(K)
     , use_swwc_(use_swwc)
     , batch_(std::max(1024, std::min(kSmartMaxBatch, P * kBatchFactor)))
     , mask_(static_cast<uint32_t>(P) - 1)
-    , max_cap_(max_cap)
+    , allocator_(buildSchemaForType<TKey>(K), static_cast<size_t>(P), 0)
     , cols_(std::move(cols))
-    , arena_(arena)
     , pids_(static_cast<size_t>(batch_))
     , hist_(static_cast<size_t>(P), 0)
+    , size_hist_(static_cast<size_t>(P), 0)
+    , varlen_zeros_(static_cast<size_t>(P), 0)
+    , grants_(static_cast<size_t>(P))
+    , stale_bitset_((static_cast<size_t>(P) + 63) / 64, 0)
     , pos_(static_cast<size_t>(batch_))
     , cnt_(static_cast<size_t>(P), 0)
 {
-    parts_.assign(static_cast<size_t>(P), {});
-    for (auto & ps : parts_)
-        ps.next_cap = init_cap;
+    handle_ = allocator_.acquire();
+}
+
+
+template <typename TKey>
+RadixPartitionOperator<TKey>::~RadixPartitionOperator()
+{
+    finish();
 }
 
 
@@ -71,26 +100,40 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
     for (int j = 0; j < n; ++j)
         hist[pids[j]]++;
 
-    // ── Phase 3: pre-grow + notify columns + pre-commit ───────────────────
+    // ── Phase 3: reserve (pre-grow + pre-commit) + notify stale columns ────
     for (int p = 0; p < P_; ++p)
+        size_hist_[static_cast<size_t>(p)] = static_cast<size_t>(hist[p]);
+
+    std::fill(stale_bitset_.begin(), stale_bitset_.end(), uint64_t{0});
+    handle_->reserve(size_hist_.data(), varlen_zeros_.data(), grants_.data(), stale_bitset_.data());
+
+    for (size_t word = 0; word < stale_bitset_.size(); ++word)
     {
-        if (!hist[p])
-            continue;
-        auto & ps = parts_[static_cast<size_t>(p)];
-        if (!ps.cur || ps.cur->filled + hist[p] > ps.cur->capacity)
+        uint64_t bits = stale_bitset_[word];
+        while (bits)
         {
-            // Drain any staged rows into the current block before growing.
-            if (use_swwc_ && ps.cur && cnt_[static_cast<size_t>(p)])
+            const size_t bit = static_cast<size_t>(__builtin_ctzll(bits));
+            const size_t p = word * 64 + bit;
+            if (p < static_cast<size_t>(P_))
             {
-                for (auto * c : cols_)
-                    c->drain_one(static_cast<size_t>(p), cnt_[static_cast<size_t>(p)]);
-                cnt_[static_cast<size_t>(p)] = 0;
+                // Drain staged rows into the old chunk before redirecting
+                // the column write pointers to the newly allocated chunk.
+                if (use_swwc_ && cnt_[p])
+                {
+                    for (auto * c : cols_)
+                        c->drain_one(p, cnt_[p]);
+                    cnt_[p] = 0;
+                }
+
+                const PartReservation & slice = grants_[p].slice;
+                for (int k = 0; k < K_; ++k)
+                {
+                    void * col_base = static_cast<char *>(slice.fixed->data) + slice.fixed->slot_byte_offsets[static_cast<size_t>(k)];
+                    cols_[static_cast<size_t>(k)]->on_grow(p, col_base);
+                }
             }
-            growPart(ps, arena_, K_, sizeof(TKey), max_cap_);
-            for (int k = 0; k < K_; ++k)
-                cols_[static_cast<size_t>(k)]->on_grow(static_cast<size_t>(p), ps.cur->cols[k]);
+            bits &= bits - 1;
         }
-        ps.cur->filled += hist[p]; // pre-commit (thread-private, safe)
     }
 
     if (use_swwc_)
@@ -127,21 +170,27 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
 template <typename TKey>
 void RadixPartitionOperator<TKey>::finish()
 {
-    if (!use_swwc_)
+    if (!handle_)
         return;
 
+    if (use_swwc_)
+    {
 #if defined(__x86_64__)
-    _mm_sfence();
+        _mm_sfence();
 #endif
 
-    for (int p = 0; p < P_; ++p)
-    {
-        if (!cnt_[static_cast<size_t>(p)])
-            continue;
-        for (auto * c : cols_)
-            c->drain_one(static_cast<size_t>(p), cnt_[static_cast<size_t>(p)]);
-        cnt_[static_cast<size_t>(p)] = 0;
+        for (int p = 0; p < P_; ++p)
+        {
+            if (!cnt_[static_cast<size_t>(p)])
+                continue;
+            for (auto * c : cols_)
+                c->drain_one(static_cast<size_t>(p), cnt_[static_cast<size_t>(p)]);
+            cnt_[static_cast<size_t>(p)] = 0;
+        }
     }
+
+    allocator_.release(handle_);
+    handle_ = nullptr;
 }
 
 
