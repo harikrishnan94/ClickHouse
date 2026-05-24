@@ -2,8 +2,9 @@
 
 #include <Columns/IColumn_fwd.h>
 #include <Common/RadixShuffle/BumpArena.h>
-#include <Common/RadixShuffle/IScatterColumn.h>
+#include <Common/RadixShuffle/ColumnPrimitives.h>
 #include <Common/RadixShuffle/OutBlock.h>
+#include <Common/RadixShuffle/PartitionTypes.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -42,7 +43,8 @@ public:
     /// True iff SWWC NT-store scatter is preferred for (K, P).
     static bool should_use_swwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
 
-    /// `cols`     — K column objects; ownership not transferred.
+    /// `prims`    — K `ColumnPrimitives` objects (must have `scatter_raw`,
+    ///              `scatter_raw_swwc`, `drain_raw`, and `on_grow_raw` set).
     /// `arena`    — bump allocator for OutBlock storage; must outlive this object.
     /// `use_swwc` — select SWWC scatter path; use `should_use_swwc(K,P)` as hint.
     /// `init_cap` — initial OutBlock row capacity (must be a multiple of 8).
@@ -50,7 +52,7 @@ public:
     RadixPartitionOperator(
         int P,
         int K,
-        std::vector<IScatterColumn *> cols,
+        std::vector<ColumnPrimitives> prims,
         BumpArena & arena,
         bool use_swwc,
         size_t init_cap = kOutCapMin,
@@ -80,7 +82,8 @@ private:
     uint32_t mask_; ///< P − 1 (P must be a power of two).
     size_t max_cap_;
 
-    std::vector<IScatterColumn *> cols_;
+    std::vector<ColumnPrimitives> col_prims_;
+    std::vector<ScatterState> scatter_states_;
     std::vector<PartState> parts_;
     BumpArena & arena_;
 

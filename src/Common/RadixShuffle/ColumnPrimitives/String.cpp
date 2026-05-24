@@ -240,18 +240,26 @@ ResumePosition reconstructString(
 }
 
 
-void hashString(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n, uint32_t * out)
+void hashString(
+    const ColumnPrimitives & /*self*/,
+    const PartSchema & /*schema*/,
+    const IColumn & src_,
+    size_t offset,
+    size_t n,
+    bool initial,
+    uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnString &>(src_);
     const auto & offsets_src = col.getOffsets();
     const auto & chars_src = col.getChars();
     const auto * chars_src_bytes = reinterpret_cast<const unsigned char *>(chars_src.data());
-    UInt64 prev = 0;
+    UInt64 prev = (offset == 0) ? 0 : offsets_src[offset - 1];
     for (size_t i = 0; i < n; ++i)
     {
-        const UInt64 end = offsets_src[i];
+        const UInt64 end = offsets_src[offset + i];
         const size_t len = end - prev;
-        out[i] = hashCombine(out[i], hashBytes32(chars_src_bytes + prev, len));
+        const uint32_t h = hashBytes32(chars_src_bytes + prev, len);
+        out[i] = initial ? h : hashCombine(out[i], h);
         prev = end;
     }
 }

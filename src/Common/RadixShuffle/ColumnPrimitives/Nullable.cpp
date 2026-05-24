@@ -164,15 +164,21 @@ ResumePosition reconstructNullable(
 }
 
 
-void hashNullable(const ColumnPrimitives & self, const PartSchema & schema, const IColumn & src_, size_t n, uint32_t * out)
+void hashNullable(
+    const ColumnPrimitives & self, const PartSchema & schema, const IColumn & src_, size_t offset, size_t n, bool initial, uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnNullable &>(src_);
     const auto & null_map = col.getNullMapData();
 
+    // Hash the null map into out[] using the caller-specified initial mode.
     for (size_t i = 0; i < n; ++i)
-        out[i] = hashCombine(out[i], fmix32(static_cast<uint32_t>(null_map[i])));
+    {
+        const uint32_t h = fmix32(static_cast<uint32_t>(null_map[offset + i]));
+        out[i] = initial ? h : hashCombine(out[i], h);
+    }
 
-    self.nested->hash(*self.nested, schema, col.getNestedColumn(), n, out);
+    // Always combine nested into out[] — null map already written.
+    self.nested->hash(*self.nested, schema, col.getNestedColumn(), offset, n, /*initial=*/false, out);
 }
 
 } // namespace

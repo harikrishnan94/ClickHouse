@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
@@ -122,6 +123,12 @@ struct ScatterState
     /// False until the first scatter call fully initialises fixed_ptrs.
     bool initialized = false;
 
+    /// SWWC staging buffer for `scatter_raw_swwc`.  Lazily allocated by
+    /// `scatterRawSwwcFixed` on the first call; layout is [P × 8 × elem_size],
+    /// 64-byte aligned so that NT stores can address it.
+    char * swwc_staging = nullptr;
+    bool swwc_staging_initialized = false;
+
     explicit ScatterState(size_t P)
         : fixed_ptrs(P, nullptr)
     {
@@ -129,9 +136,37 @@ struct ScatterState
 
     ScatterState(const ScatterState &) = delete;
     ScatterState & operator=(const ScatterState &) = delete;
-    ScatterState(ScatterState &&) = default;
-    ScatterState & operator=(ScatterState &&) = default;
-    ~ScatterState() = default;
+
+    ScatterState(ScatterState && other) noexcept
+        : fixed_ptrs(std::move(other.fixed_ptrs))
+        , data_ptrs(std::move(other.data_ptrs))
+        , cached_data(std::move(other.cached_data))
+        , nested(std::move(other.nested))
+        , initialized(other.initialized)
+        , swwc_staging(other.swwc_staging)
+        , swwc_staging_initialized(other.swwc_staging_initialized)
+    {
+        other.swwc_staging = nullptr;
+    }
+
+    ScatterState & operator=(ScatterState && other) noexcept
+    {
+        if (this != &other)
+        {
+            std::free(swwc_staging);
+            fixed_ptrs = std::move(other.fixed_ptrs);
+            data_ptrs = std::move(other.data_ptrs);
+            cached_data = std::move(other.cached_data);
+            nested = std::move(other.nested);
+            initialized = other.initialized;
+            swwc_staging = other.swwc_staging;
+            swwc_staging_initialized = other.swwc_staging_initialized;
+            other.swwc_staging = nullptr;
+        }
+        return *this;
+    }
+
+    ~ScatterState() { std::free(swwc_staging); }
 };
 
 }

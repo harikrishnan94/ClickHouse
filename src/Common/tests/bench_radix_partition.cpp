@@ -19,7 +19,7 @@
 #include <Columns/ColumnVector.h>
 #include <Columns/IColumn_fwd.h>
 #include <Common/RadixShuffle/BumpArena.h>
-#include <Common/RadixShuffle/NumericScatterColumn.h>
+#include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
 #include <Common/assert_cast.h>
@@ -146,17 +146,9 @@ void runSmartRadix(
     size_t init_cap = kOutCapMin,
     size_t max_cap = kOutCapMax)
 {
-    std::vector<std::unique_ptr<NumericScatterColumn<uint64_t>>> owned;
-    std::vector<IScatterColumn *> ptrs;
-    owned.reserve(static_cast<size_t>(K));
-    ptrs.reserve(static_cast<size_t>(K));
-    for (int k = 0; k < K; ++k)
-    {
-        owned.push_back(std::make_unique<NumericScatterColumn<uint64_t>>(static_cast<size_t>(P)));
-        ptrs.push_back(owned.back().get());
-    }
+    std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
     const bool use_swwc = RadixPartitionOperator<uint64_t>::should_use_swwc(K, P);
-    RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), arena, use_swwc, init_cap, max_cap);
+    RadixPartitionOperator<uint64_t> op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();

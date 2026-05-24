@@ -135,9 +135,12 @@ void RadixPartitioner::processBatch(const DB::Columns & columns, size_t n)
 {
     // ───── Phase 1: hash chain → Lemire's fast modulo → pids ─────
 
-    std::fill_n(hashes_.data(), n, uint32_t{0});
+    bool first_key = true;
     for (const size_t k_idx : key_col_idxs_)
-        prims_[k_idx].hash(prims_[k_idx], part_schema_, *columns[k_idx], n, hashes_.data());
+    {
+        prims_[k_idx].hash(prims_[k_idx], part_schema_, *columns[k_idx], /*offset=*/0, n, first_key, hashes_.data());
+        first_key = false;
+    }
 
     // Lemire's fast divisor: (hash × P) >> 32 maps [0, 2^32) → [0, P)
     // uniformly without a % operation.  Valid for any P ≤ 2^16 ≤ 2^32.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Common/RadixShuffle/HashCombiner.h>
 #include <Common/TargetSpecific.h>
 
 #include <cstddef>
@@ -171,6 +172,114 @@ inline void hashBatch32(const T * __restrict__ keys, int n, uint32_t mask, uint3
         return hashBatch32Impl_x86_64_v3(keys, n, mask, pids);
 #endif
     hashBatch32Impl(keys, n, mask, pids);
+}
+
+
+// ── hashBatch32Acc: hash + optional hashCombine accumulation ─────────────────
+
+/// Unified body for SIMD hash accumulation.
+///
+/// When `Initial` is true:  out[j] = hash32(keys[j])           (direct overwrite)
+/// When `Initial` is false: out[j] = hashCombine(out[j], hash) (accumulate)
+///
+/// The compile-time `Initial` parameter eliminates the runtime branch and lets
+/// the vectoriser generate two independent specialisations.  All rows are
+/// independent across j — the loop auto-vectorises under AVX-512, AVX2, SSE4.1.
+template <typename T, bool Initial>
+[[gnu::always_inline]] inline void hashBatch32AccBody(const T * __restrict__ keys, int n, uint32_t * __restrict__ out) noexcept
+{
+    if constexpr (sizeof(T) <= sizeof(uint32_t))
+    {
+        for (int j = 0; j < n; ++j)
+        {
+            uint32_t x = 0;
+            std::memcpy(&x, &keys[j], sizeof(T));
+            x ^= x >> 16;
+            x *= 0x85ebca6bU;
+            x ^= x >> 13;
+            x *= 0xc2b2ae35U;
+            x ^= x >> 16;
+            if constexpr (Initial)
+                out[j] = x;
+            else
+                out[j] = hashCombine(out[j], x);
+        }
+    }
+    else if constexpr (sizeof(T) == sizeof(uint64_t))
+    {
+        for (int j = 0; j < n; ++j)
+        {
+            uint64_t raw;
+            std::memcpy(&raw, &keys[j], sizeof(uint64_t));
+            const uint32_t lo = static_cast<uint32_t>(raw);
+            const uint32_t hi = static_cast<uint32_t>(raw >> 32);
+
+            uint32_t acc = lo + 0x9e3779b9U;
+            acc ^= acc >> 16;
+            acc *= 0x85ebca6bU;
+            acc ^= acc >> 13;
+            acc *= 0xc2b2ae35U;
+            acc ^= acc >> 16;
+
+            uint32_t h2 = hi + acc + 0x9e3779b9U;
+            h2 ^= h2 >> 16;
+            h2 *= 0x85ebca6bU;
+            h2 ^= h2 >> 13;
+            h2 *= 0xc2b2ae35U;
+            h2 ^= h2 >> 16;
+
+            if constexpr (Initial)
+                out[j] = acc ^ h2;
+            else
+                out[j] = hashCombine(out[j], acc ^ h2);
+        }
+    }
+    else
+    {
+        for (int j = 0; j < n; ++j)
+        {
+            const uint32_t h = hashOne32(keys[j]);
+            if constexpr (Initial)
+                out[j] = h;
+            else
+                out[j] = hashCombine(out[j], h);
+        }
+    }
+}
+
+MULTITARGET_FUNCTION_X86_V4_V3(
+    MULTITARGET_FUNCTION_HEADER(template <typename T, bool Initial> inline void),
+    hashBatch32AccImpl,
+    MULTITARGET_FUNCTION_BODY((const T * __restrict__ keys, int n, uint32_t * __restrict__ out) noexcept {
+        hashBatch32AccBody<T, Initial>(keys, n, out);
+    }))
+
+/// Accumulate: out[j] = hashCombine(out[j], hash32(keys[j])).
+/// Use when hashing into an existing partial hash (e.g., multi-column composite).
+template <typename T>
+inline void hashBatch32Combine(const T * __restrict__ keys, int n, uint32_t * __restrict__ out) noexcept
+{
+#if USE_MULTITARGET_CODE
+    if (isArchSupported(TargetArch::x86_64_v4))
+        return hashBatch32AccImpl_x86_64_v4<T, false>(keys, n, out);
+    if (isArchSupported(TargetArch::x86_64_v3))
+        return hashBatch32AccImpl_x86_64_v3<T, false>(keys, n, out);
+#endif
+    hashBatch32AccImpl<T, false>(keys, n, out);
+}
+
+/// Direct: out[j] = hash32(keys[j]).
+/// Use for the first (or only) key column; no prior value, no hashCombine overhead.
+template <typename T>
+inline void hashBatch32Direct(const T * __restrict__ keys, int n, uint32_t * __restrict__ out) noexcept
+{
+#if USE_MULTITARGET_CODE
+    if (isArchSupported(TargetArch::x86_64_v4))
+        return hashBatch32AccImpl_x86_64_v4<T, true>(keys, n, out);
+    if (isArchSupported(TargetArch::x86_64_v3))
+        return hashBatch32AccImpl_x86_64_v3<T, true>(keys, n, out);
+#endif
+    hashBatch32AccImpl<T, true>(keys, n, out);
 }
 
 }

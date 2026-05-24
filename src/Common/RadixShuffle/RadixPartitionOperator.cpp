@@ -1,8 +1,7 @@
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
 
-#include <Columns/ColumnVector.h>
-#include <Common/RadixShuffle/HashKernels.h>
-#include <Common/assert_cast.h>
+#include <Columns/IColumn.h>
+#include <Common/RadixShuffle/ColumnPrimitives.h>
 
 #if defined(__x86_64__)
 #    include <immintrin.h>
@@ -20,20 +19,25 @@ namespace DB::RadixShuffle
 
 template <typename TKey>
 RadixPartitionOperator<TKey>::RadixPartitionOperator(
-    int P, int K, std::vector<IScatterColumn *> cols, BumpArena & arena, bool use_swwc, size_t init_cap, size_t max_cap)
+    int P, int K, std::vector<ColumnPrimitives> prims, BumpArena & arena, bool use_swwc, size_t init_cap, size_t max_cap)
     : P_(P)
     , K_(K)
     , use_swwc_(use_swwc)
     , batch_(std::max(1024, std::min(kSmartMaxBatch, P * kBatchFactor)))
     , mask_(static_cast<uint32_t>(P) - 1)
     , max_cap_(max_cap)
-    , cols_(std::move(cols))
+    , col_prims_(std::move(prims))
     , arena_(arena)
     , pids_(static_cast<size_t>(batch_))
     , hist_(static_cast<size_t>(P), 0)
     , pos_(static_cast<size_t>(batch_))
     , cnt_(static_cast<size_t>(P), 0)
 {
+    // Construct one ScatterState per column, each sized to P partitions.
+    scatter_states_.reserve(static_cast<size_t>(K_));
+    for (int k = 0; k < K_; ++k)
+        scatter_states_.emplace_back(static_cast<size_t>(P_));
+
     parts_.assign(static_cast<size_t>(P), {});
     for (auto & ps : parts_)
         ps.next_cap = init_cap;
@@ -61,9 +65,10 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
     uint32_t * pids = pids_.data();
     uint32_t * hist = hist_.data();
 
-    // ── Phase 1: hash key column → partition IDs (SIMD multi-versioned) ──────
-    const TKey * key_data = assert_cast<const ColumnVector<TKey> &>(*columns[0]).getData().data();
-    hashBatch32(key_data + start, n, mask_, pids);
+    // ── Phase 1: compute partition IDs in one SIMD pass ──────────────────────
+    // compute_pids does pids[j] = hash(keys[j]) & mask_ — same as the baseline
+    // hashBatch32 call but dispatched through a function pointer.
+    col_prims_[0].compute_pids(col_prims_[0], *columns[0], start, n, mask_, pids);
 
     // ── Phase 2: histogram ────────────────────────────────────────────────
     std::memset(hist, 0, static_cast<size_t>(P_) * sizeof(uint32_t));
@@ -81,13 +86,18 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
             // Drain any staged rows into the current block before growing.
             if (use_swwc_ && ps.cur && cnt_[static_cast<size_t>(p)])
             {
-                for (auto * c : cols_)
-                    c->drain_one(static_cast<size_t>(p), cnt_[static_cast<size_t>(p)]);
+                for (int k = 0; k < K_; ++k)
+                    col_prims_[static_cast<size_t>(k)].drain_raw(
+                        col_prims_[static_cast<size_t>(k)],
+                        static_cast<size_t>(p),
+                        cnt_[static_cast<size_t>(p)],
+                        scatter_states_[static_cast<size_t>(k)]);
                 cnt_[static_cast<size_t>(p)] = 0;
             }
             growPart(ps, arena_, K_, sizeof(TKey), max_cap_);
             for (int k = 0; k < K_; ++k)
-                cols_[static_cast<size_t>(k)]->on_grow(static_cast<size_t>(p), ps.cur->cols[k]);
+                col_prims_[static_cast<size_t>(k)].on_grow_raw(
+                    col_prims_[static_cast<size_t>(k)], static_cast<size_t>(p), ps.cur->cols[k], scatter_states_[static_cast<size_t>(k)]);
         }
         ps.cur->filled += hist[p]; // pre-commit (thread-private, safe)
     }
@@ -107,8 +117,15 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         // ── Phase 4b: SWWC scatter per column ─────────────────────────────
         for (int k = 0; k < K_; ++k)
         {
-            const TKey * col_data = assert_cast<const ColumnVector<TKey> &>(*columns[static_cast<size_t>(k)]).getData().data();
-            cols_[static_cast<size_t>(k)]->scatter_staged(pids, pos, col_data + start, n);
+            col_prims_[static_cast<size_t>(k)].scatter_raw_swwc(
+                col_prims_[static_cast<size_t>(k)],
+                *columns[static_cast<size_t>(k)],
+                start,
+                pids,
+                pos,
+                n,
+                static_cast<size_t>(P_),
+                scatter_states_[static_cast<size_t>(k)]);
         }
     }
     else
@@ -116,8 +133,14 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         // ── Phase 4b: direct scatter per column ───────────────────────────
         for (int k = 0; k < K_; ++k)
         {
-            const TKey * col_data = assert_cast<const ColumnVector<TKey> &>(*columns[static_cast<size_t>(k)]).getData().data();
-            cols_[static_cast<size_t>(k)]->scatter_direct(pids, col_data + start, n);
+            col_prims_[static_cast<size_t>(k)].scatter_raw(
+                col_prims_[static_cast<size_t>(k)],
+                *columns[static_cast<size_t>(k)],
+                start,
+                pids,
+                n,
+                static_cast<size_t>(P_),
+                scatter_states_[static_cast<size_t>(k)]);
         }
     }
 }
@@ -137,8 +160,12 @@ void RadixPartitionOperator<TKey>::finish()
     {
         if (!cnt_[static_cast<size_t>(p)])
             continue;
-        for (auto * c : cols_)
-            c->drain_one(static_cast<size_t>(p), cnt_[static_cast<size_t>(p)]);
+        for (int k = 0; k < K_; ++k)
+            col_prims_[static_cast<size_t>(k)].drain_raw(
+                col_prims_[static_cast<size_t>(k)],
+                static_cast<size_t>(p),
+                cnt_[static_cast<size_t>(p)],
+                scatter_states_[static_cast<size_t>(k)]);
         cnt_[static_cast<size_t>(p)] = 0;
     }
 }

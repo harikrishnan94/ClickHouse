@@ -5,9 +5,16 @@
 #include <Columns/ColumnVector.h>
 #include <Common/RadixShuffle/HashCombiner.h>
 #include <Common/RadixShuffle/HashKernels.h>
+#include <Common/TargetSpecific.h>
 #include <Common/assert_cast.h>
 
+#if defined(__x86_64__)
+#    include <immintrin.h>
+#endif
+
+#include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace DB::RadixShuffle
 {
@@ -374,33 +381,216 @@ ResumePosition reconstructFixedString(
 
 
 template <typename T>
-void hashFixed(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n, uint32_t * out)
+void hashFixed(
+    const ColumnPrimitives & /*self*/,
+    const PartSchema & /*schema*/,
+    const IColumn & src_,
+    size_t offset,
+    size_t n,
+    bool initial,
+    uint32_t * out)
 {
-    const auto & col = assert_cast<const ColumnVector<T> &>(src_);
-    const T * data = col.getData().data();
-    for (size_t i = 0; i < n; ++i)
-        out[i] = hashCombine(out[i], hashOne32(data[i]));
+    const T * data = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
+    if (initial)
+        hashBatch32Direct(data, static_cast<int>(n), out);
+    else
+        hashBatch32Combine(data, static_cast<int>(n), out);
 }
 
 
 template <typename T>
-void hashDecimal(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n, uint32_t * out)
+void hashDecimal(
+    const ColumnPrimitives & /*self*/,
+    const PartSchema & /*schema*/,
+    const IColumn & src_,
+    size_t offset,
+    size_t n,
+    bool initial,
+    uint32_t * out)
 {
-    const auto & col = assert_cast<const ColumnDecimal<T> &>(src_);
-    const auto & data = col.getData();
+    const auto & data = assert_cast<const ColumnDecimal<T> &>(src_).getData();
     for (size_t i = 0; i < n; ++i)
-        out[i] = hashCombine(out[i], hashOne32(data[i].value));
+    {
+        const uint32_t h = hashOne32(data[offset + i].value);
+        out[i] = initial ? h : hashCombine(out[i], h);
+    }
 }
 
 
-void hashFixedString(const ColumnPrimitives & /*self*/, const PartSchema & /*schema*/, const IColumn & src_, size_t n_rows, uint32_t * out)
+void hashFixedString(
+    const ColumnPrimitives & /*self*/,
+    const PartSchema & /*schema*/,
+    const IColumn & src_,
+    size_t offset,
+    size_t n_rows,
+    bool initial,
+    uint32_t * out)
 {
     const auto & col = assert_cast<const ColumnFixedString &>(src_);
     const size_t n = col.getN();
-    const auto * data = reinterpret_cast<const unsigned char *>(col.getChars().data());
+    const auto * data = reinterpret_cast<const unsigned char *>(col.getChars().data()) + offset * n;
     for (size_t i = 0; i < n_rows; ++i)
-        out[i] = hashCombine(out[i], hashBytes32(data + i * n, n));
+    {
+        const uint32_t h = hashBytes32(data + i * n, n);
+        out[i] = initial ? h : hashCombine(out[i], h);
+    }
 }
+
+// ── NT-flush helpers for SWWC (mirrored from NumericScatterColumn.cpp) ────────
+
+#if USE_MULTITARGET_CODE
+
+DECLARE_X86_64_V4_SPECIFIC_CODE(
+
+    template <typename T> inline void flushStagedNT(const T * staging_p, T *& out_p) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    {
+        if constexpr (sizeof(T) == 8)
+        {
+            _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
+        }
+        else
+        {
+            for (int i = 0; i < 8; ++i)
+                out_p[i] = staging_p[i];
+        }
+        out_p += 8;
+    }
+
+    ) // DECLARE_X86_64_V4_SPECIFIC_CODE
+
+#endif // USE_MULTITARGET_CODE
+
+template <typename T>
+[[gnu::always_inline]] inline void flushStagedScalar(const T * staging_p, T *& out_p)
+{
+    for (int i = 0; i < 8; ++i)
+        out_p[i] = staging_p[i];
+    out_p += 8;
+}
+
+
+// ── Direct pids computation (hash + mask in one SIMD pass) ───────────────────
+
+/// Computes pids[j] = hash(src[offset+j]) & mask in one SIMD pass.
+/// Delegates to hashBatch32 which has the same MULTITARGET ISA dispatch.
+template <typename T>
+void computePidsFixed(const ColumnPrimitives & /*self*/, const IColumn & src_, size_t offset, int n, uint32_t mask, uint32_t * pids)
+{
+    const T * data = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
+    hashBatch32(data, n, mask, pids);
+}
+
+
+// ── Raw-output-pointer scatter (OutBlock model) ───────────────────────────────
+
+/// Direct scatter: reads IColumn[offset..offset+n), writes to
+/// state.fixed_ptrs[p] (advances the pointer).
+template <typename T>
+[[gnu::hot]] void scatterRawFixed(
+    const ColumnPrimitives & /*self*/,
+    const IColumn & src_,
+    size_t offset,
+    const uint32_t * pids,
+    int n,
+    size_t partitions,
+    ScatterState & state)
+{
+    const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
+
+    if (partitions <= SCATTER_STACK_PTRS)
+    {
+        T * ptrs[SCATTER_STACK_PTRS];
+        for (size_t p = 0; p < partitions; ++p)
+            ptrs[p] = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+        for (int j = 0; j < n; ++j)
+            *ptrs[pids[j]]++ = src[j];
+        for (size_t p = 0; p < partitions; ++p)
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(ptrs[p]);
+    }
+    else
+    {
+        for (int j = 0; j < n; ++j)
+        {
+            const uint32_t p = pids[j];
+            std::memcpy(state.fixed_ptrs[p], &src[j], sizeof(T));
+            state.fixed_ptrs[p] += sizeof(T);
+        }
+    }
+}
+
+
+/// SWWC scatter: stages values into a per-partition 8-slot buffer; flushes
+/// with NT stores (x86_64_v4) or scalar stores when a partition's slot
+/// reaches 7.  Mirrors `NumericScatterColumn<T>::scatter_staged`.
+template <typename T>
+[[gnu::hot]] void scatterRawSwwcFixed(
+    const ColumnPrimitives & /*self*/,
+    const IColumn & src_,
+    size_t offset,
+    const uint32_t * pids,
+    const uint32_t * positions,
+    int n,
+    size_t partitions,
+    ScatterState & state)
+{
+    const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
+
+    if (!state.swwc_staging_initialized)
+    {
+        if (posix_memalign(reinterpret_cast<void **>(&state.swwc_staging), 64, partitions * 8 * sizeof(T)) != 0)
+            throw std::bad_alloc{};
+        std::memset(state.swwc_staging, 0, partitions * 8 * sizeof(T));
+        state.swwc_staging_initialized = true;
+    }
+
+    T * staging = reinterpret_cast<T *>(state.swwc_staging);
+
+    for (int j = 0; j < n; ++j)
+    {
+        const uint32_t p = pids[j];
+        const uint32_t slot = positions[j];
+        staging[static_cast<size_t>(p) * 8 + slot] = src[j];
+        if (slot == 7)
+        {
+            T * out_p = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+#if USE_MULTITARGET_CODE
+            if (isArchSupported(TargetArch::x86_64_v4))
+                TargetSpecific::x86_64_v4::flushStagedNT(staging + static_cast<size_t>(p) * 8, out_p);
+            else
+                flushStagedScalar(staging + static_cast<size_t>(p) * 8, out_p);
+#else
+            flushStagedScalar(staging + static_cast<size_t>(p) * 8, out_p);
+#endif
+            state.fixed_ptrs[p] = reinterpret_cast<char *>(out_p);
+        }
+    }
+}
+
+
+/// Drain: copies `cnt` staged values for partition `p` to its output
+/// pointer and advances it.  Mirrors `NumericScatterColumn<T>::drain_one`.
+template <typename T>
+void drainRawFixed(const ColumnPrimitives & /*self*/, size_t p, uint32_t cnt, ScatterState & state)
+{
+    if (!state.swwc_staging_initialized || cnt == 0)
+        return;
+    const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * 8;
+    T * dst = reinterpret_cast<T *>(state.fixed_ptrs[p]);
+    for (uint32_t i = 0; i < cnt; ++i)
+        dst[i] = s[i];
+    state.fixed_ptrs[p] = reinterpret_cast<char *>(dst + cnt);
+}
+
+
+/// Update the write pointer for partition `p` when a new output block is
+/// allocated.  Mirrors `IScatterColumn::on_grow`.
+template <typename T>
+void onGrowRawFixed(const ColumnPrimitives & /*self*/, size_t p, void * col_base, ScatterState & state)
+{
+    (void)sizeof(T); // T unused but kept for uniform registration
+    state.fixed_ptrs[p] = static_cast<char *>(col_base);
+}
+
 
 } // namespace
 
@@ -412,6 +602,11 @@ ColumnPrimitives makeFixedWidth()
     cp.scatter = &scatterFixed<T>;
     cp.reconstruct = &reconstructFixed<T>;
     cp.hash = &hashFixed<T>;
+    cp.compute_pids = &computePidsFixed<T>;
+    cp.scatter_raw = &scatterRawFixed<T>;
+    cp.scatter_raw_swwc = &scatterRawSwwcFixed<T>;
+    cp.drain_raw = &drainRawFixed<T>;
+    cp.on_grow_raw = &onGrowRawFixed<T>;
     return cp;
 }
 

@@ -65,11 +65,65 @@ using ReconstructFn = ResumePosition (*)(
 
 
 /// Hash primitive.  For each row i in [0, n) updates
-///   out[i] = hashCombine(out[i], h(src[i]))
+///   out[i] = hashCombine(out[i], h(src[offset + i]))
 /// where h(.) is the column primitive's per-row hash function and the
 /// combiner is uniform across all primitives resolved by
 /// resolveColumnPrimitives.  out is uint32_t.  Must not allocate.
-using HashFn = void (*)(const ColumnPrimitives & self, const PartSchema & schema, const IColumn & src, size_t n, uint32_t * out);
+///
+/// `offset` allows processing a sub-range of `src` without an `IColumn::cut`
+/// allocation — useful when the caller batches a large column in-place.
+/// `initial` — when true, writes `out[i] = hash(src[offset+i])` directly
+/// (no prior, no `hashCombine`).  When false, accumulates
+/// `out[i] = hashCombine(out[i], hash(src[offset+i]))`.
+/// Use `initial=true` for the first (or only) key column to skip the `hashCombine`
+/// overhead and eliminate the caller's `std::fill_n` / `memset` pre-pass.
+using HashFn = void (*)(
+    const ColumnPrimitives & self, const PartSchema & schema, const IColumn & src, size_t offset, size_t n, bool initial, uint32_t * out);
+
+
+/// Partition-ID primitive.  Computes `pids[j] = hash(src[offset+j]) & mask`
+/// in one SIMD pass — equivalent to the baseline `hashBatch32` call but
+/// dispatched through a function pointer.  Use instead of `HashFn` when only
+/// one key column is needed (no multi-column `hashCombine` chain), as it
+/// eliminates the intermediate hash buffer and the second masking loop.
+using PidsFn = void (*)(const ColumnPrimitives & self, const IColumn & src, size_t offset, int n, uint32_t mask, uint32_t * pids);
+
+
+/// Raw-output-pointer scatter primitives.  These write directly to per-partition
+/// `char *` write pointers held in `ScatterState::fixed_ptrs`, bypassing the
+/// `PartReservation` layer.  They are intended for use by callers that manage
+/// their own output storage (e.g. `RadixPartitionOperator` with `OutBlock`).
+///
+/// `partitions` is P; required by the stack-pointer fast path.
+/// `ScatterState::fixed_ptrs[p]` must be initialised (via `RawOnGrowFn`) before
+/// the first scatter call and is advanced in-place as rows are written.
+
+/// Direct scatter (replaces `IScatterColumn::scatter_direct`).
+using RawScatterFn = void (*)(
+    const ColumnPrimitives & self,
+    const IColumn & src,
+    size_t offset,
+    const uint32_t * pids,
+    int n,
+    size_t partitions,
+    ScatterState & state);
+
+/// SWWC scatter (replaces `IScatterColumn::scatter_staged`).
+using RawScatterSwwcFn = void (*)(
+    const ColumnPrimitives & self,
+    const IColumn & src,
+    size_t offset,
+    const uint32_t * pids,
+    const uint32_t * positions,
+    int n,
+    size_t partitions,
+    ScatterState & state);
+
+/// Partial SWWC drain (replaces `IScatterColumn::drain_one`).
+using RawDrainFn = void (*)(const ColumnPrimitives & self, size_t p, uint32_t cnt, ScatterState & state);
+
+/// Write-pointer update on new output block (replaces `IScatterColumn::on_grow`).
+using RawOnGrowFn = void (*)(const ColumnPrimitives & self, size_t p, void * col_base, ScatterState & state);
 
 
 /// Column-primitive triple resolved per column type.  After
@@ -80,6 +134,12 @@ struct ColumnPrimitives
     ScatterFn scatter = nullptr;
     ReconstructFn reconstruct = nullptr;
     HashFn hash = nullptr;
+
+    PidsFn compute_pids = nullptr;
+    RawScatterFn scatter_raw = nullptr;
+    RawScatterSwwcFn scatter_raw_swwc = nullptr;
+    RawDrainFn drain_raw = nullptr;
+    RawOnGrowFn on_grow_raw = nullptr;
 
     /// Indices into PartSchema::fixed_slots that this primitive owns.
     /// For Nullable(X) the first index is always the NullMap slot; the
