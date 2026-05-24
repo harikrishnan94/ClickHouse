@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Columns/IColumn_fwd.h>
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/IScatterColumn.h>
 #include <Common/RadixShuffle/OutBlock.h>
@@ -11,16 +12,6 @@
 
 namespace DB::RadixShuffle
 {
-
-/// One fixed-size input block.  `cols[k]` is the k-th column array of `rows`
-/// elements.  The key column used for partitioning is always `cols[0]`.
-template <typename T>
-struct InputBlock
-{
-    T * cols[kMaxK] = {};
-    size_t rows = 0;
-};
-
 
 /// Single-pass radix partition operator, templated over the key element type.
 ///
@@ -36,8 +27,9 @@ struct InputBlock
 ///
 /// Lifecycle:
 ///   1. Construct with P, K, columns, arena, SWWC flag, capacity hints.
-///   2. Call `process(blocks)`.
-///   3. Read `parts()` for per-partition output state.
+///   2. Call `process(columns)` once per input block.
+///   3. Call `finish()` after all blocks to flush SWWC buffers.
+///   4. Read `parts()` for per-partition output state.
 template <typename TKey>
 class RadixPartitionOperator
 {
@@ -67,25 +59,28 @@ public:
         size_t init_cap = kOutCapMin,
         size_t max_cap = kOutCapMax);
 
-    /// Process all input blocks.  Batch-slices them internally.
-    void process(const std::vector<InputBlock<TKey>> & blocks);
+    /// Process one input block.  `columns[k]` must be a `ColumnVector<TKey>`.
+    /// Call repeatedly for streaming input, then call `finish()`.
+    void process(const DB::Columns & columns);
 
-    /// Access per-partition output state (call after `process`).
+    /// Flush SWWC staging buffers and issue `sfence`.
+    /// Must be called once after all `process()` calls before reading `parts()`.
+    void finish();
+
+    /// Access per-partition output state (call after `finish()`).
     [[nodiscard]] std::vector<PartState> & parts() noexcept { return parts_; }
     [[nodiscard]] const std::vector<PartState> & parts() const noexcept { return parts_; }
 
     [[nodiscard]] int batchSize() const noexcept { return batch_; }
 
 private:
-    void runBatch(const InputBlock<TKey> & blk, size_t start, int n);
-    void finish();
+    void runBatch(const DB::Columns & columns, size_t start, int n);
 
     int P_;
     int K_;
     bool use_swwc_;
     int batch_;
     uint64_t mask_; ///< P − 1 (P must be a power of two).
-    size_t elem_size_;
     size_t max_cap_;
 
     std::vector<IScatterColumn *> cols_;

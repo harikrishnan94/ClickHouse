@@ -16,22 +16,31 @@
 //   --threads    T   worker threads             (default  16)
 //   --reps       R   timed repetitions          (default   5)
 
+#include <Columns/ColumnVector.h>
+#include <Columns/IColumn_fwd.h>
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/NumericScatterColumn.h>
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
+#include <Common/assert_cast.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <pthread.h>
+#include <memory>
+#include <numeric>
+#include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+#include <pthread.h>
 
 #include <fmt/format.h>
 
@@ -42,51 +51,56 @@ namespace
 using namespace DB::RadixShuffle;
 
 using Clk = std::chrono::steady_clock;
-using InputBlockU64 = InputBlock<uint64_t>;
+using BlockStream = std::vector<DB::Columns>;
 
-static constexpr int kMaxKArg = kMaxK;
-static constexpr int kMaxP = 32768;
+constexpr int kMaxKArg = kMaxK;
+constexpr int kMaxP = 32768;
+constexpr size_t kArenaSlabBytes = 64ULL << 20;
+
+
+struct BenchConfig
+{
+    int partitions = 64;
+    int columns = 4;
+    size_t rows = 100'000'000ULL;
+    size_t block_rows = 16'384;
+    int threads = 16;
+    int reps = 5;
+};
+
+
+struct Stats
+{
+    double mean = 0.0;
+    double stddev = 0.0;
+    double p50 = 0.0;
+    double pmin = 0.0;
+    double pmax = 0.0;
+};
 
 
 // ── input ─────────────────────────────────────────────────────────────────────
 
-static uint64_t * alloc64(size_t n)
+BlockStream genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
 {
-    void * p = nullptr;
-    if (posix_memalign(&p, 64, n * sizeof(uint64_t)) != 0)
-        std::abort();
-    return static_cast<uint64_t *>(p);
-}
-
-
-static std::vector<InputBlockU64> genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
-{
-    std::vector<InputBlockU64> out;
+    BlockStream stream;
     std::mt19937_64 rng(seed);
     for (size_t done = 0; done < total;)
     {
         const size_t bs = std::min(block_rows, total - done);
-        InputBlockU64 b;
-        b.rows = bs;
+        DB::Columns block;
         for (int k = 0; k < K; ++k)
         {
-            b.cols[k] = alloc64(bs);
+            auto col = DB::ColumnVector<UInt64>::create();
+            col->getData().resize(bs);
             for (size_t i = 0; i < bs; ++i)
-                b.cols[k][i] = rng();
+                col->getData()[i] = rng();
+            block.push_back(std::move(col));
         }
-        out.push_back(b);
+        stream.push_back(std::move(block));
         done += bs;
     }
-    return out;
-}
-
-
-static void freeBlocks(std::vector<InputBlockU64> & v, int K)
-{
-    for (auto & b : v)
-        for (int k = 0; k < K; ++k)
-            std::free(b.cols[k]);
-    v.clear();
+    return stream;
 }
 
 
@@ -95,8 +109,8 @@ static void freeBlocks(std::vector<InputBlockU64> & v, int K)
 // but writes all rows into a single partition (no hashing).  Allocation
 // pattern, block sizes, and arena usage therefore mirror the radix variant.
 
-static void runMemcpy(
-    const std::vector<InputBlockU64> & blocks,
+void runMemcpy(
+    const BlockStream & blocks,
     int K,
     PartState & out,
     BumpArena & arena,
@@ -106,16 +120,19 @@ static void runMemcpy(
     out.next_cap = init_cap;
     for (const auto & blk : blocks)
     {
+        const size_t blk_rows = blk[0]->size();
         size_t i = 0;
-        while (i < blk.rows)
+        while (i < blk_rows)
         {
             if (!out.cur || out.cur->filled >= out.cur->capacity)
                 growPart(out, arena, K, sizeof(uint64_t), max_cap);
-            const size_t n = std::min(out.cur->capacity - out.cur->filled, blk.rows - i);
+            const size_t n = std::min(out.cur->capacity - out.cur->filled, blk_rows - i);
             const size_t f = out.cur->filled;
             for (int k = 0; k < K; ++k)
-                std::memcpy(
-                    static_cast<uint64_t *>(out.cur->cols[k]) + f, blk.cols[k] + i, n * 8);
+            {
+                const auto * src = assert_cast<const DB::ColumnVector<UInt64> &>(*blk[static_cast<size_t>(k)]).getData().data();
+                std::memcpy(static_cast<uint64_t *>(out.cur->cols[k]) + f, src + i, n * 8);
+            }
             out.cur->filled = f + n;
             i += n;
         }
@@ -125,8 +142,8 @@ static void runMemcpy(
 
 // ── radix variant ─────────────────────────────────────────────────────────────
 
-static void runSmartRadix(
-    const std::vector<InputBlockU64> & blocks,
+void runSmartRadix(
+    const BlockStream & blocks,
     int K,
     int P,
     std::vector<PartState> & parts,
@@ -136,6 +153,8 @@ static void runSmartRadix(
 {
     std::vector<std::unique_ptr<NumericScatterColumn<uint64_t>>> owned;
     std::vector<IScatterColumn *> ptrs;
+    owned.reserve(static_cast<size_t>(K));
+    ptrs.reserve(static_cast<size_t>(K));
     for (int k = 0; k < K; ++k)
     {
         owned.push_back(std::make_unique<NumericScatterColumn<uint64_t>>(static_cast<size_t>(P)));
@@ -143,14 +162,16 @@ static void runSmartRadix(
     }
     const bool use_swwc = RadixPartitionOperator<uint64_t>::should_use_swwc(K, P);
     RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), arena, use_swwc, init_cap, max_cap);
-    op.process(blocks);
+    for (const auto & block : blocks)
+        op.process(block);
+    op.finish();
     parts = std::move(op.parts());
 }
 
 
 // ── thread pinning ────────────────────────────────────────────────────────────
 
-static void pinThread(int t)
+void pinThread(int t)
 {
     const unsigned n = std::thread::hardware_concurrency();
     if (!n)
@@ -164,27 +185,82 @@ static void pinThread(int t)
 
 // ── statistics ────────────────────────────────────────────────────────────────
 
-struct Stats
+Stats computeStats(std::vector<double> values)
 {
-    double mean, stddev, p50, pmin, pmax;
-};
+    std::ranges::sort(values);
+    const double sum = std::accumulate(values.begin(), values.end(), 0.0);
+    const double mean = sum / static_cast<double>(values.size());
+    double var = 0.0;
+    for (const double x : values)
+        var += (x - mean) * (x - mean);
+    return Stats{
+        .mean = mean,
+        .stddev = values.size() > 1 ? std::sqrt(var / static_cast<double>(values.size() - 1)) : 0.0,
+        .p50 = values[values.size() / 2],
+        .pmin = values.front(),
+        .pmax = values.back(),
+    };
+}
 
-static Stats computeStats(std::vector<double> v)
+
+std::optional<BenchConfig> parseCLI(std::span<char * const> args)
 {
-    std::sort(v.begin(), v.end());
-    double sum = 0;
-    for (double x : v)
-        sum += x;
-    const double m = sum / static_cast<double>(v.size());
-    double var = 0;
-    for (double x : v)
-        var += (x - m) * (x - m);
-    return {
-        m,
-        v.size() > 1 ? std::sqrt(var / static_cast<double>(v.size() - 1)) : 0.0,
-        v[v.size() / 2],
-        v.front(),
-        v.back()};
+    BenchConfig cfg;
+    for (size_t i = 0; i < args.size(); ++i)
+    {
+        const std::string arg = args[i];
+        if (arg == "--partitions" && i + 1 < args.size())
+        {
+            cfg.partitions = std::stoi(args[++i]);
+        }
+        else if (arg == "--columns" && i + 1 < args.size())
+        {
+            cfg.columns = std::stoi(args[++i]);
+        }
+        else if (arg == "--rows" && i + 1 < args.size())
+        {
+            cfg.rows = std::stoull(args[++i]);
+        }
+        else if (arg == "--block-rows" && i + 1 < args.size())
+        {
+            cfg.block_rows = std::stoull(args[++i]);
+        }
+        else if (arg == "--threads" && i + 1 < args.size())
+        {
+            cfg.threads = std::stoi(args[++i]);
+        }
+        else if (arg == "--reps" && i + 1 < args.size())
+        {
+            cfg.reps = std::stoi(args[++i]);
+        }
+        else
+        {
+            fmt::print(stderr, "unknown arg: {}\n", args[i]);
+            return std::nullopt;
+        }
+    }
+    return cfg;
+}
+
+
+bool validateConfig(const BenchConfig & cfg)
+{
+    if (cfg.partitions < 1 || cfg.partitions > kMaxP || !std::has_single_bit(static_cast<unsigned>(cfg.partitions)))
+    {
+        fmt::print(stderr, "P must be power-of-2 in [1,{}]\n", kMaxP);
+        return false;
+    }
+    if (cfg.columns < 1 || cfg.columns > kMaxKArg)
+    {
+        fmt::print(stderr, "K must be in [1,{}]\n", kMaxKArg);
+        return false;
+    }
+    if (cfg.threads < 1 || cfg.reps < 1 || cfg.block_rows < 8u)
+    {
+        fmt::print(stderr, "T,R >= 1  B >= 8\n");
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -192,58 +268,26 @@ static Stats computeStats(std::vector<double> v)
 
 int main(int argc, char ** argv)
 {
-    int P = 64;
-    int K = 4;
-    size_t N = 100'000'000ULL;
-    size_t B = 16384;
-    int T = 16;
-    int R = 5;
-
-    for (int i = 1; i < argc; ++i)
-    {
-        const std::string a = argv[i];
-        if (a == "--partitions" && i + 1 < argc)
-            P = std::stoi(argv[++i]);
-        else if (a == "--columns" && i + 1 < argc)
-            K = std::stoi(argv[++i]);
-        else if (a == "--rows" && i + 1 < argc)
-            N = std::stoull(argv[++i]);
-        else if (a == "--block-rows" && i + 1 < argc)
-            B = std::stoull(argv[++i]);
-        else if (a == "--threads" && i + 1 < argc)
-            T = std::stoi(argv[++i]);
-        else if (a == "--reps" && i + 1 < argc)
-            R = std::stoi(argv[++i]);
-        else
-        {
-            fmt::print(stderr, "unknown arg: {}\n", argv[i]);
-            return 1;
-        }
-    }
-
-    if (P < 1 || P > kMaxP || (P & (P - 1)))
-    {
-        fmt::print(stderr, "P must be power-of-2 in [1,{}]\n", kMaxP);
+    const auto cfg_opt = parseCLI({argv + 1, static_cast<size_t>(argc - 1)});
+    if (!cfg_opt)
         return 1;
-    }
-    if (K < 1 || K > kMaxKArg)
-    {
-        fmt::print(stderr, "K must be in [1,{}]\n", kMaxKArg);
+    const BenchConfig & cfg = *cfg_opt;
+    if (!validateConfig(cfg))
         return 1;
-    }
-    if (T < 1 || R < 1 || B < 8u)
-    {
-        fmt::print(stderr, "T,R >= 1  B >= 8\n");
-        return 1;
-    }
 
-    const int batch = std::max(1024, std::min(RadixPartitionOperator<uint64_t>::kSmartMaxBatch, P * RadixPartitionOperator<uint64_t>::kBatchFactor));
+    const int P = cfg.partitions;
+    const int K = cfg.columns;
+    const size_t N = cfg.rows;
+    const size_t B = cfg.block_rows;
+    const int T = cfg.threads;
+    const int R = cfg.reps;
+
+    const int batch
+        = std::max(1024, std::min(RadixPartitionOperator<uint64_t>::kSmartMaxBatch, P * RadixPartitionOperator<uint64_t>::kBatchFactor));
     const size_t rpt = (N + static_cast<size_t>(T) - 1) / static_cast<size_t>(T);
     const size_t total = rpt * static_cast<size_t>(T);
 
-    const auto cap_pair = adaptiveCaps(rpt, static_cast<size_t>(P));
-    const size_t cap_init = cap_pair.first;
-    const size_t cap_max = cap_pair.second;
+    const auto [cap_init, cap_max] = adaptiveCaps(rpt, static_cast<size_t>(P));
 
     fmt::print("bench_radix_partition\n");
     fmt::print("  partitions={:<6}  columns={:<2}  rows={:<12}\n", P, K, N);
@@ -255,14 +299,8 @@ int main(int argc, char ** argv)
         K,
         rpt);
     fmt::print("  batch_size  = {}\n", batch);
-    fmt::print(
-        "  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n",
-        cap_init,
-        cap_max,
-        rpt / static_cast<size_t>(P));
-    fmt::print(
-        "  radix mode  = {}\n",
-        RadixPartitionOperator<uint64_t>::should_use_swwc(K, P) ? "SWWC (NT stores)" : "direct");
+    fmt::print("  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n", cap_init, cap_max, rpt / static_cast<size_t>(P));
+    fmt::print("  radix mode  = {}\n", RadixPartitionOperator<uint64_t>::should_use_swwc(K, P) ? "SWWC (NT stores)" : "direct");
     if (B < static_cast<size_t>(batch))
         fmt::print("  [warn] block-rows {} < batch_size {} -> scalar path only\n", B, batch);
     fmt::print("\n");
@@ -270,7 +308,7 @@ int main(int argc, char ** argv)
     // ── generate input streams ────────────────────────────────────────────────
     fmt::print("Generating {} streams \xc3\x97 {} blocks each...\n", T, (rpt + B - 1) / B);
     const auto tg0 = Clk::now();
-    std::vector<std::vector<InputBlockU64>> streams(static_cast<size_t>(T));
+    std::vector<BlockStream> streams(static_cast<size_t>(T));
     for (int t = 0; t < T; ++t)
         streams[static_cast<size_t>(t)] = genBlocks(rpt, B, K, 42ULL + static_cast<uint64_t>(t));
     fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
@@ -285,8 +323,8 @@ int main(int argc, char ** argv)
     rd_arenas.reserve(static_cast<size_t>(T));
     for (int t = 0; t < T; ++t)
     {
-        mc_arenas.emplace_back(64ULL << 20);
-        rd_arenas.emplace_back(64ULL << 20);
+        mc_arenas.emplace_back(kArenaSlabBytes);
+        rd_arenas.emplace_back(kArenaSlabBytes);
     }
 
     std::vector<PartState> mc_parts(static_cast<size_t>(T));
@@ -315,6 +353,7 @@ int main(int argc, char ** argv)
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(T));
             for (int t = 0; t < T; ++t)
+            {
                 ths.emplace_back(
                     [&, t]()
                     {
@@ -327,11 +366,10 @@ int main(int argc, char ** argv)
                             cap_init,
                             cap_max);
                     });
+            }
             for (auto & th : ths)
                 th.join();
-            mc_ns[static_cast<size_t>(rep)]
-                = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9
-                / static_cast<double>(total);
+            mc_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
         }
 
         // ── radix ─────────────────────────────────────────────────────────────
@@ -345,6 +383,7 @@ int main(int argc, char ** argv)
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(T));
             for (int t = 0; t < T; ++t)
+            {
                 ths.emplace_back(
                     [&, t]()
                     {
@@ -358,11 +397,10 @@ int main(int argc, char ** argv)
                             cap_init,
                             cap_max);
                     });
+            }
             for (auto & th : ths)
                 th.join();
-            rd_ns[static_cast<size_t>(rep)]
-                = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9
-                / static_cast<double>(total);
+            rd_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
         }
 
         fmt::print(
@@ -393,22 +431,14 @@ int main(int argc, char ** argv)
     fmt::print("  (used > expected by OutBlock headers and partial-block waste)\n");
 
     // ── summary ───────────────────────────────────────────────────────────────
-    const auto mc = computeStats(mc_ns);
-    const auto rd = computeStats(rd_ns);
+    const auto mc = computeStats(std::move(mc_ns));
+    const auto rd = computeStats(std::move(rd_ns));
 
     fmt::print("\nSummary (agg = wall_ns/total_rows;  per-thr = agg\xc3\x97T;  GB/s = R+W)\n");
-    fmt::print(
-        "{:<8}  {:>8}  {:>8}  {:>8}  {:>5}  {:>8}  {:>8}\n",
-        "variant",
-        "agg-min",
-        "agg-p50",
-        "agg-mean",
-        "cv%",
-        "GB/s",
-        "per-thr");
+    fmt::print("{:<8}  {:>8}  {:>8}  {:>8}  {:>5}  {:>8}  {:>8}\n", "variant", "agg-min", "agg-p50", "agg-mean", "cv%", "GB/s", "per-thr");
     fmt::print("--------  --------  --------  --------  -----  --------  --------\n");
 
-    auto print_row = [&](const char * label, const Stats & s)
+    const auto print_row = [&](const char * label, const Stats & s)
     {
         fmt::print(
             "{:<8}  {:>8.3f}  {:>8.3f}  {:>8.3f}  {:>4.1f}%  {:>8.1f}  {:>8.1f}\n",
@@ -431,8 +461,5 @@ int main(int argc, char ** argv)
         rd.pmin * static_cast<double>(T),
         mc.pmin * static_cast<double>(T));
 
-    // ── cleanup ───────────────────────────────────────────────────────────────
-    for (int t = 0; t < T; ++t)
-        freeBlocks(streams[static_cast<size_t>(t)], K);
     return 0;
 }
