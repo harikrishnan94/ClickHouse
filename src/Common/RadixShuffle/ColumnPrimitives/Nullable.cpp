@@ -181,6 +181,31 @@ void hashNullable(
     self.nested->hash(*self.nested, schema, col.getNestedColumn(), offset, n, /*initial=*/false, out);
 }
 
+
+void computePidsNullable(const ColumnPrimitives & self, const IColumn & src_, size_t offset, int n, uint32_t mask, uint32_t * pids)
+{
+    const auto & col = assert_cast<const ColumnNullable &>(src_);
+    const auto & null_map = col.getNullMapData();
+    const IColumn & nested_col = col.getNestedColumn();
+
+    if (self.nested && self.nested->compute_pids)
+    {
+        // Let the nested column compute the initial pids, then mix in the null flag.
+        self.nested->compute_pids(*self.nested, nested_col, offset, n, mask, pids);
+        for (int j = 0; j < n; ++j)
+        {
+            const uint32_t null_h = fmix32(static_cast<uint32_t>(null_map[offset + j]));
+            pids[j] = (pids[j] ^ (null_h + 0x9e3779b9U + (pids[j] << 6) + (pids[j] >> 2))) & mask;
+        }
+    }
+    else
+    {
+        // Fallback: hash null map only.
+        for (int j = 0; j < n; ++j)
+            pids[j] = fmix32(static_cast<uint32_t>(null_map[offset + j])) & mask;
+    }
+}
+
 } // namespace
 
 
@@ -190,6 +215,7 @@ ColumnPrimitives makeNullable(ColumnPrimitives nested)
     cp.scatter = &scatterNullable;
     cp.reconstruct = &reconstructNullable;
     cp.hash = &hashNullable;
+    cp.compute_pids = &computePidsNullable;
     cp.writes_varlen = nested.writes_varlen;
     cp.nested = std::make_shared<const ColumnPrimitives>(std::move(nested));
     return cp;

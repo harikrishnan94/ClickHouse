@@ -264,6 +264,21 @@ void hashString(
     }
 }
 
+
+void computePidsString(const ColumnPrimitives & /*self*/, const IColumn & src_, size_t offset, int n, uint32_t mask, uint32_t * pids)
+{
+    const auto & col = assert_cast<const ColumnString &>(src_);
+    const auto & col_offsets = col.getOffsets();
+    const auto * chars = reinterpret_cast<const unsigned char *>(col.getChars().data());
+    UInt64 prev = (offset == 0) ? 0 : col_offsets[offset - 1];
+    for (int j = 0; j < n; ++j)
+    {
+        const UInt64 end = col_offsets[offset + j];
+        pids[j] = hashBytes32(chars + prev, static_cast<size_t>(end - prev)) & mask;
+        prev = end;
+    }
+}
+
 } // namespace
 
 
@@ -274,6 +289,9 @@ ColumnPrimitives makeString()
     cp.reconstruct = &reconstructString;
     cp.hash = &hashString;
     cp.writes_varlen = true;
+    cp.compute_pids = &computePidsString;
+    // scatter_raw* not supported: String requires separate chars+offsets arrays
+    // which OutBlock does not currently provide.
     return cp;
 }
 
