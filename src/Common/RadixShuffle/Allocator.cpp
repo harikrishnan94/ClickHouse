@@ -104,7 +104,13 @@ bool Handle::ensureFixed(size_t p, size_t rows)
 
     const size_t floor_rows = opts.min_chunk_floor_rows;
     const size_t growth_rows = pc.reserved_rows / 10;
-    size_t chunk_rows = std::max({floor_rows, rows, growth_rows});
+    size_t geometric_rows = 0;
+    if (pc.fixed_tail != nullptr && opts.fixed_chunk_growth_denominator != 0)
+    {
+        geometric_rows = (pc.fixed_tail->row_capacity * opts.fixed_chunk_growth_numerator + opts.fixed_chunk_growth_denominator - 1)
+            / opts.fixed_chunk_growth_denominator;
+    }
+    size_t chunk_rows = std::max({floor_rows, rows, growth_rows, geometric_rows});
     if (rows > 0)
     {
         const size_t k = (chunk_rows + rows - 1) / rows;

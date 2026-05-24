@@ -83,6 +83,14 @@ PartSchema buildSchemaForType(int K)
     return schema;
 }
 
+AllocatorOptions buildAllocatorOptions()
+{
+    AllocatorOptions opts;
+    opts.fixed_chunk_growth_numerator = 3;
+    opts.fixed_chunk_growth_denominator = 2;
+    return opts;
+}
+
 } // namespace
 
 // ── RadixPartitionOperator implementation ────────────────────────────────────
@@ -94,7 +102,7 @@ RadixPartitionOperator<TKey>::RadixPartitionOperator(int P, int K, std::vector<I
     , use_swwc_(use_swwc)
     , batch_(std::max(1024, std::min(kSmartMaxBatch, P * kBatchFactor)))
     , mask_(static_cast<uint32_t>(P) - 1)
-    , allocator_(buildSchemaForType<TKey>(K), static_cast<size_t>(P), 0)
+    , allocator_(buildSchemaForType<TKey>(K), static_cast<size_t>(P), 0, buildAllocatorOptions())
     , cols_(std::move(cols))
     , pids_(static_cast<size_t>(batch_))
     , hist_(static_cast<size_t>(P), 0)

@@ -27,6 +27,12 @@ struct AllocatorOptions
 {
     size_t min_chunk_floor_rows = DEFAULT_MIN_CHUNK_FLOOR_ROWS;
     size_t min_chunk_floor_bytes_data = DEFAULT_MIN_CHUNK_FLOOR_BYTES;
+
+    /// Optional multiplicative fixed-chunk growth, encoded as a rational.
+    /// When denominator is non-zero, the next FixedChunk is at least
+    /// previous_capacity * numerator / denominator.
+    size_t fixed_chunk_growth_numerator = 0;
+    size_t fixed_chunk_growth_denominator = 0;
 };
 
 
