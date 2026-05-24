@@ -87,6 +87,10 @@ private:
     std::vector<PartState> parts_;
     BumpArena & arena_;
 
+    /// Per-column raw element sizes for OutBlock allocation.
+    /// elem_sizes_[k] = col_prims_[k].raw_elem_size; set in constructor.
+    std::vector<size_t> elem_sizes_;
+
     /// Per-batch scratch arrays (size == batch_).
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> hist_;

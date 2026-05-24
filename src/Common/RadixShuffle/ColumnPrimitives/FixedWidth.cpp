@@ -609,7 +609,7 @@ scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, 
 
 /// Drain: copies `cnt` staged values for partition `p` to its output pointer.
 template <typename T>
-void drainRawFixed(size_t p, uint32_t cnt, ScatterState & state)
+void drainRawFixed(const ColumnPrimitives & /*self*/, size_t p, uint32_t cnt, ScatterState & state)
 {
     if (state.swwc_staging == nullptr || cnt == 0)
         return;
@@ -630,7 +630,7 @@ void drainRawFixed(size_t p, uint32_t cnt, ScatterState & state)
 /// Staging layout: P partitions × kSlotsPerFlush<T> × sizeof(T) = P × 64 bytes
 /// (always one 64-byte cache line per partition, independent of T).
 template <typename T>
-void onGrowRawFixed(size_t p, void * col_base, ScatterState & state)
+void onGrowRawFixed(const ColumnPrimitives & /*self*/, size_t p, void * col_base, size_t /*capacity*/, ScatterState & state)
 {
     if (state.raw_write_ptrs == nullptr)
     {
@@ -748,6 +748,7 @@ ColumnPrimitives makeFixedWidth()
     cp.scatter_raw_swwc = &scatterRawSwwcFixed<T>;
     cp.drain_raw = &drainRawFixed<T>;
     cp.on_grow_raw = &onGrowRawFixed<T>;
+    cp.raw_elem_size = sizeof(T);
     return cp;
 }
 
@@ -784,6 +785,7 @@ ColumnPrimitives makeDecimal()
     cp.scatter_raw_swwc = &scatterRawSwwcDecimal<T>;
     cp.drain_raw        = &drainRawFixed<NativeT>;
     cp.on_grow_raw      = &onGrowRawFixed<NativeT>;
+    cp.raw_elem_size    = sizeof(NativeT);
     return cp;
 }
 
@@ -802,11 +804,12 @@ ColumnPrimitives makeFixedString(size_t n)
     cp.reconstruct = &reconstructFixedString;
     cp.hash = &hashFixedString;
     cp.aux = n;
-    cp.compute_pids = &computePidsFixedString;
-    cp.scatter_raw  = &scatterRawFixedString;
+    cp.compute_pids  = &computePidsFixedString;
+    cp.scatter_raw   = &scatterRawFixedString;
     // scatter_raw_swwc and drain_raw are null — RadixPartitionOperator
     // falls back to direct scatter when scatter_raw_swwc is null.
-    cp.on_grow_raw  = &onGrowRawFixed<unsigned char>;
+    cp.on_grow_raw   = &onGrowRawFixed<unsigned char>;
+    cp.raw_elem_size = n;
     return cp;
 }
 

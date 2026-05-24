@@ -18,11 +18,13 @@
 
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnFixedString.h>
+#include <Columns/ColumnNullable.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/IColumn_fwd.h>
 #include <base/Decimal.h>
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
+#include <Common/RadixShuffle/ColumnPrimitives/Nullable.h>
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
 #include <Common/assert_cast.h>
@@ -175,6 +177,37 @@ BlockStream genBlocksFixedStr(size_t total, size_t block_rows, int K, size_t n, 
                     col->getChars()[i * n + b] = static_cast<uint8_t>(v >> (b * 8));
             }
             block.push_back(std::move(col));
+        }
+        stream.push_back(std::move(block));
+        done += bs;
+    }
+    return stream;
+}
+
+
+/// Nullable(UInt64) blocks: K columns of ColumnNullable(ColumnVector<UInt64>),
+/// 9 bytes/row each (1 null byte + 8 value bytes).  ~50% of rows are NULL.
+BlockStream genBlocksNullableUInt64(size_t total, size_t block_rows, int K, uint64_t seed)
+{
+    BlockStream stream;
+    std::mt19937_64 rng(seed);
+    for (size_t done = 0; done < total;)
+    {
+        const size_t bs = std::min(block_rows, total - done);
+        DB::Columns block;
+        for (int k = 0; k < K; ++k)
+        {
+            auto nested = DB::ColumnVector<UInt64>::create();
+            nested->getData().resize(bs);
+            auto null_map = DB::ColumnUInt8::create();
+            null_map->getData().resize(bs);
+            for (size_t i = 0; i < bs; ++i)
+            {
+                const uint64_t v = rng();
+                nested->getData()[i] = v;
+                null_map->getData()[i] = static_cast<uint8_t>(v & 1); // ~50% nulls
+            }
+            block.push_back(DB::ColumnNullable::create(std::move(nested), std::move(null_map)));
         }
         stream.push_back(std::move(block));
         done += bs;
@@ -635,6 +668,14 @@ int main(int argc, char ** argv)
         [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksFixedStr(tot, br, k, 8, seed); },
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
         { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeFixedString(8), ic, mc_); });
+
+    // Nullable(UInt64) — 9 bytes/row (1 null + 8 value); key hashed via nested UInt64.
+    run_typed_variant(
+        "null_uint64",
+        9,
+        [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksNullableUInt64(tot, br, k, seed); },
+        [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
+        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeNullable(makeFixedWidth<UInt64>()), ic, mc_); });
 
     return 0;
 }

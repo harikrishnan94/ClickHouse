@@ -38,6 +38,11 @@ RadixPartitionOperator<TKey>::RadixPartitionOperator(
     for (int k = 0; k < K_; ++k)
         scatter_states_.emplace_back(static_cast<size_t>(P_));
 
+    // Build per-column element-size table for OutBlock allocation.
+    elem_sizes_.resize(static_cast<size_t>(K_));
+    for (int k = 0; k < K_; ++k)
+        elem_sizes_[static_cast<size_t>(k)] = col_prims_[static_cast<size_t>(k)].raw_elem_size;
+
     parts_.assign(static_cast<size_t>(P), {});
     for (auto & ps : parts_)
         ps.next_cap = init_cap;
@@ -89,13 +94,20 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
                 for (int k = 0; k < K_; ++k)
                     if (col_prims_[static_cast<size_t>(k)].drain_raw)
                         col_prims_[static_cast<size_t>(k)].drain_raw(
-                            static_cast<size_t>(p), cnt_[static_cast<size_t>(p)], scatter_states_[static_cast<size_t>(k)]);
+                            col_prims_[static_cast<size_t>(k)],
+                            static_cast<size_t>(p),
+                            cnt_[static_cast<size_t>(p)],
+                            scatter_states_[static_cast<size_t>(k)]);
                 cnt_[static_cast<size_t>(p)] = 0;
             }
-            growPart(ps, arena_, K_, sizeof(TKey), max_cap_);
+            growPart(ps, arena_, K_, elem_sizes_.data(), max_cap_);
             for (int k = 0; k < K_; ++k)
                 col_prims_[static_cast<size_t>(k)].on_grow_raw(
-                    static_cast<size_t>(p), ps.cur->cols[k], scatter_states_[static_cast<size_t>(k)]);
+                    col_prims_[static_cast<size_t>(k)],
+                    static_cast<size_t>(p),
+                    ps.cur->cols[k],
+                    ps.cur->capacity,
+                    scatter_states_[static_cast<size_t>(k)]);
         }
         ps.cur->filled += hist[p]; // pre-commit (thread-private, safe)
     }
@@ -156,7 +168,10 @@ void RadixPartitionOperator<TKey>::finish()
         for (int k = 0; k < K_; ++k)
             if (col_prims_[static_cast<size_t>(k)].drain_raw)
                 col_prims_[static_cast<size_t>(k)].drain_raw(
-                    static_cast<size_t>(p), cnt_[static_cast<size_t>(p)], scatter_states_[static_cast<size_t>(k)]);
+                    col_prims_[static_cast<size_t>(k)],
+                    static_cast<size_t>(p),
+                    cnt_[static_cast<size_t>(p)],
+                    scatter_states_[static_cast<size_t>(k)]);
         cnt_[static_cast<size_t>(p)] = 0;
     }
 }

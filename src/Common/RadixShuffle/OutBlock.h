@@ -94,4 +94,42 @@ inline void growPart(PartState & ps, BumpArena & arena, int K, size_t elem_size,
     ps.next_cap = std::min(ps.next_cap * 2, max_cap);
 }
 
+
+/// Allocate a new OutBlock with per-column element sizes.
+/// `elem_sizes[k]` is the byte size of one element in column k
+/// (e.g., sizeof(uint64_t) for UInt64, 9 = 1+8 for Nullable(UInt64)).
+///
+/// Layout: [OutBlock header | col_0[cap * elem_sizes[0]] | col_1[cap * elem_sizes[1]] | ...]
+[[nodiscard]] inline OutBlock * newOutBlock(BumpArena & arena, int K, const size_t * elem_sizes, size_t cap)
+{
+    constexpr size_t hdr = (sizeof(OutBlock) + 63) & ~size_t(63);
+    size_t total = 0;
+    for (int k = 0; k < K; ++k)
+        total += elem_sizes[static_cast<size_t>(k)] * cap;
+    char * raw = arena.alignedAlloc(hdr + total, 64);
+    auto * b = reinterpret_cast<OutBlock *>(raw);
+    b->next = nullptr;
+    b->filled = 0;
+    b->capacity = cap;
+    size_t off = 0;
+    for (int k = 0; k < K; ++k)
+    {
+        b->cols[k] = raw + hdr + off;
+        off += elem_sizes[static_cast<size_t>(k)] * cap;
+    }
+    for (int k = K; k < kMaxK; ++k)
+        b->cols[k] = nullptr;
+    return b;
+}
+
+
+/// Prepend a new OutBlock with per-column element sizes.
+inline void growPart(PartState & ps, BumpArena & arena, int K, const size_t * elem_sizes, size_t max_cap = kOutCapMax)
+{
+    OutBlock * nb = newOutBlock(arena, K, elem_sizes, ps.next_cap);
+    nb->next = ps.head;
+    ps.head = ps.cur = nb;
+    ps.next_cap = std::min(ps.next_cap * 2, max_cap);
+}
+
 } // namespace DB::RadixShuffle

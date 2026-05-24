@@ -111,10 +111,15 @@ using RawScatterSwwcFn
     = void (*)(const IColumn & src, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state);
 
 /// Partial SWWC drain (replaces `IScatterColumn::drain_one`).
-using RawDrainFn = void (*)(size_t p, uint32_t cnt, ScatterState & state);
+/// `self` is provided so Nullable can delegate to its nested primitive.
+using RawDrainFn = void (*)(const ColumnPrimitives & self, size_t p, uint32_t cnt, ScatterState & state);
 
 /// Write-pointer update on new output block (replaces `IScatterColumn::on_grow`).
-using RawOnGrowFn = void (*)(size_t p, void * col_base, ScatterState & state);
+/// `self` is provided so Nullable can delegate to its nested primitive.
+/// `capacity` is the OutBlock row capacity — Nullable uses it to split
+/// `col_base` into the null-map region `[0, capacity)` and the values region
+/// `[capacity, capacity*(1+sizeof(T)))`.
+using RawOnGrowFn = void (*)(const ColumnPrimitives & self, size_t p, void * col_base, size_t capacity, ScatterState & state);
 
 
 /// Column-primitive triple resolved per column type.  After
@@ -147,6 +152,12 @@ struct ColumnPrimitives
     /// Auxiliary scalar used by some primitives (e.g., FixedString row
     /// width n).
     size_t aux = 0;
+
+    /// Bytes per row in an OutBlock column buffer for the raw scatter path.
+    /// RadixPartitionOperator uses this per-column to allocate OutBlock memory
+    /// instead of a uniform sizeof(TKey).
+    /// 0 = raw scatter path not supported (e.g., String).
+    size_t raw_elem_size = 0;
 };
 
 }

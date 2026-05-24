@@ -10,6 +10,8 @@
 namespace DB::RadixShuffle
 {
 
+struct ColumnPrimitives;
+
 /// One chunk in a per-partition fixed chain.  Holds all fixed-width arrays
 /// (values, offsets, null maps) for all columns in the partition, laid out
 /// column-major (planar): each slot's array is contiguous.
@@ -148,6 +150,12 @@ struct ScatterState
     /// Lazily constructed on the first scatter call for Nullable columns.
     std::unique_ptr<ScatterState> nested;
 
+    /// Back-pointer to the owning ColumnPrimitives.  Set by on_grow_raw for
+    /// composite types (Nullable) so that scatter_raw (which has no self
+    /// parameter) can reach self.nested to delegate to the nested primitive.
+    /// Null for leaf column types.
+    const ColumnPrimitives * raw_prim = nullptr;
+
     /// False until the first scatter call fully initialises fixed_ptrs.
     bool initialized = false;
 
@@ -166,6 +174,7 @@ struct ScatterState
         , data_ptrs(std::move(other.data_ptrs))
         , cached_data(std::move(other.cached_data))
         , nested(std::move(other.nested))
+        , raw_prim(other.raw_prim)
         , initialized(other.initialized)
     {
         other.raw_write_ptrs = nullptr;
@@ -184,6 +193,7 @@ struct ScatterState
             data_ptrs = std::move(other.data_ptrs);
             cached_data = std::move(other.cached_data);
             nested = std::move(other.nested);
+            raw_prim = other.raw_prim;
             initialized = other.initialized;
             other.raw_write_ptrs = nullptr;
             other.swwc_staging = nullptr;
