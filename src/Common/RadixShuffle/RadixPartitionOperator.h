@@ -40,10 +40,7 @@ public:
     static constexpr int kSimdWidth = 8; ///< uint64 lanes per AVX-512 ZMM register.
 
     /// True iff SWWC NT-store scatter is preferred for (K, P).
-    static bool should_use_swwc(int K, int P) noexcept
-    {
-        return (K == 1) ? (P >= 512) : (P >= 32);
-    }
+    static bool should_use_swwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
 
     /// `cols`     — K column objects; ownership not transferred.
     /// `arena`    — bump allocator for OutBlock storage; must outlive this object.
@@ -91,7 +88,7 @@ private:
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> hist_;
     std::vector<uint32_t> pos_; ///< SWWC staging slot per row.
-    std::vector<uint8_t> cnt_;  ///< SWWC staging slot counter per partition (0..7).
+    std::vector<uint8_t> cnt_; ///< SWWC staging slot counter per partition (0..7).
 };
 
 /// Explicit instantiation declarations.

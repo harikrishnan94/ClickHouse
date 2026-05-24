@@ -331,8 +331,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         // ── Phase 4b: SWWC scatter per column ─────────────────────────────
         for (int k = 0; k < K_; ++k)
         {
-            const TKey * col_data =
-                assert_cast<const ColumnVector<TKey> &>(*columns[static_cast<size_t>(k)]).getData().data();
+            const TKey * col_data = assert_cast<const ColumnVector<TKey> &>(*columns[static_cast<size_t>(k)]).getData().data();
             cols_[static_cast<size_t>(k)]->scatter_staged(pids, pos, col_data + start, n);
         }
     }
@@ -341,8 +340,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         // ── Phase 4b: direct scatter per column ───────────────────────────
         for (int k = 0; k < K_; ++k)
         {
-            const TKey * col_data =
-                assert_cast<const ColumnVector<TKey> &>(*columns[static_cast<size_t>(k)]).getData().data();
+            const TKey * col_data = assert_cast<const ColumnVector<TKey> &>(*columns[static_cast<size_t>(k)]).getData().data();
             cols_[static_cast<size_t>(k)]->scatter_direct(pids, col_data + start, n);
         }
     }
