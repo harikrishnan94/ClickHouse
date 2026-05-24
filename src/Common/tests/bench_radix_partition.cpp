@@ -16,6 +16,8 @@
 //   --threads    T   worker threads             (default  16)
 //   --reps       R   timed repetitions          (default   5)
 
+#include <Columns/ColumnDecimal.h>
+#include <Columns/ColumnFixedString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/IColumn_fwd.h>
 #include <Common/RadixShuffle/BumpArena.h>
@@ -23,6 +25,7 @@
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
 #include <Common/assert_cast.h>
+#include <base/Decimal.h>
 
 #include <algorithm>
 #include <bit>
@@ -101,6 +104,105 @@ BlockStream genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
         done += bs;
     }
     return stream;
+}
+
+
+// ── typed input generators ────────────────────────────────────────────────────
+
+/// Decimal64 blocks: K columns of ColumnDecimal<Decimal64>, 8 bytes/row each.
+BlockStream genBlocksDecimal64(size_t total, size_t block_rows, int K, uint64_t seed)
+{
+    BlockStream stream;
+    std::mt19937_64 rng(seed);
+    for (size_t done = 0; done < total;)
+    {
+        const size_t bs = std::min(block_rows, total - done);
+        DB::Columns block;
+        for (int k = 0; k < K; ++k)
+        {
+            auto col = DB::ColumnDecimal<DB::Decimal64>::create(0, 0);
+            col->getData().resize(bs);
+            for (size_t i = 0; i < bs; ++i)
+                col->getData()[i] = DB::Decimal64{static_cast<Int64>(rng())};
+            block.push_back(std::move(col));
+        }
+        stream.push_back(std::move(block));
+        done += bs;
+    }
+    return stream;
+}
+
+/// Decimal32 blocks: K columns of ColumnDecimal<Decimal32>, 4 bytes/row each.
+BlockStream genBlocksDecimal32(size_t total, size_t block_rows, int K, uint64_t seed)
+{
+    BlockStream stream;
+    std::mt19937_64 rng(seed);
+    for (size_t done = 0; done < total;)
+    {
+        const size_t bs = std::min(block_rows, total - done);
+        DB::Columns block;
+        for (int k = 0; k < K; ++k)
+        {
+            auto col = DB::ColumnDecimal<DB::Decimal32>::create(0, 0);
+            col->getData().resize(bs);
+            for (size_t i = 0; i < bs; ++i)
+                col->getData()[i] = DB::Decimal32{static_cast<Int32>(rng())};
+            block.push_back(std::move(col));
+        }
+        stream.push_back(std::move(block));
+        done += bs;
+    }
+    return stream;
+}
+
+/// FixedString(n) blocks: K columns of ColumnFixedString(n), n bytes/row each.
+BlockStream genBlocksFixedStr(size_t total, size_t block_rows, int K, size_t n, uint64_t seed)
+{
+    BlockStream stream;
+    std::mt19937_64 rng(seed);
+    for (size_t done = 0; done < total;)
+    {
+        const size_t bs = std::min(block_rows, total - done);
+        DB::Columns block;
+        for (int k = 0; k < K; ++k)
+        {
+            auto col = DB::ColumnFixedString::create(n);
+            col->getChars().resize(bs * n);
+            for (size_t i = 0; i < bs; ++i)
+            {
+                uint64_t v = rng();
+                for (size_t b = 0; b < n; ++b)
+                    col->getChars()[i * n + b] = static_cast<uint8_t>(v >> (b * 8));
+            }
+            block.push_back(std::move(col));
+        }
+        stream.push_back(std::move(block));
+        done += bs;
+    }
+    return stream;
+}
+
+
+/// Generic typed radix runner.  `prims_proto` is copied K times.
+/// `elem_size` is sizeof(T) for the payload element — used for OutBlock sizing.
+template <typename TKey>
+void runTypedRadix(
+    const BlockStream & blocks,
+    int K,
+    int P,
+    std::vector<PartState> & parts,
+    BumpArena & arena,
+    const ColumnPrimitives & prim_proto,
+    size_t init_cap = kOutCapMin,
+    size_t max_cap = kOutCapMax)
+{
+    std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), prim_proto);
+    const bool use_swwc = RadixPartitionOperator<TKey>::should_use_swwc(K, P);
+    RadixPartitionOperator<TKey> op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
+    for (const auto & block : blocks)
+        op.process(block);
+    op.finish();
+    parts = std::move(op.parts());
 }
 
 
@@ -438,6 +540,107 @@ int main(int argc, char ** argv)
         rd.mean / mc.mean,
         rd.pmin * static_cast<double>(T),
         mc.pmin * static_cast<double>(T));
+
+    // ── Type-sweep: same P/K/N, compare column types at equal bytes-per-row ──
+    // Reference: UInt64 (already benchmarked above as `radix`).
+    // Each variant uses ColumnPrimitives dispatch; TKey selects OutBlock elem size.
+    //
+    //  Type          elem  total B/row (K=4)
+    //  -----------   ----  -----------------
+    //  uint64           8           32  (reference)
+    //  decimal64        8           32  (same bytes/row)
+    //  decimal32        4           16  (half bytes/row)
+    //  fixedstr8        8           32  (same bytes/row)
+    fmt::print("\nType-sweep (P={} K={} T={} R={}):\n", P, K, T, R);
+    fmt::print(
+        "{:<12}  {:>6}  {:>7}  {:>8}  {:>8}\n",
+        "type", "B/elem", "B/row", "ns/row", "GB/s(R+W)");
+    fmt::print("------------  ------  -------  --------  --------\n");
+
+    // Helper: run one typed variant and print a row.
+    auto run_typed_variant = [&](const char * label,
+                                 size_t elem_size,
+                                 auto gen_fn,
+                                 auto run_fn)
+    {
+        // Generate streams for this type.
+        std::vector<BlockStream> typed_streams(static_cast<size_t>(T));
+        for (int t = 0; t < T; ++t)
+            typed_streams[static_cast<size_t>(t)] = gen_fn(rpt, B, K, 42ULL + static_cast<uint64_t>(t) + 1000ULL);
+
+        std::vector<double> typed_ns(static_cast<size_t>(R));
+        std::vector<std::vector<PartState>> typed_parts(static_cast<size_t>(T));
+        const double bytes_per_row = static_cast<double>(K) * static_cast<double>(elem_size);
+        const double gbs_typed = 2.0 * bytes_per_row;
+
+        for (int rep = 0; rep < R; ++rep)
+        {
+            std::vector<BumpArena> typed_arenas;
+            typed_arenas.reserve(static_cast<size_t>(T));
+            for (int t = 0; t < T; ++t)
+                typed_arenas.emplace_back(kArenaSlabBytes);
+            for (int t = 0; t < T; ++t)
+                typed_parts[static_cast<size_t>(t)].clear();
+
+            const auto t0 = Clk::now();
+            std::vector<std::thread> ths;
+            ths.reserve(static_cast<size_t>(T));
+            for (int t = 0; t < T; ++t)
+            {
+                ths.emplace_back([&, t]()
+                {
+                    pinThread(t);
+                    run_fn(
+                        typed_streams[static_cast<size_t>(t)],
+                        K, P,
+                        typed_parts[static_cast<size_t>(t)],
+                        typed_arenas[static_cast<size_t>(t)],
+                        cap_init, cap_max);
+                });
+            }
+            for (auto & th : ths)
+                th.join();
+            typed_ns[static_cast<size_t>(rep)]
+                = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9
+                  / static_cast<double>(total);
+        }
+        const auto s = computeStats(std::move(typed_ns));
+        fmt::print(
+            "{:<12}  {:>6}  {:>7}  {:>8.3f}  {:>8.1f}\n",
+            label,
+            elem_size,
+            K * elem_size,
+            s.pmin,
+            gbs_typed / s.pmin);
+    };
+
+    // UInt64 reference (re-run, fresh streams).
+    run_typed_variant(
+        "uint64", 8,
+        [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocks(tot, br, k, seed); },
+        [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
+        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeFixedWidth<UInt64>(), ic, mc_); });
+
+    // Decimal64 (8 bytes/row — same as UInt64).
+    run_typed_variant(
+        "decimal64", 8,
+        [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksDecimal64(tot, br, k, seed); },
+        [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
+        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeDecimal<DB::Decimal64>(), ic, mc_); });
+
+    // Decimal32 (4 bytes/row — half of UInt64).
+    run_typed_variant(
+        "decimal32", 4,
+        [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksDecimal32(tot, br, k, seed); },
+        [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
+        { runTypedRadix<uint32_t>(blk, k, p, pts, ar, makeDecimal<DB::Decimal32>(), ic, mc_); });
+
+    // FixedString(8) (8 bytes/row — same as UInt64).
+    run_typed_variant(
+        "fixedstr8", 8,
+        [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksFixedStr(tot, br, k, 8, seed); },
+        [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
+        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeFixedString(8), ic, mc_); });
 
     return 0;
 }
