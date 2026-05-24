@@ -79,13 +79,6 @@ struct Stats
 };
 
 
-struct RadixBenchStats
-{
-    uint64_t allocated_bytes = 0;
-    uint64_t reserved_bytes = 0;
-};
-
-
 // ── input ─────────────────────────────────────────────────────────────────────
 
 BlockStream genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
@@ -144,7 +137,14 @@ void runMemcpy(
 
 // ── radix variant ─────────────────────────────────────────────────────────────
 
-RadixBenchStats runSmartRadix(const BlockStream & blocks, int K, int P)
+void runSmartRadix(
+    const BlockStream & blocks,
+    int K,
+    int P,
+    std::vector<PartState> & parts,
+    BumpArena & arena,
+    size_t init_cap = kOutCapMin,
+    size_t max_cap = kOutCapMax)
 {
     std::vector<std::unique_ptr<NumericScatterColumn<uint64_t>>> owned;
     std::vector<IScatterColumn *> ptrs;
@@ -156,14 +156,11 @@ RadixBenchStats runSmartRadix(const BlockStream & blocks, int K, int P)
         ptrs.push_back(owned.back().get());
     }
     const bool use_swwc = RadixPartitionOperator<uint64_t>::should_use_swwc(K, P);
-    RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), use_swwc);
+    RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), arena, use_swwc, init_cap, max_cap);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
-    return RadixBenchStats{
-        .allocated_bytes = op.getAllocator().totalAllocatedBytes(),
-        .reserved_bytes = op.getAllocator().totalReservedBytes(),
-    };
+    parts = std::move(op.parts());
 }
 
 
@@ -311,10 +308,9 @@ int main(int argc, char ** argv)
         streams[static_cast<size_t>(t)] = genBlocks(rpt, B, K, 42ULL + static_cast<uint64_t>(t));
     fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
 
+    // ── fresh arenas allocated every rep — no reuse between reps ─────────────
     std::vector<PartState> mc_parts(static_cast<size_t>(T));
-    std::vector<RadixBenchStats> rd_stats(static_cast<size_t>(T));
-    uint64_t mc_used_bytes = 0;
-    uint64_t mc_allocated_bytes = 0;
+    std::vector<std::vector<PartState>> parts(static_cast<size_t>(T));
 
     // GB/s = gbs_k / ns_per_row  (factor of 2 for read + write)
     const double gbs_k = 2.0 * static_cast<double>(K) * 8.0;
@@ -328,7 +324,7 @@ int main(int argc, char ** argv)
 
     for (int rep = 0; rep < R; ++rep)
     {
-        // ── memcpy ────────────────────────────────────────────────────────────
+        // ── memcpy — fresh BumpArena each rep ────────────────────────────────
         {
             std::vector<BumpArena> mc_arenas;
             mc_arenas.reserve(static_cast<size_t>(T));
@@ -358,14 +354,17 @@ int main(int argc, char ** argv)
             for (auto & th : ths)
                 th.join();
             mc_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
-            mc_used_bytes = mc_arenas[0].usedBytes();
-            mc_allocated_bytes = mc_arenas[0].allocatedBytes();
         }
 
-        // ── radix ─────────────────────────────────────────────────────────────
+        // ── radix — fresh BumpArena each rep ─────────────────────────────────
         {
+            std::vector<BumpArena> rd_arenas;
+            rd_arenas.reserve(static_cast<size_t>(T));
             for (int t = 0; t < T; ++t)
-                rd_stats[static_cast<size_t>(t)] = {};
+                rd_arenas.emplace_back(kArenaSlabBytes);
+
+            for (int t = 0; t < T; ++t)
+                parts[static_cast<size_t>(t)].clear();
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(T));
@@ -375,7 +374,14 @@ int main(int argc, char ** argv)
                     [&, t]()
                     {
                         pinThread(t);
-                        rd_stats[static_cast<size_t>(t)] = runSmartRadix(streams[static_cast<size_t>(t)], K, P);
+                        runSmartRadix(
+                            streams[static_cast<size_t>(t)],
+                            K,
+                            P,
+                            parts[static_cast<size_t>(t)],
+                            rd_arenas[static_cast<size_t>(t)],
+                            cap_init,
+                            cap_max);
                     });
             }
             for (auto & th : ths)
@@ -392,8 +398,15 @@ int main(int argc, char ** argv)
         (void)std::fflush(stdout);
     }
 
-    // ── arena sanity check ────────────────────────────────────────────────────
+    // ── arena sanity check (last rep, from parts chain) ──────────────────────
     const size_t expected_data = rpt * static_cast<size_t>(K) * 8;
+    size_t radix_used_rows = 0;
+    for (const auto & sv : parts[0])
+    {
+        for (const OutBlock * b = sv.head; b != nullptr; b = b->next)
+            radix_used_rows += b->filled;
+    }
+    const size_t radix_used_bytes = radix_used_rows * static_cast<size_t>(K) * sizeof(uint64_t);
     fmt::print("\nArena usage after last rep (thread 0):\n");
     fmt::print(
         "  expected data  = {:>7.1f} MiB  ({} rows \xc3\x97 {} cols \xc3\x97 8 B)\n",
@@ -401,14 +414,7 @@ int main(int argc, char ** argv)
         rpt,
         K);
     fmt::print(
-        "  memcpy  used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
-        static_cast<double>(mc_used_bytes) / 1048576.0,
-        static_cast<double>(mc_allocated_bytes) / 1048576.0);
-    fmt::print(
-        "  radix   used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
-        static_cast<double>(rd_stats[0].reserved_bytes) / 1048576.0,
-        static_cast<double>(rd_stats[0].allocated_bytes) / 1048576.0);
-    fmt::print("  (radix used is reserved payload bytes; alloc includes Allocator chunk waste)\n");
+        "  radix   rows   = {:>7.1f} MiB  ({} rows scattered)\n", static_cast<double>(radix_used_bytes) / 1048576.0, radix_used_rows);
 
     // ── summary ───────────────────────────────────────────────────────────────
     const auto mc = computeStats(std::move(mc_ns));

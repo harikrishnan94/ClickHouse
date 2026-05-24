@@ -104,21 +104,12 @@ bool Handle::ensureFixed(size_t p, size_t rows)
 
     const size_t floor_rows = opts.min_chunk_floor_rows;
     const size_t growth_rows = pc.reserved_rows / 10;
-    size_t geometric_rows = 0;
-    if (pc.fixed_tail != nullptr && opts.fixed_chunk_growth_denominator != 0)
-    {
-        geometric_rows = (pc.fixed_tail->row_capacity * opts.fixed_chunk_growth_numerator + opts.fixed_chunk_growth_denominator - 1)
-            / opts.fixed_chunk_growth_denominator;
-    }
-    size_t chunk_rows = std::max({floor_rows, rows, growth_rows, geometric_rows});
+    size_t chunk_rows = std::max({floor_rows, rows, growth_rows});
     if (rows > 0)
     {
         const size_t k = (chunk_rows + rows - 1) / rows;
         chunk_rows = k * rows;
     }
-    /// Keep column slot starts 64-byte aligned for 8-byte values.  SWWC uses
-    /// `_mm512_stream_si512`, whose destination must be 64-byte aligned.
-    chunk_rows = (chunk_rows + 7) & ~size_t(7);
 
     /// Compute the column-major layout for this chunk and the total byte size.
     const size_t num_slots = sc.fixed_slots.size();

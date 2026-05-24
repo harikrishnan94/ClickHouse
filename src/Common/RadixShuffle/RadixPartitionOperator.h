@@ -1,10 +1,9 @@
 #pragma once
 
 #include <Columns/IColumn_fwd.h>
-#include <Common/RadixShuffle/Allocator.h>
+#include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/IScatterColumn.h>
-#include <Common/RadixShuffle/PartSchema.h>
-#include <Common/RadixShuffle/PartitionTypes.h>
+#include <Common/RadixShuffle/OutBlock.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -27,10 +26,10 @@ namespace DB::RadixShuffle
 /// Crossover: `K==1 → SWWC when P≥512`; `K≥2 → SWWC when P≥32`.
 ///
 /// Lifecycle:
-///   1. Construct with P, K, columns, SWWC flag.
+///   1. Construct with P, K, columns, arena, SWWC flag, capacity hints.
 ///   2. Call `process(columns)` once per input block.
 ///   3. Call `finish()` after all blocks to flush SWWC buffers.
-///   4. Read allocator statistics through `getAllocator()`.
+///   4. Read `parts()` for per-partition output state.
 template <typename TKey>
 class RadixPartitionOperator
 {
@@ -44,9 +43,18 @@ public:
     static bool should_use_swwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
 
     /// `cols`     — K column objects; ownership not transferred.
+    /// `arena`    — bump allocator for OutBlock storage; must outlive this object.
     /// `use_swwc` — select SWWC scatter path; use `should_use_swwc(K,P)` as hint.
-    RadixPartitionOperator(int P, int K, std::vector<IScatterColumn *> cols, bool use_swwc);
-    ~RadixPartitionOperator();
+    /// `init_cap` — initial OutBlock row capacity (must be a multiple of 8).
+    /// `max_cap`  — maximum OutBlock row capacity (must be a multiple of 8).
+    RadixPartitionOperator(
+        int P,
+        int K,
+        std::vector<IScatterColumn *> cols,
+        BumpArena & arena,
+        bool use_swwc,
+        size_t init_cap = kOutCapMin,
+        size_t max_cap = kOutCapMax);
 
     /// Process one input block.  `columns[k]` must be a `ColumnVector<TKey>`.
     /// Call repeatedly for streaming input, then call `finish()`.
@@ -56,7 +64,10 @@ public:
     /// Must be called once after all `process()` calls before reading `parts()`.
     void finish();
 
-    [[nodiscard]] const Allocator & getAllocator() const noexcept { return allocator_; }
+    /// Access per-partition output state (call after `finish()`).
+    [[nodiscard]] std::vector<PartState> & parts() noexcept { return parts_; }
+    [[nodiscard]] const std::vector<PartState> & parts() const noexcept { return parts_; }
+
     [[nodiscard]] int batchSize() const noexcept { return batch_; }
 
 private:
@@ -67,30 +78,17 @@ private:
     bool use_swwc_;
     int batch_;
     uint32_t mask_; ///< P − 1 (P must be a power of two).
-    Allocator allocator_;
-    Handle * handle_ = nullptr;
+    size_t max_cap_;
 
     std::vector<IScatterColumn *> cols_;
+    std::vector<PartState> parts_;
+    BumpArena & arena_;
 
     /// Per-batch scratch arrays (size == batch_).
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> hist_;
-    std::vector<size_t> size_hist_;
-    std::vector<size_t> varlen_zeros_;
-    std::vector<PartReserveGrant> grants_;
-    std::vector<uint64_t> stale_bitset_;
     std::vector<uint32_t> pos_; ///< SWWC staging slot per row.
     std::vector<uint8_t> cnt_; ///< SWWC staging slot counter per partition (0..7).
-
-    uint64_t debug_rows_ = 0;
-    uint64_t debug_batches_ = 0;
-    uint64_t debug_hash_ns_ = 0;
-    uint64_t debug_hist_ns_ = 0;
-    uint64_t debug_reserve_ns_ = 0;
-    uint64_t debug_stale_ns_ = 0;
-    uint64_t debug_scatter_ns_ = 0;
-    uint64_t debug_stale_partitions_ = 0;
-    uint64_t debug_drain_events_ = 0;
 };
 
 /// Explicit instantiation declarations.
