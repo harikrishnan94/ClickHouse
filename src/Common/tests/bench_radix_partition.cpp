@@ -1,18 +1,33 @@
-#include <Columns/ColumnNullable.h>
-#include <Columns/ColumnString.h>
-#include <Columns/ColumnVector.h>
-#include <Columns/ColumnsNumber.h>
-#include <DataTypes/DataTypeNullable.h>
-#include <DataTypes/DataTypeString.h>
-#include <DataTypes/DataTypesNumber.h>
-#include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
-#include <Common/RadixShuffle/RadixPartitioner.h>
+// bench_radix_partition.cpp
+//
+// Benchmark: plain memcpy vs. single-pass radix partitioning.
+// Both functions receive the same K-column uint64 table delivered in
+// fixed-size row blocks.  Measures ns/row and GB/s (read + write).
+//
+// Ported from radix_part_vs_memcpy.cpp; the radix implementation lives in
+// src/Common/RadixShuffle/ so it shares all logic with production code.
+//
+// Usage:
+//   bench_radix_partition [OPTIONS]
+//   --partitions P   power-of-2 in [1,32768]   (default 64)
+//   --columns    K   uint64 columns per row     (default  4, max 8)
+//   --rows       N   total rows                 (default  100 000 000)
+//   --block-rows B   rows per input block       (default  16 384)
+//   --threads    T   worker threads             (default  16)
+//   --reps       R   timed repetitions          (default   5)
+
+#include <Common/RadixShuffle/BumpArena.h>
+#include <Common/RadixShuffle/NumericScatterColumn.h>
+#include <Common/RadixShuffle/OutBlock.h>
+#include <Common/RadixShuffle/RadixPartitionOperator.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
-#include <iostream>
+#include <cstring>
+#include <pthread.h>
 #include <random>
 #include <string>
 #include <thread>
@@ -24,306 +39,152 @@
 namespace
 {
 
-using namespace DB;
-namespace rs = DB::RadixShuffle;
+using namespace DB::RadixShuffle;
+
+using Clk = std::chrono::steady_clock;
+using InputBlockU64 = InputBlock<uint64_t>;
+
+static constexpr int kMaxKArg = kMaxK;
+static constexpr int kMaxP = 32768;
 
 
-// ───────────────────────── column builders ─────────────────────────
+// ── input ─────────────────────────────────────────────────────────────────────
 
-
-MutableColumnPtr makeUInt32Col(size_t n, uint64_t seed)
+static uint64_t * alloc64(size_t n)
 {
-    std::mt19937_64 rng(seed);
-    auto col = ColumnVector<UInt32>::create();
-    col->reserve(n);
-    for (size_t i = 0; i < n; ++i)
-        col->insertValue(static_cast<UInt32>(rng()));
-    return col;
+    void * p = nullptr;
+    if (posix_memalign(&p, 64, n * sizeof(uint64_t)) != 0)
+        std::abort();
+    return static_cast<uint64_t *>(p);
 }
 
-MutableColumnPtr makeUInt64Col(size_t n, uint64_t seed)
-{
-    std::mt19937_64 rng(seed);
-    auto col = ColumnVector<UInt64>::create();
-    col->reserve(n);
-    for (size_t i = 0; i < n; ++i)
-        col->insertValue(rng());
-    return col;
-}
 
-MutableColumnPtr makeStringCol(size_t n, uint64_t seed)
+static std::vector<InputBlockU64> genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
 {
+    std::vector<InputBlockU64> out;
     std::mt19937_64 rng(seed);
-    std::uniform_int_distribution<size_t> len_dist(4, 32);
-    auto col = ColumnString::create();
-    std::string buf;
-    for (size_t i = 0; i < n; ++i)
+    for (size_t done = 0; done < total;)
     {
-        const size_t len = len_dist(rng);
-        buf.resize(len);
-        for (auto & c : buf)
-            c = static_cast<char>((rng() % 95) + 32);
-        col->insertData(buf.data(), buf.size());
+        const size_t bs = std::min(block_rows, total - done);
+        InputBlockU64 b;
+        b.rows = bs;
+        for (int k = 0; k < K; ++k)
+        {
+            b.cols[k] = alloc64(bs);
+            for (size_t i = 0; i < bs; ++i)
+                b.cols[k][i] = rng();
+        }
+        out.push_back(b);
+        done += bs;
     }
-    return col;
+    return out;
 }
 
-MutableColumnPtr makeNullableUInt32Col(size_t n, uint64_t seed)
+
+static void freeBlocks(std::vector<InputBlockU64> & v, int K)
 {
-    std::mt19937_64 rng(seed);
-    std::uniform_int_distribution<int> null_dist(0, 4);
-    auto nested = ColumnVector<UInt32>::create();
-    auto null_map = ColumnUInt8::create();
-    for (size_t i = 0; i < n; ++i)
+    for (auto & b : v)
+        for (int k = 0; k < K; ++k)
+            std::free(b.cols[k]);
+    v.clear();
+}
+
+
+// ── memcpy baseline ───────────────────────────────────────────────────────────
+// Uses the same OutBlock / PartState / growPart machinery as the radix variant
+// but writes all rows into a single partition (no hashing).  Allocation
+// pattern, block sizes, and arena usage therefore mirror the radix variant.
+
+static void runMemcpy(
+    const std::vector<InputBlockU64> & blocks,
+    int K,
+    PartState & out,
+    BumpArena & arena,
+    size_t init_cap = kOutCapMin,
+    size_t max_cap = kOutCapMax)
+{
+    out.next_cap = init_cap;
+    for (const auto & blk : blocks)
     {
-        null_map->insertValue(null_dist(rng) == 0 ? 1 : 0);
-        nested->insertValue(static_cast<UInt32>(rng()));
+        size_t i = 0;
+        while (i < blk.rows)
+        {
+            if (!out.cur || out.cur->filled >= out.cur->capacity)
+                growPart(out, arena, K, sizeof(uint64_t), max_cap);
+            const size_t n = std::min(out.cur->capacity - out.cur->filled, blk.rows - i);
+            const size_t f = out.cur->filled;
+            for (int k = 0; k < K; ++k)
+                std::memcpy(
+                    static_cast<uint64_t *>(out.cur->cols[k]) + f, blk.cols[k] + i, n * 8);
+            out.cur->filled = f + n;
+            i += n;
+        }
     }
-    return ColumnNullable::create(std::move(nested), std::move(null_map));
 }
 
 
-// ───────────────────────── column spec ─────────────────────────
+// ── radix variant ─────────────────────────────────────────────────────────────
 
-
-struct ColumnSpec
+static void runSmartRadix(
+    const std::vector<InputBlockU64> & blocks,
+    int K,
+    int P,
+    std::vector<PartState> & parts,
+    BumpArena & arena,
+    size_t init_cap = kOutCapMin,
+    size_t max_cap = kOutCapMax)
 {
-    std::string name;
-    std::function<MutableColumnPtr(size_t, uint64_t)> make_column;
-    DataTypePtr dtype;
+    std::vector<std::unique_ptr<NumericScatterColumn<uint64_t>>> owned;
+    std::vector<IScatterColumn *> ptrs;
+    for (int k = 0; k < K; ++k)
+    {
+        owned.push_back(std::make_unique<NumericScatterColumn<uint64_t>>(static_cast<size_t>(P)));
+        ptrs.push_back(owned.back().get());
+    }
+    const bool use_swwc = RadixPartitionOperator<uint64_t>::should_use_swwc(K, P);
+    RadixPartitionOperator<uint64_t> op(P, K, std::move(ptrs), arena, use_swwc, init_cap, max_cap);
+    op.process(blocks);
+    parts = std::move(op.parts());
+}
+
+
+// ── thread pinning ────────────────────────────────────────────────────────────
+
+static void pinThread(int t)
+{
+    const unsigned n = std::thread::hardware_concurrency();
+    if (!n)
+        return;
+    cpu_set_t cs;
+    CPU_ZERO(&cs);
+    CPU_SET(static_cast<unsigned>(t) % n, &cs);
+    pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
+}
+
+
+// ── statistics ────────────────────────────────────────────────────────────────
+
+struct Stats
+{
+    double mean, stddev, p50, pmin, pmax;
 };
 
-
-std::vector<ColumnSpec> buildColumnSpecs()
+static Stats computeStats(std::vector<double> v)
 {
+    std::sort(v.begin(), v.end());
+    double sum = 0;
+    for (double x : v)
+        sum += x;
+    const double m = sum / static_cast<double>(v.size());
+    double var = 0;
+    for (double x : v)
+        var += (x - m) * (x - m);
     return {
-        {"UInt32", makeUInt32Col, std::make_shared<DataTypeUInt32>()},
-        {"UInt64", makeUInt64Col, std::make_shared<DataTypeUInt64>()},
-        {"String", makeStringCol, std::make_shared<DataTypeString>()},
-        {"Nullable(UInt32)", makeNullableUInt32Col, std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>())},
-    };
-}
-
-
-// ───────────────────────── workload ─────────────────────────
-
-
-struct Workload
-{
-    size_t batch_size;
-    size_t partitions;
-    size_t columns;
-    size_t threads;
-    size_t total_rows;
-};
-
-
-struct Result
-{
-    std::string column_type;
-    size_t batch_size = 0;
-    size_t partitions = 0;
-    size_t columns = 0;
-    size_t threads = 0;
-    size_t total_rows = 0;
-    double median_ns_per_row = 0.0;
-    double total_bandwidth_gbs = 0.0;
-};
-
-
-// ───────────────────────── benchmark kernel ─────────────────────────
-
-
-uint64_t runThread(
-    const rs::PartSchema & schema,
-    const std::vector<rs::ColumnPrimitives> & primitives,
-    const std::vector<MutableColumnPtr> & columns,
-    size_t P,
-    size_t batches,
-    size_t batch_size,
-    std::vector<double> & batch_times_ns)
-{
-    rs::RadixPartitionerOptions opts;
-    opts.batch_size_override = batch_size;
-    rs::RadixPartitioner part(schema, primitives, P, {0}, opts);
-
-    uint64_t total_source_bytes = 0;
-    for (size_t b = 0; b < batches; ++b)
-    {
-        DB::Columns cols(columns.size());
-        for (size_t k = 0; k < columns.size(); ++k)
-            cols[k] = columns[k]->getPtr();
-
-        const auto t0 = std::chrono::steady_clock::now();
-        part.process(cols);
-        const auto t1 = std::chrono::steady_clock::now();
-
-        batch_times_ns.push_back(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
-
-        for (size_t k = 0; k < columns.size(); ++k)
-            total_source_bytes += columns[k]->byteSize();
-    }
-    part.finish();
-    return total_source_bytes;
-}
-
-
-Result runBenchmark(const ColumnSpec & spec, const Workload & wl)
-{
-    const size_t B = wl.batch_size;
-    const size_t P = wl.partitions;
-    const size_t K = wl.columns;
-    const size_t T = wl.threads;
-    const size_t N = wl.total_rows;
-
-    // Build schema + primitives from K copies of the same column type.
-    std::vector<DataTypePtr> types(K, spec.dtype);
-    auto sp = rs::buildSchemaAndPrimitives(types);
-
-    const size_t batches_per_thread = std::max<size_t>(1, N / (T * B));
-
-    // Build source columns per thread.
-    std::vector<std::vector<MutableColumnPtr>> cols_per_thread(T);
-    for (size_t t = 0; t < T; ++t)
-    {
-        cols_per_thread[t].resize(K);
-        for (size_t k = 0; k < K; ++k)
-            cols_per_thread[t][k] = spec.make_column(B, t * 100 + k);
-    }
-
-    std::vector<std::vector<double>> times_per_thread(T);
-    std::vector<std::atomic<uint64_t>> src_bytes_per_thread(T);
-    for (auto & s : src_bytes_per_thread)
-        s.store(0);
-
-    const auto wall_t0 = std::chrono::steady_clock::now();
-    std::vector<std::thread> threads;
-    threads.reserve(T);
-    for (size_t t = 0; t < T; ++t)
-    {
-        threads.emplace_back(
-            [&, t]()
-            {
-                times_per_thread[t].reserve(batches_per_thread);
-                const uint64_t sb = runThread(sp.schema, sp.primitives, cols_per_thread[t], P, batches_per_thread, B, times_per_thread[t]);
-                src_bytes_per_thread[t].store(sb);
-            });
-    }
-    for (auto & thr : threads)
-        thr.join();
-
-    const auto wall_t1 = std::chrono::steady_clock::now();
-    const double wall_sec = std::chrono::duration<double>(wall_t1 - wall_t0).count();
-
-    std::vector<double> all_times;
-    for (const auto & tv : times_per_thread)
-        all_times.insert(all_times.end(), tv.begin(), tv.end());
-    std::sort(all_times.begin(), all_times.end());
-
-    const double median_ns = all_times.empty() ? 0.0 : all_times[all_times.size() / 2];
-    const double median_ns_per_row = (B > 0 && K > 0) ? median_ns / static_cast<double>(B * K) : 0.0;
-
-    uint64_t total_src_bytes = 0;
-    for (const auto & s : src_bytes_per_thread)
-        total_src_bytes += s.load();
-    const double bandwidth_gbs = (wall_sec > 0) ? static_cast<double>(total_src_bytes) / wall_sec / 1e9 : 0.0;
-
-    return Result{spec.name, B, P, K, T, N, median_ns_per_row, bandwidth_gbs};
-}
-
-
-// ───────────────────────── CLI ─────────────────────────
-
-
-struct CLIConfig
-{
-    size_t total_rows = 8 * 1024 * 1024;
-    std::vector<size_t> batch_sizes = {1024, 4096, 16384};
-    std::vector<size_t> partitions_list = {4, 8, 16, 32, 64, 128, 256};
-    std::vector<size_t> columns_list = {1, 2, 4, 8};
-    std::vector<size_t> threads_list = {1, 4, 8, 16, 32, 48};
-    std::string column_type;
-    bool csv = false;
-    std::string csv_path = "bench_radix_partition.csv";
-    bool full_sweep = false;
-};
-
-
-CLIConfig parseCLI(int argc, char ** argv)
-{
-    CLIConfig cfg;
-    for (int i = 1; i < argc; ++i)
-    {
-        const std::string arg = argv[i];
-        if (arg == "--csv" && i + 1 < argc)
-        {
-            cfg.csv = true;
-            cfg.csv_path = argv[++i];
-        }
-        else if (arg == "--csv")
-        {
-            cfg.csv = true;
-        }
-        else if (arg == "--total-rows" && i + 1 < argc)
-        {
-            cfg.total_rows = std::stoull(argv[++i]);
-        }
-        else if (arg == "--batch-size" && i + 1 < argc)
-        {
-            cfg.batch_sizes = {std::stoull(argv[++i])};
-        }
-        else if (arg == "--partitions" && i + 1 < argc)
-        {
-            cfg.partitions_list = {std::stoull(argv[++i])};
-        }
-        else if (arg == "--columns" && i + 1 < argc)
-        {
-            cfg.columns_list = {std::stoull(argv[++i])};
-        }
-        else if (arg == "--threads" && i + 1 < argc)
-        {
-            cfg.threads_list = {std::stoull(argv[++i])};
-        }
-        else if (arg == "--column-type" && i + 1 < argc)
-        {
-            cfg.column_type = argv[++i];
-        }
-        else if (arg == "--full-sweep")
-        {
-            cfg.full_sweep = true;
-        }
-    }
-    return cfg;
-}
-
-
-void printHeader()
-{
-    fmt::print(
-        "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12} {:>14}\n",
-        "column_type",
-        "batch",
-        "P",
-        "K",
-        "T",
-        "total_rows",
-        "ns/row(med)",
-        "bandwidth_gbs");
-    fmt::print("{}\n", std::string(80, '-'));
-}
-
-void printResult(const Result & r)
-{
-    fmt::print(
-        "{:<18} {:>6} {:>5} {:>4} {:>4} {:>12} {:>12.2f} {:>14.2f}\n",
-        r.column_type,
-        r.batch_size,
-        r.partitions,
-        r.columns,
-        r.threads,
-        r.total_rows,
-        r.median_ns_per_row,
-        r.total_bandwidth_gbs);
+        m,
+        v.size() > 1 ? std::sqrt(var / static_cast<double>(v.size() - 1)) : 0.0,
+        v[v.size() / 2],
+        v.front(),
+        v.back()};
 }
 
 } // namespace
@@ -331,34 +192,247 @@ void printResult(const Result & r)
 
 int main(int argc, char ** argv)
 {
-    const CLIConfig cfg = parseCLI(argc, argv);
-    const std::vector<ColumnSpec> specs = buildColumnSpecs();
-    const size_t hw_threads = std::thread::hardware_concurrency();
+    int P = 64;
+    int K = 4;
+    size_t N = 100'000'000ULL;
+    size_t B = 16384;
+    int T = 16;
+    int R = 5;
 
-    printHeader();
-
-    for (const auto & spec : specs)
+    for (int i = 1; i < argc; ++i)
     {
-        if (!cfg.column_type.empty() && spec.name != cfg.column_type)
-            continue;
-
-        for (const size_t batch : cfg.batch_sizes)
+        const std::string a = argv[i];
+        if (a == "--partitions" && i + 1 < argc)
+            P = std::stoi(argv[++i]);
+        else if (a == "--columns" && i + 1 < argc)
+            K = std::stoi(argv[++i]);
+        else if (a == "--rows" && i + 1 < argc)
+            N = std::stoull(argv[++i]);
+        else if (a == "--block-rows" && i + 1 < argc)
+            B = std::stoull(argv[++i]);
+        else if (a == "--threads" && i + 1 < argc)
+            T = std::stoi(argv[++i]);
+        else if (a == "--reps" && i + 1 < argc)
+            R = std::stoi(argv[++i]);
+        else
         {
-            for (const size_t P : cfg.partitions_list)
-            {
-                for (const size_t K : cfg.columns_list)
-                {
-                    for (const size_t T : cfg.threads_list)
-                    {
-                        if (T > hw_threads && !cfg.full_sweep)
-                            continue;
-                        const Workload wl{batch, P, K, T, cfg.total_rows};
-                        printResult(runBenchmark(spec, wl));
-                    }
-                }
-            }
+            fmt::print(stderr, "unknown arg: {}\n", argv[i]);
+            return 1;
         }
     }
 
+    if (P < 1 || P > kMaxP || (P & (P - 1)))
+    {
+        fmt::print(stderr, "P must be power-of-2 in [1,{}]\n", kMaxP);
+        return 1;
+    }
+    if (K < 1 || K > kMaxKArg)
+    {
+        fmt::print(stderr, "K must be in [1,{}]\n", kMaxKArg);
+        return 1;
+    }
+    if (T < 1 || R < 1 || B < 8u)
+    {
+        fmt::print(stderr, "T,R >= 1  B >= 8\n");
+        return 1;
+    }
+
+    const int batch = std::max(1024, std::min(RadixPartitionOperator<uint64_t>::kSmartMaxBatch, P * RadixPartitionOperator<uint64_t>::kBatchFactor));
+    const size_t rpt = (N + static_cast<size_t>(T) - 1) / static_cast<size_t>(T);
+    const size_t total = rpt * static_cast<size_t>(T);
+
+    const auto cap_pair = adaptiveCaps(rpt, static_cast<size_t>(P));
+    const size_t cap_init = cap_pair.first;
+    const size_t cap_max = cap_pair.second;
+
+    fmt::print("bench_radix_partition\n");
+    fmt::print("  partitions={:<6}  columns={:<2}  rows={:<12}\n", P, K, N);
+    fmt::print("  block-rows={:<6}  threads={:<3}  reps={}\n", B, T, R);
+    fmt::print("  rows/thread={}  total={}\n", rpt, total);
+    fmt::print(
+        "  data/thread = {:.1f} MiB  ({} cols \xc3\x97 {} rows \xc3\x97 8 B)\n",
+        static_cast<double>(K) * static_cast<double>(rpt) * 8.0 / (1 << 20),
+        K,
+        rpt);
+    fmt::print("  batch_size  = {}\n", batch);
+    fmt::print(
+        "  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n",
+        cap_init,
+        cap_max,
+        rpt / static_cast<size_t>(P));
+    fmt::print(
+        "  radix mode  = {}\n",
+        RadixPartitionOperator<uint64_t>::should_use_swwc(K, P) ? "SWWC (NT stores)" : "direct");
+    if (B < static_cast<size_t>(batch))
+        fmt::print("  [warn] block-rows {} < batch_size {} -> scalar path only\n", B, batch);
+    fmt::print("\n");
+
+    // ── generate input streams ────────────────────────────────────────────────
+    fmt::print("Generating {} streams \xc3\x97 {} blocks each...\n", T, (rpt + B - 1) / B);
+    const auto tg0 = Clk::now();
+    std::vector<std::vector<InputBlockU64>> streams(static_cast<size_t>(T));
+    for (int t = 0; t < T; ++t)
+        streams[static_cast<size_t>(t)] = genBlocks(rpt, B, K, 42ULL + static_cast<uint64_t>(t));
+    fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
+
+    // ── arenas + output state — reset() between reps for warm-page reuse ─────
+    // 64 MiB initial slab: at most a handful of allocations in rep 0.
+    // From rep 1 onward reset() rewinds to the same warm physical pages so
+    // both variants pay identical allocation and page-fault cost.
+    std::vector<BumpArena> mc_arenas;
+    std::vector<BumpArena> rd_arenas;
+    mc_arenas.reserve(static_cast<size_t>(T));
+    rd_arenas.reserve(static_cast<size_t>(T));
+    for (int t = 0; t < T; ++t)
+    {
+        mc_arenas.emplace_back(64ULL << 20);
+        rd_arenas.emplace_back(64ULL << 20);
+    }
+
+    std::vector<PartState> mc_parts(static_cast<size_t>(T));
+    std::vector<std::vector<PartState>> parts(static_cast<size_t>(T));
+
+    // GB/s = gbs_k / ns_per_row  (factor of 2 for read + write)
+    const double gbs_k = 2.0 * static_cast<double>(K) * 8.0;
+
+    std::vector<double> mc_ns(static_cast<size_t>(R));
+    std::vector<double> rd_ns(static_cast<size_t>(R));
+
+    // ── benchmark ─────────────────────────────────────────────────────────────
+    fmt::print("{:<4}  {:>12}  {:>12}  {:>6}\n", "rep", "memcpy ns/row", "radix ns/row", "ratio");
+    fmt::print("----  ------------  ------------  ------\n");
+
+    for (int rep = 0; rep < R; ++rep)
+    {
+        // ── memcpy ────────────────────────────────────────────────────────────
+        {
+            for (int t = 0; t < T; ++t)
+            {
+                mc_parts[static_cast<size_t>(t)] = {};
+                mc_arenas[static_cast<size_t>(t)].reset();
+            }
+            const auto t0 = Clk::now();
+            std::vector<std::thread> ths;
+            ths.reserve(static_cast<size_t>(T));
+            for (int t = 0; t < T; ++t)
+                ths.emplace_back(
+                    [&, t]()
+                    {
+                        pinThread(t);
+                        runMemcpy(
+                            streams[static_cast<size_t>(t)],
+                            K,
+                            mc_parts[static_cast<size_t>(t)],
+                            mc_arenas[static_cast<size_t>(t)],
+                            cap_init,
+                            cap_max);
+                    });
+            for (auto & th : ths)
+                th.join();
+            mc_ns[static_cast<size_t>(rep)]
+                = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9
+                / static_cast<double>(total);
+        }
+
+        // ── radix ─────────────────────────────────────────────────────────────
+        {
+            for (int t = 0; t < T; ++t)
+            {
+                parts[static_cast<size_t>(t)].clear();
+                rd_arenas[static_cast<size_t>(t)].reset();
+            }
+            const auto t0 = Clk::now();
+            std::vector<std::thread> ths;
+            ths.reserve(static_cast<size_t>(T));
+            for (int t = 0; t < T; ++t)
+                ths.emplace_back(
+                    [&, t]()
+                    {
+                        pinThread(t);
+                        runSmartRadix(
+                            streams[static_cast<size_t>(t)],
+                            K,
+                            P,
+                            parts[static_cast<size_t>(t)],
+                            rd_arenas[static_cast<size_t>(t)],
+                            cap_init,
+                            cap_max);
+                    });
+            for (auto & th : ths)
+                th.join();
+            rd_ns[static_cast<size_t>(rep)]
+                = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9
+                / static_cast<double>(total);
+        }
+
+        fmt::print(
+            "{:<4}  {:>12.3f}  {:>12.3f}  {:>5.2f}x\n",
+            rep,
+            mc_ns[static_cast<size_t>(rep)],
+            rd_ns[static_cast<size_t>(rep)],
+            rd_ns[static_cast<size_t>(rep)] / mc_ns[static_cast<size_t>(rep)]);
+        (void)std::fflush(stdout);
+    }
+
+    // ── arena sanity check ────────────────────────────────────────────────────
+    const size_t expected_data = rpt * static_cast<size_t>(K) * 8;
+    fmt::print("\nArena usage after last rep (thread 0):\n");
+    fmt::print(
+        "  expected data  = {:>7.1f} MiB  ({} rows \xc3\x97 {} cols \xc3\x97 8 B)\n",
+        static_cast<double>(expected_data) / 1048576.0,
+        rpt,
+        K);
+    fmt::print(
+        "  memcpy  used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
+        static_cast<double>(mc_arenas[0].usedBytes()) / 1048576.0,
+        static_cast<double>(mc_arenas[0].allocatedBytes()) / 1048576.0);
+    fmt::print(
+        "  radix   used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
+        static_cast<double>(rd_arenas[0].usedBytes()) / 1048576.0,
+        static_cast<double>(rd_arenas[0].allocatedBytes()) / 1048576.0);
+    fmt::print("  (used > expected by OutBlock headers and partial-block waste)\n");
+
+    // ── summary ───────────────────────────────────────────────────────────────
+    const auto mc = computeStats(mc_ns);
+    const auto rd = computeStats(rd_ns);
+
+    fmt::print("\nSummary (agg = wall_ns/total_rows;  per-thr = agg\xc3\x97T;  GB/s = R+W)\n");
+    fmt::print(
+        "{:<8}  {:>8}  {:>8}  {:>8}  {:>5}  {:>8}  {:>8}\n",
+        "variant",
+        "agg-min",
+        "agg-p50",
+        "agg-mean",
+        "cv%",
+        "GB/s",
+        "per-thr");
+    fmt::print("--------  --------  --------  --------  -----  --------  --------\n");
+
+    auto print_row = [&](const char * label, const Stats & s)
+    {
+        fmt::print(
+            "{:<8}  {:>8.3f}  {:>8.3f}  {:>8.3f}  {:>4.1f}%  {:>8.1f}  {:>8.1f}\n",
+            label,
+            s.pmin,
+            s.p50,
+            s.mean,
+            s.mean > 0 ? 100.0 * s.stddev / s.mean : 0.0,
+            gbs_k / s.pmin,
+            s.pmin * static_cast<double>(T));
+    };
+    print_row("memcpy", mc);
+    print_row("radix", rd);
+
+    fmt::print(
+        "\nOverhead (radix / memcpy):  best={:.3f}x  mean={:.3f}x"
+        "  (per-thread: {:.1f} vs {:.1f} ns/row)\n",
+        rd.pmin / mc.pmin,
+        rd.mean / mc.mean,
+        rd.pmin * static_cast<double>(T),
+        mc.pmin * static_cast<double>(T));
+
+    // ── cleanup ───────────────────────────────────────────────────────────────
+    for (int t = 0; t < T; ++t)
+        freeBlocks(streams[static_cast<size_t>(t)], K);
     return 0;
 }
