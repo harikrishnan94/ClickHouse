@@ -311,16 +311,10 @@ int main(int argc, char ** argv)
         streams[static_cast<size_t>(t)] = genBlocks(rpt, B, K, 42ULL + static_cast<uint64_t>(t));
     fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
 
-    // ── memcpy arena + output state — reset() between reps for warm-page reuse ──
-    // The radix variant owns an Allocator inside RadixPartitionOperator and
-    // allocates fresh chunks per repetition.
-    std::vector<BumpArena> mc_arenas;
-    mc_arenas.reserve(static_cast<size_t>(T));
-    for (int t = 0; t < T; ++t)
-        mc_arenas.emplace_back(kArenaSlabBytes);
-
     std::vector<PartState> mc_parts(static_cast<size_t>(T));
     std::vector<RadixBenchStats> rd_stats(static_cast<size_t>(T));
+    uint64_t mc_used_bytes = 0;
+    uint64_t mc_allocated_bytes = 0;
 
     // GB/s = gbs_k / ns_per_row  (factor of 2 for read + write)
     const double gbs_k = 2.0 * static_cast<double>(K) * 8.0;
@@ -336,11 +330,13 @@ int main(int argc, char ** argv)
     {
         // ── memcpy ────────────────────────────────────────────────────────────
         {
+            std::vector<BumpArena> mc_arenas;
+            mc_arenas.reserve(static_cast<size_t>(T));
             for (int t = 0; t < T; ++t)
-            {
+                mc_arenas.emplace_back(kArenaSlabBytes);
+
+            for (int t = 0; t < T; ++t)
                 mc_parts[static_cast<size_t>(t)] = {};
-                mc_arenas[static_cast<size_t>(t)].reset();
-            }
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(T));
@@ -362,6 +358,8 @@ int main(int argc, char ** argv)
             for (auto & th : ths)
                 th.join();
             mc_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
+            mc_used_bytes = mc_arenas[0].usedBytes();
+            mc_allocated_bytes = mc_arenas[0].allocatedBytes();
         }
 
         // ── radix ─────────────────────────────────────────────────────────────
@@ -404,8 +402,8 @@ int main(int argc, char ** argv)
         K);
     fmt::print(
         "  memcpy  used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
-        static_cast<double>(mc_arenas[0].usedBytes()) / 1048576.0,
-        static_cast<double>(mc_arenas[0].allocatedBytes()) / 1048576.0);
+        static_cast<double>(mc_used_bytes) / 1048576.0,
+        static_cast<double>(mc_allocated_bytes) / 1048576.0);
     fmt::print(
         "  radix   used   = {:>7.1f} MiB  alloc = {:.1f} MiB\n",
         static_cast<double>(rd_stats[0].reserved_bytes) / 1048576.0,

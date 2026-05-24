@@ -81,6 +81,16 @@ private:
     std::vector<uint64_t> stale_bitset_;
     std::vector<uint32_t> pos_; ///< SWWC staging slot per row.
     std::vector<uint8_t> cnt_; ///< SWWC staging slot counter per partition (0..7).
+
+    uint64_t debug_rows_ = 0;
+    uint64_t debug_batches_ = 0;
+    uint64_t debug_hash_ns_ = 0;
+    uint64_t debug_hist_ns_ = 0;
+    uint64_t debug_reserve_ns_ = 0;
+    uint64_t debug_stale_ns_ = 0;
+    uint64_t debug_scatter_ns_ = 0;
+    uint64_t debug_stale_partitions_ = 0;
+    uint64_t debug_drain_events_ = 0;
 };
 
 /// Explicit instantiation declarations.
