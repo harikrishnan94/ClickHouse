@@ -77,7 +77,7 @@ private:
     int K_;
     bool use_swwc_;
     int batch_;
-    uint64_t mask_; ///< P − 1 (P must be a power of two).
+    uint32_t mask_; ///< P − 1 (P must be a power of two).
     size_t max_cap_;
 
     std::vector<IScatterColumn *> cols_;
