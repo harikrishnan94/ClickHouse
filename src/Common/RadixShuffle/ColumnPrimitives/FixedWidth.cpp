@@ -437,11 +437,18 @@ void hashFixedString(
 }
 
 // ── NT-flush helpers for SWWC ─────────────────────────────────────────────────
-// flushStagedNT / flushStagedScalar          — typed T*&  (NumericScatterColumn)
-// flushStagedNTInPlace / flushStagedScalarInPlace — void*& (raw scatter path)
+// Each flush writes exactly 64 bytes (one cache line) regardless of T's size.
+// kSlotsPerFlush<T> = 64 / sizeof(T): number of T-elements per flush.
 //
-// The InPlace variants pass the reference directly into fixed_ptrs[p] so the
-// pointer updates in-place without a separate load-cast-store sequence.
+//   sizeof=8  (uint64) → 8 slots    sizeof=4 (uint32) → 16 slots
+//   sizeof=2  (uint16) → 32 slots   sizeof=1 (uint8)  → 64 slots
+//   sizeof=16 (UUID)   → 4 slots    sizeof=32 (u256)  → 2 slots
+//
+// flushStagedNT/Scalar       — typed T*&  (NumericScatterColumn compat)
+// flushStagedNTInPlace/…     — void*&     (raw scatter path, in-place update)
+
+template <typename T>
+static constexpr size_t kSlotsPerFlush = 64 / sizeof(T);
 
 #if USE_MULTITARGET_CODE
 
@@ -449,45 +456,64 @@ DECLARE_X86_64_V4_SPECIFIC_CODE(
 
     template <typename T> inline void flushStagedNT(const T * staging_p, T *& out_p) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     {
-        if constexpr (sizeof(T) == 8)
-            _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
-        else
-            for (int i = 0; i < 8; ++i)
-                out_p[i] = staging_p[i];
-        out_p += 8;
+        _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
+        out_p += kSlotsPerFlush<T>;
     }
 
     template <typename T>
     inline void flushStagedNTInPlace(const T * staging_p, void *& out_void) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     {
         T * out_p = static_cast<T *>(out_void);
-        if constexpr (sizeof(T) == 8)
-            _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
-        else
-            for (int i = 0; i < 8; ++i)
-                out_p[i] = staging_p[i];
-        out_void = out_p + 8;
+        _mm512_stream_si512(reinterpret_cast<__m512i *>(out_p), _mm512_load_si512(reinterpret_cast<const __m512i *>(staging_p)));
+        out_void = out_p + kSlotsPerFlush<T>;
     }
 
     ) // DECLARE_X86_64_V4_SPECIFIC_CODE
+
+
+DECLARE_X86_64_V3_SPECIFIC_CODE(
+
+    template <typename T> inline void flushStagedNT(const T * staging_p, T *& out_p) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    {
+        const auto * s = reinterpret_cast<const __m256i *>(staging_p);
+        auto * d = reinterpret_cast<__m256i *>(out_p);
+        _mm256_stream_si256(d, _mm256_load_si256(s));
+        _mm256_stream_si256(d + 1, _mm256_load_si256(s + 1));
+        out_p += kSlotsPerFlush<T>;
+    }
+
+    template <typename T>
+    inline void flushStagedNTInPlace(const T * staging_p, void *& out_void) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    {
+        T * out_p = static_cast<T *>(out_void);
+        const auto * s = reinterpret_cast<const __m256i *>(staging_p);
+        auto * d = reinterpret_cast<__m256i *>(out_p);
+        _mm256_stream_si256(d, _mm256_load_si256(s));
+        _mm256_stream_si256(d + 1, _mm256_load_si256(s + 1));
+        out_void = out_p + kSlotsPerFlush<T>;
+    }
+
+    ) // DECLARE_X86_64_V3_SPECIFIC_CODE
 
 #endif // USE_MULTITARGET_CODE
 
 template <typename T>
 [[gnu::always_inline]] inline void flushStagedScalar(const T * staging_p, T *& out_p)
 {
-    for (int i = 0; i < 8; ++i)
+    constexpr size_t S = kSlotsPerFlush<T>;
+    for (size_t i = 0; i < S; ++i)
         out_p[i] = staging_p[i];
-    out_p += 8;
+    out_p += S;
 }
 
 template <typename T>
 [[gnu::always_inline]] inline void flushStagedScalarInPlace(const T * staging_p, void *& out_void)
 {
     T * out_p = static_cast<T *>(out_void);
-    for (int i = 0; i < 8; ++i)
+    constexpr size_t S = kSlotsPerFlush<T>;
+    for (size_t i = 0; i < S; ++i)
         out_p[i] = staging_p[i];
-    out_void = out_p + 8;
+    out_void = out_p + S;
 }
 
 
@@ -511,35 +537,23 @@ void computePidsFixed(const ColumnPrimitives & /*self*/, const IColumn & src_, s
 // the primary regression vs. the baseline IScatterColumn path.
 
 /// Direct scatter: reads IColumn[offset..offset+n), writes via raw_write_ptrs[p].
+///
+/// raw_write_ptrs is a persistent per-partition write-pointer array, refreshed
+/// only when on_grow_raw allocates a new OutBlock for a partition.  Between
+/// refreshes the pointers are advanced here, exactly as `UInt64Column::out_[]`
+/// is advanced by `scatter_direct` in the reference implementation.
+///
+/// The array is allocated as T*[] and viewed through void** in ScatterState
+/// (type erasure).  `reinterpret_cast<T**>` restores the original type so the
+/// hot loop is verbatim `*wp[pids[j]]++ = src[j]` — no per-row cast, no
+/// copy-in/copy-out, matching the reference pattern exactly.
 template <typename T>
 [[gnu::hot]] void scatterRawFixed(const IColumn & src_, size_t offset, const uint32_t * pids, int n, ScatterState & state)
 {
     const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
-    // raw_write_ptrs is a plain void** — loaded once into a callee-saved register,
-    // no vector.data() double-indirection in the hot loop.
-    void ** wp = state.raw_write_ptrs;
-    const size_t partitions = state.fixed_ptrs.size();
-
-    if (partitions <= SCATTER_STACK_PTRS)
-    {
-        T * ptrs[SCATTER_STACK_PTRS];
-        for (size_t p = 0; p < partitions; ++p)
-            ptrs[p] = static_cast<T *>(wp[p]);
-        for (int j = 0; j < n; ++j)
-            *ptrs[pids[j]]++ = src[j];
-        for (size_t p = 0; p < partitions; ++p)
-            wp[p] = ptrs[p]; // T* → void* implicit
-    }
-    else
-    {
-        for (int j = 0; j < n; ++j)
-        {
-            const uint32_t p = pids[j];
-            T * out = static_cast<T *>(wp[p]);
-            *out++ = src[j];
-            wp[p] = out; // T* → void* implicit
-        }
-    }
+    T ** wp = reinterpret_cast<T **>(state.raw_write_ptrs); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    for (int j = 0; j < n; ++j)
+        *wp[pids[j]]++ = src[j];
 }
 
 
@@ -561,41 +575,32 @@ template <typename T>
 [[gnu::hot]] void
 scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state)
 {
+    // staging is pre-allocated by on_grow_raw — no lazy-init guard here.
+    // kSlotsPerFlush<T> = 64/sizeof(T): flush exactly one 64-byte cache line.
+    constexpr size_t S = kSlotsPerFlush<T>;
+    constexpr uint32_t flush_trigger = static_cast<uint32_t>(S) - 1;
+
     const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
 
-    if (!state.swwc_staging_initialized)
-    {
-        const size_t partitions = state.fixed_ptrs.size();
-        if (posix_memalign(reinterpret_cast<void **>(&state.swwc_staging), 64, partitions * 8 * sizeof(T)) != 0)
-            throw std::bad_alloc{};
-        std::memset(state.swwc_staging, 0, partitions * 8 * sizeof(T));
-        state.swwc_staging_initialized = true;
-    }
-
-    // Access staging and raw_write_ptrs via state in the loop body — don't preload
-    // them into named variables before the loop.  The compiler then keeps `state`
-    // (= r9 → one callee-saved register) as the base pointer for both arrays,
-    // exactly mirroring the baseline's `this` (r12) that gave access to both
-    // `staging_` and `out_[]` via member offsets.  This frees two callee-saved
-    // registers (previously consumed by a pre-loaded staging pointer and a
-    // pre-loaded wp pointer) so that pids and positions can stay in registers
-    // instead of being spilled to the stack.
+    // Access staging and raw_write_ptrs via state in the loop body so the
+    // compiler keeps `state` in one callee-saved register — same pattern as the
+    // baseline's `this` giving access to `staging_` and `out_[]` via offsets.
     for (int j = 0; j < n; ++j)
     {
         const uint32_t p = pids[j];
         const uint32_t slot = positions[j];
-        reinterpret_cast<T *>(state.swwc_staging)[static_cast<size_t>(p) * 8 + slot] = src[j];
-        if (slot == 7)
+        reinterpret_cast<T *>(state.swwc_staging)[p * S + slot] = src[j];
+        if (slot == flush_trigger)
         {
-            // state.raw_write_ptrs[p] is void*& — updated in-place by flush.
 #if USE_MULTITARGET_CODE
             if (isArchSupported(TargetArch::x86_64_v4))
-                TargetSpecific::x86_64_v4::flushStagedNTInPlace(
-                    reinterpret_cast<T *>(state.swwc_staging) + static_cast<size_t>(p) * 8, state.raw_write_ptrs[p]);
+                TargetSpecific::x86_64_v4::flushStagedNTInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
+            else if (isArchSupported(TargetArch::x86_64_v3))
+                TargetSpecific::x86_64_v3::flushStagedNTInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
             else
-                flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + static_cast<size_t>(p) * 8, state.raw_write_ptrs[p]);
+                flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
 #else
-            flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + static_cast<size_t>(p) * 8, state.raw_write_ptrs[p]);
+            flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
 #endif
         }
     }
@@ -606,27 +611,37 @@ scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, 
 template <typename T>
 void drainRawFixed(size_t p, uint32_t cnt, ScatterState & state)
 {
-    if (!state.swwc_staging_initialized || cnt == 0)
+    if (state.swwc_staging == nullptr || cnt == 0)
         return;
-    const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * 8;
-    T * dst = static_cast<T *>(state.raw_write_ptrs[p]);
+    constexpr size_t S = kSlotsPerFlush<T>;
+    const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * S;
+    T ** wp = reinterpret_cast<T **>(state.raw_write_ptrs); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    T * dst = wp[p];
     for (uint32_t i = 0; i < cnt; ++i)
         dst[i] = s[i];
-    state.raw_write_ptrs[p] = dst + cnt; // T* → void* implicit
+    wp[p] = dst + cnt;
 }
 
 
 /// Update the write pointer for partition `p` when a new output block is
-/// allocated.  Initializes raw_write_ptrs lazily on the first call.
+/// allocated.  On the first call, also pre-allocates `raw_write_ptrs` and
+/// `swwc_staging` so that `scatterRawSwwcFixed` needs no lazy-init guard.
+///
+/// Staging layout: P partitions × kSlotsPerFlush<T> × sizeof(T) = P × 64 bytes
+/// (always one 64-byte cache line per partition, independent of T).
 template <typename T>
 void onGrowRawFixed(size_t p, void * col_base, ScatterState & state)
 {
     if (state.raw_write_ptrs == nullptr)
     {
-        // Lazily allocate; calloc so unused slots are null-safe.
-        state.raw_write_ptrs = static_cast<void **>(std::calloc(state.fixed_ptrs.size(), sizeof(void *)));
+        const size_t P = state.fixed_ptrs.size();
+        state.raw_write_ptrs = static_cast<void **>(std::calloc(P, sizeof(void *)));
         if (!state.raw_write_ptrs)
             throw std::bad_alloc{};
+        // One 64-byte cache line per partition, 64-byte aligned for NT stores.
+        if (posix_memalign(reinterpret_cast<void **>(&state.swwc_staging), 64, P * 64) != 0)
+            throw std::bad_alloc{};
+        std::memset(state.swwc_staging, 0, P * 64);
     }
     state.raw_write_ptrs[p] = col_base;
 }

@@ -133,11 +133,10 @@ struct ScatterState
     /// Lazily allocated by `on_grow_raw` on the first call.
     void ** raw_write_ptrs = nullptr;
 
-    /// SWWC staging buffer for `scatter_raw_swwc`.  Lazily allocated on the
-    /// first `scatter_raw_swwc` call; layout is [P × 8 × elem_size],
-    /// 64-byte aligned so that NT stores can address it.
+    /// SWWC staging buffer — P partitions × 64 bytes each (one cache line per
+    /// partition regardless of element type).  Pre-allocated by `on_grow_raw`
+    /// on the first call so `scatter_raw_swwc` needs no lazy-init guard.
     char * swwc_staging = nullptr;
-    bool swwc_staging_initialized = false;
 
     explicit ScatterState(size_t P)
         : fixed_ptrs(P, nullptr)
@@ -155,7 +154,6 @@ struct ScatterState
         , initialized(other.initialized)
         , raw_write_ptrs(other.raw_write_ptrs)
         , swwc_staging(other.swwc_staging)
-        , swwc_staging_initialized(other.swwc_staging_initialized)
     {
         other.raw_write_ptrs = nullptr;
         other.swwc_staging = nullptr;
@@ -174,7 +172,6 @@ struct ScatterState
             initialized = other.initialized;
             raw_write_ptrs = other.raw_write_ptrs;
             swwc_staging = other.swwc_staging;
-            swwc_staging_initialized = other.swwc_staging_initialized;
             other.raw_write_ptrs = nullptr;
             other.swwc_staging = nullptr;
         }

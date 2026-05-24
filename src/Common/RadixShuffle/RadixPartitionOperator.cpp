@@ -102,6 +102,9 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
     if (use_swwc_)
     {
         // ── Phase 4a: compute staging slots (shared across columns) ───────
+        // Wrap at kSlotsPerFlush<TKey> = 64/sizeof(TKey): one cache line per
+        // partition regardless of key element size.
+        constexpr uint8_t kSlotMask = static_cast<uint8_t>(64 / sizeof(TKey)) - 1;
         uint32_t * pos = pos_.data();
         uint8_t * cnt = cnt_.data();
         for (int j = 0; j < n; ++j)
@@ -109,7 +112,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
             const uint32_t p = pids[j];
             const uint32_t slot = cnt[p];
             pos[j] = slot;
-            cnt[p] = static_cast<uint8_t>((slot + 1) & 7);
+            cnt[p] = static_cast<uint8_t>((slot + 1) & kSlotMask);
         }
         // ── Phase 4b: SWWC scatter per column ─────────────────────────────
         for (int k = 0; k < K_; ++k)
