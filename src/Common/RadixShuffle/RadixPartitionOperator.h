@@ -14,6 +14,16 @@
 namespace DB::RadixShuffle
 {
 
+/// Describes how to extract a physical sub-column from a logical column.
+/// Used by `RadixPartitionOperator` when expanding Nullable columns into
+/// separate null-map and value primitives.
+struct PhysColInfo
+{
+    size_t logical_k;
+    bool use_null_map; ///< Extract getNullMapColumn() from ColumnNullable
+    bool use_nested;   ///< Extract getNestedColumn() from ColumnNullable
+};
+
 /// Single-pass radix partition operator, templated over the key element type.
 ///
 /// Port of `PartitionOperatorV` from `radix_part_vs_memcpy.cpp`, generalized
@@ -43,8 +53,12 @@ public:
     /// True iff SWWC NT-store scatter is preferred for (K, P).
     static bool should_use_swwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
 
-    /// `prims`    — K `ColumnPrimitives` objects (must have `scatter_raw`,
-    ///              `scatter_raw_swwc`, `drain_raw`, and `on_grow_raw` set).
+    /// `prims`    — K logical `ColumnPrimitives` objects.  Nullable primitives
+    ///              (those with a non-null `nested` that has `scatter_raw`) are
+    ///              automatically decomposed into two physical primitives:
+    ///              makeFixedWidth<uint8_t>() for the null map and the nested
+    ///              leaf primitive for the values.  All other types are passed
+    ///              through directly.
     /// `arena`    — bump allocator for OutBlock storage; must outlive this object.
     /// `use_swwc` — select SWWC scatter path; use `should_use_swwc(K,P)` as hint.
     /// `init_cap` — initial OutBlock row capacity (must be a multiple of 8).
@@ -76,26 +90,28 @@ private:
     void runBatch(const DB::Columns & columns, size_t start, int n);
 
     int P_;
-    int K_;
+    int K_;       ///< Logical column count (as provided by the caller).
+    int K_phys_;  ///< Physical column count; ≥ K_ when Nullable columns are expanded.
     bool use_swwc_;
     int batch_;
     uint32_t mask_; ///< P − 1 (P must be a power of two).
     size_t max_cap_;
 
-    std::vector<ColumnPrimitives> col_prims_;
-    std::vector<ScatterState> scatter_states_;
+    std::vector<ColumnPrimitives> col_prims_;  ///< K_ logical prims (Phase 1: compute_pids only).
+    std::vector<ColumnPrimitives> phys_prims_; ///< K_phys_ physical prims (Phase 3-4: scatter).
+    std::vector<PhysColInfo> phys_col_info_;   ///< K_phys_ sub-column extraction descriptors.
+    std::vector<ScatterState> scatter_states_; ///< K_phys_ ScatterState objects.
     std::vector<PartState> parts_;
     BumpArena & arena_;
 
-    /// Per-column raw element sizes for OutBlock allocation.
-    /// elem_sizes_[k] = col_prims_[k].raw_elem_size; set in constructor.
+    /// Per-physical-column element sizes for OutBlock allocation.
     std::vector<size_t> elem_sizes_;
 
     /// Per-batch scratch arrays (size == batch_).
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> hist_;
     std::vector<uint32_t> pos_; ///< SWWC staging slot per row.
-    std::vector<uint8_t> cnt_; ///< SWWC staging slot counter per partition (0..7).
+    std::vector<uint8_t> cnt_; ///< SWWC staging fill counter; wraps at 64/sizeof(TKey).
 };
 
 /// Explicit instantiation declarations.

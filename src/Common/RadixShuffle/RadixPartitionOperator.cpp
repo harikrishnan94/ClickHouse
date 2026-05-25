@@ -1,7 +1,10 @@
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
 
+#include <Columns/ColumnNullable.h>
 #include <Columns/IColumn.h>
 #include <Common/RadixShuffle/ColumnPrimitives.h>
+#include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
+#include <base/types.h>
 
 #if defined(__x86_64__)
 #    include <immintrin.h>
@@ -33,19 +36,59 @@ RadixPartitionOperator<TKey>::RadixPartitionOperator(
     , pos_(static_cast<size_t>(batch_))
     , cnt_(static_cast<size_t>(P), 0)
 {
-    // Construct one ScatterState per column, each sized to P partitions.
-    scatter_states_.reserve(static_cast<size_t>(K_));
+    // Build physical column table.
+    // Nullable primitives (nested != null && nested has scatter_raw) are expanded
+    // into two physical leaf primitives:
+    //   - makeFixedWidth<uint8_t>()  for the null map    (1 B/row, always direct scatter)
+    //   - *prim.nested               for the values      (full SWWC path via leaf primitive)
+    //
+    // This eliminates scatterRawNullable entirely — each physical primitive calls
+    // the standard scatterRawSwwcFixed<T> directly on a plain ColumnVector sub-column,
+    // matching the baseline UInt64Column::scatter_staged pattern exactly.
     for (int k = 0; k < K_; ++k)
+    {
+        const ColumnPrimitives & prim = col_prims_[static_cast<size_t>(k)];
+        const bool expandable = prim.nested != nullptr && prim.nested->scatter_raw != nullptr;
+        if (expandable)
+        {
+            phys_prims_.push_back(makeFixedWidth<UInt8>()); // UInt8=char8_t, has explicit instantiation
+            phys_col_info_.push_back({static_cast<size_t>(k), true, false});
+
+            phys_prims_.push_back(*prim.nested);
+            phys_col_info_.push_back({static_cast<size_t>(k), false, true});
+        }
+        else
+        {
+            phys_prims_.push_back(prim);
+            phys_col_info_.push_back({static_cast<size_t>(k), false, false});
+        }
+    }
+    K_phys_ = static_cast<int>(phys_prims_.size());
+
+    // ScatterState and elem_sizes are per physical column.
+    scatter_states_.reserve(static_cast<size_t>(K_phys_));
+    for (int k = 0; k < K_phys_; ++k)
         scatter_states_.emplace_back(static_cast<size_t>(P_));
 
-    // Build per-column element-size table for OutBlock allocation.
-    elem_sizes_.resize(static_cast<size_t>(K_));
-    for (int k = 0; k < K_; ++k)
-        elem_sizes_[static_cast<size_t>(k)] = col_prims_[static_cast<size_t>(k)].raw_elem_size;
+    elem_sizes_.resize(static_cast<size_t>(K_phys_));
+    for (int k = 0; k < K_phys_; ++k)
+        elem_sizes_[static_cast<size_t>(k)] = phys_prims_[static_cast<size_t>(k)].raw_elem_size;
 
     parts_.assign(static_cast<size_t>(P), {});
     for (auto & ps : parts_)
         ps.next_cap = init_cap;
+}
+
+
+/// Extract the sub-column for a physical primitive from the logical block.
+static const IColumn & extractPhysCol(const DB::Columns & columns, const PhysColInfo & info)
+{
+    const IColumn & col = *columns[info.logical_k];
+    if (info.use_null_map)
+        return assert_cast<const ColumnNullable &>(col).getNullMapColumn();
+    if (info.use_nested)
+        return assert_cast<const ColumnNullable &>(col).getNestedColumn();
+    return col;
 }
 
 
@@ -70,9 +113,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
     uint32_t * pids = pids_.data();
     uint32_t * hist = hist_.data();
 
-    // ── Phase 1: compute partition IDs in one SIMD pass ──────────────────────
-    // compute_pids does pids[j] = hash(keys[j]) & mask_ — same as the baseline
-    // hashBatch32 call but dispatched through a function pointer.
+    // ── Phase 1: compute partition IDs from the first LOGICAL column ──────────
     col_prims_[0].compute_pids(col_prims_[0], *columns[0], start, n, mask_, pids);
 
     // ── Phase 2: histogram ────────────────────────────────────────────────
@@ -80,7 +121,7 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
     for (int j = 0; j < n; ++j)
         hist[pids[j]]++;
 
-    // ── Phase 3: pre-grow + notify columns + pre-commit ───────────────────
+    // ── Phase 3: pre-grow + notify PHYSICAL columns + pre-commit ─────────────
     for (int p = 0; p < P_; ++p)
     {
         if (!hist[p])
@@ -88,35 +129,32 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         auto & ps = parts_[static_cast<size_t>(p)];
         if (!ps.cur || ps.cur->filled + hist[p] > ps.cur->capacity)
         {
-            // Drain any staged rows into the current block before growing.
             if (use_swwc_ && ps.cur && cnt_[static_cast<size_t>(p)])
             {
-                for (int k = 0; k < K_; ++k)
-                    if (col_prims_[static_cast<size_t>(k)].drain_raw)
-                        col_prims_[static_cast<size_t>(k)].drain_raw(
-                            col_prims_[static_cast<size_t>(k)],
+                for (int k = 0; k < K_phys_; ++k)
+                    if (phys_prims_[static_cast<size_t>(k)].drain_raw)
+                        phys_prims_[static_cast<size_t>(k)].drain_raw(
+                            phys_prims_[static_cast<size_t>(k)],
                             static_cast<size_t>(p),
                             cnt_[static_cast<size_t>(p)],
                             scatter_states_[static_cast<size_t>(k)]);
                 cnt_[static_cast<size_t>(p)] = 0;
             }
-            growPart(ps, arena_, K_, elem_sizes_.data(), max_cap_);
-            for (int k = 0; k < K_; ++k)
-                col_prims_[static_cast<size_t>(k)].on_grow_raw(
-                    col_prims_[static_cast<size_t>(k)],
+            growPart(ps, arena_, K_phys_, elem_sizes_.data(), max_cap_);
+            for (int k = 0; k < K_phys_; ++k)
+                phys_prims_[static_cast<size_t>(k)].on_grow_raw(
+                    phys_prims_[static_cast<size_t>(k)],
                     static_cast<size_t>(p),
                     ps.cur->cols[k],
                     ps.cur->capacity,
                     scatter_states_[static_cast<size_t>(k)]);
         }
-        ps.cur->filled += hist[p]; // pre-commit (thread-private, safe)
+        ps.cur->filled += hist[p];
     }
 
     if (use_swwc_)
     {
-        // ── Phase 4a: compute staging slots (shared across columns) ───────
-        // Wrap at kSlotsPerFlush<TKey> = 64/sizeof(TKey): one cache line per
-        // partition regardless of key element size.
+        // ── Phase 4a: staging slots (shared across all physical columns) ──────
         constexpr uint8_t kSlotMask = static_cast<uint8_t>(64 / sizeof(TKey)) - 1;
         uint32_t * pos = pos_.data();
         uint8_t * cnt = cnt_.data();
@@ -127,25 +165,25 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
             pos[j] = slot;
             cnt[p] = static_cast<uint8_t>((slot + 1) & kSlotMask);
         }
-        // ── Phase 4b: SWWC scatter per column ─────────────────────────────
-        for (int k = 0; k < K_; ++k)
+        // ── Phase 4b: SWWC scatter per PHYSICAL column ────────────────────────
+        for (int k = 0; k < K_phys_; ++k)
         {
-            auto & prim = col_prims_[static_cast<size_t>(k)];
+            const IColumn & sub_col = extractPhysCol(columns, phys_col_info_[static_cast<size_t>(k)]);
+            auto & prim = phys_prims_[static_cast<size_t>(k)];
             if (prim.scatter_raw_swwc)
-                prim.scatter_raw_swwc(
-                    *columns[static_cast<size_t>(k)], start, pids, pos, n, scatter_states_[static_cast<size_t>(k)]);
+                prim.scatter_raw_swwc(sub_col, start, pids, pos, n, scatter_states_[static_cast<size_t>(k)]);
             else
-                prim.scatter_raw(
-                    *columns[static_cast<size_t>(k)], start, pids, n, scatter_states_[static_cast<size_t>(k)]);
+                prim.scatter_raw(sub_col, start, pids, n, scatter_states_[static_cast<size_t>(k)]);
         }
     }
     else
     {
-        // ── Phase 4b: direct scatter per column ───────────────────────────
-        for (int k = 0; k < K_; ++k)
+        // ── Phase 4b: direct scatter per PHYSICAL column ──────────────────────
+        for (int k = 0; k < K_phys_; ++k)
         {
-            col_prims_[static_cast<size_t>(k)].scatter_raw(
-                *columns[static_cast<size_t>(k)], start, pids, n, scatter_states_[static_cast<size_t>(k)]);
+            const IColumn & sub_col = extractPhysCol(columns, phys_col_info_[static_cast<size_t>(k)]);
+            phys_prims_[static_cast<size_t>(k)].scatter_raw(
+                sub_col, start, pids, n, scatter_states_[static_cast<size_t>(k)]);
         }
     }
 }
@@ -165,10 +203,10 @@ void RadixPartitionOperator<TKey>::finish()
     {
         if (!cnt_[static_cast<size_t>(p)])
             continue;
-        for (int k = 0; k < K_; ++k)
-            if (col_prims_[static_cast<size_t>(k)].drain_raw)
-                col_prims_[static_cast<size_t>(k)].drain_raw(
-                    col_prims_[static_cast<size_t>(k)],
+        for (int k = 0; k < K_phys_; ++k)
+            if (phys_prims_[static_cast<size_t>(k)].drain_raw)
+                phys_prims_[static_cast<size_t>(k)].drain_raw(
+                    phys_prims_[static_cast<size_t>(k)],
                     static_cast<size_t>(p),
                     cnt_[static_cast<size_t>(p)],
                     scatter_states_[static_cast<size_t>(k)]);

@@ -208,94 +208,6 @@ void computePidsNullable(const ColumnPrimitives & self, const IColumn & src_, si
     }
 }
 
-// ── Raw-output-pointer scatter for Nullable (OutBlock model) ─────────────────
-//
-// Layout in OutBlock for column k of type Nullable(T):
-//   cols[k] points to a buffer of raw_elem_size * capacity bytes, split:
-//     [0,       capacity)            — null_map  (uint8_t[capacity])
-//     [capacity, capacity*(1+szT))   — values    (T[capacity])
-//
-// state.raw_write_ptrs[p] → current null_map write pointer for partition p.
-// state.nested            → ScatterState for the nested leaf primitive.
-// state.raw_prim          → &self (set by on_grow_raw; used by scatter_raw /
-//                           scatter_raw_swwc which lack a self parameter).
-
-
-/// Direct scatter: null_map written via raw_write_ptrs; nested value column
-/// delegated to the leaf primitive through state.raw_prim.
-[[gnu::hot]] void scatterRawNullable(const IColumn & src_, size_t offset, const uint32_t * pids, int n, ScatterState & state)
-{
-    const auto & col = assert_cast<const ColumnNullable &>(src_);
-    const auto & null_map = col.getNullMapData();
-
-    uint8_t ** null_wp = reinterpret_cast<uint8_t **>(state.raw_write_ptrs); // NOLINT
-    for (int j = 0; j < n; ++j)
-        *null_wp[pids[j]]++ = null_map[offset + j];
-
-    if (state.raw_prim && state.raw_prim->nested && state.raw_prim->nested->scatter_raw && state.nested)
-        state.raw_prim->nested->scatter_raw(col.getNestedColumn(), offset, pids, n, *state.nested);
-}
-
-
-/// SWWC scatter: null_map uses direct scatter (1 byte/row; staging not needed),
-/// nested value column uses SWWC (or direct if nested has no SWWC support).
-[[gnu::hot]] void scatterRawSwwcNullable(
-    const IColumn & src_, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state)
-{
-    const auto & col = assert_cast<const ColumnNullable &>(src_);
-    const auto & null_map = col.getNullMapData();
-
-    // Direct scatter for null map — 1 byte/row is cheap; staging adds no benefit.
-    uint8_t ** null_wp = reinterpret_cast<uint8_t **>(state.raw_write_ptrs); // NOLINT
-    for (int j = 0; j < n; ++j)
-        *null_wp[pids[j]]++ = null_map[offset + j];
-
-    if (!state.raw_prim || !state.raw_prim->nested || !state.nested)
-        return;
-
-    const ColumnPrimitives & nested_prim = *state.raw_prim->nested;
-    if (nested_prim.scatter_raw_swwc)
-        nested_prim.scatter_raw_swwc(col.getNestedColumn(), offset, pids, positions, n, *state.nested);
-    else if (nested_prim.scatter_raw)
-        nested_prim.scatter_raw(col.getNestedColumn(), offset, pids, n, *state.nested);
-}
-
-
-/// Drain: null_map uses direct scatter so has no staged residual.
-/// Delegate entirely to the nested primitive's drain.
-void drainRawNullable(const ColumnPrimitives & self, size_t p, uint32_t cnt, ScatterState & state)
-{
-    if (!self.nested || !self.nested->drain_raw || !state.nested)
-        return;
-    self.nested->drain_raw(*self.nested, p, cnt, *state.nested);
-}
-
-
-/// On-grow: split the column buffer into null_map and values regions,
-/// update null_map write pointer, and delegate values pointer to the nested
-/// primitive's on_grow_raw.
-void onGrowRawNullable(const ColumnPrimitives & self, size_t p, void * col_base, size_t capacity, ScatterState & state)
-{
-    if (state.raw_write_ptrs == nullptr)
-    {
-        const size_t num_parts = state.fixed_ptrs.size();
-        state.raw_write_ptrs = static_cast<void **>(std::calloc(num_parts, sizeof(void *)));
-        if (!state.raw_write_ptrs)
-            throw std::bad_alloc{};
-        if (!state.nested)
-            state.nested = std::make_unique<ScatterState>(num_parts);
-        state.raw_prim = &self;
-    }
-    // Null map occupies bytes [0, capacity) within the column buffer.
-    state.raw_write_ptrs[p] = col_base;
-    // Values start immediately after the null map region.
-    if (self.nested && self.nested->on_grow_raw && state.nested)
-    {
-        char * values_base = static_cast<char *>(col_base) + capacity;
-        self.nested->on_grow_raw(*self.nested, p, values_base, capacity, *state.nested);
-    }
-}
-
 } // namespace
 
 
@@ -307,15 +219,14 @@ ColumnPrimitives makeNullable(ColumnPrimitives nested)
     cp.hash = &hashNullable;
     cp.compute_pids = &computePidsNullable;
     cp.writes_varlen = nested.writes_varlen;
-    // Raw scatter is only supported when the nested type supports it.
+    // raw_elem_size is set so RadixPartitionOperator can detect that this is
+    // a Nullable with raw scatter support and expand it into two physical
+    // primitives (makeFixedWidth<uint8_t> for null_map + nested for values).
+    // scatter_raw* are intentionally NOT registered here — the operator handles
+    // decomposition directly at the leaf level, eliminating any need for a
+    // composite Nullable scatter function.
     if (nested.raw_elem_size > 0)
-    {
-        cp.scatter_raw      = &scatterRawNullable;
-        cp.scatter_raw_swwc = &scatterRawSwwcNullable;
-        cp.drain_raw        = &drainRawNullable;
-        cp.on_grow_raw      = &onGrowRawNullable;
-        cp.raw_elem_size    = sizeof(uint8_t) + nested.raw_elem_size;
-    }
+        cp.raw_elem_size = sizeof(uint8_t) + nested.raw_elem_size;
     cp.nested = std::make_shared<const ColumnPrimitives>(std::move(nested));
     return cp;
 }
