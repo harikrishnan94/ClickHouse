@@ -588,7 +588,10 @@ scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, 
     for (int j = 0; j < n; ++j)
     {
         const uint32_t p = pids[j];
-        const uint32_t slot = positions[j];
+        // positions[j] is a raw row counter (uint8_t, wraps at 256).
+        // Mask to this column's slot range so each column type flushes at the
+        // correct granularity regardless of what other columns have in the batch.
+        const uint32_t slot = positions[j] & flush_trigger;
         reinterpret_cast<T *>(state.swwc_staging)[p * S + slot] = src[j];
         if (slot == flush_trigger)
         {
@@ -607,19 +610,25 @@ scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, 
 }
 
 
-/// Drain: copies `cnt` staged values for partition `p` to its output pointer.
+/// Drain: copies residual staged values for partition `p` to its output pointer.
+/// `cnt` is the raw per-partition row counter from the operator; the actual
+/// residual is `cnt & (kSlotsPerFlush<T> - 1)` — the elements staged since
+/// the last full flush for this column type.
 template <typename T>
 void drainRawFixed(const ColumnPrimitives & /*self*/, size_t p, uint32_t cnt, ScatterState & state)
 {
-    if (state.swwc_staging == nullptr || cnt == 0)
+    if (state.swwc_staging == nullptr)
         return;
     constexpr size_t S = kSlotsPerFlush<T>;
+    const uint32_t residual = cnt & static_cast<uint32_t>(S - 1);
+    if (residual == 0)
+        return;
     const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * S;
     T ** wp = reinterpret_cast<T **>(state.raw_write_ptrs); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     T * dst = wp[p];
-    for (uint32_t i = 0; i < cnt; ++i)
+    for (uint32_t i = 0; i < residual; ++i)
         dst[i] = s[i];
-    wp[p] = dst + cnt;
+    wp[p] = dst + residual;
 }
 
 
@@ -684,7 +693,8 @@ template <typename T>
     for (int j = 0; j < n; ++j)
     {
         const uint32_t p = pids[j];
-        const uint32_t slot = positions[j];
+        // Mask positions[j] to this column's slot range (see scatterRawSwwcFixed comment).
+        const uint32_t slot = positions[j] & flush_trigger;
         reinterpret_cast<NativeT *>(state.swwc_staging)[p * S + slot] = src[j]; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (slot == flush_trigger)
         {

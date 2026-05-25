@@ -2,9 +2,9 @@
 
 #include <Columns/ColumnNullable.h>
 #include <Columns/IColumn.h>
+#include <base/types.h>
 #include <Common/RadixShuffle/ColumnPrimitives.h>
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
-#include <base/types.h>
 
 #if defined(__x86_64__)
 #    include <immintrin.h>
@@ -20,8 +20,7 @@ namespace DB::RadixShuffle
 
 // ── RadixPartitionOperator implementation ────────────────────────────────────
 
-template <typename TKey>
-RadixPartitionOperator<TKey>::RadixPartitionOperator(
+RadixPartitionOperator::RadixPartitionOperator(
     int P, int K, std::vector<ColumnPrimitives> prims, BumpArena & arena, bool use_swwc, size_t init_cap, size_t max_cap)
     : P_(P)
     , K_(K)
@@ -39,19 +38,15 @@ RadixPartitionOperator<TKey>::RadixPartitionOperator(
     // Build physical column table.
     // Nullable primitives (nested != null && nested has scatter_raw) are expanded
     // into two physical leaf primitives:
-    //   - makeFixedWidth<uint8_t>()  for the null map    (1 B/row, always direct scatter)
-    //   - *prim.nested               for the values      (full SWWC path via leaf primitive)
-    //
-    // This eliminates scatterRawNullable entirely — each physical primitive calls
-    // the standard scatterRawSwwcFixed<T> directly on a plain ColumnVector sub-column,
-    // matching the baseline UInt64Column::scatter_staged pattern exactly.
+    //   - makeFixedWidth<UInt8>()  for the null map
+    //   - *prim.nested             for the values
     for (int k = 0; k < K_; ++k)
     {
         const ColumnPrimitives & prim = col_prims_[static_cast<size_t>(k)];
         const bool expandable = prim.nested != nullptr && prim.nested->scatter_raw != nullptr;
         if (expandable)
         {
-            phys_prims_.push_back(makeFixedWidth<UInt8>()); // UInt8=char8_t, has explicit instantiation
+            phys_prims_.push_back(makeFixedWidth<UInt8>());
             phys_col_info_.push_back({static_cast<size_t>(k), true, false});
 
             phys_prims_.push_back(*prim.nested);
@@ -65,7 +60,6 @@ RadixPartitionOperator<TKey>::RadixPartitionOperator(
     }
     K_phys_ = static_cast<int>(phys_prims_.size());
 
-    // ScatterState and elem_sizes are per physical column.
     scatter_states_.reserve(static_cast<size_t>(K_phys_));
     for (int k = 0; k < K_phys_; ++k)
         scatter_states_.emplace_back(static_cast<size_t>(P_));
@@ -92,8 +86,7 @@ static const IColumn & extractPhysCol(const DB::Columns & columns, const PhysCol
 }
 
 
-template <typename TKey>
-void RadixPartitionOperator<TKey>::process(const DB::Columns & columns)
+void RadixPartitionOperator::process(const DB::Columns & columns)
 {
     if (columns.empty() || columns[0]->size() == 0)
         return;
@@ -107,8 +100,7 @@ void RadixPartitionOperator<TKey>::process(const DB::Columns & columns)
 }
 
 
-template <typename TKey>
-void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t start, int n)
+void RadixPartitionOperator::runBatch(const DB::Columns & columns, size_t start, int n)
 {
     uint32_t * pids = pids_.data();
     uint32_t * hist = hist_.data();
@@ -154,16 +146,19 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
 
     if (use_swwc_)
     {
-        // ── Phase 4a: staging slots (shared across all physical columns) ──────
-        constexpr uint8_t kSlotMask = static_cast<uint8_t>(64 / sizeof(TKey)) - 1;
+        // ── Phase 4a: raw per-partition row counter ───────────────────────────
+        // cnt[p] is a plain row counter that wraps at 256 (uint8_t natural wrap).
+        // 256 is divisible by every valid kSlotsPerFlush<T> value (1,2,4,8,16,32,64),
+        // so each column primitive can independently derive its own slot index via
+        //   slot = cnt & (kSlotsPerFlush<T> - 1)
+        // without any information leaking from a TKey type.
         uint32_t * pos = pos_.data();
         uint8_t * cnt = cnt_.data();
         for (int j = 0; j < n; ++j)
         {
             const uint32_t p = pids[j];
-            const uint32_t slot = cnt[p];
-            pos[j] = slot;
-            cnt[p] = static_cast<uint8_t>((slot + 1) & kSlotMask);
+            pos[j] = cnt[p];
+            ++cnt[p]; // uint8_t natural wrap at 256
         }
         // ── Phase 4b: SWWC scatter per PHYSICAL column ────────────────────────
         for (int k = 0; k < K_phys_; ++k)
@@ -182,15 +177,13 @@ void RadixPartitionOperator<TKey>::runBatch(const DB::Columns & columns, size_t 
         for (int k = 0; k < K_phys_; ++k)
         {
             const IColumn & sub_col = extractPhysCol(columns, phys_col_info_[static_cast<size_t>(k)]);
-            phys_prims_[static_cast<size_t>(k)].scatter_raw(
-                sub_col, start, pids, n, scatter_states_[static_cast<size_t>(k)]);
+            phys_prims_[static_cast<size_t>(k)].scatter_raw(sub_col, start, pids, n, scatter_states_[static_cast<size_t>(k)]);
         }
     }
 }
 
 
-template <typename TKey>
-void RadixPartitionOperator<TKey>::finish()
+void RadixPartitionOperator::finish()
 {
     if (!use_swwc_)
         return;
@@ -213,19 +206,5 @@ void RadixPartitionOperator<TKey>::finish()
         cnt_[static_cast<size_t>(p)] = 0;
     }
 }
-
-
-// ── explicit instantiations ───────────────────────────────────────────────────
-
-template class RadixPartitionOperator<uint8_t>;
-template class RadixPartitionOperator<uint16_t>;
-template class RadixPartitionOperator<uint32_t>;
-template class RadixPartitionOperator<uint64_t>;
-template class RadixPartitionOperator<int8_t>;
-template class RadixPartitionOperator<int16_t>;
-template class RadixPartitionOperator<int32_t>;
-template class RadixPartitionOperator<int64_t>;
-template class RadixPartitionOperator<float>;
-template class RadixPartitionOperator<double>;
 
 } // namespace DB::RadixShuffle

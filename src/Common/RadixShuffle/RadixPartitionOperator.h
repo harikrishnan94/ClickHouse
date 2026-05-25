@@ -24,10 +24,11 @@ struct PhysColInfo
     bool use_nested;   ///< Extract getNestedColumn() from ColumnNullable
 };
 
-/// Single-pass radix partition operator, templated over the key element type.
+/// Single-pass radix partition operator.
 ///
-/// Port of `PartitionOperatorV` from `radix_part_vs_memcpy.cpp`, generalized
-/// from `uint64_t` to any fixed-width POD `TKey`.
+/// Port of `PartitionOperatorV` from `radix_part_vs_memcpy.cpp`.
+/// Column types are fully described by the `ColumnPrimitives` objects passed
+/// at construction — the operator itself is not templated on any element type.
 ///
 /// The operator auto-selects between two scatter strategies:
 ///   - direct   — live-pointer per-partition scatter; best for small P.
@@ -36,12 +37,14 @@ struct PhysColInfo
 ///
 /// Crossover: `K==1 → SWWC when P≥512`; `K≥2 → SWWC when P≥32`.
 ///
+/// Nullable primitives are automatically decomposed into two physical leaf
+/// primitives (null-map UInt8 + values), each using the standard SWWC path.
+///
 /// Lifecycle:
 ///   1. Construct with P, K, columns, arena, SWWC flag, capacity hints.
 ///   2. Call `process(columns)` once per input block.
 ///   3. Call `finish()` after all blocks to flush SWWC buffers.
 ///   4. Read `parts()` for per-partition output state.
-template <typename TKey>
 class RadixPartitionOperator
 {
 public:
@@ -54,11 +57,9 @@ public:
     static bool should_use_swwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
 
     /// `prims`    — K logical `ColumnPrimitives` objects.  Nullable primitives
-    ///              (those with a non-null `nested` that has `scatter_raw`) are
-    ///              automatically decomposed into two physical primitives:
-    ///              makeFixedWidth<uint8_t>() for the null map and the nested
-    ///              leaf primitive for the values.  All other types are passed
-    ///              through directly.
+    ///              are automatically decomposed into two physical primitives:
+    ///              makeFixedWidth<UInt8>() for the null map and the nested
+    ///              leaf primitive for the values.
     /// `arena`    — bump allocator for OutBlock storage; must outlive this object.
     /// `use_swwc` — select SWWC scatter path; use `should_use_swwc(K,P)` as hint.
     /// `init_cap` — initial OutBlock row capacity (must be a multiple of 8).
@@ -72,7 +73,7 @@ public:
         size_t init_cap = kOutCapMin,
         size_t max_cap = kOutCapMax);
 
-    /// Process one input block.  `columns[k]` must be a `ColumnVector<TKey>`.
+    /// Process one input block.
     /// Call repeatedly for streaming input, then call `finish()`.
     void process(const DB::Columns & columns);
 
@@ -90,8 +91,8 @@ private:
     void runBatch(const DB::Columns & columns, size_t start, int n);
 
     int P_;
-    int K_;       ///< Logical column count (as provided by the caller).
-    int K_phys_;  ///< Physical column count; ≥ K_ when Nullable columns are expanded.
+    int K_;      ///< Logical column count (as provided by the caller).
+    int K_phys_; ///< Physical column count; ≥ K_ when Nullable columns are expanded.
     bool use_swwc_;
     int batch_;
     uint32_t mask_; ///< P − 1 (P must be a power of two).
@@ -110,20 +111,8 @@ private:
     /// Per-batch scratch arrays (size == batch_).
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> hist_;
-    std::vector<uint32_t> pos_; ///< SWWC staging slot per row.
-    std::vector<uint8_t> cnt_; ///< SWWC staging fill counter; wraps at 64/sizeof(TKey).
+    std::vector<uint32_t> pos_; ///< Raw per-partition row counter snapshot per row.
+    std::vector<uint8_t> cnt_;  ///< Raw per-partition row counter; wraps at 256 (uint8_t natural).
 };
-
-/// Explicit instantiation declarations.
-extern template class RadixPartitionOperator<uint8_t>;
-extern template class RadixPartitionOperator<uint16_t>;
-extern template class RadixPartitionOperator<uint32_t>;
-extern template class RadixPartitionOperator<uint64_t>;
-extern template class RadixPartitionOperator<int8_t>;
-extern template class RadixPartitionOperator<int16_t>;
-extern template class RadixPartitionOperator<int32_t>;
-extern template class RadixPartitionOperator<int64_t>;
-extern template class RadixPartitionOperator<float>;
-extern template class RadixPartitionOperator<double>;
 
 } // namespace DB::RadixShuffle

@@ -218,7 +218,6 @@ BlockStream genBlocksNullableUInt64(size_t total, size_t block_rows, int K, uint
 
 /// Generic typed radix runner.  `prims_proto` is copied K times.
 /// `elem_size` is sizeof(T) for the payload element — used for OutBlock sizing.
-template <typename TKey>
 void runTypedRadix(
     const BlockStream & blocks,
     int K,
@@ -230,8 +229,8 @@ void runTypedRadix(
     size_t max_cap = kOutCapMax)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), prim_proto);
-    const bool use_swwc = RadixPartitionOperator<TKey>::should_use_swwc(K, P);
-    RadixPartitionOperator<TKey> op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
+    const bool use_swwc = RadixPartitionOperator::should_use_swwc(K, P);
+    RadixPartitionOperator op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
@@ -282,8 +281,8 @@ void runSmartRadix(
     size_t max_cap = kOutCapMax)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
-    const bool use_swwc = RadixPartitionOperator<uint64_t>::should_use_swwc(K, P);
-    RadixPartitionOperator<uint64_t> op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
+    const bool use_swwc = RadixPartitionOperator::should_use_swwc(K, P);
+    RadixPartitionOperator op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
@@ -405,7 +404,7 @@ int main(int argc, char ** argv)
     const int R = cfg.reps;
 
     const int batch
-        = std::max(1024, std::min(RadixPartitionOperator<uint64_t>::kSmartMaxBatch, P * RadixPartitionOperator<uint64_t>::kBatchFactor));
+        = std::max(1024, std::min(RadixPartitionOperator::kSmartMaxBatch, P * RadixPartitionOperator::kBatchFactor));
     const size_t rpt = (N + static_cast<size_t>(T) - 1) / static_cast<size_t>(T);
     const size_t total = rpt * static_cast<size_t>(T);
 
@@ -422,7 +421,7 @@ int main(int argc, char ** argv)
         rpt);
     fmt::print("  batch_size  = {}\n", batch);
     fmt::print("  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n", cap_init, cap_max, rpt / static_cast<size_t>(P));
-    fmt::print("  radix mode  = {}\n", RadixPartitionOperator<uint64_t>::should_use_swwc(K, P) ? "SWWC (NT stores)" : "direct");
+    fmt::print("  radix mode  = {}\n", RadixPartitionOperator::should_use_swwc(K, P) ? "SWWC (NT stores)" : "direct");
     if (B < static_cast<size_t>(batch))
         fmt::print("  [warn] block-rows {} < batch_size {} -> scalar path only\n", B, batch);
     fmt::print("\n");
@@ -643,7 +642,7 @@ int main(int argc, char ** argv)
         8,
         [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocks(tot, br, k, seed); },
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
-        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeFixedWidth<UInt64>(), ic, mc_); });
+        { runTypedRadix(blk, k, p, pts, ar, makeFixedWidth<UInt64>(), ic, mc_); });
 
     // Decimal64 (8 bytes/row — same as UInt64).
     run_typed_variant(
@@ -651,7 +650,7 @@ int main(int argc, char ** argv)
         8,
         [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksDecimal64(tot, br, k, seed); },
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
-        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeDecimal<DB::Decimal64>(), ic, mc_); });
+        { runTypedRadix(blk, k, p, pts, ar, makeDecimal<DB::Decimal64>(), ic, mc_); });
 
     // Decimal32 (4 bytes/row — half of UInt64).
     run_typed_variant(
@@ -659,7 +658,7 @@ int main(int argc, char ** argv)
         4,
         [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksDecimal32(tot, br, k, seed); },
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
-        { runTypedRadix<uint32_t>(blk, k, p, pts, ar, makeDecimal<DB::Decimal32>(), ic, mc_); });
+        { runTypedRadix(blk, k, p, pts, ar, makeDecimal<DB::Decimal32>(), ic, mc_); });
 
     // FixedString(8) (8 bytes/row — same as UInt64).
     run_typed_variant(
@@ -667,7 +666,7 @@ int main(int argc, char ** argv)
         8,
         [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksFixedStr(tot, br, k, 8, seed); },
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
-        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeFixedString(8), ic, mc_); });
+        { runTypedRadix(blk, k, p, pts, ar, makeFixedString(8), ic, mc_); });
 
     // Nullable(UInt64) — 9 bytes/row (1 null + 8 value); key hashed via nested UInt64.
     run_typed_variant(
@@ -675,7 +674,7 @@ int main(int argc, char ** argv)
         9,
         [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksNullableUInt64(tot, br, k, seed); },
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
-        { runTypedRadix<uint64_t>(blk, k, p, pts, ar, makeNullable(makeFixedWidth<UInt64>()), ic, mc_); });
+        { runTypedRadix(blk, k, p, pts, ar, makeNullable(makeFixedWidth<UInt64>()), ic, mc_); });
 
     return 0;
 }
