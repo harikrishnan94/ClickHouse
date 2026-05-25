@@ -187,25 +187,25 @@ public:
     /// NullMap must be added before any other slot for a Nullable column.
     size_t addSlot(size_t col_idx, SlotRole role, size_t element_size, size_t alignment)
     {
-        current_off = alignUp(current_off, alignment);
-        schema.fixed_slots.push_back({col_idx, role, element_size, alignment});
-        schema.slot_byte_offset.push_back(current_off);
-        current_off += element_size;
-        return schema.fixed_slots.size() - 1;
+        current_off_ = alignUp(current_off_, alignment);
+        schema_.fixed_slots.push_back({col_idx, role, element_size, alignment});
+        schema_.slot_byte_offset.push_back(current_off_);
+        current_off_ += element_size;
+        return schema_.fixed_slots.size() - 1;
     }
 
     PartSchema finish(bool has_varlen)
     {
-        schema.fixed_bytes_per_row = current_off;
-        schema.has_varlen_portion = has_varlen;
-        return std::move(schema);
+        schema_.fixed_bytes_per_row = current_off_;
+        schema_.has_varlen_portion = has_varlen;
+        return std::move(schema_);
     }
 
 private:
     static constexpr size_t alignUp(size_t n, size_t align) noexcept { return (n + (align - 1)) & ~(align - 1); }
 
-    PartSchema schema;
-    size_t current_off = 0;
+    PartSchema schema_;
+    size_t current_off_ = 0;
 };
 
 

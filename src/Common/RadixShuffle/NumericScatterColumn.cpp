@@ -62,7 +62,7 @@ template <typename T>
 // ── NumericScatterColumn implementation ──────────────────────────────────────
 
 template <typename T>
-NumericScatterColumn<T>::NumericScatterColumn(size_t P) : P_(P)
+NumericScatterColumn<T>::NumericScatterColumn(size_t P) : num_partitions_(P)
 {
     if (posix_memalign(reinterpret_cast<void **>(&staging_), 64, P * 8 * sizeof(T)) != 0)
         throw std::bad_alloc{};
@@ -80,14 +80,14 @@ NumericScatterColumn<T>::~NumericScatterColumn()
 
 
 template <typename T>
-void NumericScatterColumn<T>::on_grow(size_t p, void * col_base)
+void NumericScatterColumn<T>::onGrow(size_t p, void * col_base)
 {
     out_[p] = static_cast<T *>(col_base);
 }
 
 
 template <typename T>
-void NumericScatterColumn<T>::drain_one(size_t p, uint32_t cnt)
+void NumericScatterColumn<T>::drainOne(size_t p, uint32_t cnt)
 {
     const T * s = staging_ + p * 8;
     T * dst = out_[p];
@@ -98,7 +98,7 @@ void NumericScatterColumn<T>::drain_one(size_t p, uint32_t cnt)
 
 
 template <typename T>
-void NumericScatterColumn<T>::scatter_direct(const uint32_t * pids, const void * src, int n)
+void NumericScatterColumn<T>::scatterDirect(const uint32_t * pids, const void * src, int n)
 {
     const T * s = static_cast<const T *>(src);
     T ** ptrs = out_;
@@ -108,7 +108,7 @@ void NumericScatterColumn<T>::scatter_direct(const uint32_t * pids, const void *
 
 
 template <typename T>
-void NumericScatterColumn<T>::scatter_staged(
+void NumericScatterColumn<T>::scatterStaged(
     const uint32_t * pids, const uint32_t * positions, const void * src, int n)
 {
     const T * s = static_cast<const T *>(src);

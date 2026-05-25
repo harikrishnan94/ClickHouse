@@ -11,12 +11,6 @@ if (ENABLE_MYSQL)
 endif ()
 
 if (ENABLE_TESTS)
-    clickhouse_add_executable(bench_radix_shuffle_column_primitives tests/bench_radix_shuffle_column_primitives.cpp)
-    target_link_libraries(bench_radix_shuffle_column_primitives PRIVATE dbms)
-
     clickhouse_add_executable(bench_radix_partition tests/bench_radix_partition.cpp)
     target_link_libraries(bench_radix_partition PRIVATE dbms)
-
-    clickhouse_add_executable(bench_radix_mem_sweep tests/bench_radix_mem_sweep.cpp)
-    target_link_libraries(bench_radix_mem_sweep PRIVATE dbms)
 endif()

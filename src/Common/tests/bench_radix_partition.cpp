@@ -1,16 +1,25 @@
-// bench_radix_partition.cpp
+// Benchmark: plain memcpy vs. single-pass radix partitioning via production
+// `RadixPartitionOperator` in `src/Common/RadixShuffle/`.
 //
-// Benchmark: plain memcpy vs. single-pass radix partitioning.
-// Both functions receive the same K-column uint64 table delivered in
-// fixed-size row blocks.  Measures ns/row and GB/s (read + write).
+// Workload:
+//   - Input is a stream of `DB::Columns` blocks (default: K × ColumnVector<UInt64>).
+//   - Each thread owns one input stream; rows are split evenly across threads.
+//   - Memcpy baseline appends all rows into a single `PartState` (no hash).
+//   - Radix path hashes the first column (`compute_pids`), histograms, and
+//     scatters all K columns into P partition chains using `ColumnPrimitives`
+//     (`scatter_raw` or `scatter_raw_swwc` when `shouldUseSwwc(K,P)` is true).
+//   - Both paths use the same `BumpArena`, `OutBlock`, and `growPart` helpers.
 //
-// Ported from radix_part_vs_memcpy.cpp; the radix implementation lives in
-// src/Common/RadixShuffle/ so it shares all logic with production code.
+// Metrics: wall-clock ns/row (aggregate over all threads) and GB/s assuming
+// read+write of `K × elem_size` bytes per row (elem_size = 8 for UInt64).
+//
+// After the UInt64 comparison, a type-sweep re-runs radix with other column
+// types (Decimal, FixedString, ColumnString, Nullable) at matched or stated bytes/row.
 //
 // Usage:
 //   bench_radix_partition [OPTIONS]
 //   --partitions P   power-of-2 in [1,32768]   (default 64)
-//   --columns    K   uint64 columns per row     (default  4, max 8)
+//   --columns    K   columns per row            (default  4, max 8)
 //   --rows       N   total rows                 (default  100 000 000)
 //   --block-rows B   rows per input block       (default  16 384)
 //   --threads    T   worker threads             (default  16)
@@ -19,14 +28,18 @@
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnFixedString.h>
 #include <Columns/ColumnNullable.h>
+#include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/IColumn_fwd.h>
+#include <DataTypes/DataTypeString.h>
 #include <base/Decimal.h>
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
 #include <Common/RadixShuffle/ColumnPrimitives/Nullable.h>
+#include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixPartitionOperator.h>
+#include <Common/RadixShuffle/RadixPartitioner.h>
 #include <Common/assert_cast.h>
 
 #include <algorithm>
@@ -36,7 +49,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <numeric>
 #include <optional>
 #include <random>
@@ -84,8 +96,9 @@ struct Stats
 };
 
 
-// ── input ─────────────────────────────────────────────────────────────────────
+// ── input (UInt64 reference) ───────────────────────────────────────────────────
 
+/// K columns of `ColumnVector<UInt64>`, `block_rows` rows per block (last block may be smaller).
 BlockStream genBlocks(size_t total, size_t block_rows, int K, uint64_t seed)
 {
     BlockStream stream;
@@ -185,6 +198,39 @@ BlockStream genBlocksFixedStr(size_t total, size_t block_rows, int K, size_t n, 
 }
 
 
+/// ColumnString blocks: K columns of ColumnString, fixed 64 bytes/string.
+/// Logical 64 B/elem for GB/s; scatter also moves 8-byte offsets per row.
+BlockStream genBlocksString64(size_t total, size_t block_rows, int K, uint64_t seed)
+{
+    BlockStream stream;
+    std::mt19937_64 rng(seed);
+    std::string buf(64, '\0');
+    for (size_t done = 0; done < total;)
+    {
+        const size_t bs = std::min(block_rows, total - done);
+        DB::Columns block;
+        for (int k = 0; k < K; ++k)
+        {
+            auto col = DB::ColumnString::create();
+            for (size_t row = 0; row < bs; ++row)
+            {
+                for (size_t chunk = 0; chunk < 64; chunk += 8)
+                {
+                    const uint64_t v = rng();
+                    for (size_t b = 0; b < 8; ++b)
+                        buf[chunk + b] = static_cast<char>(v >> (b * 8));
+                }
+                col->insertData(buf.data(), buf.size());
+            }
+            block.push_back(std::move(col));
+        }
+        stream.push_back(std::move(block));
+        done += bs;
+    }
+    return stream;
+}
+
+
 /// Nullable(UInt64) blocks: K columns of ColumnNullable(ColumnVector<UInt64>),
 /// 9 bytes/row each (1 null byte + 8 value bytes).  ~50% of rows are NULL.
 BlockStream genBlocksNullableUInt64(size_t total, size_t block_rows, int K, uint64_t seed)
@@ -216,8 +262,9 @@ BlockStream genBlocksNullableUInt64(size_t total, size_t block_rows, int K, uint
 }
 
 
-/// Generic typed radix runner.  `prims_proto` is copied K times.
-/// `elem_size` is sizeof(T) for the payload element — used for OutBlock sizing.
+/// Radix partition via `RadixPartitionOperator` with K copies of `prim_proto`.
+/// OutBlock memory is sized per physical column using each primitive's
+/// `raw_elem_size` (and Nullable expansion into null-map + nested columns).
 void runTypedRadix(
     const BlockStream & blocks,
     int K,
@@ -229,7 +276,7 @@ void runTypedRadix(
     size_t max_cap = kOutCapMax)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), prim_proto);
-    const bool use_swwc = RadixPartitionOperator::should_use_swwc(K, P);
+    const bool use_swwc = RadixPartitionOperator::shouldUseSwwc(K, P);
     RadixPartitionOperator op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
     for (const auto & block : blocks)
         op.process(block);
@@ -238,10 +285,23 @@ void runTypedRadix(
 }
 
 
+/// ColumnString uses `RadixPartitioner` (scatter path); `RadixPartitionOperator`
+/// requires `scatter_raw`, which strings do not provide.
+void runStringRadixPartitioner(const BlockStream & blocks, int K, int P)
+{
+    std::vector<DB::DataTypePtr> types(static_cast<size_t>(K), std::make_shared<DB::DataTypeString>());
+    const auto sp = buildSchemaAndPrimitives(types);
+    RadixPartitioner part(sp.schema, sp.primitives, static_cast<size_t>(P), {0});
+    for (const auto & block : blocks)
+        part.process(block);
+    part.finish();
+}
+
+
 // ── memcpy baseline ───────────────────────────────────────────────────────────
-// Uses the same OutBlock / PartState / growPart machinery as the radix variant
-// but writes all rows into a single partition (no hashing).  Allocation
-// pattern, block sizes, and arena usage therefore mirror the radix variant.
+// Same `BumpArena` / `OutBlock` / `growPart` path as radix, but no hash: every
+// row is appended to one `PartState` with uniform `sizeof(uint64_t)` columns.
+// Serves as a lower bound on memory traffic for the same read+write volume.
 
 void runMemcpy(
     const BlockStream & blocks, int K, PartState & out, BumpArena & arena, size_t init_cap = kOutCapMin, size_t max_cap = kOutCapMax)
@@ -269,7 +329,8 @@ void runMemcpy(
 }
 
 
-// ── radix variant ─────────────────────────────────────────────────────────────
+// ── radix variant (UInt64) ────────────────────────────────────────────────────
+// `makeFixedWidth<UInt64>()` on every column; partition id from column 0 only.
 
 void runSmartRadix(
     const BlockStream & blocks,
@@ -281,7 +342,7 @@ void runSmartRadix(
     size_t max_cap = kOutCapMax)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
-    const bool use_swwc = RadixPartitionOperator::should_use_swwc(K, P);
+    const bool use_swwc = RadixPartitionOperator::shouldUseSwwc(K, P);
     RadixPartitionOperator op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
     for (const auto & block : blocks)
         op.process(block);
@@ -290,7 +351,7 @@ void runSmartRadix(
 }
 
 
-// ── thread pinning ────────────────────────────────────────────────────────────
+// ── thread pinning (optional, best-effort) ─────────────────────────────────────
 
 void pinThread(int t)
 {
@@ -396,72 +457,75 @@ int main(int argc, char ** argv)
     if (!validateConfig(cfg))
         return 1;
 
-    const int P = cfg.partitions;
-    const int K = cfg.columns;
-    const size_t N = cfg.rows;
-    const size_t B = cfg.block_rows;
-    const int T = cfg.threads;
-    const int R = cfg.reps;
+    const int partitions = cfg.partitions;
+    const int columns = cfg.columns;
+    const size_t num_rows = cfg.rows;
+    const size_t block_rows = cfg.block_rows;
+    const int threads = cfg.threads;
+    const int reps = cfg.reps;
 
-    const int batch = std::max(1024, std::min(RadixPartitionOperator::kSmartMaxBatch, P * RadixPartitionOperator::kBatchFactor));
-    const size_t rpt = (N + static_cast<size_t>(T) - 1) / static_cast<size_t>(T);
-    const size_t total = rpt * static_cast<size_t>(T);
+    const int batch = std::max(1024, std::min(RadixPartitionOperator::kSmartMaxBatch, partitions * RadixPartitionOperator::kBatchFactor));
+    const size_t rpt = (num_rows + static_cast<size_t>(threads) - 1) / static_cast<size_t>(threads);
+    const size_t total = rpt * static_cast<size_t>(threads);
 
-    const auto [cap_init, cap_max] = adaptiveCaps(rpt, static_cast<size_t>(P));
+    const auto [cap_init, cap_max] = adaptiveCaps(rpt, static_cast<size_t>(partitions));
 
     fmt::print("bench_radix_partition\n");
-    fmt::print("  partitions={:<6}  columns={:<2}  rows={:<12}\n", P, K, N);
-    fmt::print("  block-rows={:<6}  threads={:<3}  reps={}\n", B, T, R);
+    fmt::print("  partitions={:<6}  columns={:<2}  rows={:<12}\n", partitions, columns, num_rows);
+    fmt::print("  block-rows={:<6}  threads={:<3}  reps={}\n", block_rows, threads, reps);
     fmt::print("  rows/thread={}  total={}\n", rpt, total);
     fmt::print(
         "  data/thread = {:.1f} MiB  ({} cols \xc3\x97 {} rows \xc3\x97 8 B)\n",
-        static_cast<double>(K) * static_cast<double>(rpt) * 8.0 / (1 << 20),
-        K,
+        static_cast<double>(columns) * static_cast<double>(rpt) * 8.0 / (1 << 20),
+        columns,
         rpt);
     fmt::print("  batch_size  = {}\n", batch);
-    fmt::print("  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n", cap_init, cap_max, rpt / static_cast<size_t>(P));
-    fmt::print("  radix mode  = {}\n", RadixPartitionOperator::should_use_swwc(K, P) ? "SWWC (NT stores)" : "direct");
-    if (B < static_cast<size_t>(batch))
-        fmt::print("  [warn] block-rows {} < batch_size {} -> scalar path only\n", B, batch);
+    fmt::print(
+        "  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n", cap_init, cap_max, rpt / static_cast<size_t>(partitions));
+    fmt::print("  radix mode  = {}\n", RadixPartitionOperator::shouldUseSwwc(columns, partitions) ? "SWWC (NT stores)" : "direct");
+    // Internal batch is max(1024, min(32768, P×16)); smaller block-rows still work
+    // but process() may run multiple batches per input block.
+    if (block_rows < static_cast<size_t>(batch))
+        fmt::print("  [warn] block-rows {} < operator batch {} (multiple batches/block)\n", block_rows, batch);
     fmt::print("\n");
 
     // ── generate input streams ────────────────────────────────────────────────
-    fmt::print("Generating {} streams \xc3\x97 {} blocks each...\n", T, (rpt + B - 1) / B);
+    fmt::print("Generating {} streams \xc3\x97 {} blocks each...\n", threads, (rpt + block_rows - 1) / block_rows);
     const auto tg0 = Clk::now();
-    std::vector<BlockStream> streams(static_cast<size_t>(T));
-    for (int t = 0; t < T; ++t)
-        streams[static_cast<size_t>(t)] = genBlocks(rpt, B, K, 42ULL + static_cast<uint64_t>(t));
+    std::vector<BlockStream> streams(static_cast<size_t>(threads));
+    for (int t = 0; t < threads; ++t)
+        streams[static_cast<size_t>(t)] = genBlocks(rpt, block_rows, columns, 42ULL + static_cast<uint64_t>(t));
     fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
 
-    // ── fresh arenas allocated every rep — no reuse between reps ─────────────
-    std::vector<PartState> mc_parts(static_cast<size_t>(T));
-    std::vector<std::vector<PartState>> parts(static_cast<size_t>(T));
+    // ── timed reps: fresh BumpArena per rep (no cross-rep reuse) ─────────────
+    std::vector<PartState> mc_parts(static_cast<size_t>(threads));
+    std::vector<std::vector<PartState>> parts(static_cast<size_t>(threads));
 
-    // GB/s = gbs_k / ns_per_row  (factor of 2 for read + write)
-    const double gbs_k = 2.0 * static_cast<double>(K) * 8.0;
+    // GB/s = gbs_k / ns_per_row; gbs_k counts read + write of K × 8 bytes/row.
+    const double gbs_k = 2.0 * static_cast<double>(columns) * 8.0;
 
-    std::vector<double> mc_ns(static_cast<size_t>(R));
-    std::vector<double> rd_ns(static_cast<size_t>(R));
+    std::vector<double> mc_ns(static_cast<size_t>(reps));
+    std::vector<double> rd_ns(static_cast<size_t>(reps));
 
     // ── benchmark ─────────────────────────────────────────────────────────────
     fmt::print("{:<4}  {:>12}  {:>12}  {:>6}\n", "rep", "memcpy ns/row", "radix ns/row", "ratio");
     fmt::print("----  ------------  ------------  ------\n");
 
-    for (int rep = 0; rep < R; ++rep)
+    for (int rep = 0; rep < reps; ++rep)
     {
         // ── memcpy — fresh BumpArena each rep ────────────────────────────────
         {
             std::vector<BumpArena> mc_arenas;
-            mc_arenas.reserve(static_cast<size_t>(T));
-            for (int t = 0; t < T; ++t)
+            mc_arenas.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
                 mc_arenas.emplace_back(kArenaSlabBytes);
 
-            for (int t = 0; t < T; ++t)
-                mc_parts[static_cast<size_t>(t)] = {};
+            for (auto & part : mc_parts)
+                part = {};
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
-            ths.reserve(static_cast<size_t>(T));
-            for (int t = 0; t < T; ++t)
+            ths.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
             {
                 ths.emplace_back(
                     [&, t]()
@@ -469,7 +533,7 @@ int main(int argc, char ** argv)
                         pinThread(t);
                         runMemcpy(
                             streams[static_cast<size_t>(t)],
-                            K,
+                            columns,
                             mc_parts[static_cast<size_t>(t)],
                             mc_arenas[static_cast<size_t>(t)],
                             cap_init,
@@ -484,16 +548,16 @@ int main(int argc, char ** argv)
         // ── radix — fresh BumpArena each rep ─────────────────────────────────
         {
             std::vector<BumpArena> rd_arenas;
-            rd_arenas.reserve(static_cast<size_t>(T));
-            for (int t = 0; t < T; ++t)
+            rd_arenas.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
                 rd_arenas.emplace_back(kArenaSlabBytes);
 
-            for (int t = 0; t < T; ++t)
+            for (int t = 0; t < threads; ++t)
                 parts[static_cast<size_t>(t)].clear();
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
-            ths.reserve(static_cast<size_t>(T));
-            for (int t = 0; t < T; ++t)
+            ths.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
             {
                 ths.emplace_back(
                     [&, t]()
@@ -501,8 +565,8 @@ int main(int argc, char ** argv)
                         pinThread(t);
                         runSmartRadix(
                             streams[static_cast<size_t>(t)],
-                            K,
-                            P,
+                            columns,
+                            partitions,
                             parts[static_cast<size_t>(t)],
                             rd_arenas[static_cast<size_t>(t)],
                             cap_init,
@@ -520,24 +584,23 @@ int main(int argc, char ** argv)
             mc_ns[static_cast<size_t>(rep)],
             rd_ns[static_cast<size_t>(rep)],
             rd_ns[static_cast<size_t>(rep)] / mc_ns[static_cast<size_t>(rep)]);
-        (void)std::fflush(stdout);
     }
 
-    // ── arena sanity check (last rep, from parts chain) ──────────────────────
-    const size_t expected_data = rpt * static_cast<size_t>(K) * 8;
+    // ── sanity: scattered row count on thread 0 after last radix rep ─────────
+    const size_t expected_data = rpt * static_cast<size_t>(columns) * 8;
     size_t radix_used_rows = 0;
     for (const auto & sv : parts[0])
     {
         for (const OutBlock * b = sv.head; b != nullptr; b = b->next)
             radix_used_rows += b->filled;
     }
-    const size_t radix_used_bytes = radix_used_rows * static_cast<size_t>(K) * sizeof(uint64_t);
+    const size_t radix_used_bytes = radix_used_rows * static_cast<size_t>(columns) * sizeof(uint64_t);
     fmt::print("\nArena usage after last rep (thread 0):\n");
     fmt::print(
         "  expected data  = {:>7.1f} MiB  ({} rows \xc3\x97 {} cols \xc3\x97 8 B)\n",
         static_cast<double>(expected_data) / 1048576.0,
         rpt,
-        K);
+        columns);
     fmt::print(
         "  radix   rows   = {:>7.1f} MiB  ({} rows scattered)\n", static_cast<double>(radix_used_bytes) / 1048576.0, radix_used_rows);
 
@@ -545,7 +608,7 @@ int main(int argc, char ** argv)
     const auto mc = computeStats(std::move(mc_ns));
     const auto rd = computeStats(std::move(rd_ns));
 
-    fmt::print("\nSummary (agg = wall_ns/total_rows;  per-thr = agg\xc3\x97T;  GB/s = R+W)\n");
+    fmt::print("\nSummary (agg = wall_ns/total_rows;  per-thr = agg\xc3\x97threads;  GB/s = R+W)\n");
     fmt::print("{:<8}  {:>8}  {:>8}  {:>8}  {:>5}  {:>8}  {:>8}\n", "variant", "agg-min", "agg-p50", "agg-mean", "cv%", "GB/s", "per-thr");
     fmt::print("--------  --------  --------  --------  -----  --------  --------\n");
 
@@ -559,7 +622,7 @@ int main(int argc, char ** argv)
             s.mean,
             s.mean > 0 ? 100.0 * s.stddev / s.mean : 0.0,
             gbs_k / s.pmin,
-            s.pmin * static_cast<double>(T));
+            s.pmin * static_cast<double>(threads));
     };
     print_row("memcpy", mc);
     print_row("radix", rd);
@@ -569,49 +632,53 @@ int main(int argc, char ** argv)
         "  (per-thread: {:.1f} vs {:.1f} ns/row)\n",
         rd.pmin / mc.pmin,
         rd.mean / mc.mean,
-        rd.pmin * static_cast<double>(T),
-        mc.pmin * static_cast<double>(T));
+        rd.pmin * static_cast<double>(threads),
+        mc.pmin * static_cast<double>(threads));
 
-    // ── Type-sweep: same P/K/N, compare column types at equal bytes-per-row ──
-    // Reference: UInt64 (already benchmarked above as `radix`).
-    // Each variant uses ColumnPrimitives dispatch; TKey selects OutBlock elem size.
+    // ── Type-sweep: same P/K/threads/reps, other ColumnPrimitives factories ───
+    // UInt64 numbers above are the reference; below re-runs radix only with
+    // fresh streams.  `elem_size` in the table is the logical bytes/row per
+    // column used for GB/s; OutBlock layout follows each primitive's
+    // `raw_elem_size` (Nullable uses 1-byte map + nested width).
     //
-    //  Type          elem  total B/row (K=4)
-    //  -----------   ----  -----------------
-    //  uint64           8           32  (reference)
-    //  decimal64        8           32  (same bytes/row)
-    //  decimal32        4           16  (half bytes/row)
-    //  fixedstr8        8           32  (same bytes/row)
-    fmt::print("\nType-sweep (P={} K={} T={} R={}):\n", P, K, T, R);
+    //  Type          B/elem  B/row (K=4)   notes
+    //  -----------   -----  -----------   -----
+    //  uint64           8          32     reference
+    //  decimal64        8          32     same width as UInt64
+    //  decimal32        4          16     half width
+    //  fixedstr8        8          32     direct scatter (no SWWC)
+    //  str64           64         256     fixed-length ColumnString payload
+    //  null_uint64      9          36     ~50% nulls; 1+8 bytes logical/row
+    fmt::print("\nType-sweep (partitions={} columns={} threads={} reps={}):\n", partitions, columns, threads, reps);
     fmt::print("{:<12}  {:>6}  {:>7}  {:>8}  {:>8}\n", "type", "B/elem", "B/row", "ns/row", "GB/s(R+W)");
     fmt::print("------------  ------  -------  --------  --------\n");
 
-    // Helper: run one typed variant and print a row.
+    // Run one typed variant (regenerate streams, fresh arena each rep).
     auto run_typed_variant = [&](const char * label, size_t elem_size, auto gen_fn, auto run_fn)
     {
         // Generate streams for this type.
-        std::vector<BlockStream> typed_streams(static_cast<size_t>(T));
-        for (int t = 0; t < T; ++t)
-            typed_streams[static_cast<size_t>(t)] = gen_fn(rpt, B, K, 42ULL + static_cast<uint64_t>(t) + 1000ULL);
+        std::vector<BlockStream> typed_streams(static_cast<size_t>(threads));
+        for (int t = 0; t < threads; ++t)
+            typed_streams[static_cast<size_t>(t)] = gen_fn(rpt, block_rows, columns, 42ULL + static_cast<uint64_t>(t) + 1000ULL);
 
-        std::vector<double> typed_ns(static_cast<size_t>(R));
-        std::vector<std::vector<PartState>> typed_parts(static_cast<size_t>(T));
-        const double bytes_per_row = static_cast<double>(K) * static_cast<double>(elem_size);
+        std::vector<double> typed_ns(static_cast<size_t>(reps));
+        std::vector<std::vector<PartState>> typed_parts(static_cast<size_t>(threads));
+        const double bytes_per_row = static_cast<double>(columns) * static_cast<double>(elem_size);
         const double gbs_typed = 2.0 * bytes_per_row;
 
-        for (int rep = 0; rep < R; ++rep)
+        for (int rep = 0; rep < reps; ++rep)
         {
             std::vector<BumpArena> typed_arenas;
-            typed_arenas.reserve(static_cast<size_t>(T));
-            for (int t = 0; t < T; ++t)
+            typed_arenas.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
                 typed_arenas.emplace_back(kArenaSlabBytes);
-            for (int t = 0; t < T; ++t)
+            for (int t = 0; t < threads; ++t)
                 typed_parts[static_cast<size_t>(t)].clear();
 
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
-            ths.reserve(static_cast<size_t>(T));
-            for (int t = 0; t < T; ++t)
+            ths.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
             {
                 ths.emplace_back(
                     [&, t]()
@@ -619,8 +686,8 @@ int main(int argc, char ** argv)
                         pinThread(t);
                         run_fn(
                             typed_streams[static_cast<size_t>(t)],
-                            K,
-                            P,
+                            columns,
+                            partitions,
                             typed_parts[static_cast<size_t>(t)],
                             typed_arenas[static_cast<size_t>(t)],
                             cap_init,
@@ -632,10 +699,10 @@ int main(int argc, char ** argv)
             typed_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
         }
         const auto s = computeStats(std::move(typed_ns));
-        fmt::print("{:<12}  {:>6}  {:>7}  {:>8.3f}  {:>8.1f}\n", label, elem_size, K * elem_size, s.pmin, gbs_typed / s.pmin);
+        fmt::print("{:<12}  {:>6}  {:>7}  {:>8.3f}  {:>8.1f}\n", label, elem_size, columns * elem_size, s.pmin, gbs_typed / s.pmin);
     };
 
-    // UInt64 reference (re-run, fresh streams).
+    // UInt64 (re-run with type-sweep streams; should match main radix).
     run_typed_variant(
         "uint64",
         8,
@@ -667,7 +734,15 @@ int main(int argc, char ** argv)
         [](const BlockStream & blk, int k, int p, std::vector<PartState> & pts, BumpArena & ar, size_t ic, size_t mc_)
         { runTypedRadix(blk, k, p, pts, ar, makeFixedString(8), ic, mc_); });
 
-    // Nullable(UInt64) — 9 bytes/row (1 null + 8 value); key hashed via nested UInt64.
+    // ColumnString with 64-byte payloads (RadixPartitioner scatter; offsets not in B/elem).
+    run_typed_variant(
+        "str64",
+        64,
+        [](size_t tot, size_t br, int k, uint64_t seed) { return genBlocksString64(tot, br, k, seed); },
+        [](const BlockStream & blk, int k, int p, std::vector<PartState> &, BumpArena &, size_t, size_t)
+        { runStringRadixPartitioner(blk, k, p); });
+
+    // Nullable(UInt64): logical 9 B/row; operator expands to null-map + values.
     run_typed_variant(
         "null_uint64",
         9,

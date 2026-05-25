@@ -57,9 +57,9 @@ struct Handle::ArenaPage
 };
 
 
-Handle::Handle(Allocator & parent_, size_t partitions_)
-    : parent(parent_)
-    , parts(partitions_)
+Handle::Handle(Allocator & parent, size_t partitions)
+    : parent_(parent)
+    , parts_(partitions)
 {
 }
 
@@ -69,8 +69,8 @@ Handle::~Handle() = default;
 
 void * Handle::arenaAllocate(size_t bytes, size_t align)
 {
-    if (arena_cursor == nullptr
-        || alignUp(reinterpret_cast<uintptr_t>(arena_cursor), align) + bytes > reinterpret_cast<uintptr_t>(arena_end))
+    if (arena_cursor_ == nullptr
+        || alignUp(reinterpret_cast<uintptr_t>(arena_cursor_), align) + bytes > reinterpret_cast<uintptr_t>(arena_end_))
     {
         const size_t header = alignUp(sizeof(ArenaPage), alignof(std::max_align_t));
         const size_t needed = header + bytes + (align > alignof(std::max_align_t) ? align : 0);
@@ -79,28 +79,28 @@ void * Handle::arenaAllocate(size_t bytes, size_t align)
         auto * page = static_cast<ArenaPage *>(std::malloc(page_bytes));
         if (page == nullptr)
             throw std::bad_alloc();
-        page->next = arena_head;
-        arena_head = page;
+        page->next = arena_head_;
+        arena_head_ = page;
 
         char * payload = reinterpret_cast<char *>(page) + header;
-        arena_cursor = payload;
-        arena_end = reinterpret_cast<char *>(page) + page_bytes;
+        arena_cursor_ = payload;
+        arena_end_ = reinterpret_cast<char *>(page) + page_bytes;
     }
 
-    const auto aligned = alignUp(reinterpret_cast<uintptr_t>(arena_cursor), align);
-    arena_cursor = reinterpret_cast<char *>(aligned + bytes);
+    const auto aligned = alignUp(reinterpret_cast<uintptr_t>(arena_cursor_), align);
+    arena_cursor_ = reinterpret_cast<char *>(aligned + bytes);
     return reinterpret_cast<void *>(aligned);
 }
 
 
 bool Handle::ensureFixed(size_t p, size_t rows)
 {
-    PerPartition & pc = parts[p];
+    PerPartition & pc = parts_[p];
     if (pc.fixed_tail != nullptr && pc.fixed_remaining_rows >= rows)
         return false;
 
-    const PartSchema & sc = parent.schema();
-    const AllocatorOptions & opts = parent.options();
+    const PartSchema & sc = parent_.schema();
+    const AllocatorOptions & opts = parent_.options();
 
     const size_t floor_rows = opts.min_chunk_floor_rows;
     const size_t growth_rows = pc.reserved_rows / 10;
@@ -142,10 +142,10 @@ bool Handle::ensureFixed(size_t p, size_t rows)
     pc.fixed_next_row = 0;
     pc.fixed_remaining_rows = chunk_rows;
 
-    local_chunks.fetch_add(1, std::memory_order_relaxed);
-    local_allocated_bytes.fetch_add(total_data_bytes, std::memory_order_relaxed);
+    local_chunks_.fetch_add(1, std::memory_order_relaxed);
+    local_allocated_bytes_.fetch_add(total_data_bytes, std::memory_order_relaxed);
     if (was_empty)
-        local_active_partitions.fetch_add(1, std::memory_order_relaxed);
+        local_active_partitions_.fetch_add(1, std::memory_order_relaxed);
 
     return true; // new chunk allocated → stale-pointer event
 }
@@ -153,11 +153,11 @@ bool Handle::ensureFixed(size_t p, size_t rows)
 
 void Handle::ensureData(size_t p, size_t varlen_bytes)
 {
-    PerPartition & pc = parts[p];
+    PerPartition & pc = parts_[p];
     if (pc.data_tail != nullptr && pc.data_remaining_bytes >= varlen_bytes)
         return;
 
-    const AllocatorOptions & opts = parent.options();
+    const AllocatorOptions & opts = parent_.options();
 
     const size_t floor_bytes = opts.min_chunk_floor_bytes_data;
     const size_t growth_bytes = pc.reserved_bytes / 10;
@@ -177,17 +177,17 @@ void Handle::ensureData(size_t p, size_t varlen_bytes)
     pc.data_next_byte = 0;
     pc.data_remaining_bytes = chunk_bytes;
 
-    local_chunks.fetch_add(1, std::memory_order_relaxed);
-    local_allocated_bytes.fetch_add(chunk_bytes, std::memory_order_relaxed);
+    local_chunks_.fetch_add(1, std::memory_order_relaxed);
+    local_allocated_bytes_.fetch_add(chunk_bytes, std::memory_order_relaxed);
 }
 
 
 void Handle::reserve(const size_t * rows, const size_t * varlen_bytes, PartReserveGrant * grants, uint64_t * stale_fixed_bitset)
 {
-    chassert(live);
+    chassert(live_);
 
-    const PartSchema & sc = parent.schema();
-    const size_t partitions = parent.partitions();
+    const PartSchema & sc = parent_.schema();
+    const size_t partitions = parent_.partitions();
     uint64_t reserved_delta = 0;
 
     for (size_t p = 0; p < partitions; ++p)
@@ -218,7 +218,7 @@ void Handle::reserve(const size_t * rows, const size_t * varlen_bytes, PartReser
         if (sc.has_varlen_portion)
             ensureData(p, byte_req);
 
-        PerPartition & pc = parts[p];
+        PerPartition & pc = parts_[p];
 
         PartReserveGrant & g = grants[p];
         g.granted_rows = row_req;
@@ -245,18 +245,18 @@ void Handle::reserve(const size_t * rows, const size_t * varlen_bytes, PartReser
         reserved_delta += row_req * sc.fixed_bytes_per_row + byte_req;
     }
 
-    local_reserved_bytes.fetch_add(reserved_delta, std::memory_order_relaxed);
+    local_reserved_bytes_.fetch_add(reserved_delta, std::memory_order_relaxed);
 }
 
 
 Allocator::Allocator(PartSchema schema_, size_t partitions_, size_t /*expected_total_rows*/, AllocatorOptions options_)
-    : part_schema(std::move(schema_))
-    , num_partitions(partitions_)
-    , opts(options_)
+    : part_schema_(std::move(schema_))
+    , num_partitions_(partitions_)
+    , opts_(options_)
 {
-    if (num_partitions == 0)
+    if (num_partitions_ == 0)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "RadixShuffle::Allocator: partitions must be > 0");
-    for (const auto & slot : part_schema.fixed_slots)
+    for (const auto & slot : part_schema_.fixed_slots)
     {
         if (slot.alignment == 0 || (slot.alignment & (slot.alignment - 1)) != 0)
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "RadixShuffle::Allocator: slot alignment must be a power of two");
@@ -266,10 +266,10 @@ Allocator::Allocator(PartSchema schema_, size_t partitions_, size_t /*expected_t
 
 Allocator::~Allocator()
 {
-    std::lock_guard lk(handle_pool_mutex);
-    for (auto & h : handles)
+    std::lock_guard lk(handle_pool_mutex_);
+    for (auto & h : handles_)
     {
-        auto * page = h->arena_head;
+        auto * page = h->arena_head_;
         while (page != nullptr)
         {
             auto * next = page->next;
@@ -282,10 +282,10 @@ Allocator::~Allocator()
 
 Handle * Allocator::acquire()
 {
-    std::lock_guard lk(handle_pool_mutex);
-    auto handle = std::unique_ptr<Handle>(new Handle(*this, num_partitions));
+    std::lock_guard lk(handle_pool_mutex_);
+    auto handle = std::unique_ptr<Handle>(new Handle(*this, num_partitions_));
     auto * raw = handle.get();
-    handles.push_back(std::move(handle));
+    handles_.push_back(std::move(handle));
     return raw;
 }
 
@@ -293,46 +293,46 @@ Handle * Allocator::acquire()
 void Allocator::release(Handle * handle)
 {
     if (handle != nullptr)
-        handle->live = false;
+        handle->live_ = false;
 }
 
 
 uint64_t Allocator::totalAllocatedBytes() const noexcept
 {
-    std::lock_guard lk(handle_pool_mutex);
+    std::lock_guard lk(handle_pool_mutex_);
     uint64_t sum = 0;
-    for (const auto & h : handles)
-        sum += h->local_allocated_bytes.load(std::memory_order_relaxed);
+    for (const auto & h : handles_)
+        sum += h->local_allocated_bytes_.load(std::memory_order_relaxed);
     return sum;
 }
 
 
 uint64_t Allocator::totalReservedBytes() const noexcept
 {
-    std::lock_guard lk(handle_pool_mutex);
+    std::lock_guard lk(handle_pool_mutex_);
     uint64_t sum = 0;
-    for (const auto & h : handles)
-        sum += h->local_reserved_bytes.load(std::memory_order_relaxed);
+    for (const auto & h : handles_)
+        sum += h->local_reserved_bytes_.load(std::memory_order_relaxed);
     return sum;
 }
 
 
 uint64_t Allocator::activePartitions() const noexcept
 {
-    std::lock_guard lk(handle_pool_mutex);
+    std::lock_guard lk(handle_pool_mutex_);
     uint64_t sum = 0;
-    for (const auto & h : handles)
-        sum += h->local_active_partitions.load(std::memory_order_relaxed);
+    for (const auto & h : handles_)
+        sum += h->local_active_partitions_.load(std::memory_order_relaxed);
     return sum;
 }
 
 
 uint64_t Allocator::totalChunks() const noexcept
 {
-    std::lock_guard lk(handle_pool_mutex);
+    std::lock_guard lk(handle_pool_mutex_);
     uint64_t sum = 0;
-    for (const auto & h : handles)
-        sum += h->local_chunks.load(std::memory_order_relaxed);
+    for (const auto & h : handles_)
+        sum += h->local_chunks_.load(std::memory_order_relaxed);
     return sum;
 }
 

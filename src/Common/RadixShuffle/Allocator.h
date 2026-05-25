@@ -57,11 +57,7 @@ public:
     ///                    was newly allocated during this call.  Callers
     ///                    may cache FixedChunk* across batches and consult
     ///                    the bitset to detect when to reload.
-    void reserve(
-        const size_t * rows,
-        const size_t * varlen_bytes,
-        PartReserveGrant * grants,
-        uint64_t * stale_fixed_bitset);
+    void reserve(const size_t * rows, const size_t * varlen_bytes, PartReserveGrant * grants, uint64_t * stale_fixed_bitset);
 
 private:
     friend class Allocator;
@@ -79,22 +75,22 @@ private:
     /// Ensure partition p's data chunk has room for `varlen_bytes` bytes.
     void ensureData(size_t p, size_t varlen_bytes);
 
-    Allocator & parent;
-    std::vector<PerPartition> parts;
+    Allocator & parent_;
+    std::vector<PerPartition> parts_;
 
-    ArenaPage * arena_head = nullptr;
-    char * arena_cursor = nullptr;
-    char * arena_end = nullptr;
+    ArenaPage * arena_head_ = nullptr;
+    char * arena_cursor_ = nullptr;
+    char * arena_end_ = nullptr;
 
     /// Sharded counters — per-handle atomics avoid cache-line bouncing
     /// with other threads' counters at high T.  memory_order_relaxed
     /// suffices because there is no ordering dependency with other state.
-    alignas(64) std::atomic<uint64_t> local_reserved_bytes{0};
-    alignas(64) std::atomic<uint64_t> local_allocated_bytes{0};
-    alignas(64) std::atomic<uint64_t> local_chunks{0};
-    alignas(64) std::atomic<uint64_t> local_active_partitions{0};
+    alignas(64) std::atomic<uint64_t> local_reserved_bytes_{0};
+    alignas(64) std::atomic<uint64_t> local_allocated_bytes_{0};
+    alignas(64) std::atomic<uint64_t> local_chunks_{0};
+    alignas(64) std::atomic<uint64_t> local_active_partitions_{0};
 
-    bool live = true;
+    bool live_ = true;
 };
 
 
@@ -103,11 +99,7 @@ private:
 class Allocator
 {
 public:
-    Allocator(
-        PartSchema schema,
-        size_t partitions,
-        size_t expected_total_rows,
-        AllocatorOptions options = {});
+    Allocator(PartSchema schema, size_t partitions, size_t expected_total_rows, AllocatorOptions options = {});
 
     Allocator(const Allocator &) = delete;
     Allocator & operator=(const Allocator &) = delete;
@@ -116,9 +108,9 @@ public:
 
     ~Allocator();
 
-    [[nodiscard]] size_t partitions() const noexcept { return num_partitions; }
-    [[nodiscard]] const PartSchema & schema() const noexcept { return part_schema; }
-    [[nodiscard]] const AllocatorOptions & options() const noexcept { return opts; }
+    [[nodiscard]] size_t partitions() const noexcept { return num_partitions_; }
+    [[nodiscard]] const PartSchema & schema() const noexcept { return part_schema_; }
+    [[nodiscard]] const AllocatorOptions & options() const noexcept { return opts_; }
 
     Handle * acquire();
     void release(Handle * handle);
@@ -129,12 +121,12 @@ public:
     [[nodiscard]] uint64_t totalChunks() const noexcept;
 
 private:
-    const PartSchema part_schema;
-    const size_t num_partitions;
-    const AllocatorOptions opts;
+    const PartSchema part_schema_;
+    const size_t num_partitions_;
+    const AllocatorOptions opts_;
 
-    mutable std::mutex handle_pool_mutex;
-    std::vector<std::unique_ptr<Handle>> handles;
+    mutable std::mutex handle_pool_mutex_;
+    std::vector<std::unique_ptr<Handle>> handles_;
 };
 
 }

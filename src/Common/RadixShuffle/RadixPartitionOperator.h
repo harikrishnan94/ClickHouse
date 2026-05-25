@@ -54,14 +54,14 @@ public:
     static constexpr int kSimdWidth = 8; ///< uint64 lanes per AVX-512 ZMM register.
 
     /// True iff SWWC NT-store scatter is preferred for (K, P).
-    static bool should_use_swwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
+    static bool shouldUseSwwc(int K, int P) noexcept { return (K == 1) ? (P >= 512) : (P >= 32); }
 
     /// `prims`    — K logical `ColumnPrimitives` objects.  Nullable primitives
     ///              are automatically decomposed into two physical primitives:
     ///              makeFixedWidth<UInt8>() for the null map and the nested
     ///              leaf primitive for the values.
     /// `arena`    — bump allocator for OutBlock storage; must outlive this object.
-    /// `use_swwc` — select SWWC scatter path; use `should_use_swwc(K,P)` as hint.
+    /// `use_swwc` — select SWWC scatter path; use `shouldUseSwwc(K,P)` as hint.
     /// `init_cap` — initial OutBlock row capacity (must be a multiple of 8).
     /// `max_cap`  — maximum OutBlock row capacity (must be a multiple of 8).
     RadixPartitionOperator(
@@ -90,18 +90,18 @@ public:
 private:
     void runBatch(const DB::Columns & columns, size_t start, int n);
 
-    int P_;
-    int K_; ///< Logical column count (as provided by the caller).
-    int K_phys_; ///< Physical column count; ≥ K_ when Nullable columns are expanded.
+    int num_partitions_;
+    int num_columns_; ///< Logical column count (as provided by the caller).
+    int num_physical_columns_; ///< Physical column count; ≥ num_columns_ when Nullable columns are expanded.
     bool use_swwc_;
     int batch_;
     uint32_t mask_; ///< P − 1 (P must be a power of two).
     size_t max_cap_;
 
-    std::vector<ColumnPrimitives> col_prims_; ///< K_ logical prims (Phase 1: compute_pids only).
-    std::vector<ColumnPrimitives> phys_prims_; ///< K_phys_ physical prims (Phase 3-4: scatter).
-    std::vector<PhysColInfo> phys_col_info_; ///< K_phys_ sub-column extraction descriptors.
-    std::vector<ScatterState> scatter_states_; ///< K_phys_ ScatterState objects.
+    std::vector<ColumnPrimitives> col_prims_; ///< num_columns_ logical prims (Phase 1: compute_pids only).
+    std::vector<ColumnPrimitives> phys_prims_; ///< num_physical_columns_ physical prims (Phase 3-4: scatter).
+    std::vector<PhysColInfo> phys_col_info_; ///< num_physical_columns_ sub-column extraction descriptors.
+    std::vector<ScatterState> scatter_states_; ///< num_physical_columns_ ScatterState objects.
     std::vector<PartState> parts_;
     BumpArena & arena_;
 

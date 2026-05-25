@@ -23,7 +23,7 @@ static constexpr size_t kOutCapMax = 65536;
 /// (8 × uint64_t), so every OutBlock capacity must be a multiple of 8.
 [[nodiscard]] inline size_t round8(size_t n) noexcept
 {
-    return (n + 7) & ~size_t(7);
+    return (n + 7) & ~size_t{7};
 }
 
 
@@ -71,7 +71,7 @@ struct PartState
 /// all within one contiguous 64-byte-aligned allocation from `arena`.
 [[nodiscard]] inline OutBlock * newOutBlock(BumpArena & arena, int K, size_t elem_size, size_t cap)
 {
-    constexpr size_t hdr = (sizeof(OutBlock) + 63) & ~size_t(63); // round header to 64 B
+    constexpr size_t hdr = (sizeof(OutBlock) + 63) & ~size_t{63}; // round header to 64 B
     char * raw = arena.alignedAlloc(hdr + static_cast<size_t>(K) * cap * elem_size, 64);
     auto * b = reinterpret_cast<OutBlock *>(raw);
     b->next = nullptr;
@@ -102,7 +102,7 @@ inline void growPart(PartState & ps, BumpArena & arena, int K, size_t elem_size,
 /// Layout: [OutBlock header | col_0[cap * elem_sizes[0]] | col_1[cap * elem_sizes[1]] | ...]
 [[nodiscard]] inline OutBlock * newOutBlock(BumpArena & arena, int K, const size_t * elem_sizes, size_t cap)
 {
-    constexpr size_t hdr = (sizeof(OutBlock) + 63) & ~size_t(63);
+    constexpr size_t hdr = (sizeof(OutBlock) + 63) & ~size_t{63};
     size_t total = 0;
     for (int k = 0; k < K; ++k)
         total += elem_sizes[static_cast<size_t>(k)] * cap;

@@ -48,19 +48,19 @@ namespace rs = DB::RadixShuffle;
 // ───────────────────────── test helpers ─────────────────────────
 
 
-std::vector<uint16_t> uniformPids(size_t n, size_t P, uint64_t seed = 42)
+std::vector<uint16_t> uniformPids(size_t n, size_t num_partitions, uint64_t seed = 42)
 {
     std::vector<uint16_t> pids(n);
     std::mt19937_64 rng(seed); // NOLINT(cert-msc32-c,cert-msc51-cpp)
-    std::uniform_int_distribution<uint16_t> dist(0, static_cast<uint16_t>(P - 1));
+    std::uniform_int_distribution<uint16_t> dist(0, static_cast<uint16_t>(num_partitions - 1));
     for (size_t i = 0; i < n; ++i)
         pids[i] = dist(rng);
     return pids;
 }
 
-std::vector<size_t> histogram(const std::vector<uint16_t> & pids, size_t P)
+std::vector<size_t> histogram(const std::vector<uint16_t> & pids, size_t num_partitions)
 {
-    std::vector<size_t> hist(P, 0);
+    std::vector<size_t> hist(num_partitions, 0);
     for (auto p : pids)
         ++hist[p];
     return hist;
@@ -80,21 +80,21 @@ std::vector<rs::PartReservationView> scatterBatch(
     const std::vector<size_t> & varlen_bytes_per_part,
     rs::ScatterState & state)
 {
-    const size_t P = varlen_bytes_per_part.size();
-    const std::vector<size_t> hist = histogram(pids, P);
+    const size_t num_partitions = varlen_bytes_per_part.size();
+    const std::vector<size_t> hist = histogram(pids, num_partitions);
 
-    std::vector<rs::PartReserveGrant> grants(P);
-    std::vector<uint64_t> stale((P + 63) / 64, 0);
+    std::vector<rs::PartReserveGrant> grants(num_partitions);
+    std::vector<uint64_t> stale((num_partitions + 63) / 64, 0);
     handle->reserve(hist.data(), varlen_bytes_per_part.data(), grants.data(), stale.data());
 
-    std::vector<rs::PartReservation> dst(P);
-    for (size_t p = 0; p < P; ++p)
+    std::vector<rs::PartReservation> dst(num_partitions);
+    for (size_t p = 0; p < num_partitions; ++p)
         dst[p] = grants[p].slice;
 
-    prim.scatter(prim, schema, src, pids.data(), pids.size(), P, dst.data(), state, stale.data());
+    prim.scatter(prim, schema, src, pids.data(), pids.size(), num_partitions, dst.data(), state, stale.data());
 
-    std::vector<rs::PartReservationView> views(P);
-    for (size_t p = 0; p < P; ++p)
+    std::vector<rs::PartReservationView> views(num_partitions);
+    for (size_t p = 0; p < num_partitions; ++p)
     {
         views[p].fixed = dst[p].fixed;
         views[p].row_begin = dst[p].begin_row;
@@ -107,9 +107,9 @@ std::vector<rs::PartReservationView> scatterBatch(
 }
 
 /// Compute per-partition varlen byte totals for a ColumnString batch.
-std::vector<size_t> stringVarlenPerPart(const ColumnString & col, const std::vector<uint16_t> & pids, size_t P)
+std::vector<size_t> stringVarlenPerPart(const ColumnString & col, const std::vector<uint16_t> & pids, size_t num_partitions)
 {
-    std::vector<size_t> out(P, 0);
+    std::vector<size_t> out(num_partitions, 0);
     const auto & offs = col.getOffsets();
     UInt64 prev = 0;
     for (size_t i = 0; i < pids.size(); ++i)
@@ -127,42 +127,46 @@ void roundTripOne(
     const rs::PartSchema & schema,
     const rs::ColumnPrimitives & prim,
     const IColumn & src,
-    size_t P,
+    size_t num_partitions,
     const DataTypePtr & dtype,
     uint64_t seed = 42)
 {
-    const size_t N = src.size();
-    const std::vector<uint16_t> pids = uniformPids(N, P, seed);
+    const size_t num_rows = src.size();
+    const std::vector<uint16_t> pids = uniformPids(num_rows, num_partitions, seed);
 
-    rs::Allocator alloc(schema, P, N);
+    rs::Allocator alloc(schema, num_partitions, num_rows);
     rs::Handle * handle = alloc.acquire();
 
     // Compute varlen bytes per partition if needed
-    std::vector<size_t> varlen(P, 0);
+    std::vector<size_t> varlen(num_partitions, 0);
     if (schema.has_varlen_portion)
     {
         if (const auto * cs = typeid_cast<const ColumnString *>(&src))
-            varlen = stringVarlenPerPart(*cs, pids, P);
+        {
+            varlen = stringVarlenPerPart(*cs, pids, num_partitions);
+        }
         else if (const auto * cn = typeid_cast<const ColumnNullable *>(&src))
         {
             if (const auto * cs2 = typeid_cast<const ColumnString *>(&cn->getNestedColumn()))
-                varlen = stringVarlenPerPart(*cs2, pids, P);
+            {
+                varlen = stringVarlenPerPart(*cs2, pids, num_partitions);
+            }
         }
     }
 
-    rs::ScatterState scatter_state(P);
+    rs::ScatterState scatter_state(num_partitions);
     const std::vector<rs::PartReservationView> views = scatterBatch(handle, schema, prim, src, pids, varlen, scatter_state);
 
     // Build per-partition sorted row indices to know expected multiset.
     // Then reconstruct each partition into a fresh column and concatenate.
-    std::vector<std::vector<size_t>> part_rows(P);
-    for (size_t i = 0; i < N; ++i)
+    std::vector<std::vector<size_t>> part_rows(num_partitions);
+    for (size_t i = 0; i < num_rows; ++i)
         part_rows[pids[i]].push_back(i);
 
     MutableColumnPtr reconstructed = src.cloneEmpty();
-    reconstructed->reserve(N);
+    reconstructed->reserve(num_rows);
 
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
     {
         if (views[p].row_end <= views[p].row_begin)
             continue;
@@ -188,13 +192,14 @@ void roundTripOne(
 
     alloc.release(handle);
 
-    ASSERT_EQ(reconstructed->size(), N);
+    ASSERT_EQ(reconstructed->size(), num_rows);
 
     // Multiset equality: sort field lists from source and reconstructed
-    std::vector<Field> src_fields, rec_fields;
-    src_fields.reserve(N);
-    rec_fields.reserve(N);
-    for (size_t i = 0; i < N; ++i)
+    std::vector<Field> src_fields;
+    std::vector<Field> rec_fields;
+    src_fields.reserve(num_rows);
+    rec_fields.reserve(num_rows);
+    for (size_t i = 0; i < num_rows; ++i)
     {
         src_fields.push_back(src[i]);
         rec_fields.push_back((*reconstructed)[i]);
@@ -431,14 +436,14 @@ TEST(Allocator, ConstructionNoAlloc)
 TEST(Allocator, BasicReserve)
 {
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
-    constexpr size_t P = 4;
-    rs::Allocator alloc(schema, P, 1024);
+    constexpr size_t num_partitions = 4;
+    rs::Allocator alloc(schema, num_partitions, 1024);
     rs::Handle * h = alloc.acquire();
 
     std::vector<size_t> rows = {10, 20, 30, 0};
-    std::vector<size_t> varlen(P, 0);
-    std::vector<rs::PartReserveGrant> grants(P);
-    std::vector<uint64_t> stale((P + 63) / 64, 0);
+    std::vector<size_t> varlen(num_partitions, 0);
+    std::vector<rs::PartReserveGrant> grants(num_partitions);
+    std::vector<uint64_t> stale((num_partitions + 63) / 64, 0);
     h->reserve(rows.data(), varlen.data(), grants.data(), stale.data());
 
     EXPECT_EQ(grants[0].granted_rows, 10u);
@@ -456,19 +461,19 @@ TEST(Allocator, BasicReserve)
 TEST(Allocator, StaleFixedBitset)
 {
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
-    constexpr size_t P = 4;
-    rs::Allocator alloc(schema, P, 0, {.min_chunk_floor_rows = 256});
+    constexpr size_t num_partitions = 4;
+    rs::Allocator alloc(schema, num_partitions, 0, {.min_chunk_floor_rows = 256});
     rs::Handle * h = alloc.acquire();
 
-    std::vector<size_t> rows(P, 10);
-    std::vector<size_t> varlen(P, 0);
-    std::vector<rs::PartReserveGrant> grants(P);
-    std::vector<uint64_t> stale((P + 63) / 64, 0);
+    std::vector<size_t> rows(num_partitions, 10);
+    std::vector<size_t> varlen(num_partitions, 0);
+    std::vector<rs::PartReserveGrant> grants(num_partitions);
+    std::vector<uint64_t> stale((num_partitions + 63) / 64, 0);
     h->reserve(rows.data(), varlen.data(), grants.data(), stale.data());
 
     // All partitions should have stale bits set (first allocation)
     EXPECT_NE(stale[0], 0u);
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
         EXPECT_TRUE((stale[p / 64] >> (p % 64)) & 1u) << "bit p=" << p;
 
     // Second call into the same chunk — no stale bits
@@ -482,18 +487,18 @@ TEST(Allocator, StaleFixedBitset)
 TEST(Allocator, WasteBound)
 {
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
-    constexpr size_t P = 16;
-    constexpr size_t FLOOR_ROWS = 256;
-    rs::Allocator alloc(schema, P, 0, {.min_chunk_floor_rows = FLOOR_ROWS});
+    constexpr size_t num_partitions = 16;
+    constexpr size_t floor_rows = 256;
+    rs::Allocator alloc(schema, num_partitions, 0, {.min_chunk_floor_rows = floor_rows});
     rs::Handle * h = alloc.acquire();
 
-    std::vector<size_t> rows(P, 64);
-    std::vector<size_t> varlen(P, 0);
-    std::vector<rs::PartReserveGrant> grants(P);
-    std::vector<uint64_t> stale((P + 63) / 64, 0);
+    std::vector<size_t> rows(num_partitions, 64);
+    std::vector<size_t> varlen(num_partitions, 0);
+    std::vector<rs::PartReserveGrant> grants(num_partitions);
+    std::vector<uint64_t> stale((num_partitions + 63) / 64, 0);
 
-    constexpr size_t BATCHES = 20;
-    for (size_t b = 0; b < BATCHES; ++b)
+    constexpr size_t num_batches = 20;
+    for (size_t b = 0; b < num_batches; ++b)
     {
         std::fill(stale.begin(), stale.end(), 0);
         h->reserve(rows.data(), varlen.data(), grants.data(), stale.data());
@@ -504,7 +509,7 @@ TEST(Allocator, WasteBound)
     const uint64_t allocated = alloc.totalAllocatedBytes();
     const uint64_t reserved = alloc.totalReservedBytes();
     const uint64_t active = alloc.activePartitions();
-    const uint64_t floor = active * (FLOOR_ROWS * schema.fixed_bytes_per_row + rs::DEFAULT_MIN_CHUNK_FLOOR_BYTES);
+    const uint64_t floor = active * (floor_rows * schema.fixed_bytes_per_row + rs::DEFAULT_MIN_CHUNK_FLOOR_BYTES);
 
     EXPECT_LE(allocated, floor + static_cast<uint64_t>(1.11 * static_cast<double>(reserved)))
         << "waste bound violated: allocated=" << allocated << " reserved=" << reserved << " active=" << active;
@@ -513,30 +518,30 @@ TEST(Allocator, WasteBound)
 TEST(Allocator, MultiThreadedNoBlocking)
 {
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
-    constexpr size_t P = 16;
-    constexpr size_t T = 8;
-    rs::Allocator alloc(schema, P, 0);
+    constexpr size_t num_partitions = 16;
+    constexpr size_t num_threads = 8;
+    rs::Allocator alloc(schema, num_partitions, 0);
 
     std::atomic<uint64_t> total_rows_reserved{0};
     std::vector<std::thread> threads;
-    threads.reserve(T);
+    threads.reserve(num_threads);
 
-    for (size_t t = 0; t < T; ++t)
+    for (size_t t = 0; t < num_threads; ++t)
     {
         threads.emplace_back(
             [&]()
             {
                 rs::Handle * h = alloc.acquire();
-                std::vector<size_t> rows(P, 32);
-                std::vector<size_t> varlen(P, 0);
-                std::vector<rs::PartReserveGrant> grants(P);
-                std::vector<uint64_t> stale((P + 63) / 64, 0);
+                std::vector<size_t> rows(num_partitions, 32);
+                std::vector<size_t> varlen(num_partitions, 0);
+                std::vector<rs::PartReserveGrant> grants(num_partitions);
+                std::vector<uint64_t> stale((num_partitions + 63) / 64, 0);
                 for (size_t b = 0; b < 50; ++b)
                 {
                     std::fill(stale.begin(), stale.end(), 0);
                     h->reserve(rows.data(), varlen.data(), grants.data(), stale.data());
                     uint64_t delta = 0;
-                    for (size_t p = 0; p < P; ++p)
+                    for (size_t p = 0; p < num_partitions; ++p)
                         delta += grants[p].granted_rows;
                     total_rows_reserved.fetch_add(delta, std::memory_order_relaxed);
                 }
@@ -546,7 +551,7 @@ TEST(Allocator, MultiThreadedNoBlocking)
     for (auto & thr : threads)
         thr.join();
 
-    EXPECT_EQ(total_rows_reserved.load(), T * 50 * P * 32);
+    EXPECT_EQ(total_rows_reserved.load(), num_threads * 50 * num_partitions * 32);
 }
 
 
@@ -560,40 +565,40 @@ TEST(ScatterState, WritePointerPersistence)
     // so the stale bitset should be all-zero from batch 2 onwards — the
     // cached write pointers are reused directly.
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
-    constexpr size_t P = 4;
-    constexpr size_t BATCH = 64;
-    constexpr size_t BATCHES = 10;
+    constexpr size_t num_partitions = 4;
+    constexpr size_t batch_size = 64;
+    constexpr size_t num_batches = 10;
 
-    rs::Allocator alloc(schema, P, BATCH * BATCHES, {.min_chunk_floor_rows = BATCH * BATCHES});
+    rs::Allocator alloc(schema, num_partitions, batch_size * num_batches, {.min_chunk_floor_rows = batch_size * num_batches});
     rs::Handle * h = alloc.acquire();
-    rs::ScatterState state(P);
+    rs::ScatterState state(num_partitions);
 
     size_t stale_events = 0;
-    for (size_t b = 0; b < BATCHES; ++b)
+    for (size_t b = 0; b < num_batches; ++b)
     {
-        auto col = makeUInt32Column(BATCH, b);
-        const std::vector<uint16_t> pids = uniformPids(BATCH, P, b);
-        const std::vector<size_t> hist = histogram(pids, P);
-        std::vector<size_t> varlen(P, 0);
+        auto col = makeUInt32Column(batch_size, b);
+        const std::vector<uint16_t> pids = uniformPids(batch_size, num_partitions, b);
+        const std::vector<size_t> hist = histogram(pids, num_partitions);
+        std::vector<size_t> varlen(num_partitions, 0);
 
-        std::vector<rs::PartReserveGrant> grants(P);
-        std::vector<uint64_t> stale((P + 63) / 64, 0);
+        std::vector<rs::PartReserveGrant> grants(num_partitions);
+        std::vector<uint64_t> stale((num_partitions + 63) / 64, 0);
         h->reserve(hist.data(), varlen.data(), grants.data(), stale.data());
 
-        std::vector<rs::PartReservation> dst(P);
-        for (size_t p = 0; p < P; ++p)
+        std::vector<rs::PartReservation> dst(num_partitions);
+        for (size_t p = 0; p < num_partitions; ++p)
             dst[p] = grants[p].slice;
 
-        primitives[0].scatter(primitives[0], schema, *col, pids.data(), BATCH, P, dst.data(), state, stale.data());
+        primitives[0].scatter(primitives[0], schema, *col, pids.data(), batch_size, num_partitions, dst.data(), state, stale.data());
 
-        for (size_t word = 0; word < stale.size(); ++word)
-            stale_events += static_cast<size_t>(__builtin_popcountll(stale[word]));
+        for (const uint64_t word : stale)
+            stale_events += static_cast<size_t>(__builtin_popcountll(word));
     }
 
     alloc.release(h);
 
     // Only the first batch should have set stale bits (one per partition).
-    EXPECT_EQ(stale_events, P);
+    EXPECT_EQ(stale_events, num_partitions);
 }
 
 
@@ -602,29 +607,29 @@ TEST(ScatterState, RoundTripMultiBatchUInt32)
     // Two batches into the same allocator, same ScatterState.
     // Verify round-trip correctness when write pointers are reused.
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeUInt32>()});
-    constexpr size_t P = 8;
-    constexpr size_t N = 256;
+    constexpr size_t num_partitions = 8;
+    constexpr size_t num_rows = 256;
 
-    rs::Allocator alloc(schema, P, N * 2);
+    rs::Allocator alloc(schema, num_partitions, num_rows * 2);
     rs::Handle * h = alloc.acquire();
-    rs::ScatterState state(P);
+    rs::ScatterState state(num_partitions);
 
     std::vector<rs::PartReservationView> all_views[2];
     for (size_t b = 0; b < 2; ++b)
     {
-        auto col = makeUInt32Column(N, b + 100);
-        const auto pids = uniformPids(N, P, b + 100);
-        std::vector<size_t> varlen(P, 0);
+        auto col = makeUInt32Column(num_rows, b + 100);
+        const auto pids = uniformPids(num_rows, num_partitions, b + 100);
+        std::vector<size_t> varlen(num_partitions, 0);
         all_views[b] = scatterBatch(h, schema, primitives[0], *col, pids, varlen, state);
     }
     alloc.release(h);
 
     // Reconstruct both batches and verify non-zero row counts
     size_t total = 0;
-    for (size_t b = 0; b < 2; ++b)
-        for (size_t p = 0; p < P; ++p)
-            total += all_views[b][p].row_end - all_views[b][p].row_begin;
-    EXPECT_EQ(total, N * 2);
+    for (const auto & batch_views : all_views)
+        for (const auto & view : batch_views)
+            total += view.row_end - view.row_begin;
+    EXPECT_EQ(total, num_rows * 2);
 }
 
 
@@ -632,29 +637,29 @@ TEST(ScatterState, RoundTripMultiBatchString)
 {
     // Two batches of String scatter with cached pointers.
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({std::make_shared<DataTypeString>()});
-    constexpr size_t P = 4;
-    constexpr size_t N = 128;
+    constexpr size_t num_partitions = 4;
+    constexpr size_t num_rows = 128;
 
-    rs::Allocator alloc(schema, P, N * 2);
+    rs::Allocator alloc(schema, num_partitions, num_rows * 2);
     rs::Handle * h = alloc.acquire();
-    rs::ScatterState state(P);
+    rs::ScatterState state(num_partitions);
 
     std::vector<rs::PartReservationView> all_views[2];
     for (size_t b = 0; b < 2; ++b)
     {
-        auto col = makeStringColumn(N, b + 200);
-        const auto pids = uniformPids(N, P, b + 200);
+        auto col = makeStringColumn(num_rows, b + 200);
+        const auto pids = uniformPids(num_rows, num_partitions, b + 200);
         const auto & cs = assert_cast<const ColumnString &>(*col);
-        const auto varlen = stringVarlenPerPart(cs, pids, P);
+        const auto varlen = stringVarlenPerPart(cs, pids, num_partitions);
         all_views[b] = scatterBatch(h, schema, primitives[0], *col, pids, varlen, state);
     }
     alloc.release(h);
 
     size_t total = 0;
-    for (size_t b = 0; b < 2; ++b)
-        for (size_t p = 0; p < P; ++p)
-            total += all_views[b][p].row_end - all_views[b][p].row_begin;
-    EXPECT_EQ(total, N * 2);
+    for (const auto & batch_views : all_views)
+        for (const auto & view : batch_views)
+            total += view.row_end - view.row_begin;
+    EXPECT_EQ(total, num_rows * 2);
 }
 
 
@@ -662,65 +667,65 @@ TEST(ScatterState, RoundTripMultiBatchString)
 
 
 template <typename ColPtr>
-void testRoundTrip(ColPtr && col, const DataTypePtr & dt, size_t P)
+void testRoundTrip(ColPtr && col, const DataTypePtr & dt, size_t num_partitions)
 {
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({dt});
-    roundTripOne(schema, primitives[0], *col, P, dt);
+    roundTripOne(schema, primitives[0], *col, num_partitions, dt);
 }
 
 
-TEST(RoundTrip, UInt32_P4)
+TEST(RoundTrip, UInt32P4)
 {
     testRoundTrip(makeUInt32Column(1024), std::make_shared<DataTypeUInt32>(), 4);
 }
-TEST(RoundTrip, UInt32_P32)
+TEST(RoundTrip, UInt32P32)
 {
     testRoundTrip(makeUInt32Column(1024), std::make_shared<DataTypeUInt32>(), 32);
 }
-TEST(RoundTrip, UInt32_P256)
+TEST(RoundTrip, UInt32P256)
 {
     testRoundTrip(makeUInt32Column(16384), std::make_shared<DataTypeUInt32>(), 256);
 }
 
-TEST(RoundTrip, UInt64_P32)
+TEST(RoundTrip, UInt64P32)
 {
     testRoundTrip(makeUInt64Column(1024), std::make_shared<DataTypeUInt64>(), 32);
 }
 
-TEST(RoundTrip, Float64_P32)
+TEST(RoundTrip, Float64P32)
 {
     testRoundTrip(makeFloat64Column(1024), std::make_shared<DataTypeFloat64>(), 32);
 }
 
-TEST(RoundTrip, Decimal64_P32)
+TEST(RoundTrip, Decimal64P32)
 {
     testRoundTrip(makeDecimal64Column(1024), std::make_shared<DataTypeDecimal<Decimal64>>(18, 2), 32);
 }
 
-TEST(RoundTrip, FixedString7_P32)
+TEST(RoundTrip, FixedString7P32)
 {
     testRoundTrip(makeFixedStringColumn(1024, 7), std::make_shared<DataTypeFixedString>(7), 32);
 }
 
-TEST(RoundTrip, String_P4)
+TEST(RoundTrip, StringP4)
 {
     testRoundTrip(makeStringColumn(1024), std::make_shared<DataTypeString>(), 4);
 }
-TEST(RoundTrip, String_P32)
+TEST(RoundTrip, StringP32)
 {
     testRoundTrip(makeStringColumn(1024), std::make_shared<DataTypeString>(), 32);
 }
-TEST(RoundTrip, String_P256)
+TEST(RoundTrip, StringP256)
 {
     testRoundTrip(makeStringColumn(2048), std::make_shared<DataTypeString>(), 256);
 }
 
-TEST(RoundTrip, NullableUInt32_P32)
+TEST(RoundTrip, NullableUInt32P32)
 {
     testRoundTrip(makeNullableUInt32Column(1024), std::make_shared<DataTypeNullable>(std::make_shared<DataTypeUInt32>()), 32);
 }
 
-TEST(RoundTrip, NullableString_P32)
+TEST(RoundTrip, NullableStringP32)
 {
     testRoundTrip(makeNullableStringColumn(1024), std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()), 32);
 }
@@ -739,22 +744,22 @@ TEST(RoundTrip, MultiBatch)
     // Two scatter batches into the same allocator per partition.
     const auto dt = std::make_shared<DataTypeUInt32>();
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({dt});
-    constexpr size_t P = 4;
-    constexpr size_t N = 512;
+    constexpr size_t num_partitions = 4;
+    constexpr size_t num_rows = 512;
 
-    auto src_col = makeUInt32Column(N * 2, 7);
+    auto src_col = makeUInt32Column(num_rows * 2, 7);
     const auto & src = assert_cast<const ColumnVector<UInt32> &>(*src_col);
 
-    const std::vector<uint16_t> pids1 = uniformPids(N, P, 1);
-    const std::vector<uint16_t> pids2 = uniformPids(N, P, 2);
+    const std::vector<uint16_t> pids1 = uniformPids(num_rows, num_partitions, 1);
+    const std::vector<uint16_t> pids2 = uniformPids(num_rows, num_partitions, 2);
 
-    rs::Allocator alloc(schema, P, N * 2);
+    rs::Allocator alloc(schema, num_partitions, num_rows * 2);
     rs::Handle * handle = alloc.acquire();
 
     // Track per-partition view lists across both batches.
     // Reuse the same ScatterState to test write-pointer persistence across batches.
-    std::vector<std::vector<rs::PartReservationView>> all_views(P);
-    rs::ScatterState scatter_state(P);
+    std::vector<std::vector<rs::PartReservationView>> all_views(num_partitions);
+    rs::ScatterState scatter_state(num_partitions);
 
     for (size_t batch = 0; batch < 2; ++batch)
     {
@@ -762,12 +767,12 @@ TEST(RoundTrip, MultiBatch)
 
         // Create a sub-column view for this batch
         auto batch_col = ColumnVector<UInt32>::create();
-        for (size_t i = 0; i < N; ++i)
-            batch_col->insertValue(src.getData()[batch * N + i]);
+        for (size_t i = 0; i < num_rows; ++i)
+            batch_col->insertValue(src.getData()[batch * num_rows + i]);
 
-        std::vector<size_t> varlen(P, 0);
+        std::vector<size_t> varlen(num_partitions, 0);
         const auto views = scatterBatch(handle, schema, primitives[0], *batch_col, pids, varlen, scatter_state);
-        for (size_t p = 0; p < P; ++p)
+        for (size_t p = 0; p < num_partitions; ++p)
             if (views[p].row_end > views[p].row_begin)
                 all_views[p].push_back(views[p]);
     }
@@ -776,7 +781,7 @@ TEST(RoundTrip, MultiBatch)
 
     // Reconstruct each partition fully
     size_t total_reconstructed = 0;
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
     {
         if (all_views[p].empty())
             continue;
@@ -791,7 +796,7 @@ TEST(RoundTrip, MultiBatch)
         EXPECT_EQ(part_col->size(), expected) << "partition " << p;
         total_reconstructed += part_col->size();
     }
-    EXPECT_EQ(total_reconstructed, N * 2);
+    EXPECT_EQ(total_reconstructed, num_rows * 2);
 }
 
 
@@ -804,7 +809,8 @@ TEST(Hash, Deterministic)
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({dt});
     auto col = makeUInt32Column(256);
 
-    std::vector<uint32_t> out1(256, 0), out2(256, 0);
+    std::vector<uint32_t> out1(256, 0);
+    std::vector<uint32_t> out2(256, 0);
     primitives[0].hash(primitives[0], schema, *col, 0, 256, /*initial=*/true, out1.data());
     primitives[0].hash(primitives[0], schema, *col, 0, 256, /*initial=*/true, out2.data());
     EXPECT_EQ(out1, out2);
@@ -817,19 +823,19 @@ TEST(Hash, CombinerUniformity)
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>(), std::make_shared<DataTypeUInt64>()};
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives(types);
 
-    constexpr size_t N = 64;
-    auto col0 = makeUInt32Column(N, 1);
-    auto col1 = makeUInt64Column(N, 2);
+    constexpr size_t num_rows = 64;
+    auto col0 = makeUInt32Column(num_rows, 1);
+    auto col1 = makeUInt64Column(num_rows, 2);
 
     // Order: col0 then col1
-    std::vector<uint32_t> out_01(N, 0);
-    primitives[0].hash(primitives[0], schema, *col0, 0, N, /*initial=*/true, out_01.data());
-    primitives[1].hash(primitives[1], schema, *col1, 0, N, /*initial=*/false, out_01.data());
+    std::vector<uint32_t> out_01(num_rows, 0);
+    primitives[0].hash(primitives[0], schema, *col0, 0, num_rows, /*initial=*/true, out_01.data());
+    primitives[1].hash(primitives[1], schema, *col1, 0, num_rows, /*initial=*/false, out_01.data());
 
     // Order: col1 then col0
-    std::vector<uint32_t> out_10(N, 0);
-    primitives[1].hash(primitives[1], schema, *col1, 0, N, /*initial=*/true, out_10.data());
-    primitives[0].hash(primitives[0], schema, *col0, 0, N, /*initial=*/false, out_10.data());
+    std::vector<uint32_t> out_10(num_rows, 0);
+    primitives[1].hash(primitives[1], schema, *col1, 0, num_rows, /*initial=*/true, out_10.data());
+    primitives[0].hash(primitives[0], schema, *col0, 0, num_rows, /*initial=*/false, out_10.data());
 
     // The two orders produce different results (unless all values collide,
     // which is negligible for 64 random rows)
@@ -855,7 +861,8 @@ TEST(Hash, NullableParticipation)
     null_b->insertValue(1);
     auto col_b = ColumnNullable::create(std::move(nested_b), std::move(null_b));
 
-    uint32_t ha = 0, hb = 0;
+    uint32_t ha = 0;
+    uint32_t hb = 0;
     primitives[0].hash(primitives[0], schema, *col_a, 0, 1, /*initial=*/true, &ha);
     primitives[0].hash(primitives[0], schema, *col_b, 0, 1, /*initial=*/true, &hb);
     EXPECT_NE(ha, hb);
@@ -867,25 +874,25 @@ TEST(Hash, StringRoundTripSameHash)
     // hash of the reconstructed column must equal the hash of the original.
     const auto dt = std::make_shared<DataTypeString>();
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({dt});
-    constexpr size_t N = 128;
-    constexpr size_t P = 8;
+    constexpr size_t num_rows = 128;
+    constexpr size_t num_partitions = 8;
 
-    auto src_col = makeStringColumn(N, 5);
-    const std::vector<uint16_t> pids = uniformPids(N, P, 99);
+    auto src_col = makeStringColumn(num_rows, 5);
+    const std::vector<uint16_t> pids = uniformPids(num_rows, num_partitions, 99);
 
     const auto & src = assert_cast<const ColumnString &>(*src_col);
-    const std::vector<size_t> varlen = stringVarlenPerPart(src, pids, P);
+    const std::vector<size_t> varlen = stringVarlenPerPart(src, pids, num_partitions);
 
-    rs::Allocator alloc(schema, P, N);
+    rs::Allocator alloc(schema, num_partitions, num_rows);
     rs::Handle * h = alloc.acquire();
-    rs::ScatterState scatter_state(P);
+    rs::ScatterState scatter_state(num_partitions);
     const auto views = scatterBatch(h, schema, primitives[0], src, pids, varlen, scatter_state);
     alloc.release(h);
 
     // Reconstruct all partitions into one column
     auto rec = ColumnString::create();
-    rec->reserve(N);
-    for (size_t p = 0; p < P; ++p)
+    rec->reserve(num_rows);
+    for (size_t p = 0; p < num_partitions; ++p)
     {
         if (views[p].row_end <= views[p].row_begin)
             continue;
@@ -996,16 +1003,16 @@ TEST(Reconstruct, PumpResume)
     // limit of 50 rows per call; verify correct resumption.
     const auto dt = std::make_shared<DataTypeUInt32>();
     const auto [schema, primitives] = rs::buildSchemaAndPrimitives({dt});
-    constexpr size_t N = 1024;
-    constexpr size_t P = 4;
+    constexpr size_t num_rows = 1024;
+    constexpr size_t num_partitions = 4;
 
-    auto src_col = makeUInt32Column(N, 3);
-    const std::vector<uint16_t> pids = uniformPids(N, P, 3);
-    std::vector<size_t> varlen(P, 0);
+    auto src_col = makeUInt32Column(num_rows, 3);
+    const std::vector<uint16_t> pids = uniformPids(num_rows, num_partitions, 3);
+    std::vector<size_t> varlen(num_partitions, 0);
 
-    rs::Allocator alloc(schema, P, N);
+    rs::Allocator alloc(schema, num_partitions, num_rows);
     rs::Handle * h = alloc.acquire();
-    rs::ScatterState scatter_state(P);
+    rs::ScatterState scatter_state(num_partitions);
     const auto views = scatterBatch(h, schema, primitives[0], *src_col, pids, varlen, scatter_state);
     alloc.release(h);
 
@@ -1022,7 +1029,7 @@ TEST(Reconstruct, PumpResume)
             const size_t remaining = total - pumped;
             const size_t cap = std::min(remaining, size_t{50});
             result->reserve(pumped + cap);
-            pos = primitives[0].reconstruct(primitives[0], schema, &views[0], 1, pos, *result);
+            pos = primitives[0].reconstruct(primitives[0], schema, views.data(), 1, pos, *result);
             pumped = result->size();
         }
         EXPECT_EQ(result->size(), total);
@@ -1050,10 +1057,16 @@ MutableColumnPtr collectBuckets(const rs::RadixPartitioner & part, size_t col_k,
         if (part.schema().has_varlen_portion)
         {
             if (auto * sc = typeid_cast<ColumnString *>(tmp.get()))
+            {
                 sc->getChars().reserve(bkt.total_varlen_bytes);
+            }
             else if (auto * nc = typeid_cast<ColumnNullable *>(tmp.get()))
+            {
                 if (auto * sc2 = typeid_cast<ColumnString *>(&nc->getNestedColumn()))
+                {
                     sc2->getChars().reserve(bkt.total_varlen_bytes);
+                }
+            }
         }
         rs::ResumePosition pos{};
         pos = part.primitives()[col_k].reconstruct(part.primitives()[col_k], part.schema(), bkt.views.data(), bkt.views.size(), pos, *tmp);
@@ -1066,21 +1079,26 @@ MutableColumnPtr collectBuckets(const rs::RadixPartitioner & part, size_t col_k,
 
 /// Partition cols, reconstruct col_k from all buckets, assert multiset equality.
 void rxpRoundTrip(
-    const DB::Columns & cols, const std::vector<DataTypePtr> & types, size_t P, size_t col_k, const std::vector<size_t> & key_idxs = {0})
+    const DB::Columns & cols,
+    const std::vector<DataTypePtr> & types,
+    size_t num_partitions,
+    size_t col_k,
+    const std::vector<size_t> & key_idxs = {0})
 {
-    const size_t N = cols[0]->size();
+    const size_t num_rows = cols[0]->size();
     auto sp = rs::buildSchemaAndPrimitives(types);
-    rs::RadixPartitioner part(sp.schema, sp.primitives, P, key_idxs);
+    rs::RadixPartitioner part(sp.schema, sp.primitives, num_partitions, key_idxs);
     part.process(cols);
     part.finish();
 
     MutableColumnPtr rec = collectBuckets(part, col_k, *cols[col_k]);
-    ASSERT_EQ(rec->size(), N);
+    ASSERT_EQ(rec->size(), num_rows);
 
-    std::vector<Field> sf, rf;
-    sf.reserve(N);
-    rf.reserve(N);
-    for (size_t i = 0; i < N; ++i)
+    std::vector<Field> sf;
+    std::vector<Field> rf;
+    sf.reserve(num_rows);
+    rf.reserve(num_rows);
+    for (size_t i = 0; i < num_rows; ++i)
     {
         sf.push_back((*cols[col_k])[i]);
         rf.push_back((*rec)[i]);
@@ -1091,33 +1109,33 @@ void rxpRoundTrip(
 }
 
 
-TEST(RadixPartitioner, SingleColumnUInt32_RoundTrip)
+TEST(RadixPartitioner, SingleColumnUInt32RoundTrip)
 {
-    constexpr size_t N = 4096;
-    constexpr size_t P = 32;
-    auto col = makeUInt32Column(N, 1);
+    constexpr size_t num_rows = 4096;
+    constexpr size_t num_partitions = 32;
+    auto col = makeUInt32Column(num_rows, 1);
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
     DB::Columns cols{col->getPtr()};
-    rxpRoundTrip(cols, types, P, 0);
+    rxpRoundTrip(cols, types, num_partitions, 0);
 }
 
 
-TEST(RadixPartitioner, MultiColumnUInt32String_RoundTrip)
+TEST(RadixPartitioner, MultiColumnUInt32StringRoundTrip)
 {
     // K=2 columns (UInt32 + String); key = col0.
     // Verify both columns round-trip with multiset equality.
-    constexpr size_t N = 1024;
-    constexpr size_t P = 16;
+    constexpr size_t num_rows = 1024;
+    constexpr size_t num_partitions = 16;
 
-    auto col0 = makeUInt32Column(N, 10);
-    auto col1 = makeStringColumn(N, 11);
+    auto col0 = makeUInt32Column(num_rows, 10);
+    auto col1 = makeStringColumn(num_rows, 11);
 
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>(), std::make_shared<DataTypeString>()};
     DB::Columns cols{col0->getPtr(), col1->getPtr()};
 
     // Round-trip both columns independently.
-    rxpRoundTrip(cols, types, P, 0);
-    rxpRoundTrip(cols, types, P, 1);
+    rxpRoundTrip(cols, types, num_partitions, 0);
+    rxpRoundTrip(cols, types, num_partitions, 1);
 }
 
 
@@ -1125,13 +1143,13 @@ TEST(RadixPartitioner, MultiKeyHash)
 {
     // K=4 columns, key_col_idxs = {0, 2}.
     // Run twice with same data → same partition assignments (deterministic).
-    constexpr size_t N = 256;
-    constexpr size_t P = 8;
+    constexpr size_t num_rows = 256;
+    constexpr size_t num_partitions = 8;
 
-    auto c0 = makeUInt32Column(N, 1);
-    auto c1 = makeUInt64Column(N, 2);
-    auto c2 = makeUInt32Column(N, 3);
-    auto c3 = makeFloat64Column(N, 4);
+    auto c0 = makeUInt32Column(num_rows, 1);
+    auto c1 = makeUInt64Column(num_rows, 2);
+    auto c2 = makeUInt32Column(num_rows, 3);
+    auto c3 = makeFloat64Column(num_rows, 4);
 
     const std::vector<DataTypePtr> types
         = {std::make_shared<DataTypeUInt32>(),
@@ -1142,36 +1160,36 @@ TEST(RadixPartitioner, MultiKeyHash)
     auto sp = rs::buildSchemaAndPrimitives(types);
 
     // Run 1
-    rs::RadixPartitioner part1(sp.schema, sp.primitives, P, {0, 2});
+    rs::RadixPartitioner part1(sp.schema, sp.primitives, num_partitions, {0, 2});
     DB::Columns cols{c0->getPtr(), c1->getPtr(), c2->getPtr(), c3->getPtr()};
     part1.process(cols);
     part1.finish();
 
     // Run 2
-    rs::RadixPartitioner part2(sp.schema, sp.primitives, P, {0, 2});
+    rs::RadixPartitioner part2(sp.schema, sp.primitives, num_partitions, {0, 2});
     part2.process(cols);
     part2.finish();
 
     // Same per-partition row counts in both runs.
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
         EXPECT_EQ(part1.bucket(p).total_rows, part2.bucket(p).total_rows) << "partition " << p << " counts differ between runs";
 
     // Total == N.
     size_t total = 0;
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
         total += part1.bucket(p).total_rows;
-    EXPECT_EQ(total, N);
+    EXPECT_EQ(total, num_rows);
 }
 
 
 TEST(RadixPartitioner, NullableStringRoundTrip)
 {
-    constexpr size_t N = 512;
-    constexpr size_t P = 4;
-    auto col = makeNullableStringColumn(N, 7);
+    constexpr size_t num_rows = 512;
+    constexpr size_t num_partitions = 4;
+    auto col = makeNullableStringColumn(num_rows, 7);
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>())};
     DB::Columns cols{col->getPtr()};
-    rxpRoundTrip(cols, types, P, 0);
+    rxpRoundTrip(cols, types, num_partitions, 0);
 }
 
 
@@ -1179,16 +1197,16 @@ TEST(RadixPartitioner, LargeBlockSlicing)
 {
     // Input bigger than batch_size → internal slicing via IColumn::cut.
     // batch_size_override=64 forces many slices on a small N.
-    constexpr size_t N = 512;
-    constexpr size_t P = 8;
+    constexpr size_t num_rows = 512;
+    constexpr size_t num_partitions = 8;
 
-    auto col = makeUInt32Column(N, 99);
+    auto col = makeUInt32Column(num_rows, 99);
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
     auto sp = rs::buildSchemaAndPrimitives(types);
 
     rs::RadixPartitionerOptions opts;
     opts.batch_size_override = 64;
-    rs::RadixPartitioner part(sp.schema, sp.primitives, P, {0}, opts);
+    rs::RadixPartitioner part(sp.schema, sp.primitives, num_partitions, {0}, opts);
 
     DB::Columns cols{col->getPtr()};
     part.process(cols);
@@ -1196,17 +1214,18 @@ TEST(RadixPartitioner, LargeBlockSlicing)
 
     // Total rows must equal N.
     size_t total = 0;
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
         total += part.bucket(p).total_rows;
-    EXPECT_EQ(total, N);
+    EXPECT_EQ(total, num_rows);
 
     // Multiset equality.
     MutableColumnPtr rec = collectBuckets(part, 0, *col);
-    ASSERT_EQ(rec->size(), N);
-    std::vector<Field> sf, rf;
-    sf.reserve(N);
-    rf.reserve(N);
-    for (size_t i = 0; i < N; ++i)
+    ASSERT_EQ(rec->size(), num_rows);
+    std::vector<Field> sf;
+    std::vector<Field> rf;
+    sf.reserve(num_rows);
+    rf.reserve(num_rows);
+    for (size_t i = 0; i < num_rows; ++i)
     {
         sf.push_back((*col)[i]);
         rf.push_back((*rec)[i]);
@@ -1219,60 +1238,60 @@ TEST(RadixPartitioner, LargeBlockSlicing)
 
 TEST(RadixPartitioner, NonPowerOfTwoP)
 {
-    // P=100 exercises Lemire's fast modulo for non-power-of-2 P.
-    constexpr size_t N = 2000;
-    constexpr size_t P = 100;
+    // num_partitions=100 exercises Lemire's fast modulo for non-power-of-2 P.
+    constexpr size_t num_rows = 2000;
+    constexpr size_t num_partitions = 100;
 
-    auto col = makeUInt32Column(N, 55);
+    auto col = makeUInt32Column(num_rows, 55);
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
     DB::Columns cols{col->getPtr()};
-    rxpRoundTrip(cols, types, P, 0);
+    rxpRoundTrip(cols, types, num_partitions, 0);
 }
 
 
 TEST(RadixPartitioner, HistogramSumsToN)
 {
     // sum(bucket(p).total_rows for p in 0..P) == N for every batch size.
-    constexpr size_t P = 32;
+    constexpr size_t num_partitions = 32;
 
-    for (size_t N : {size_t{0}, size_t{1}, size_t{256}, size_t{4097}})
+    for (size_t num_rows : {size_t{0}, size_t{1}, size_t{256}, size_t{4097}})
     {
-        auto col = makeUInt32Column(N, 77);
+        auto col = makeUInt32Column(num_rows, 77);
         const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt32>()};
         auto sp = rs::buildSchemaAndPrimitives(types);
-        rs::RadixPartitioner part(sp.schema, sp.primitives, P, {0});
-        if (N > 0)
+        rs::RadixPartitioner part(sp.schema, sp.primitives, num_partitions, {0});
+        if (num_rows > 0)
         {
             DB::Columns cols{col->getPtr()};
             part.process(cols);
         }
         part.finish();
         size_t total = 0;
-        for (size_t p = 0; p < P; ++p)
+        for (size_t p = 0; p < num_partitions; ++p)
             total += part.bucket(p).total_rows;
-        EXPECT_EQ(total, N) << "N=" << N;
+        EXPECT_EQ(total, num_rows) << "N=" << num_rows;
     }
 }
 
 
 TEST(RadixPartitioner, LargeP)
 {
-    // P=4096: histogram and scatter scale; basic sanity check.
-    constexpr size_t N = 16384;
-    constexpr size_t P = 4096;
+    // num_partitions=4096: histogram and scatter scale; basic sanity check.
+    constexpr size_t num_rows = 16384;
+    constexpr size_t num_partitions = 4096;
 
-    auto col = makeUInt64Column(N, 88);
+    auto col = makeUInt64Column(num_rows, 88);
     const std::vector<DataTypePtr> types = {std::make_shared<DataTypeUInt64>()};
     auto sp = rs::buildSchemaAndPrimitives(types);
-    rs::RadixPartitioner part(sp.schema, sp.primitives, P, {0});
+    rs::RadixPartitioner part(sp.schema, sp.primitives, num_partitions, {0});
     DB::Columns cols{col->getPtr()};
     part.process(cols);
     part.finish();
 
     size_t total = 0;
-    for (size_t p = 0; p < P; ++p)
+    for (size_t p = 0; p < num_partitions; ++p)
         total += part.bucket(p).total_rows;
-    EXPECT_EQ(total, N);
+    EXPECT_EQ(total, num_rows);
 }
 
 
@@ -1281,7 +1300,7 @@ TEST(RadixPartitioner, LargeP)
 // These tests exercise the OutBlock / BumpArena based scatter operator.
 // Coverage goals:
 //   • all code paths in RadixPartitionOperator.cpp
-//   • direct scatter (small P) and SWWC scatter (large P) for every column type
+//   • direct scatter (small num_partitions) and SWWC scatter (large num_partitions) for every column type
 //   • Nullable decomposition into [null_map, values] physical columns
 //   • drain-before-grow in Phase 3 (block overflow during SWWC)
 //   • finish() both with and without staged residuals
@@ -1379,7 +1398,9 @@ auto makeVec(size_t n, uint64_t seed = 1)
             col->insertValue(dist(rng));
         }
         else
+        {
             col->insertValue(static_cast<T>(rng()));
+        }
     }
     return col;
 }
@@ -1391,7 +1412,7 @@ auto makeDecCol(size_t n, uint64_t seed = 1)
     std::mt19937_64 rng(seed);
     auto col = DB::ColumnDecimal<DecT>::create(0, 0);
     for (size_t i = 0; i < n; ++i)
-        col->insertValue(DecT(static_cast<typename DecT::NativeType>(rng())));
+        col->insertValue(DecT(static_cast<DecT::NativeType>(rng())));
     return col;
 }
 
@@ -1431,25 +1452,26 @@ DB::MutableColumnPtr makeFixedStrCol(size_t n, size_t width, uint64_t seed = 1)
 
 // ── Core round-trip helper ───────────────────────────────────────────────────
 
-/// Run the operator on `N` rows across `BLOCKS` calls to `process()`, then
+/// Run the operator on `N` rows across `num_blocks` calls to `process()`, then
 /// collect all scattered rows and verify they form a multiset-equal copy of
 /// the input.  Returns the total rows collected.
 template <typename T>
-size_t runNumericRoundTrip(size_t N, int P, size_t blocks = 1, size_t init_cap = rs::kOutCapMin, size_t max_cap = rs::kOutCapMax)
+size_t runNumericRoundTrip(
+    size_t num_rows, int num_partitions, size_t blocks = 1, size_t init_cap = rs::kOutCapMin, size_t max_cap = rs::kOutCapMax)
 {
-    auto col = makeVec<T>(N, 17);
+    auto col = makeVec<T>(num_rows, 17);
     const auto & src = assert_cast<const DB::ColumnVector<T> &>(*col);
 
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<T>());
     rs::BumpArena arena(64ULL << 20);
-    bool use_swwc = rs::RadixPartitionOperator::should_use_swwc(1, P);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, use_swwc, init_cap, max_cap);
+    bool use_swwc = rs::RadixPartitionOperator::shouldUseSwwc(1, num_partitions);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, use_swwc, init_cap, max_cap);
 
-    const size_t rows_per_block = (N + blocks - 1) / blocks;
+    const size_t rows_per_block = (num_rows + blocks - 1) / blocks;
     for (size_t b = 0; b < blocks; ++b)
     {
         const size_t start = b * rows_per_block;
-        const size_t end = std::min(start + rows_per_block, N);
+        const size_t end = std::min(start + rows_per_block, num_rows);
         if (start >= end)
             break;
         DB::Columns blk = {col->cut(start, end - start)};
@@ -1458,195 +1480,205 @@ size_t runNumericRoundTrip(size_t N, int P, size_t blocks = 1, size_t init_cap =
     op.finish();
 
     std::vector<T> collected = collectScalar<T>(op.parts(), 0);
-    EXPECT_EQ(collected.size(), N);
+    EXPECT_EQ(collected.size(), num_rows);
 
     std::vector<T> original(src.getData().begin(), src.getData().end());
     std::sort(original.begin(), original.end());
     std::sort(collected.begin(), collected.end());
-    EXPECT_EQ(original, collected) << "type=" << typeid(T).name() << " P=" << P << " N=" << N;
+    EXPECT_EQ(original, collected) << "type=" << typeid(T).name() << " P=" << num_partitions << " N=" << num_rows;
 
     return totalRows(op.parts());
 }
 
 
 // ─────────────────────────── Direct scatter tests ───────────────────────────
-// should_use_swwc(1, P) == false  ↔  P < 512
-// should_use_swwc(K, P) == false  ↔  K>=2 && P < 32
+// shouldUseSwwc(1, num_partitions) == false  ↔  P < 512
+// shouldUseSwwc(K, num_partitions) == false  ↔  K>=2 && P < 32
 
 TEST(RadixPartitionOperator, ShouldUseSwwcCrossover)
 {
     // K=1: threshold at P=512
-    EXPECT_FALSE(rs::RadixPartitionOperator::should_use_swwc(1, 1));
-    EXPECT_FALSE(rs::RadixPartitionOperator::should_use_swwc(1, 256));
-    EXPECT_FALSE(rs::RadixPartitionOperator::should_use_swwc(1, 511));
-    EXPECT_TRUE(rs::RadixPartitionOperator::should_use_swwc(1, 512));
-    EXPECT_TRUE(rs::RadixPartitionOperator::should_use_swwc(1, 1024));
+    EXPECT_FALSE(rs::RadixPartitionOperator::shouldUseSwwc(1, 1));
+    EXPECT_FALSE(rs::RadixPartitionOperator::shouldUseSwwc(1, 256));
+    EXPECT_FALSE(rs::RadixPartitionOperator::shouldUseSwwc(1, 511));
+    EXPECT_TRUE(rs::RadixPartitionOperator::shouldUseSwwc(1, 512));
+    EXPECT_TRUE(rs::RadixPartitionOperator::shouldUseSwwc(1, 1024));
     // K>=2: threshold at P=32
-    EXPECT_FALSE(rs::RadixPartitionOperator::should_use_swwc(2, 16));
-    EXPECT_FALSE(rs::RadixPartitionOperator::should_use_swwc(4, 31));
-    EXPECT_TRUE(rs::RadixPartitionOperator::should_use_swwc(2, 32));
-    EXPECT_TRUE(rs::RadixPartitionOperator::should_use_swwc(4, 64));
+    EXPECT_FALSE(rs::RadixPartitionOperator::shouldUseSwwc(2, 16));
+    EXPECT_FALSE(rs::RadixPartitionOperator::shouldUseSwwc(4, 31));
+    EXPECT_TRUE(rs::RadixPartitionOperator::shouldUseSwwc(2, 32));
+    EXPECT_TRUE(rs::RadixPartitionOperator::shouldUseSwwc(4, 64));
 }
 
-TEST(RadixPartitionOperator, Direct_UInt8_P4)
+TEST(RadixPartitionOperator, DirectUInt8P4)
 {
     runNumericRoundTrip<UInt8>(2048, 4);
 }
-TEST(RadixPartitionOperator, Direct_UInt16_P16)
+TEST(RadixPartitionOperator, DirectUInt16P16)
 {
     runNumericRoundTrip<UInt16>(2048, 16);
 }
-TEST(RadixPartitionOperator, Direct_UInt32_P64)
+TEST(RadixPartitionOperator, DirectUInt32P64)
 {
     runNumericRoundTrip<UInt32>(4096, 64);
 }
-TEST(RadixPartitionOperator, Direct_UInt64_P256)
+TEST(RadixPartitionOperator, DirectUInt64P256)
 {
     runNumericRoundTrip<UInt64>(4096, 256);
 }
-TEST(RadixPartitionOperator, Direct_UInt128_P4)
+TEST(RadixPartitionOperator, DirectUInt128P4)
 {
     runNumericRoundTrip<UInt128>(1024, 4);
 }
-TEST(RadixPartitionOperator, Direct_UInt256_P4)
+TEST(RadixPartitionOperator, DirectUInt256P4)
 {
     runNumericRoundTrip<UInt256>(512, 4);
 }
-TEST(RadixPartitionOperator, Direct_Int8_P8)
+TEST(RadixPartitionOperator, DirectInt8P8)
 {
     runNumericRoundTrip<Int8>(2048, 8);
 }
-TEST(RadixPartitionOperator, Direct_Int16_P8)
+TEST(RadixPartitionOperator, DirectInt16P8)
 {
     runNumericRoundTrip<Int16>(2048, 8);
 }
-TEST(RadixPartitionOperator, Direct_Int32_P64)
+TEST(RadixPartitionOperator, DirectInt32P64)
 {
     runNumericRoundTrip<Int32>(4096, 64);
 }
-TEST(RadixPartitionOperator, Direct_Int64_P128)
+TEST(RadixPartitionOperator, DirectInt64P128)
 {
     runNumericRoundTrip<Int64>(4096, 128);
 }
-TEST(RadixPartitionOperator, Direct_Float32_P16)
+TEST(RadixPartitionOperator, DirectFloat32P16)
 {
     runNumericRoundTrip<Float32>(2048, 16);
 }
-TEST(RadixPartitionOperator, Direct_Float64_P128)
+TEST(RadixPartitionOperator, DirectFloat64P128)
 {
     runNumericRoundTrip<Float64>(4096, 128);
 }
 
-TEST(RadixPartitionOperator, Direct_Decimal32_P4)
+TEST(RadixPartitionOperator, DirectDecimal32P4)
 {
-    constexpr size_t N = 1024;
-    constexpr int P = 4;
-    auto col = makeDecCol<Decimal32>(N, 7);
+    constexpr size_t num_rows = 1024;
+    constexpr int num_partitions = 4;
+    auto col = makeDecCol<Decimal32>(num_rows, 7);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeDecimal<Decimal32>());
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
     using NT = Decimal32::NativeType;
-    std::vector<NT> orig, coll;
-    for (size_t i = 0; i < N; ++i)
+    std::vector<NT> orig;
+
+    std::vector<NT> coll;
+    for (size_t i = 0; i < num_rows; ++i)
         orig.push_back(col->getData()[i].value);
     coll = collectScalar<NT>(op.parts(), 0);
 
-    ASSERT_EQ(coll.size(), N);
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
 }
 
-TEST(RadixPartitionOperator, Direct_Decimal64_P64)
+TEST(RadixPartitionOperator, DirectDecimal64P64)
 {
-    constexpr size_t N = 2048;
-    constexpr int P = 64;
-    auto col = makeDecCol<Decimal64>(N, 8);
+    constexpr size_t num_rows = 2048;
+    constexpr int num_partitions = 64;
+    auto col = makeDecCol<Decimal64>(num_rows, 8);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeDecimal<Decimal64>());
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
     using NT = Decimal64::NativeType;
-    std::vector<NT> orig, coll;
-    for (size_t i = 0; i < N; ++i)
+    std::vector<NT> orig;
+
+    std::vector<NT> coll;
+    for (size_t i = 0; i < num_rows; ++i)
         orig.push_back(col->getData()[i].value);
     coll = collectScalar<NT>(op.parts(), 0);
 
-    ASSERT_EQ(coll.size(), N);
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
 }
 
-TEST(RadixPartitionOperator, Direct_FixedString8_P16)
+TEST(RadixPartitionOperator, DirectFixedString8P16)
 {
-    constexpr size_t N = 1024;
-    constexpr int P = 16;
-    constexpr size_t W = 8;
-    auto col = makeFixedStrCol(N, W, 5);
-    std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedString(W));
+    constexpr size_t num_rows = 1024;
+    constexpr int num_partitions = 16;
+    constexpr size_t width = 8;
+    auto col = makeFixedStrCol(num_rows, width, 5);
+    std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedString(width));
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
-    std::vector<std::string> orig, coll;
-    const auto & fscol = assert_cast<const DB::ColumnFixedString &>(*col);
-    for (size_t i = 0; i < N; ++i)
-        orig.emplace_back(reinterpret_cast<const char *>(fscol.getChars().data() + i * W), W);
-    coll = collectFixedString(op.parts(), 0, W);
+    std::vector<std::string> orig;
 
-    ASSERT_EQ(coll.size(), N);
+
+    std::vector<std::string> coll;
+    const auto & fscol = assert_cast<const DB::ColumnFixedString &>(*col);
+    for (size_t i = 0; i < num_rows; ++i)
+        orig.emplace_back(reinterpret_cast<const char *>(fscol.getChars().data() + i * width), width);
+    coll = collectFixedString(op.parts(), 0, width);
+
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
 }
 
-TEST(RadixPartitionOperator, Direct_NullableUInt32_P8)
+TEST(RadixPartitionOperator, DirectNullableUInt32P8)
 {
-    constexpr size_t N = 1024;
-    constexpr int P = 8;
-    auto col = makeNullableVec<UInt32>(N, 3);
+    constexpr size_t num_rows = 1024;
+    constexpr int num_partitions = 8;
+    auto col = makeNullableVec<UInt32>(num_rows, 3);
     const auto & nc = assert_cast<const DB::ColumnNullable &>(*col);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeNullable(rs::makeFixedWidth<UInt32>()));
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
-    std::vector<NV<UInt32>> orig, coll;
+    std::vector<NV<UInt32>> orig;
+
+
+    std::vector<NV<UInt32>> coll;
     const auto & nulls = nc.getNullMapData();
     const auto & vals = assert_cast<const DB::ColumnVector<UInt32> &>(nc.getNestedColumn()).getData();
-    for (size_t i = 0; i < N; ++i)
+    for (size_t i = 0; i < num_rows; ++i)
         orig.push_back({nulls[i] != 0, vals[i]});
     coll = collectNullable<UInt32>(op.parts(), 0, 1);
 
-    ASSERT_EQ(coll.size(), N);
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
 }
 
 // K>=2 direct scatter (K=2, P=16 < 32)
-TEST(RadixPartitionOperator, Direct_TwoColumn_P16)
+TEST(RadixPartitionOperator, DirectTwoColumnP16)
 {
-    constexpr size_t N = 1024;
-    constexpr int P = 16;
-    auto col0 = makeVec<UInt64>(N, 1);
-    auto col1 = makeVec<UInt32>(N, 2);
+    constexpr size_t num_rows = 1024;
+    constexpr int num_partitions = 16;
+    auto col0 = makeVec<UInt64>(num_rows, 1);
+    auto col1 = makeVec<UInt32>(num_rows, 2);
 
     std::vector<rs::ColumnPrimitives> prims = {rs::makeFixedWidth<UInt64>(), rs::makeFixedWidth<UInt32>()};
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 2, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 2, std::move(prims), arena, false);
     DB::Columns blk{col0->getPtr(), col1->getPtr()};
     op.process(blk);
     op.finish();
@@ -1654,7 +1686,7 @@ TEST(RadixPartitionOperator, Direct_TwoColumn_P16)
     // Verify column 0 (UInt64)
     std::vector<UInt64> orig0(col0->getData().begin(), col0->getData().end());
     std::vector<UInt64> coll0 = collectScalar<UInt64>(op.parts(), 0);
-    ASSERT_EQ(coll0.size(), N);
+    ASSERT_EQ(coll0.size(), num_rows);
     std::sort(orig0.begin(), orig0.end());
     std::sort(coll0.begin(), coll0.end());
     EXPECT_EQ(orig0, coll0);
@@ -1662,31 +1694,31 @@ TEST(RadixPartitionOperator, Direct_TwoColumn_P16)
     // Verify column 1 (UInt32)
     std::vector<UInt32> orig1(col1->getData().begin(), col1->getData().end());
     std::vector<UInt32> coll1 = collectScalar<UInt32>(op.parts(), 1);
-    ASSERT_EQ(coll1.size(), N);
+    ASSERT_EQ(coll1.size(), num_rows);
     std::sort(orig1.begin(), orig1.end());
     std::sort(coll1.begin(), coll1.end());
     EXPECT_EQ(orig1, coll1);
 }
 
 // K=4, P=16 < 32 → direct (exercises kMaxK boundary)
-TEST(RadixPartitionOperator, Direct_FourColumn_P16)
+TEST(RadixPartitionOperator, DirectFourColumnP16)
 {
-    constexpr size_t N = 512;
-    constexpr int P = 16;
-    auto c0 = makeVec<UInt64>(N, 10);
-    auto c1 = makeVec<UInt32>(N, 11);
-    auto c2 = makeVec<UInt16>(N, 12);
-    auto c3 = makeVec<UInt8>(N, 13);
+    constexpr size_t num_rows = 512;
+    constexpr int num_partitions = 16;
+    auto c0 = makeVec<UInt64>(num_rows, 10);
+    auto c1 = makeVec<UInt32>(num_rows, 11);
+    auto c2 = makeVec<UInt16>(num_rows, 12);
+    auto c3 = makeVec<UInt8>(num_rows, 13);
 
     std::vector<rs::ColumnPrimitives> prims
         = {rs::makeFixedWidth<UInt64>(), rs::makeFixedWidth<UInt32>(), rs::makeFixedWidth<UInt16>(), rs::makeFixedWidth<UInt8>()};
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 4, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 4, std::move(prims), arena, false);
     DB::Columns blk{c0->getPtr(), c1->getPtr(), c2->getPtr(), c3->getPtr()};
     op.process(blk);
     op.finish();
 
-    EXPECT_EQ(totalRows(op.parts()), N);
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
 
     // Spot-check col 0 and col 3
     std::vector<UInt64> orig0(c0->getData().begin(), c0->getData().end());
@@ -1706,53 +1738,55 @@ TEST(RadixPartitionOperator, Direct_FourColumn_P16)
 // ─────────────────────────── SWWC scatter tests ─────────────────────────────
 // K=1: P >= 512    K>=2: P >= 32
 
-TEST(RadixPartitionOperator, SWWC_UInt64_P512)
+TEST(RadixPartitionOperator, SWWCUInt64P512)
 {
     runNumericRoundTrip<UInt64>(8192, 512);
 }
-TEST(RadixPartitionOperator, SWWC_UInt64_P1024)
+TEST(RadixPartitionOperator, SWWCUInt64P1024)
 {
     runNumericRoundTrip<UInt64>(8192, 1024);
 }
-TEST(RadixPartitionOperator, SWWC_UInt32_P512)
+TEST(RadixPartitionOperator, SWWCUInt32P512)
 {
     runNumericRoundTrip<UInt32>(8192, 512);
 }
-TEST(RadixPartitionOperator, SWWC_Int64_P1024)
+TEST(RadixPartitionOperator, SWWCInt64P1024)
 {
     runNumericRoundTrip<Int64>(4096, 1024);
 }
-TEST(RadixPartitionOperator, SWWC_Float64_P512)
+TEST(RadixPartitionOperator, SWWCFloat64P512)
 {
     runNumericRoundTrip<Float64>(4096, 512);
 }
-TEST(RadixPartitionOperator, SWWC_UInt128_P512)
+TEST(RadixPartitionOperator, SWWCUInt128P512)
 {
     runNumericRoundTrip<UInt128>(2048, 512);
 }
-TEST(RadixPartitionOperator, SWWC_UInt256_P512)
+TEST(RadixPartitionOperator, SWWCUInt256P512)
 {
     runNumericRoundTrip<UInt256>(1024, 512);
 }
 
-TEST(RadixPartitionOperator, SWWC_Decimal64_P512)
+TEST(RadixPartitionOperator, SWWCDecimal64P512)
 {
-    constexpr size_t N = 4096;
-    constexpr int P = 512;
-    auto col = makeDecCol<Decimal64>(N, 9);
+    constexpr size_t num_rows = 4096;
+    constexpr int num_partitions = 512;
+    auto col = makeDecCol<Decimal64>(num_rows, 9);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeDecimal<Decimal64>());
     rs::BumpArena arena(32ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, true);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, true);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
     using NT = Decimal64::NativeType;
-    std::vector<NT> orig, coll;
-    for (size_t i = 0; i < N; ++i)
+    std::vector<NT> orig;
+
+    std::vector<NT> coll;
+    for (size_t i = 0; i < num_rows; ++i)
         orig.push_back(col->getData()[i].value);
     coll = collectScalar<NT>(op.parts(), 0);
-    ASSERT_EQ(coll.size(), N);
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
@@ -1760,69 +1794,74 @@ TEST(RadixPartitionOperator, SWWC_Decimal64_P512)
 
 // FixedString in SWWC mode: scatter_raw_swwc=nullptr → falls back to scatter_raw
 // This covers the `else` branch in Phase 4b and also `drain_raw=nullptr` in finish().
-TEST(RadixPartitionOperator, SWWC_FixedString8_P512)
+TEST(RadixPartitionOperator, SWWCFixedString8P512)
 {
-    constexpr size_t N = 4096;
-    constexpr int P = 512;
-    constexpr size_t W = 8;
-    auto col = makeFixedStrCol(N, W, 6);
-    std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedString(W));
+    constexpr size_t num_rows = 4096;
+    constexpr int num_partitions = 512;
+    constexpr size_t width = 8;
+    auto col = makeFixedStrCol(num_rows, width, 6);
+    std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedString(width));
     rs::BumpArena arena(32ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, true);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, true);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
-    std::vector<std::string> orig, coll;
-    const auto & fscol = assert_cast<const DB::ColumnFixedString &>(*col);
-    for (size_t i = 0; i < N; ++i)
-        orig.emplace_back(reinterpret_cast<const char *>(fscol.getChars().data() + i * W), W);
-    coll = collectFixedString(op.parts(), 0, W);
+    std::vector<std::string> orig;
 
-    ASSERT_EQ(coll.size(), N);
+
+    std::vector<std::string> coll;
+    const auto & fscol = assert_cast<const DB::ColumnFixedString &>(*col);
+    for (size_t i = 0; i < num_rows; ++i)
+        orig.emplace_back(reinterpret_cast<const char *>(fscol.getChars().data() + i * width), width);
+    coll = collectFixedString(op.parts(), 0, width);
+
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
 }
 
 // Nullable(UInt64) in SWWC mode: null_map gets kSlotsPerFlush=64, values get 8.
-TEST(RadixPartitionOperator, SWWC_NullableUInt64_P512)
+TEST(RadixPartitionOperator, SWWCNullableUInt64P512)
 {
-    constexpr size_t N = 4096;
-    constexpr int P = 512;
-    auto col = makeNullableVec<UInt64>(N, 4);
+    constexpr size_t num_rows = 4096;
+    constexpr int num_partitions = 512;
+    auto col = makeNullableVec<UInt64>(num_rows, 4);
     const auto & nc = assert_cast<const DB::ColumnNullable &>(*col);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeNullable(rs::makeFixedWidth<UInt64>()));
     rs::BumpArena arena(32ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, true);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, true);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
     const auto & nulls = nc.getNullMapData();
     const auto & vals = assert_cast<const DB::ColumnVector<UInt64> &>(nc.getNestedColumn()).getData();
-    std::vector<NV<UInt64>> orig, coll;
-    for (size_t i = 0; i < N; ++i)
+    std::vector<NV<UInt64>> orig;
+
+    std::vector<NV<UInt64>> coll;
+    for (size_t i = 0; i < num_rows; ++i)
         orig.push_back({nulls[i] != 0, vals[i]});
     // Physical layout: cols[0]=null_map (uint8_t), cols[1]=uint64_t values
     coll = collectNullable<UInt64>(op.parts(), 0, 1);
 
-    ASSERT_EQ(coll.size(), N);
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
 }
 
 // K=2, P=32 → SWWC
-TEST(RadixPartitionOperator, SWWC_TwoColumn_P32)
+TEST(RadixPartitionOperator, SWWCTwoColumnP32)
 {
-    constexpr size_t N = 2048;
-    constexpr int P = 32;
-    auto c0 = makeVec<UInt64>(N, 20);
-    auto c1 = makeVec<UInt64>(N, 21);
+    constexpr size_t num_rows = 2048;
+    constexpr int num_partitions = 32;
+    auto c0 = makeVec<UInt64>(num_rows, 20);
+    auto c1 = makeVec<UInt64>(num_rows, 21);
     std::vector<rs::ColumnPrimitives> prims = {rs::makeFixedWidth<UInt64>(), rs::makeFixedWidth<UInt64>()};
     rs::BumpArena arena(32ULL << 20);
-    rs::RadixPartitionOperator op(P, 2, std::move(prims), arena, true);
+    rs::RadixPartitionOperator op(num_partitions, 2, std::move(prims), arena, true);
     DB::Columns blk{c0->getPtr(), c1->getPtr()};
     op.process(blk);
     op.finish();
@@ -1832,7 +1871,7 @@ TEST(RadixPartitionOperator, SWWC_TwoColumn_P32)
         const auto & src_data = (ci == 0 ? c0->getData() : c1->getData());
         std::vector<UInt64> orig(src_data.begin(), src_data.end());
         auto coll = collectScalar<UInt64>(op.parts(), static_cast<size_t>(ci));
-        ASSERT_EQ(coll.size(), N);
+        ASSERT_EQ(coll.size(), num_rows);
         std::sort(orig.begin(), orig.end());
         std::sort(coll.begin(), coll.end());
         EXPECT_EQ(orig, coll) << "col=" << ci;
@@ -1840,23 +1879,23 @@ TEST(RadixPartitionOperator, SWWC_TwoColumn_P32)
 }
 
 // K=4, P=64 → SWWC (exercises kMaxK=8 limit since no Nullable expansion here)
-TEST(RadixPartitionOperator, SWWC_FourColumn_P64)
+TEST(RadixPartitionOperator, SWWCFourColumnP64)
 {
-    constexpr size_t N = 4096;
-    constexpr int P = 64;
-    auto c0 = makeVec<UInt64>(N, 30);
-    auto c1 = makeVec<UInt32>(N, 31);
-    auto c2 = makeVec<UInt64>(N, 32);
-    auto c3 = makeVec<UInt32>(N, 33);
+    constexpr size_t num_rows = 4096;
+    constexpr int num_partitions = 64;
+    auto c0 = makeVec<UInt64>(num_rows, 30);
+    auto c1 = makeVec<UInt32>(num_rows, 31);
+    auto c2 = makeVec<UInt64>(num_rows, 32);
+    auto c3 = makeVec<UInt32>(num_rows, 33);
     std::vector<rs::ColumnPrimitives> prims
         = {rs::makeFixedWidth<UInt64>(), rs::makeFixedWidth<UInt32>(), rs::makeFixedWidth<UInt64>(), rs::makeFixedWidth<UInt32>()};
     rs::BumpArena arena(64ULL << 20);
-    rs::RadixPartitionOperator op(P, 4, std::move(prims), arena, true);
+    rs::RadixPartitionOperator op(num_partitions, 4, std::move(prims), arena, true);
     DB::Columns blk{c0->getPtr(), c1->getPtr(), c2->getPtr(), c3->getPtr()};
     op.process(blk);
     op.finish();
 
-    EXPECT_EQ(totalRows(op.parts()), N);
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
 
     std::vector<UInt64> orig0(c0->getData().begin(), c0->getData().end());
     auto coll0 = collectScalar<UInt64>(op.parts(), 0);
@@ -1871,10 +1910,10 @@ TEST(RadixPartitionOperator, SWWC_FourColumn_P64)
 TEST(RadixPartitionOperator, EmptyInput)
 {
     // process() early return when N=0
-    constexpr int P = 64;
+    constexpr int num_partitions = 64;
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt64>());
     rs::BumpArena arena(1ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
 
     auto col = DB::ColumnVector<UInt64>::create(); // empty column
     DB::Columns blk{col->getPtr()};
@@ -1887,10 +1926,10 @@ TEST(RadixPartitionOperator, EmptyInput)
 TEST(RadixPartitionOperator, EmptyColumns)
 {
     // process() early return when columns is empty
-    constexpr int P = 4;
+    constexpr int num_partitions = 4;
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt64>());
     rs::BumpArena arena(1ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
 
     DB::Columns blk{}; // empty columns vector
     op.process(blk); // must not crash
@@ -1899,124 +1938,124 @@ TEST(RadixPartitionOperator, EmptyColumns)
     EXPECT_EQ(totalRows(op.parts()), 0u);
 }
 
-TEST(RadixPartitionOperator, SinglePartition_P1)
+TEST(RadixPartitionOperator, SinglePartitionP1)
 {
-    // P=1: every row goes to partition 0.  mask_ = 0, so pids[j] = hash & 0 = 0.
-    constexpr size_t N = 512;
-    constexpr int P = 1;
-    auto col = makeVec<UInt32>(N, 5);
+    // num_partitions=1: every row goes to partition 0.  mask_ = 0, so pids[j] = hash & 0 = 0.
+    constexpr size_t num_rows = 512;
+    constexpr int num_partitions = 1;
+    auto col = makeVec<UInt32>(num_rows, 5);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt32>());
     rs::BumpArena arena(8ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
-    EXPECT_EQ(totalRows(op.parts()), N);
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
     // All rows in partition 0
     size_t p0_rows = 0;
     for (const rs::OutBlock * b = op.parts()[0].head; b; b = b->next)
         p0_rows += b->filled;
-    EXPECT_EQ(p0_rows, N);
+    EXPECT_EQ(p0_rows, num_rows);
 }
 
-TEST(RadixPartitionOperator, MultiBatch_DirectScatter)
+TEST(RadixPartitionOperator, MultiBatchDirectScatter)
 {
-    // N > batch_size → multiple runBatch() calls.
+    // num_rows > batch_size → multiple runBatch() calls.
     // batch = max(1024, min(32768, P*16)).  With P=4, batch=1024.
     // Use N=3000 to get 3 batches.
-    constexpr size_t N = 3000;
-    constexpr int P = 4;
-    runNumericRoundTrip<UInt64>(N, P, 3 /*blocks*/);
+    constexpr size_t num_rows = 3000;
+    constexpr int num_partitions = 4;
+    runNumericRoundTrip<UInt64>(num_rows, num_partitions, 3 /*blocks*/);
 }
 
-TEST(RadixPartitionOperator, MultiBatch_SWWC)
+TEST(RadixPartitionOperator, MultiBatchSWWC)
 {
-    // P=512 → SWWC.  batch = max(1024, min(32768, 512*16)) = 8192.
+    // num_partitions=512 → SWWC.  batch = max(1024, min(32768, 512*16)) = 8192.
     // Use N=20000 to get 3 batches.
-    constexpr size_t N = 20000;
-    constexpr int P = 512;
-    runNumericRoundTrip<UInt64>(N, P, 3 /*blocks*/);
+    constexpr size_t num_rows = 20000;
+    constexpr int num_partitions = 512;
+    runNumericRoundTrip<UInt64>(num_rows, num_partitions, 3 /*blocks*/);
 }
 
-TEST(RadixPartitionOperator, BlockOverflow_DirectScatter)
+TEST(RadixPartitionOperator, BlockOverflowDirectScatter)
 {
     // Small init_cap forces multiple OutBlocks per partition (linked chain).
     // init_cap must be >= hist[p] for any single batch (≈ N/(P*batches_approx)).
     // With P=4, N=8192, 4 process() calls (blocks=4), each of 2048 rows:
     //   hist[p] ≈ 2048/4 = 512.  Use init_cap=512, max_cap=512 so every
     //   process() call triggers a growth → 4 OutBlocks per partition.
-    constexpr size_t N = 8192;
-    constexpr int P = 4;
-    runNumericRoundTrip<UInt64>(N, P, 4 /*blocks*/, 512 /*init_cap*/, 512 /*max_cap*/);
+    constexpr size_t num_rows = 8192;
+    constexpr int num_partitions = 4;
+    runNumericRoundTrip<UInt64>(num_rows, num_partitions, 4 /*blocks*/, 512 /*init_cap*/, 512 /*max_cap*/);
 }
 
-TEST(RadixPartitionOperator, BlockOverflow_SWWC_DrainBeforeGrow)
+TEST(RadixPartitionOperator, BlockOverflowSWWCDrainBeforeGrow)
 {
     // SWWC + small init_cap: forces a grow while cnt_[p] > 0, exercising the
     // "drain before grow" path in Phase 3 (drain_raw is called with non-zero cnt).
-    // P=512, N=65536, 2 process() calls of 32768 rows each.
+    // num_partitions=512, N=65536, 2 process() calls of 32768 rows each.
     // hist[p] ≈ 32768/512 = 64.  Use init_cap=64 so every batch triggers a grow.
     // With cnt_[p] accumulating (SWWC), drain_raw is called before the grow.
-    constexpr size_t N = 65536;
-    constexpr int P = 512;
-    runNumericRoundTrip<UInt64>(N, P, 2 /*blocks*/, 64 /*init_cap*/, 128 /*max_cap*/);
+    constexpr size_t num_rows = 65536;
+    constexpr int num_partitions = 512;
+    runNumericRoundTrip<UInt64>(num_rows, num_partitions, 2 /*blocks*/, 64 /*init_cap*/, 128 /*max_cap*/);
 }
 
-TEST(RadixPartitionOperator, FinishWithSWWC_ZeroCnt)
+TEST(RadixPartitionOperator, FinishWithSWWCZeroCnt)
 {
     // finish() with all cnt_[p]=0 (nothing staged) — the fast path.
     // Achieved by choosing N that's a perfect multiple of kSlotsPerFlush<UInt64>=8
     // so all staging buffers flush completely during scatter.
-    constexpr size_t N = 8192; // 8192 rows, P=512 partitions, ~16 rows/part on average
-    constexpr int P = 512;
-    runNumericRoundTrip<UInt64>(N, P);
+    constexpr size_t num_rows = 8192; // 8192 rows, P=512 partitions, ~16 rows/part on average
+    constexpr int num_partitions = 512;
+    runNumericRoundTrip<UInt64>(num_rows, num_partitions);
 }
 
-TEST(RadixPartitionOperator, FinishWithSWWC_NonZeroCnt)
+TEST(RadixPartitionOperator, FinishWithSWWCNonZeroCnt)
 {
     // finish() with some cnt_[p]!=0 — exercises the drain loop.
-    // N=8193 is NOT a multiple of 8 so at least some partitions will have residual.
-    constexpr size_t N = 8193;
-    constexpr int P = 512;
-    runNumericRoundTrip<UInt64>(N, P);
+    // num_rows=8193 is NOT a multiple of 8 so at least some partitions will have residual.
+    constexpr size_t num_rows = 8193;
+    constexpr int num_partitions = 512;
+    runNumericRoundTrip<UInt64>(num_rows, num_partitions);
 }
 
-TEST(RadixPartitionOperator, FinishNoop_DirectMode)
+TEST(RadixPartitionOperator, FinishNoopDirectMode)
 {
     // finish() with use_swwc_=false → returns immediately.
-    constexpr size_t N = 512;
-    constexpr int P = 4;
-    auto col = makeVec<UInt32>(N, 99);
+    constexpr size_t num_rows = 512;
+    constexpr int num_partitions = 4;
+    auto col = makeVec<UInt32>(num_rows, 99);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt32>());
     rs::BumpArena arena(8ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, /*use_swwc=*/false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, /*use_swwc=*/false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish(); // no-op
-    EXPECT_EQ(totalRows(op.parts()), N);
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
 }
 
-TEST(RadixPartitionOperator, MultiProcess_SameOperator)
+TEST(RadixPartitionOperator, MultiProcessSameOperator)
 {
     // Call process() multiple times on the same operator instance with different blocks.
-    constexpr size_t N_PER = 512;
-    constexpr size_t BLOCKS = 5;
-    constexpr int P = 8;
-    auto col = makeVec<UInt64>(N_PER * BLOCKS, 77);
+    constexpr size_t rows_per_batch = 512;
+    constexpr size_t num_blocks = 5;
+    constexpr int num_partitions = 8;
+    auto col = makeVec<UInt64>(rows_per_batch * num_blocks, 77);
     std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt64>());
     rs::BumpArena arena(64ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
 
-    for (size_t b = 0; b < BLOCKS; ++b)
+    for (size_t b = 0; b < num_blocks; ++b)
     {
-        DB::Columns blk{col->cut(b * N_PER, N_PER)};
+        DB::Columns blk{col->cut(b * rows_per_batch, rows_per_batch)};
         op.process(blk);
     }
     op.finish();
 
     const size_t total = totalRows(op.parts());
-    EXPECT_EQ(total, N_PER * BLOCKS);
+    EXPECT_EQ(total, rows_per_batch * num_blocks);
 
     std::vector<UInt64> orig(col->getData().begin(), col->getData().end());
     auto coll = collectScalar<UInt64>(op.parts(), 0);
@@ -2030,24 +2069,24 @@ TEST(RadixPartitionOperator, MultiProcess_SameOperator)
 // Each thread owns its own BumpArena + RadixPartitionOperator.  Threads run
 // concurrently but are fully independent — tests correct thread isolation.
 
-TEST(RadixPartitionOperator, MultiThread_Direct_P16)
+TEST(RadixPartitionOperator, MultiThreadDirectP16)
 {
-    constexpr size_t N_PER_THREAD = 2048;
-    constexpr int P = 16;
-    constexpr size_t THREADS = 4;
+    constexpr size_t rows_per_thread = 2048;
+    constexpr int num_partitions = 16;
+    constexpr size_t num_threads = 4;
 
     std::vector<std::thread> threads;
-    std::vector<size_t> results(THREADS, 0);
+    std::vector<size_t> results(num_threads, 0);
 
-    for (size_t t = 0; t < THREADS; ++t)
+    for (size_t t = 0; t < num_threads; ++t)
     {
         threads.emplace_back(
             [&, t]()
             {
-                auto col = makeVec<UInt32>(N_PER_THREAD, t + 100);
+                auto col = makeVec<UInt32>(rows_per_thread, t + 100);
                 std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt32>());
                 rs::BumpArena arena(16ULL << 20);
-                rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+                rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
                 DB::Columns blk{col->getPtr()};
                 op.process(blk);
                 op.finish();
@@ -2063,28 +2102,28 @@ TEST(RadixPartitionOperator, MultiThread_Direct_P16)
     for (auto & th : threads)
         th.join();
 
-    for (size_t t = 0; t < THREADS; ++t)
-        EXPECT_EQ(results[t], N_PER_THREAD) << "thread " << t;
+    for (size_t t = 0; t < num_threads; ++t)
+        EXPECT_EQ(results[t], rows_per_thread) << "thread " << t;
 }
 
-TEST(RadixPartitionOperator, MultiThread_SWWC_P512)
+TEST(RadixPartitionOperator, MultiThreadSWWCP512)
 {
-    constexpr size_t N_PER_THREAD = 4096;
-    constexpr int P = 512;
-    constexpr size_t THREADS = 4;
+    constexpr size_t rows_per_thread = 4096;
+    constexpr int num_partitions = 512;
+    constexpr size_t num_threads = 4;
 
     std::vector<std::thread> threads;
-    std::vector<bool> ok(THREADS, false);
+    std::vector<bool> ok(num_threads, false);
 
-    for (size_t t = 0; t < THREADS; ++t)
+    for (size_t t = 0; t < num_threads; ++t)
     {
         threads.emplace_back(
             [&, t]()
             {
-                auto col = makeVec<UInt64>(N_PER_THREAD, t + 200);
+                auto col = makeVec<UInt64>(rows_per_thread, t + 200);
                 std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt64>());
                 rs::BumpArena arena(32ULL << 20);
-                rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, true);
+                rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, true);
                 DB::Columns blk{col->getPtr()};
                 op.process(blk);
                 op.finish();
@@ -2093,43 +2132,43 @@ TEST(RadixPartitionOperator, MultiThread_SWWC_P512)
                 auto coll = collectScalar<UInt64>(op.parts(), 0);
                 std::sort(orig.begin(), orig.end());
                 std::sort(coll.begin(), coll.end());
-                ok[t] = (orig == coll && coll.size() == N_PER_THREAD);
+                ok[t] = (orig == coll && coll.size() == rows_per_thread);
             });
     }
     for (auto & th : threads)
         th.join();
 
-    for (size_t t = 0; t < THREADS; ++t)
+    for (size_t t = 0; t < num_threads; ++t)
         EXPECT_TRUE(ok[t]) << "thread " << t;
 }
 
-TEST(RadixPartitionOperator, MultiThread_EightThreads_Mixed)
+TEST(RadixPartitionOperator, MultiThreadEightThreadsMixed)
 {
-    constexpr size_t N = 2048;
-    constexpr size_t THREADS = 8;
+    constexpr size_t num_rows = 2048;
+    constexpr size_t num_threads = 8;
 
     std::vector<std::thread> threads;
     std::atomic<size_t> passed{0};
 
-    for (size_t t = 0; t < THREADS; ++t)
+    for (size_t t = 0; t < num_threads; ++t)
     {
         threads.emplace_back(
             [&, t]()
             {
                 // Alternate between direct (P=16) and SWWC (P=512)
-                const int P = (t % 2 == 0) ? 16 : 512;
-                auto col = makeVec<UInt64>(N, t + 300);
+                const int num_partitions = (t % 2 == 0) ? 16 : 512;
+                auto col = makeVec<UInt64>(num_rows, t + 300);
                 std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt64>());
                 rs::BumpArena arena(32ULL << 20);
-                bool use_swwc = rs::RadixPartitionOperator::should_use_swwc(1, P);
-                rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, use_swwc);
+                bool use_swwc = rs::RadixPartitionOperator::shouldUseSwwc(1, num_partitions);
+                rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, use_swwc);
                 DB::Columns blk{col->getPtr()};
                 op.process(blk);
                 op.finish();
 
                 std::vector<UInt64> orig(col->getData().begin(), col->getData().end());
                 auto coll = collectScalar<UInt64>(op.parts(), 0);
-                if (coll.size() == N)
+                if (coll.size() == num_rows)
                 {
                     std::sort(orig.begin(), orig.end());
                     std::sort(coll.begin(), coll.end());
@@ -2141,33 +2180,33 @@ TEST(RadixPartitionOperator, MultiThread_EightThreads_Mixed)
     for (auto & th : threads)
         th.join();
 
-    EXPECT_EQ(passed.load(), THREADS);
+    EXPECT_EQ(passed.load(), num_threads);
 }
 
 
 // ─────────────────────────── Nullable decomposition tests ───────────────────
 
-TEST(RadixPartitionOperator, NullableExpansion_K_phys)
+TEST(RadixPartitionOperator, NullableExpansionKphys)
 {
     // With a Nullable column, K_phys = 2K (each Nullable → 2 physical columns).
     // Verify the K=2 Nullable(UInt32) case: K_phys=4, cols[0]=null0, cols[1]=vals0,
     // cols[2]=null1, cols[3]=vals1.
-    constexpr size_t N = 512;
-    constexpr int P = 8;
-    auto c0 = makeNullableVec<UInt32>(N, 1);
-    auto c1 = makeNullableVec<UInt32>(N, 2);
+    constexpr size_t num_rows = 512;
+    constexpr int num_partitions = 8;
+    auto c0 = makeNullableVec<UInt32>(num_rows, 1);
+    auto c1 = makeNullableVec<UInt32>(num_rows, 2);
     const auto & nc0 = assert_cast<const DB::ColumnNullable &>(*c0);
     const auto & nc1 = assert_cast<const DB::ColumnNullable &>(*c1);
 
     std::vector<rs::ColumnPrimitives> prims
         = {rs::makeNullable(rs::makeFixedWidth<UInt32>()), rs::makeNullable(rs::makeFixedWidth<UInt32>())};
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 2, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 2, std::move(prims), arena, false);
     DB::Columns blk{c0->getPtr(), c1->getPtr()};
     op.process(blk);
     op.finish();
 
-    EXPECT_EQ(totalRows(op.parts()), N);
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
 
     // col 0: physical cols 0 (null_map) and 1 (values)
     auto orig0 = [&]()
@@ -2175,7 +2214,7 @@ TEST(RadixPartitionOperator, NullableExpansion_K_phys)
         std::vector<NV<UInt32>> v;
         const auto & nulls = nc0.getNullMapData();
         const auto & vals = assert_cast<const DB::ColumnVector<UInt32> &>(nc0.getNestedColumn()).getData();
-        for (size_t i = 0; i < N; ++i)
+        for (size_t i = 0; i < num_rows; ++i)
             v.push_back({nulls[i] != 0, vals[i]});
         return v;
     }();
@@ -2190,7 +2229,7 @@ TEST(RadixPartitionOperator, NullableExpansion_K_phys)
         std::vector<NV<UInt32>> v;
         const auto & nulls = nc1.getNullMapData();
         const auto & vals = assert_cast<const DB::ColumnVector<UInt32> &>(nc1.getNestedColumn()).getData();
-        for (size_t i = 0; i < N; ++i)
+        for (size_t i = 0; i < num_rows; ++i)
             v.push_back({nulls[i] != 0, vals[i]});
         return v;
     }();
@@ -2200,38 +2239,38 @@ TEST(RadixPartitionOperator, NullableExpansion_K_phys)
     EXPECT_EQ(orig1, coll1) << "col 1";
 }
 
-TEST(RadixPartitionOperator, NullableFixedString_P8)
+TEST(RadixPartitionOperator, NullableFixedStringP8)
 {
     // Nullable(FixedString(4)): null_map + fixedstring.
-    constexpr size_t N = 512;
-    constexpr int P = 8;
-    constexpr size_t W = 4;
+    constexpr size_t num_rows = 512;
+    constexpr int num_partitions = 8;
+    constexpr size_t width = 4;
 
-    std::mt19937_64 rng(42);
-    auto nested = DB::ColumnFixedString::create(W);
+    std::mt19937_64 rng(42); // NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+    auto nested = DB::ColumnFixedString::create(width);
     auto null_map = DB::ColumnUInt8::create();
-    std::string buf(W, '\0');
-    for (size_t i = 0; i < N; ++i)
+    std::string buf(width, '\0');
+    for (size_t i = 0; i < num_rows; ++i)
     {
         bool is_null = (rng() % 4 == 0);
         null_map->insertValue(is_null ? 1 : 0);
         for (char & c : buf)
             c = static_cast<char>(rng() & 0xff);
-        nested->insertData(buf.data(), W);
+        nested->insertData(buf.data(), width);
     }
     auto col = DB::ColumnNullable::create(std::move(nested), std::move(null_map));
     const auto & nc = assert_cast<const DB::ColumnNullable &>(*col);
 
-    std::vector<rs::ColumnPrimitives> prims(1, rs::makeNullable(rs::makeFixedString(W)));
+    std::vector<rs::ColumnPrimitives> prims(1, rs::makeNullable(rs::makeFixedString(width)));
     rs::BumpArena arena(16ULL << 20);
-    rs::RadixPartitionOperator op(P, 1, std::move(prims), arena, false);
+    rs::RadixPartitionOperator op(num_partitions, 1, std::move(prims), arena, false);
     DB::Columns blk{col->getPtr()};
     op.process(blk);
     op.finish();
 
-    EXPECT_EQ(totalRows(op.parts()), N);
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
 
-    // Physical cols: 0=null_map (uint8_t), 1=fixedstring (W bytes/row)
+    // Physical cols: 0=null_map (uint8_t), 1=fixedstring (width bytes/row)
     struct NFS
     {
         bool is_null;
@@ -2239,17 +2278,22 @@ TEST(RadixPartitionOperator, NullableFixedString_P8)
         bool operator<(const NFS & o) const
         {
             if (is_null != o.is_null)
+            {
                 return is_null < o.is_null;
+            }
             return value < o.value;
         }
         bool operator==(const NFS & o) const { return is_null == o.is_null && (is_null || value == o.value); }
     };
 
-    std::vector<NFS> orig, coll;
+    std::vector<NFS> orig;
+
+
+    std::vector<NFS> coll;
     const auto & null_data = nc.getNullMapData();
     const auto & fs_data = assert_cast<const DB::ColumnFixedString &>(nc.getNestedColumn()).getChars();
-    for (size_t i = 0; i < N; ++i)
-        orig.push_back({null_data[i] != 0, std::string(reinterpret_cast<const char *>(fs_data.data() + i * W), W)});
+    for (size_t i = 0; i < num_rows; ++i)
+        orig.push_back({null_data[i] != 0, std::string(reinterpret_cast<const char *>(fs_data.data() + i * width), width)});
 
     for (const auto & ps : op.parts())
         for (const rs::OutBlock * b = ps.head; b; b = b->next)
@@ -2257,10 +2301,10 @@ TEST(RadixPartitionOperator, NullableFixedString_P8)
             const uint8_t * nulls = static_cast<const uint8_t *>(b->cols[0]);
             const char * chars = static_cast<const char *>(b->cols[1]);
             for (size_t r = 0; r < b->filled; ++r)
-                coll.push_back({nulls[r] != 0, std::string(chars + r * W, W)});
+                coll.push_back({nulls[r] != 0, std::string(chars + r * width, width)});
         }
 
-    ASSERT_EQ(coll.size(), N);
+    ASSERT_EQ(coll.size(), num_rows);
     std::sort(orig.begin(), orig.end());
     std::sort(coll.begin(), coll.end());
     EXPECT_EQ(orig, coll);
@@ -2271,18 +2315,18 @@ TEST(RadixPartitionOperator, NullableFixedString_P8)
 
 TEST(RadixPartitionOperator, BatchSizeFormula)
 {
-    // batch = max(1024, min(32768, P * 16))
+    // batch = max(1024, min(32768, num_partitions * 16))
     struct TC
     {
-        int P;
+        int num_partitions;
         int expected_batch;
     };
     for (const auto & tc : std::initializer_list<TC>{{1, 1024}, {4, 1024}, {64, 1024}, {128, 2048}, {1024, 16384}, {4096, 32768}})
     {
         std::vector<rs::ColumnPrimitives> prims(1, rs::makeFixedWidth<UInt64>());
         rs::BumpArena arena(1ULL << 20);
-        rs::RadixPartitionOperator op(tc.P, 1, std::move(prims), arena, false);
-        EXPECT_EQ(op.batchSize(), tc.expected_batch) << "P=" << tc.P;
+        rs::RadixPartitionOperator op(tc.num_partitions, 1, std::move(prims), arena, false);
+        EXPECT_EQ(op.batchSize(), tc.expected_batch) << "num_partitions=" << tc.num_partitions;
     }
 }
 
@@ -2301,13 +2345,13 @@ TEST(RadixPartitionOperator, AdaptiveCaps)
     EXPECT_EQ(rs::round8(64), 64u);
 
     // adaptiveCaps: init ≤ kOutCapMin, max ≥ init.
-    for (size_t P : {size_t{4}, size_t{64}, size_t{1024}, size_t{4096}})
+    for (size_t num_partitions : {size_t{4}, size_t{64}, size_t{1024}, size_t{4096}})
     {
-        const auto [init, maxc] = rs::adaptiveCaps(100000, P);
-        EXPECT_LE(init, rs::kOutCapMin) << "P=" << P;
-        EXPECT_GE(maxc, init) << "P=" << P;
-        EXPECT_EQ(init % 8, 0u) << "init not multiple of 8 for P=" << P;
-        EXPECT_EQ(maxc % 8, 0u) << "max not multiple of 8 for P=" << P;
+        const auto [init, maxc] = rs::adaptiveCaps(100000, num_partitions);
+        EXPECT_LE(init, rs::kOutCapMin) << "P=" << num_partitions;
+        EXPECT_GE(maxc, init) << "P=" << num_partitions;
+        EXPECT_EQ(init % 8, 0u) << "init not multiple of 8 for P=" << num_partitions;
+        EXPECT_EQ(maxc % 8, 0u) << "max not multiple of 8 for P=" << num_partitions;
     }
 }
 

@@ -185,7 +185,7 @@ inline void hashBatch32(const T * __restrict__ keys, int n, uint32_t mask, uint3
 /// The compile-time `Initial` parameter eliminates the runtime branch and lets
 /// the vectoriser generate two independent specialisations.  All rows are
 /// independent across j — the loop auto-vectorises under AVX-512, AVX2, SSE4.1.
-template <typename T, bool Initial>
+template <typename T, bool initial>
 [[gnu::always_inline]] inline void hashBatch32AccBody(const T * __restrict__ keys, int n, uint32_t * __restrict__ out) noexcept
 {
     if constexpr (sizeof(T) <= sizeof(uint32_t))
@@ -199,7 +199,7 @@ template <typename T, bool Initial>
             x ^= x >> 13;
             x *= 0xc2b2ae35U;
             x ^= x >> 16;
-            if constexpr (Initial)
+            if constexpr (initial)
                 out[j] = x;
             else
                 out[j] = hashCombine(out[j], x);
@@ -228,7 +228,7 @@ template <typename T, bool Initial>
             h2 *= 0xc2b2ae35U;
             h2 ^= h2 >> 16;
 
-            if constexpr (Initial)
+            if constexpr (initial)
                 out[j] = acc ^ h2;
             else
                 out[j] = hashCombine(out[j], acc ^ h2);
@@ -239,7 +239,7 @@ template <typename T, bool Initial>
         for (int j = 0; j < n; ++j)
         {
             const uint32_t h = hashOne32(keys[j]);
-            if constexpr (Initial)
+            if constexpr (initial)
                 out[j] = h;
             else
                 out[j] = hashCombine(out[j], h);
@@ -248,10 +248,10 @@ template <typename T, bool Initial>
 }
 
 MULTITARGET_FUNCTION_X86_V4_V3(
-    MULTITARGET_FUNCTION_HEADER(template <typename T, bool Initial> inline void),
+    MULTITARGET_FUNCTION_HEADER(template <typename T, bool initial> inline void),
     hashBatch32AccImpl,
     MULTITARGET_FUNCTION_BODY((const T * __restrict__ keys, int n, uint32_t * __restrict__ out) noexcept {
-        hashBatch32AccBody<T, Initial>(keys, n, out);
+        hashBatch32AccBody<T, initial>(keys, n, out);
     }))
 
 /// Accumulate: out[j] = hashCombine(out[j], hash32(keys[j])).

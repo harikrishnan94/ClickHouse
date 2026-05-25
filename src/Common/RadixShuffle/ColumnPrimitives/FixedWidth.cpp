@@ -49,14 +49,14 @@ constexpr size_t SCATTER_STACK_PTRS = 1024;
 /// On the first call (state.initialized == false) every partition is
 /// refreshed with an O(P) loop.  On subsequent calls only the stale
 /// partitions (flagged in stale_fixed_bitset) are touched.
-template <size_t ElemSize>
+template <size_t elem_size>
 [[gnu::always_inline]] inline void
 refreshFixedPtrs(ScatterState & state, size_t slot_idx, size_t partitions, const PartReservation * dst, const uint64_t * stale_fixed_bitset)
 {
     if (!state.initialized)
     {
         for (size_t p = 0; p < partitions; ++p)
-            refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, ElemSize);
+            refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, elem_size);
         state.initialized = true;
         return;
     }
@@ -71,7 +71,7 @@ refreshFixedPtrs(ScatterState & state, size_t slot_idx, size_t partitions, const
             const size_t bit = static_cast<size_t>(__builtin_ctzll(bits));
             const size_t p = word * 64 + bit;
             if (p < partitions)
-                refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, ElemSize);
+                refreshFixedPtr(state.fixed_ptrs[p], p, slot_idx, dst, elem_size);
             bits &= bits - 1;
         }
     }
@@ -448,7 +448,7 @@ void hashFixedString(
 // flushStagedNTInPlace/…     — void*&     (raw scatter path, in-place update)
 
 template <typename T>
-static constexpr size_t kSlotsPerFlush = 64 / sizeof(T);
+constexpr size_t kSlotsPerFlush = 64 / sizeof(T);
 
 #if USE_MULTITARGET_CODE
 
@@ -500,20 +500,20 @@ DECLARE_X86_64_V3_SPECIFIC_CODE(
 template <typename T>
 [[gnu::always_inline]] inline void flushStagedScalar(const T * staging_p, T *& out_p)
 {
-    constexpr size_t S = kSlotsPerFlush<T>;
-    for (size_t i = 0; i < S; ++i)
+    constexpr size_t slots_per_flush = kSlotsPerFlush<T>;
+    for (size_t i = 0; i < slots_per_flush; ++i)
         out_p[i] = staging_p[i];
-    out_p += S;
+    out_p += slots_per_flush;
 }
 
 template <typename T>
 [[gnu::always_inline]] inline void flushStagedScalarInPlace(const T * staging_p, void *& out_void)
 {
     T * out_p = static_cast<T *>(out_void);
-    constexpr size_t S = kSlotsPerFlush<T>;
-    for (size_t i = 0; i < S; ++i)
+    constexpr size_t slots_per_flush = kSlotsPerFlush<T>;
+    for (size_t i = 0; i < slots_per_flush; ++i)
         out_p[i] = staging_p[i];
-    out_void = out_p + S;
+    out_void = out_p + slots_per_flush;
 }
 
 
@@ -577,8 +577,8 @@ scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, 
 {
     // staging is pre-allocated by on_grow_raw — no lazy-init guard here.
     // kSlotsPerFlush<T> = 64/sizeof(T): flush exactly one 64-byte cache line.
-    constexpr size_t S = kSlotsPerFlush<T>;
-    constexpr uint32_t flush_trigger = static_cast<uint32_t>(S) - 1;
+    constexpr size_t slots_per_flush = kSlotsPerFlush<T>;
+    constexpr uint32_t flush_trigger = static_cast<uint32_t>(slots_per_flush) - 1;
 
     const T * src = assert_cast<const ColumnVector<T> &>(src_).getData().data() + offset;
 
@@ -592,18 +592,20 @@ scatterRawSwwcFixed(const IColumn & src_, size_t offset, const uint32_t * pids, 
         // Mask to this column's slot range so each column type flushes at the
         // correct granularity regardless of what other columns have in the batch.
         const uint32_t slot = positions[j] & flush_trigger;
-        reinterpret_cast<T *>(state.swwc_staging)[p * S + slot] = src[j];
+        reinterpret_cast<T *>(state.swwc_staging)[p * slots_per_flush + slot] = src[j];
         if (slot == flush_trigger)
         {
 #if USE_MULTITARGET_CODE
             if (isArchSupported(TargetArch::x86_64_v4))
-                TargetSpecific::x86_64_v4::flushStagedNTInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
+                TargetSpecific::x86_64_v4::flushStagedNTInPlace(
+                    reinterpret_cast<T *>(state.swwc_staging) + p * slots_per_flush, state.raw_write_ptrs[p]);
             else if (isArchSupported(TargetArch::x86_64_v3))
-                TargetSpecific::x86_64_v3::flushStagedNTInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
+                TargetSpecific::x86_64_v3::flushStagedNTInPlace(
+                    reinterpret_cast<T *>(state.swwc_staging) + p * slots_per_flush, state.raw_write_ptrs[p]);
             else
-                flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
+                flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * slots_per_flush, state.raw_write_ptrs[p]);
 #else
-            flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]);
+            flushStagedScalarInPlace(reinterpret_cast<T *>(state.swwc_staging) + p * slots_per_flush, state.raw_write_ptrs[p]);
 #endif
         }
     }
@@ -619,11 +621,11 @@ void drainRawFixed(const ColumnPrimitives & /*self*/, size_t p, uint32_t cnt, Sc
 {
     if (state.swwc_staging == nullptr)
         return;
-    constexpr size_t S = kSlotsPerFlush<T>;
-    const uint32_t residual = cnt & static_cast<uint32_t>(S - 1);
+    constexpr size_t slots_per_flush = kSlotsPerFlush<T>;
+    const uint32_t residual = cnt & static_cast<uint32_t>(slots_per_flush - 1);
     if (residual == 0)
         return;
-    const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * S;
+    const T * s = reinterpret_cast<const T *>(state.swwc_staging) + p * slots_per_flush;
     T ** wp = reinterpret_cast<T **>(state.raw_write_ptrs); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     T * dst = wp[p];
     for (uint32_t i = 0; i < residual; ++i)
@@ -664,7 +666,7 @@ void onGrowRawFixed(const ColumnPrimitives & /*self*/, size_t p, void * col_base
 template <typename T>
 void computePidsDecimal(const ColumnPrimitives & /*self*/, const IColumn & src_, size_t offset, int n, uint32_t mask, uint32_t * pids)
 {
-    using NativeT = typename T::NativeType;
+    using NativeT = T::NativeType;
     const NativeT * data = reinterpret_cast<const NativeT *>( // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                                assert_cast<const ColumnDecimal<T> &>(src_).getData().data())
         + offset;
@@ -674,7 +676,7 @@ void computePidsDecimal(const ColumnPrimitives & /*self*/, const IColumn & src_,
 template <typename T>
 [[gnu::hot]] void scatterRawDecimal(const IColumn & src_, size_t offset, const uint32_t * pids, int n, ScatterState & state)
 {
-    using NativeT = typename T::NativeType;
+    using NativeT = T::NativeType;
     const NativeT * src = reinterpret_cast<const NativeT *>( // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                               assert_cast<const ColumnDecimal<T> &>(src_).getData().data())
         + offset;
@@ -687,9 +689,9 @@ template <typename T>
 [[gnu::hot]] void
 scatterRawSwwcDecimal(const IColumn & src_, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state)
 {
-    using NativeT = typename T::NativeType;
-    constexpr size_t S = kSlotsPerFlush<NativeT>;
-    constexpr uint32_t flush_trigger = static_cast<uint32_t>(S) - 1;
+    using NativeT = T::NativeType;
+    constexpr size_t slots_per_flush = kSlotsPerFlush<NativeT>;
+    constexpr uint32_t flush_trigger = static_cast<uint32_t>(slots_per_flush) - 1;
     const NativeT * src = reinterpret_cast<const NativeT *>( // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                               assert_cast<const ColumnDecimal<T> &>(src_).getData().data())
         + offset;
@@ -698,25 +700,26 @@ scatterRawSwwcDecimal(const IColumn & src_, size_t offset, const uint32_t * pids
         const uint32_t p = pids[j];
         // Mask positions[j] to this column's slot range (see scatterRawSwwcFixed comment).
         const uint32_t slot = positions[j] & flush_trigger;
-        reinterpret_cast<NativeT *>(state.swwc_staging)[p * S + slot] = src[j]; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<NativeT *>(state.swwc_staging)[p * slots_per_flush + slot]
+            = src[j]; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (slot == flush_trigger)
         {
 #if USE_MULTITARGET_CODE
             if (isArchSupported(TargetArch::x86_64_v4))
                 TargetSpecific::x86_64_v4::flushStagedNTInPlace(
-                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * slots_per_flush,
                     state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             else if (isArchSupported(TargetArch::x86_64_v3))
                 TargetSpecific::x86_64_v3::flushStagedNTInPlace(
-                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * slots_per_flush,
                     state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             else
                 flushStagedScalarInPlace(
-                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * slots_per_flush,
                     state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 #else
             flushStagedScalarInPlace(
-                reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                reinterpret_cast<NativeT *>(state.swwc_staging) + p * slots_per_flush,
                 state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 #endif
         }
@@ -794,7 +797,7 @@ template ColumnPrimitives makeFixedWidth<IPv6>();
 template <typename T>
 ColumnPrimitives makeDecimal()
 {
-    using NativeT = typename T::NativeType;
+    using NativeT = T::NativeType;
     ColumnPrimitives cp;
     cp.scatter = &scatterDecimal<T>;
     cp.reconstruct = &reconstructDecimal<T>;

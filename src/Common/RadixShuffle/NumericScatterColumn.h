@@ -12,17 +12,17 @@ namespace DB::RadixShuffle
 /// Fixed-width numeric scatter column for radix partitioning.
 ///
 /// Generalises `UInt64Column` from `radix_part_vs_memcpy.cpp` to any POD type
-/// `T`.  The SWWC scatter path (`scatter_staged`) uses `_mm512_stream_si512`
+/// `T`.  The SWWC scatter path (`scatterStaged`) uses `_mm512_stream_si512`
 /// NT stores on x86_64-v4 hardware when `sizeof(T) == 8` (matching the
 /// reference for `T = uint64_t`).  On other architectures or narrower types
-/// `scatter_staged` falls back to scalar.
+/// `scatterStaged` falls back to scalar.
 ///
 /// Lifecycle:
 ///   1. Construct with P (number of partitions).
-///   2. Call `on_grow` when the owning `RadixPartitionOperator` allocates a new
+///   2. Call `onGrow` when the owning `RadixPartitionOperator` allocates a new
 ///      `OutBlock` for a partition.
-///   3. Call `scatter_direct` or `scatter_staged` for each batch.
-///   4. Call `drain_one` before `on_grow` and at finish to flush partial SWWC
+///   3. Call `scatterDirect` or `scatterStaged` for each batch.
+///   4. Call `drainOne` before `onGrow` and at finish to flush partial SWWC
 ///      staging buffers.
 template <typename T>
 class NumericScatterColumn final : public IScatterColumn
@@ -34,13 +34,13 @@ public:
     NumericScatterColumn(const NumericScatterColumn &) = delete;
     NumericScatterColumn & operator=(const NumericScatterColumn &) = delete;
 
-    void on_grow(size_t p, void * col_base) override;
-    void drain_one(size_t p, uint32_t cnt) override;
-    void scatter_direct(const uint32_t * pids, const void * src, int n) override;
-    void scatter_staged(const uint32_t * pids, const uint32_t * positions, const void * src, int n) override;
+    void onGrow(size_t p, void * col_base) override;
+    void drainOne(size_t p, uint32_t cnt) override;
+    void scatterDirect(const uint32_t * pids, const void * src, int n) override;
+    void scatterStaged(const uint32_t * pids, const uint32_t * positions, const void * src, int n) override;
 
 private:
-    size_t P_;
+    size_t num_partitions_;
     T * staging_; ///< [P × 8] 64B-aligned SWWC staging buffer.
     T ** out_;    ///< Per-partition write-destination pointer.
 };
