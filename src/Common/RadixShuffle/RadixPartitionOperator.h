@@ -21,7 +21,7 @@ struct PhysColInfo
 {
     size_t logical_k;
     bool use_null_map; ///< Extract getNullMapColumn() from ColumnNullable
-    bool use_nested;   ///< Extract getNestedColumn() from ColumnNullable
+    bool use_nested; ///< Extract getNestedColumn() from ColumnNullable
 };
 
 /// Single-pass radix partition operator.
@@ -91,16 +91,16 @@ private:
     void runBatch(const DB::Columns & columns, size_t start, int n);
 
     int P_;
-    int K_;      ///< Logical column count (as provided by the caller).
+    int K_; ///< Logical column count (as provided by the caller).
     int K_phys_; ///< Physical column count; ≥ K_ when Nullable columns are expanded.
     bool use_swwc_;
     int batch_;
     uint32_t mask_; ///< P − 1 (P must be a power of two).
     size_t max_cap_;
 
-    std::vector<ColumnPrimitives> col_prims_;  ///< K_ logical prims (Phase 1: compute_pids only).
+    std::vector<ColumnPrimitives> col_prims_; ///< K_ logical prims (Phase 1: compute_pids only).
     std::vector<ColumnPrimitives> phys_prims_; ///< K_phys_ physical prims (Phase 3-4: scatter).
-    std::vector<PhysColInfo> phys_col_info_;   ///< K_phys_ sub-column extraction descriptors.
+    std::vector<PhysColInfo> phys_col_info_; ///< K_phys_ sub-column extraction descriptors.
     std::vector<ScatterState> scatter_states_; ///< K_phys_ ScatterState objects.
     std::vector<PartState> parts_;
     BumpArena & arena_;
@@ -112,7 +112,7 @@ private:
     std::vector<uint32_t> pids_;
     std::vector<uint32_t> hist_;
     std::vector<uint32_t> pos_; ///< Raw per-partition row counter snapshot per row.
-    std::vector<uint8_t> cnt_;  ///< Raw per-partition row counter; wraps at 256 (uint8_t natural).
+    std::vector<uint8_t> cnt_; ///< Raw per-partition row counter; wraps at 256 (uint8_t natural).
 };
 
 } // namespace DB::RadixShuffle

@@ -403,8 +403,7 @@ int main(int argc, char ** argv)
     const int T = cfg.threads;
     const int R = cfg.reps;
 
-    const int batch
-        = std::max(1024, std::min(RadixPartitionOperator::kSmartMaxBatch, P * RadixPartitionOperator::kBatchFactor));
+    const int batch = std::max(1024, std::min(RadixPartitionOperator::kSmartMaxBatch, P * RadixPartitionOperator::kBatchFactor));
     const size_t rpt = (N + static_cast<size_t>(T) - 1) / static_cast<size_t>(T);
     const size_t total = rpt * static_cast<size_t>(T);
 

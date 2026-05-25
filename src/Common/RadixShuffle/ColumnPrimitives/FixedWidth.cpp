@@ -666,7 +666,8 @@ void computePidsDecimal(const ColumnPrimitives & /*self*/, const IColumn & src_,
 {
     using NativeT = typename T::NativeType;
     const NativeT * data = reinterpret_cast<const NativeT *>( // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-        assert_cast<const ColumnDecimal<T> &>(src_).getData().data()) + offset;
+                               assert_cast<const ColumnDecimal<T> &>(src_).getData().data())
+        + offset;
     hashBatch32(data, n, mask, pids);
 }
 
@@ -675,21 +676,23 @@ template <typename T>
 {
     using NativeT = typename T::NativeType;
     const NativeT * src = reinterpret_cast<const NativeT *>( // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-        assert_cast<const ColumnDecimal<T> &>(src_).getData().data()) + offset;
+                              assert_cast<const ColumnDecimal<T> &>(src_).getData().data())
+        + offset;
     NativeT ** wp = reinterpret_cast<NativeT **>(state.raw_write_ptrs); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     for (int j = 0; j < n; ++j)
         *wp[pids[j]]++ = src[j];
 }
 
 template <typename T>
-[[gnu::hot]] void scatterRawSwwcDecimal(
-    const IColumn & src_, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state)
+[[gnu::hot]] void
+scatterRawSwwcDecimal(const IColumn & src_, size_t offset, const uint32_t * pids, const uint32_t * positions, int n, ScatterState & state)
 {
     using NativeT = typename T::NativeType;
     constexpr size_t S = kSlotsPerFlush<NativeT>;
     constexpr uint32_t flush_trigger = static_cast<uint32_t>(S) - 1;
     const NativeT * src = reinterpret_cast<const NativeT *>( // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-        assert_cast<const ColumnDecimal<T> &>(src_).getData().data()) + offset;
+                              assert_cast<const ColumnDecimal<T> &>(src_).getData().data())
+        + offset;
     for (int j = 0; j < n; ++j)
     {
         const uint32_t p = pids[j];
@@ -701,14 +704,20 @@ template <typename T>
 #if USE_MULTITARGET_CODE
             if (isArchSupported(TargetArch::x86_64_v4))
                 TargetSpecific::x86_64_v4::flushStagedNTInPlace(
-                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                    state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             else if (isArchSupported(TargetArch::x86_64_v3))
                 TargetSpecific::x86_64_v3::flushStagedNTInPlace(
-                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                    state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             else
-                flushStagedScalarInPlace(reinterpret_cast<NativeT *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                flushStagedScalarInPlace(
+                    reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                    state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 #else
-            flushStagedScalarInPlace(reinterpret_cast<NativeT *>(state.swwc_staging) + p * S, state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+            flushStagedScalarInPlace(
+                reinterpret_cast<NativeT *>(state.swwc_staging) + p * S,
+                state.raw_write_ptrs[p]); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 #endif
         }
     }
@@ -790,12 +799,12 @@ ColumnPrimitives makeDecimal()
     cp.scatter = &scatterDecimal<T>;
     cp.reconstruct = &reconstructDecimal<T>;
     cp.hash = &hashDecimal<T>;
-    cp.compute_pids     = &computePidsDecimal<T>;
-    cp.scatter_raw      = &scatterRawDecimal<T>;
+    cp.compute_pids = &computePidsDecimal<T>;
+    cp.scatter_raw = &scatterRawDecimal<T>;
     cp.scatter_raw_swwc = &scatterRawSwwcDecimal<T>;
-    cp.drain_raw        = &drainRawFixed<NativeT>;
-    cp.on_grow_raw      = &onGrowRawFixed<NativeT>;
-    cp.raw_elem_size    = sizeof(NativeT);
+    cp.drain_raw = &drainRawFixed<NativeT>;
+    cp.on_grow_raw = &onGrowRawFixed<NativeT>;
+    cp.raw_elem_size = sizeof(NativeT);
     return cp;
 }
 
@@ -814,11 +823,11 @@ ColumnPrimitives makeFixedString(size_t n)
     cp.reconstruct = &reconstructFixedString;
     cp.hash = &hashFixedString;
     cp.aux = n;
-    cp.compute_pids  = &computePidsFixedString;
-    cp.scatter_raw   = &scatterRawFixedString;
+    cp.compute_pids = &computePidsFixedString;
+    cp.scatter_raw = &scatterRawFixedString;
     // scatter_raw_swwc and drain_raw are null — RadixPartitionOperator
     // falls back to direct scatter when scatter_raw_swwc is null.
-    cp.on_grow_raw   = &onGrowRawFixed<unsigned char>;
+    cp.on_grow_raw = &onGrowRawFixed<unsigned char>;
     cp.raw_elem_size = n;
     return cp;
 }
