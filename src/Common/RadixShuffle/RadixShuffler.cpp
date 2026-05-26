@@ -1,0 +1,208 @@
+#include <Common/RadixShuffle/RadixShuffler.h>
+
+#include <Columns/ColumnNullable.h>
+#include <Columns/IColumn.h>
+#include <base/types.h>
+#include <Common/RadixShuffle/ColumnPrimitives.h>
+#include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
+
+#if defined(__x86_64__)
+#    include <immintrin.h>
+#endif
+
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+
+
+namespace DB
+{
+
+RadixShuffler::RadixShuffler(
+    int P, int K, std::vector<ColumnPrimitives> prims, BumpArena & arena, bool use_swwc, size_t init_cap, size_t max_cap)
+    : num_partitions_(P)
+    , num_columns_(K)
+    , use_swwc_(use_swwc)
+    , batch_(std::max(1024, std::min(kSmartMaxBatch, P * kBatchFactor)))
+    , mask_(static_cast<uint32_t>(P) - 1)
+    , max_cap_(max_cap)
+    , col_prims_(std::move(prims))
+    , arena_(arena)
+    , pids_(static_cast<size_t>(batch_))
+    , hist_(static_cast<size_t>(P), 0)
+    , pos_(static_cast<size_t>(batch_))
+    , cnt_(static_cast<size_t>(P), 0)
+{
+    // Build physical column table.
+    // Nullable primitives (nested != null && nested has scatter_raw) are expanded
+    // into two physical leaf primitives:
+    //   - makeFixedWidth<UInt8>()  for the null map
+    //   - *prim.nested             for the values
+    for (size_t k = 0; k < static_cast<size_t>(num_columns_); ++k)
+    {
+        const ColumnPrimitives & prim = col_prims_[k];
+        const bool expandable = prim.nested != nullptr && prim.nested->scatter_raw != nullptr;
+        if (expandable)
+        {
+            phys_prims_.push_back(makeFixedWidth<UInt8>());
+            phys_col_info_.push_back({k, true, false});
+
+            phys_prims_.push_back(*prim.nested);
+            phys_col_info_.push_back({k, false, true});
+        }
+        else
+        {
+            phys_prims_.push_back(prim);
+            phys_col_info_.push_back({k, false, false});
+        }
+    }
+    num_physical_columns_ = static_cast<int>(phys_prims_.size());
+
+    scatter_states_.reserve(static_cast<size_t>(num_physical_columns_));
+    for (int k = 0; k < num_physical_columns_; ++k)
+        scatter_states_.emplace_back(static_cast<size_t>(num_partitions_));
+
+    elem_sizes_.resize(static_cast<size_t>(num_physical_columns_));
+    for (int k = 0; k < num_physical_columns_; ++k)
+        elem_sizes_[static_cast<size_t>(k)] = phys_prims_[static_cast<size_t>(k)].raw_elem_size;
+
+    parts_.assign(static_cast<size_t>(P), {});
+    for (auto & ps : parts_)
+        ps.next_cap = init_cap;
+}
+
+
+/// Extract the sub-column for a physical primitive from the logical block.
+static const IColumn & extractPhysCol(const DB::Columns & columns, const PhysColInfo & info)
+{
+    const IColumn & col = *columns[info.logical_k];
+    if (info.use_null_map)
+        return assert_cast<const ColumnNullable &>(col).getNullMapColumn();
+    if (info.use_nested)
+        return assert_cast<const ColumnNullable &>(col).getNestedColumn();
+    return col;
+}
+
+
+void RadixShuffler::process(const DB::Columns & columns)
+{
+    if (columns.empty() || columns[0]->size() == 0)
+        return;
+    const size_t n_total = columns[0]->size();
+    for (size_t i = 0; i < n_total;)
+    {
+        const int n = static_cast<int>(std::min(static_cast<size_t>(batch_), n_total - i));
+        runBatch(columns, i, n);
+        i += static_cast<size_t>(n);
+    }
+}
+
+
+void RadixShuffler::runBatch(const DB::Columns & columns, size_t start, int n)
+{
+    uint32_t * pids = pids_.data();
+    uint32_t * hist = hist_.data();
+
+    // ── Phase 1: compute partition IDs from the first LOGICAL column ──────────
+    col_prims_[0].compute_pids(col_prims_[0], *columns[0], start, n, mask_, pids);
+
+    // ── Phase 2: histogram ────────────────────────────────────────────────
+    std::memset(hist, 0, static_cast<size_t>(num_partitions_) * sizeof(uint32_t));
+    for (int j = 0; j < n; ++j)
+        hist[pids[j]]++;
+
+    // ── Phase 3: pre-grow + notify PHYSICAL columns + pre-commit ─────────────
+    for (int p = 0; p < num_partitions_; ++p)
+    {
+        if (!hist[p])
+            continue;
+        auto & ps = parts_[static_cast<size_t>(p)];
+        if (!ps.cur || ps.cur->filled + hist[p] > ps.cur->capacity)
+        {
+            if (use_swwc_ && ps.cur && cnt_[static_cast<size_t>(p)])
+            {
+                for (int k = 0; k < num_physical_columns_; ++k)
+                    if (phys_prims_[static_cast<size_t>(k)].drain_raw)
+                        phys_prims_[static_cast<size_t>(k)].drain_raw(
+                            phys_prims_[static_cast<size_t>(k)],
+                            static_cast<size_t>(p),
+                            cnt_[static_cast<size_t>(p)],
+                            scatter_states_[static_cast<size_t>(k)]);
+                cnt_[static_cast<size_t>(p)] = 0;
+            }
+            growPart(ps, arena_, num_physical_columns_, elem_sizes_.data(), max_cap_);
+            for (int k = 0; k < num_physical_columns_; ++k)
+                phys_prims_[static_cast<size_t>(k)].on_grow_raw(
+                    phys_prims_[static_cast<size_t>(k)],
+                    static_cast<size_t>(p),
+                    ps.cur->cols[k],
+                    ps.cur->capacity,
+                    scatter_states_[static_cast<size_t>(k)]);
+        }
+        ps.cur->filled += hist[p];
+    }
+
+    if (use_swwc_)
+    {
+        // ── Phase 4a: raw per-partition row counter ───────────────────────────
+        // cnt[p] is a plain row counter that wraps at 256 (uint8_t natural wrap).
+        // 256 is divisible by every valid kSlotsPerFlush<T> value (1,2,4,8,16,32,64),
+        // so each column primitive can independently derive its own slot index via
+        //   slot = cnt & (kSlotsPerFlush<T> - 1)
+        // without any information leaking from a TKey type.
+        uint32_t * pos = pos_.data();
+        uint8_t * cnt = cnt_.data();
+        for (int j = 0; j < n; ++j)
+        {
+            const uint32_t p = pids[j];
+            pos[j] = cnt[p];
+            ++cnt[p]; // uint8_t natural wrap at 256
+        }
+        // ── Phase 4b: SWWC scatter per PHYSICAL column ────────────────────────
+        for (int k = 0; k < num_physical_columns_; ++k)
+        {
+            const IColumn & sub_col = extractPhysCol(columns, phys_col_info_[static_cast<size_t>(k)]);
+            auto & prim = phys_prims_[static_cast<size_t>(k)];
+            if (prim.scatter_raw_swwc)
+                prim.scatter_raw_swwc(sub_col, start, pids, pos, n, scatter_states_[static_cast<size_t>(k)]);
+            else
+                prim.scatter_raw(sub_col, start, pids, n, scatter_states_[static_cast<size_t>(k)]);
+        }
+    }
+    else
+    {
+        // ── Phase 4b: direct scatter per PHYSICAL column ──────────────────────
+        for (int k = 0; k < num_physical_columns_; ++k)
+        {
+            const IColumn & sub_col = extractPhysCol(columns, phys_col_info_[static_cast<size_t>(k)]);
+            phys_prims_[static_cast<size_t>(k)].scatter_raw(sub_col, start, pids, n, scatter_states_[static_cast<size_t>(k)]);
+        }
+    }
+}
+
+
+void RadixShuffler::finish()
+{
+    if (!use_swwc_)
+        return;
+
+#if defined(__x86_64__)
+    _mm_sfence();
+#endif
+
+    for (int p = 0; p < num_partitions_; ++p)
+    {
+        if (!cnt_[static_cast<size_t>(p)])
+            continue;
+        for (int k = 0; k < num_physical_columns_; ++k)
+            if (phys_prims_[static_cast<size_t>(k)].drain_raw)
+                phys_prims_[static_cast<size_t>(k)].drain_raw(
+                    phys_prims_[static_cast<size_t>(k)],
+                    static_cast<size_t>(p),
+                    cnt_[static_cast<size_t>(p)],
+                    scatter_states_[static_cast<size_t>(k)]);
+        cnt_[static_cast<size_t>(p)] = 0;
+    }
+}
+
+} // namespace DB
