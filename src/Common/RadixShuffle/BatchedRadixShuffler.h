@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 
@@ -22,12 +23,19 @@ struct BatchedPhysColInfo
     bool use_nested;
 };
 
+
 /// Batched radix partition operator.
 ///
 /// Like `RadixShuffler`, but buffers input blocks until either
 /// `max_buffered_blocks` blocks accumulate or `max_buffered_bytes` are buffered,
 /// then allocates exact-size `OutBlock`s per partition and scatters all buffered
 /// rows in one sweep.
+///
+/// Column data buffers are allocated independently via `std::aligned_alloc`
+/// (64-byte aligned) so each column of each partition occupies its own
+/// allocation — no inter-column or inter-partition sharing of cache lines or
+/// pages.  The `OutBlock` header itself comes from the `BumpArena`.
+/// All column allocations are owned by this object and freed in the destructor.
 class BatchedRadixShuffler
 {
 public:
@@ -49,6 +57,9 @@ public:
         size_t max_cap = kOutCapMax,
         size_t max_buffered_blocks = 0,
         size_t max_buffered_bytes = 0);
+
+    /// Frees all per-column buffers allocated via `std::aligned_alloc` in flush().
+    ~BatchedRadixShuffler();
 
     void process(const DB::Columns & columns);
     void finish();
@@ -91,6 +102,15 @@ private:
 
     std::vector<uint32_t> pos_;
     std::vector<uint8_t> cnt_;
+
+    /// Per-column buffers allocated via `std::aligned_alloc` during flush().
+    /// Each entry corresponds to one `OutBlock::cols[k]` pointer and is freed
+    /// by the destructor.
+    ///
+    /// Lifetime caveat: once `parts()` is moved out of this object, the
+    /// `OutBlock::cols[k]` pointers inside remain valid until `~BatchedRadixShuffler`
+    /// fires.  Callers must not access column data after the operator is destroyed.
+    std::vector<void *> col_allocs_;
 };
 
 } // namespace DB

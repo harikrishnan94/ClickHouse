@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 
 
 namespace DB
@@ -74,6 +76,13 @@ BatchedRadixShuffler::BatchedRadixShuffler(
 }
 
 
+BatchedRadixShuffler::~BatchedRadixShuffler()
+{
+    for (void * p : col_allocs_)
+        std::free(p);
+}
+
+
 static const IColumn & extractPhysCol(const DB::Columns & columns, const BatchedPhysColInfo & info)
 {
     const IColumn & col = *columns[info.logical_k];
@@ -82,6 +91,39 @@ static const IColumn & extractPhysCol(const DB::Columns & columns, const Batched
     if (info.use_nested)
         return assert_cast<const ColumnNullable &>(col).getNestedColumn();
     return col;
+}
+
+
+/// Allocate an `OutBlock` whose column data buffers are independent
+/// 64-byte-aligned heap allocations (one per physical column).
+///
+/// The `OutBlock` header itself comes from `arena` (a small bump allocation).
+/// Each column buffer is appended to `col_allocs` so the caller can free them
+/// later.  `cap` must already be a multiple of 64 (use `round64`) because
+/// `std::aligned_alloc` requires size to be a multiple of alignment.
+static OutBlock * allocOutBlockSeparateCols(
+    BumpArena & arena, int num_physical_columns, const size_t * elem_sizes, size_t cap, std::vector<void *> & col_allocs)
+{
+    constexpr size_t kHdrSize = (sizeof(OutBlock) + 63) & ~size_t{63};
+
+    char * raw = arena.alignedAlloc(kHdrSize, 64);
+    auto * nb = reinterpret_cast<OutBlock *>(raw);
+    nb->next = nullptr;
+    nb->filled = 0;
+    nb->capacity = cap;
+
+    for (int k = 0; k < num_physical_columns; ++k)
+    {
+        void * col_mem = std::aligned_alloc(64, cap * elem_sizes[static_cast<size_t>(k)]);
+        if (!col_mem)
+            throw std::bad_alloc{};
+        nb->cols[k] = col_mem;
+        col_allocs.push_back(col_mem);
+    }
+    for (int k = num_physical_columns; k < kMaxK; ++k)
+        nb->cols[k] = nullptr;
+
+    return nb;
 }
 
 
@@ -100,7 +142,6 @@ void BatchedRadixShuffler::process(const DB::Columns & columns)
         ++accum_hist_[buffered_pids_[pid_offset + j]];
 
     buffered_blocks_.push_back(columns);
-
     total_buffered_bytes_ += n * bytes_per_row_;
 
     if (buffered_blocks_.size() >= max_buffered_blocks_ || total_buffered_bytes_ >= max_buffered_bytes_)
@@ -113,7 +154,7 @@ void BatchedRadixShuffler::flush()
     if (buffered_blocks_.empty())
         return;
 
-    // ── Phase 1: exact-size OutBlocks per active partition ─────────────────
+    // ── Phase 1: exact-size OutBlocks per active partition ────────────────
     for (int p = 0; p < num_partitions_; ++p)
     {
         const uint32_t cnt = accum_hist_[static_cast<size_t>(p)];
@@ -121,8 +162,9 @@ void BatchedRadixShuffler::flush()
             continue;
 
         auto & ps = parts_[static_cast<size_t>(p)];
-        const size_t cap = round64(cnt);
-        OutBlock * nb = newOutBlock(arena_, num_physical_columns_, elem_sizes_.data(), cap);
+        const size_t cap = round64(cnt); // multiple of 64 — satisfies aligned_alloc requirement
+
+        OutBlock * nb = allocOutBlockSeparateCols(arena_, num_physical_columns_, elem_sizes_.data(), cap, col_allocs_);
         nb->next = ps.head;
         ps.head = ps.cur = nb;
         nb->filled = cnt;
@@ -136,7 +178,7 @@ void BatchedRadixShuffler::flush()
                 scatter_states_[static_cast<size_t>(k)]);
     }
 
-    // ── Phase 2: block-major scatter ─────────────────────────────────────────
+    // ── Phase 2: block-major scatter ──────────────────────────────────────
     if (use_swwc_)
     {
         size_t pid_offset = 0;
