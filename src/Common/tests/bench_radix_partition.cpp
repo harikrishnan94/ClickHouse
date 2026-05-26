@@ -40,6 +40,7 @@
 #include <Common/RadixShuffle/ColumnPrimitivesDispatch.h>
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixShuffler.h>
+#include <Common/ThreadPool.h>
 #include <Common/assert_cast.h>
 
 #include <algorithm>
@@ -436,6 +437,16 @@ int main(int argc, char ** argv)
     if (!validateConfig(cfg))
         return 1;
 
+    // ThreadFromGlobalPool auto-installs DB::ThreadStatus per job so the
+    // MemoryTracker thread-local fast path is active — avoids the
+    // total_memory_tracker.amount cacheline ping-pong that cripples raw
+    // std::thread under high allocation pressure.
+    // See tmp/icolumn_alloc_root_cause.md.
+    GlobalThreadPool::initialize(
+        /* max_threads = */ static_cast<size_t>(cfg.threads) * 2,
+        /* max_free_threads = */ static_cast<size_t>(cfg.threads),
+        /* queue_size = */ static_cast<size_t>(cfg.threads) * 4);
+
     const int partitions = cfg.partitions;
     const int columns = cfg.columns;
     const size_t num_rows = cfg.rows;
@@ -510,7 +521,7 @@ int main(int argc, char ** argv)
             for (auto & part : mc_parts)
                 part = {};
             const auto t0 = Clk::now();
-            std::vector<std::thread> ths;
+            std::vector<ThreadFromGlobalPool> ths;
             ths.reserve(static_cast<size_t>(threads));
             for (int t = 0; t < threads; ++t)
             {
@@ -542,7 +553,7 @@ int main(int argc, char ** argv)
             for (int t = 0; t < threads; ++t)
                 radix_parts[static_cast<size_t>(t)].clear();
             const auto t0 = Clk::now();
-            std::vector<std::thread> ths;
+            std::vector<ThreadFromGlobalPool> ths;
             ths.reserve(static_cast<size_t>(threads));
             for (int t = 0; t < threads; ++t)
             {
@@ -568,7 +579,7 @@ int main(int argc, char ** argv)
         // ── batched radix ─────────────────────────────────────────────────────
         {
             const auto t0 = Clk::now();
-            std::vector<std::thread> ths;
+            std::vector<ThreadFromGlobalPool> ths;
             ths.reserve(static_cast<size_t>(threads));
             for (int t = 0; t < threads; ++t)
             {
@@ -697,7 +708,7 @@ int main(int argc, char ** argv)
                 typed_parts[static_cast<size_t>(t)].clear();
 
             const auto t0 = Clk::now();
-            std::vector<std::thread> ths;
+            std::vector<ThreadFromGlobalPool> ths;
             ths.reserve(static_cast<size_t>(threads));
             for (int t = 0; t < threads; ++t)
             {

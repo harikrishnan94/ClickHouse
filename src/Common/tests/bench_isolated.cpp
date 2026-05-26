@@ -18,6 +18,7 @@
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
 #include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/RadixShuffler.h>
+#include <Common/ThreadPool.h>
 #include <Common/assert_cast.h>
 
 #include <algorithm>
@@ -169,6 +170,16 @@ int main(int argc, char ** argv)
         return 1;
     const Config & cfg = *cfg_opt;
 
+    // ThreadFromGlobalPool auto-installs DB::ThreadStatus per job so the
+    // MemoryTracker thread-local fast path is active — avoids the
+    // total_memory_tracker.amount cacheline ping-pong that cripples raw
+    // std::thread under high allocation pressure.
+    // See tmp/icolumn_alloc_root_cause.md.
+    GlobalThreadPool::initialize(
+        /* max_threads = */ static_cast<size_t>(cfg.T) * 2,
+        /* max_free_threads = */ static_cast<size_t>(cfg.T),
+        /* queue_size = */ static_cast<size_t>(cfg.T) * 4);
+
     const size_t total_blocks = cfg.rows / cfg.block_rows;
     const size_t blocks_per_thread = total_blocks / static_cast<size_t>(cfg.T);
     const size_t rows_per_thread = blocks_per_thread * cfg.block_rows;
@@ -228,7 +239,7 @@ int main(int argc, char ** argv)
             radix_parts[static_cast<size_t>(t)].clear();
 
         const auto t0 = Clk::now();
-        std::vector<std::thread> ths;
+        std::vector<ThreadFromGlobalPool> ths;
         ths.reserve(static_cast<size_t>(cfg.T));
         for (int t = 0; t < cfg.T; ++t)
         {
