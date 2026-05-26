@@ -1,0 +1,339 @@
+#include <Common/RadixShuffle/Allocator.h>
+
+#include <Common/Exception.h>
+
+#include <algorithm>
+#include <cstdlib>
+#include <new>
+
+
+namespace DB
+{
+
+namespace ErrorCodes
+{
+extern const int LOGICAL_ERROR;
+extern const int BAD_ARGUMENTS;
+}
+
+}
+
+
+namespace DB
+{
+
+namespace
+{
+
+constexpr size_t DEFAULT_ARENA_PAGE_BYTES = 64 * 1024;
+
+[[nodiscard]] constexpr size_t alignUp(size_t n, size_t align) noexcept
+{
+    return (n + (align - 1)) & ~(align - 1);
+}
+
+} // namespace
+
+
+/// Per-partition writable tail for one Handle.
+struct Handle::PerPartition
+{
+    FixedChunk * fixed_tail = nullptr;
+    size_t fixed_next_row = 0;
+    size_t fixed_remaining_rows = 0;
+    size_t reserved_rows = 0; ///< Cumulative, for growth-factor computation.
+
+    DataChunk * data_tail = nullptr;
+    size_t data_next_byte = 0;
+    size_t data_remaining_bytes = 0;
+    size_t reserved_bytes = 0; ///< Cumulative varlen, for growth-factor computation.
+};
+
+
+struct Handle::ArenaPage
+{
+    ArenaPage * next = nullptr;
+    /// Payload bytes follow immediately after this header.
+};
+
+
+Handle::Handle(ShuffleAllocator & parent, size_t partitions)
+    : parent_(parent)
+    , parts_(partitions)
+{
+}
+
+
+Handle::~Handle() = default;
+
+
+void * Handle::arenaAllocate(size_t bytes, size_t align)
+{
+    if (arena_cursor_ == nullptr
+        || alignUp(reinterpret_cast<uintptr_t>(arena_cursor_), align) + bytes > reinterpret_cast<uintptr_t>(arena_end_))
+    {
+        const size_t header = alignUp(sizeof(ArenaPage), alignof(std::max_align_t));
+        const size_t needed = header + bytes + (align > alignof(std::max_align_t) ? align : 0);
+        const size_t page_bytes = std::max(needed, DEFAULT_ARENA_PAGE_BYTES);
+
+        auto * page = static_cast<ArenaPage *>(std::malloc(page_bytes));
+        if (page == nullptr)
+            throw std::bad_alloc();
+        page->next = arena_head_;
+        arena_head_ = page;
+
+        char * payload = reinterpret_cast<char *>(page) + header;
+        arena_cursor_ = payload;
+        arena_end_ = reinterpret_cast<char *>(page) + page_bytes;
+    }
+
+    const auto aligned = alignUp(reinterpret_cast<uintptr_t>(arena_cursor_), align);
+    arena_cursor_ = reinterpret_cast<char *>(aligned + bytes);
+    return reinterpret_cast<void *>(aligned);
+}
+
+
+bool Handle::ensureFixed(size_t p, size_t rows)
+{
+    PerPartition & pc = parts_[p];
+    if (pc.fixed_tail != nullptr && pc.fixed_remaining_rows >= rows)
+        return false;
+
+    const PartSchema & sc = parent_.schema();
+    const ShuffleAllocatorOptions & opts = parent_.options();
+
+    const size_t floor_rows = opts.min_chunk_floor_rows;
+    const size_t growth_rows = pc.reserved_rows / 10;
+    size_t chunk_rows = std::max({floor_rows, rows, growth_rows});
+    if (rows > 0)
+    {
+        const size_t k = (chunk_rows + rows - 1) / rows;
+        chunk_rows = k * rows;
+    }
+
+    /// Compute the column-major layout for this chunk and the total byte size.
+    const size_t num_slots = sc.fixed_slots.size();
+    size_t * chunk_offsets = nullptr;
+    size_t total_data_bytes = 0;
+
+    if (num_slots > 0)
+    {
+        chunk_offsets = static_cast<size_t *>(arenaAllocate(sizeof(size_t) * num_slots, alignof(size_t)));
+        size_t off = 0;
+        for (size_t s = 0; s < num_slots; ++s)
+        {
+            off = alignUp(off, sc.fixed_slots[s].alignment);
+            chunk_offsets[s] = off;
+            off += chunk_rows * sc.fixed_slots[s].element_size;
+        }
+        total_data_bytes = alignUp(off, 64); // cache-line pad
+    }
+
+    const bool was_empty = (pc.fixed_tail == nullptr);
+
+    auto * fc = static_cast<FixedChunk *>(arenaAllocate(sizeof(FixedChunk), alignof(FixedChunk)));
+    new (fc) FixedChunk{};
+    fc->row_capacity = chunk_rows;
+    fc->slot_byte_offsets = chunk_offsets;
+    if (total_data_bytes > 0)
+        fc->data = arenaAllocate(total_data_bytes, 64);
+
+    pc.fixed_tail = fc;
+    pc.fixed_next_row = 0;
+    pc.fixed_remaining_rows = chunk_rows;
+
+    local_chunks_.fetch_add(1, std::memory_order_relaxed);
+    local_allocated_bytes_.fetch_add(total_data_bytes, std::memory_order_relaxed);
+    if (was_empty)
+        local_active_partitions_.fetch_add(1, std::memory_order_relaxed);
+
+    return true; // new chunk allocated → stale-pointer event
+}
+
+
+void Handle::ensureData(size_t p, size_t varlen_bytes)
+{
+    PerPartition & pc = parts_[p];
+    if (pc.data_tail != nullptr && pc.data_remaining_bytes >= varlen_bytes)
+        return;
+
+    const ShuffleAllocatorOptions & opts = parent_.options();
+
+    const size_t floor_bytes = opts.min_chunk_floor_bytes_data;
+    const size_t growth_bytes = pc.reserved_bytes / 10;
+    size_t chunk_bytes = std::max({floor_bytes, varlen_bytes, growth_bytes});
+    if (varlen_bytes > 0)
+    {
+        const size_t kb = (chunk_bytes + varlen_bytes - 1) / varlen_bytes;
+        chunk_bytes = kb * varlen_bytes;
+    }
+
+    auto * dc = static_cast<DataChunk *>(arenaAllocate(sizeof(DataChunk), alignof(DataChunk)));
+    new (dc) DataChunk{};
+    dc->byte_capacity = chunk_bytes;
+    dc->bytes = static_cast<unsigned char *>(arenaAllocate(chunk_bytes, 1));
+
+    pc.data_tail = dc;
+    pc.data_next_byte = 0;
+    pc.data_remaining_bytes = chunk_bytes;
+
+    local_chunks_.fetch_add(1, std::memory_order_relaxed);
+    local_allocated_bytes_.fetch_add(chunk_bytes, std::memory_order_relaxed);
+}
+
+
+void Handle::reserve(const size_t * rows, const size_t * varlen_bytes, PartReserveGrant * grants, uint64_t * stale_fixed_bitset)
+{
+    chassert(live_);
+
+    const PartSchema & sc = parent_.schema();
+    const size_t partitions = parent_.partitions();
+    uint64_t reserved_delta = 0;
+
+    for (size_t p = 0; p < partitions; ++p)
+    {
+        const size_t row_req = rows[p];
+        const size_t byte_req = varlen_bytes[p];
+
+        if (row_req == 0 && byte_req == 0)
+        {
+            grants[p] = PartReserveGrant{};
+            grants[p].fully_satisfied = true;
+            continue;
+        }
+
+        /// Ensure fixed chunk capacity.
+        if (row_req > 0)
+        {
+            const bool new_chunk = ensureFixed(p, row_req);
+            if (new_chunk)
+            {
+                const size_t word = p / 64;
+                const size_t bit = p % 64;
+                stale_fixed_bitset[word] |= (uint64_t{1} << bit);
+            }
+        }
+
+        /// Ensure data chunk capacity (varlen schemas only).
+        if (sc.has_varlen_portion)
+            ensureData(p, byte_req);
+
+        PerPartition & pc = parts_[p];
+
+        PartReserveGrant & g = grants[p];
+        g.granted_rows = row_req;
+        g.granted_varlen_bytes = byte_req;
+        g.slice.fixed = pc.fixed_tail;
+        g.slice.begin_row = pc.fixed_next_row;
+        g.slice.reserved_rows = row_req;
+        g.slice.data = (sc.has_varlen_portion && (pc.data_tail != nullptr)) ? pc.data_tail : nullptr;
+        g.slice.begin_byte = pc.data_next_byte;
+        g.slice.reserved_bytes = byte_req;
+        g.fully_satisfied = true;
+
+        pc.fixed_next_row += row_req;
+        pc.fixed_remaining_rows -= row_req;
+        pc.reserved_rows += row_req;
+
+        if (sc.has_varlen_portion)
+        {
+            pc.data_next_byte += byte_req;
+            pc.data_remaining_bytes = (byte_req <= pc.data_remaining_bytes) ? pc.data_remaining_bytes - byte_req : 0;
+            pc.reserved_bytes += byte_req;
+        }
+
+        reserved_delta += row_req * sc.fixed_bytes_per_row + byte_req;
+    }
+
+    local_reserved_bytes_.fetch_add(reserved_delta, std::memory_order_relaxed);
+}
+
+
+ShuffleAllocator::ShuffleAllocator(PartSchema schema_, size_t partitions_, size_t /*expected_total_rows*/, ShuffleAllocatorOptions options_)
+    : part_schema_(std::move(schema_))
+    , num_partitions_(partitions_)
+    , opts_(options_)
+{
+    if (num_partitions_ == 0)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "RadixShuffle::ShuffleAllocator: partitions must be > 0");
+    for (const auto & slot : part_schema_.fixed_slots)
+    {
+        if (slot.alignment == 0 || (slot.alignment & (slot.alignment - 1)) != 0)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "RadixShuffle::ShuffleAllocator: slot alignment must be a power of two");
+    }
+}
+
+
+ShuffleAllocator::~ShuffleAllocator()
+{
+    std::lock_guard lk(handle_pool_mutex_);
+    for (auto & h : handles_)
+    {
+        auto * page = h->arena_head_;
+        while (page != nullptr)
+        {
+            auto * next = page->next;
+            std::free(page);
+            page = next;
+        }
+    }
+}
+
+
+Handle * ShuffleAllocator::acquire()
+{
+    std::lock_guard lk(handle_pool_mutex_);
+    auto handle = std::unique_ptr<Handle>(new Handle(*this, num_partitions_));
+    auto * raw = handle.get();
+    handles_.push_back(std::move(handle));
+    return raw;
+}
+
+
+void ShuffleAllocator::release(Handle * handle)
+{
+    if (handle != nullptr)
+        handle->live_ = false;
+}
+
+
+uint64_t ShuffleAllocator::totalAllocatedBytes() const noexcept
+{
+    std::lock_guard lk(handle_pool_mutex_);
+    uint64_t sum = 0;
+    for (const auto & h : handles_)
+        sum += h->local_allocated_bytes_.load(std::memory_order_relaxed);
+    return sum;
+}
+
+
+uint64_t ShuffleAllocator::totalReservedBytes() const noexcept
+{
+    std::lock_guard lk(handle_pool_mutex_);
+    uint64_t sum = 0;
+    for (const auto & h : handles_)
+        sum += h->local_reserved_bytes_.load(std::memory_order_relaxed);
+    return sum;
+}
+
+
+uint64_t ShuffleAllocator::activePartitions() const noexcept
+{
+    std::lock_guard lk(handle_pool_mutex_);
+    uint64_t sum = 0;
+    for (const auto & h : handles_)
+        sum += h->local_active_partitions_.load(std::memory_order_relaxed);
+    return sum;
+}
+
+
+uint64_t ShuffleAllocator::totalChunks() const noexcept
+{
+    std::lock_guard lk(handle_pool_mutex_);
+    uint64_t sum = 0;
+    for (const auto & h : handles_)
+        sum += h->local_chunks_.load(std::memory_order_relaxed);
+    return sum;
+}
+
+}

@@ -1,0 +1,132 @@
+#pragma once
+
+#include <Common/RadixShuffle/PartSchema.h>
+#include <Common/RadixShuffle/PartitionTypes.h>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <vector>
+
+
+namespace DB
+{
+
+/// Default per-partition minimum fixed-chunk row floor.
+/// Small reservations slice within an existing chunk; only a reservation
+/// that does not fit triggers a new chunk, sized to at least this many rows.
+inline constexpr size_t DEFAULT_MIN_CHUNK_FLOOR_ROWS = 256;
+
+/// Minimum byte budget for newly allocated data chunks.
+inline constexpr size_t DEFAULT_MIN_CHUNK_FLOOR_BYTES = 16 * 1024;
+
+
+struct ShuffleAllocatorOptions
+{
+    size_t min_chunk_floor_rows = DEFAULT_MIN_CHUNK_FLOOR_ROWS;
+    size_t min_chunk_floor_bytes_data = DEFAULT_MIN_CHUNK_FLOOR_BYTES;
+};
+
+
+class ShuffleAllocator;
+
+
+/// Opaque per-producer-thread cursor over P per-partition chains.
+/// Owned by ShuffleAllocator; acquire/release are cold-path; reserve is hot-path
+/// and entirely contention-free (reads/writes only per-handle state; chunk
+/// allocations go through a private arena).
+class Handle
+{
+public:
+    Handle(const Handle &) = delete;
+    Handle & operator=(const Handle &) = delete;
+    Handle(Handle &&) = delete;
+    Handle & operator=(Handle &&) = delete;
+    ~Handle();
+
+    /// Per-batch SOA reservation across all P partitions.
+    ///
+    /// rows[p]          — row count to reserve for partition p.
+    /// varlen_bytes[p]  — total varlen byte payload for partition p
+    ///                    (caller-computed; 0 for fixed-only schemas).
+    /// grants[p]        — output: reservation result for partition p.
+    /// stale_fixed_bitset — caller-zeroed array of ceil(P/64) uint64_t
+    ///                    words; bit p is set iff partition p's FixedChunk
+    ///                    was newly allocated during this call.  Callers
+    ///                    may cache FixedChunk* across batches and consult
+    ///                    the bitset to detect when to reload.
+    void reserve(const size_t * rows, const size_t * varlen_bytes, PartReserveGrant * grants, uint64_t * stale_fixed_bitset);
+
+private:
+    friend class ShuffleAllocator;
+    struct PerPartition;
+    struct ArenaPage;
+
+    Handle(ShuffleAllocator & parent_, size_t partitions);
+
+    void * arenaAllocate(size_t bytes, size_t align);
+
+    /// Ensure partition p's fixed chunk has room for `rows` rows.
+    /// Returns true if a new chunk was allocated (stale-pointer event).
+    bool ensureFixed(size_t p, size_t rows);
+
+    /// Ensure partition p's data chunk has room for `varlen_bytes` bytes.
+    void ensureData(size_t p, size_t varlen_bytes);
+
+    ShuffleAllocator & parent_;
+    std::vector<PerPartition> parts_;
+
+    ArenaPage * arena_head_ = nullptr;
+    char * arena_cursor_ = nullptr;
+    char * arena_end_ = nullptr;
+
+    /// Sharded counters — per-handle atomics avoid cache-line bouncing
+    /// with other threads' counters at high T.  memory_order_relaxed
+    /// suffices because there is no ordering dependency with other state.
+    alignas(64) std::atomic<uint64_t> local_reserved_bytes_{0};
+    alignas(64) std::atomic<uint64_t> local_allocated_bytes_{0};
+    alignas(64) std::atomic<uint64_t> local_chunks_{0};
+    alignas(64) std::atomic<uint64_t> local_active_partitions_{0};
+
+    bool live_ = true;
+};
+
+
+/// Append-only, monotonic allocator that hands out per-partition fixed and
+/// data chunks for scatter.
+class ShuffleAllocator
+{
+public:
+    ShuffleAllocator(PartSchema schema, size_t partitions, size_t expected_total_rows, ShuffleAllocatorOptions options = {});
+
+    ShuffleAllocator(const ShuffleAllocator &) = delete;
+    ShuffleAllocator & operator=(const ShuffleAllocator &) = delete;
+    ShuffleAllocator(ShuffleAllocator &&) = delete;
+    ShuffleAllocator & operator=(ShuffleAllocator &&) = delete;
+
+    ~ShuffleAllocator();
+
+    [[nodiscard]] size_t partitions() const noexcept { return num_partitions_; }
+    [[nodiscard]] const PartSchema & schema() const noexcept { return part_schema_; }
+    [[nodiscard]] const ShuffleAllocatorOptions & options() const noexcept { return opts_; }
+
+    Handle * acquire();
+    void release(Handle * handle);
+
+    [[nodiscard]] uint64_t totalAllocatedBytes() const noexcept;
+    [[nodiscard]] uint64_t totalReservedBytes() const noexcept;
+    [[nodiscard]] uint64_t activePartitions() const noexcept;
+    [[nodiscard]] uint64_t totalChunks() const noexcept;
+
+private:
+    const PartSchema part_schema_;
+    const size_t num_partitions_;
+    const ShuffleAllocatorOptions opts_;
+
+    mutable std::mutex handle_pool_mutex_;
+    std::vector<std::unique_ptr<Handle>> handles_;
+};
+
+}
