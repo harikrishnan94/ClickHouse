@@ -24,6 +24,8 @@
 //   --block-rows B   rows per input block       (default  16 384)
 //   --threads    T   worker threads             (default  16)
 //   --reps       R   timed repetitions          (default   5)
+//   --batch-max-blocks N  batched flush block limit (0 = P, default 0)
+//   --batch-max-bytes  N  batched flush byte limit  (0 = 32 MiB, default 0)
 
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnFixedString.h>
@@ -31,6 +33,7 @@
 #include <Columns/ColumnVector.h>
 #include <Columns/IColumn_fwd.h>
 #include <base/Decimal.h>
+#include <Common/RadixShuffle/BatchedRadixShuffler.h>
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
 #include <Common/RadixShuffle/ColumnPrimitives/Nullable.h>
@@ -80,6 +83,8 @@ struct BenchConfig
     size_t block_rows = 16'384;
     int threads = 16;
     int reps = 5;
+    size_t batch_max_blocks = 0;
+    size_t batch_max_bytes = 0;
 };
 
 
@@ -195,7 +200,6 @@ BlockStream genBlocksFixedStr(size_t total, size_t block_rows, int K, size_t n, 
 }
 
 
-
 /// Nullable(UInt64) blocks: K columns of ColumnNullable(ColumnVector<UInt64>),
 /// 9 bytes/row each (1 null byte + 8 value bytes).  ~50% of rows are NULL.
 BlockStream genBlocksNullableUInt64(size_t total, size_t block_rows, int K, uint64_t seed)
@@ -250,7 +254,6 @@ void runTypedRadix(
 }
 
 
-
 // ── memcpy baseline ───────────────────────────────────────────────────────────
 // Same `BumpArena` / `OutBlock` / `growPart` path as radix, but no hash: every
 // row is appended to one `PartState` with uniform `sizeof(uint64_t)` columns.
@@ -297,6 +300,27 @@ void runSmartRadix(
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
     const bool use_swwc = RadixShuffler::shouldUseSwwc(K, P);
     RadixShuffler op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap);
+    for (const auto & block : blocks)
+        op.process(block);
+    op.finish();
+    parts = std::move(op.parts());
+}
+
+
+void runBatchedRadix(
+    const BlockStream & blocks,
+    int K,
+    int P,
+    std::vector<PartState> & parts,
+    BumpArena & arena,
+    size_t init_cap = kOutCapMin,
+    size_t max_cap = kOutCapMax,
+    size_t batch_max_blocks = 0,
+    size_t batch_max_bytes = 0)
+{
+    std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
+    const bool use_swwc = BatchedRadixShuffler::shouldUseSwwc(K, P);
+    BatchedRadixShuffler op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap, batch_max_blocks, batch_max_bytes);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
@@ -368,6 +392,14 @@ std::optional<BenchConfig> parseCLI(std::span<char * const> args)
         {
             cfg.reps = std::stoi(args[++i]);
         }
+        else if (arg == "--batch-max-blocks" && i + 1 < args.size())
+        {
+            cfg.batch_max_blocks = std::stoull(args[++i]);
+        }
+        else if (arg == "--batch-max-bytes" && i + 1 < args.size())
+        {
+            cfg.batch_max_bytes = std::stoull(args[++i]);
+        }
         else
         {
             fmt::print(stderr, "unknown arg: {}\n", args[i]);
@@ -416,6 +448,8 @@ int main(int argc, char ** argv)
     const size_t block_rows = cfg.block_rows;
     const int threads = cfg.threads;
     const int reps = cfg.reps;
+    const size_t batch_max_blocks = cfg.batch_max_blocks;
+    const size_t batch_max_bytes = cfg.batch_max_bytes;
 
     const int batch = std::max(1024, std::min(RadixShuffler::kSmartMaxBatch, partitions * RadixShuffler::kBatchFactor));
     const size_t rpt = (num_rows + static_cast<size_t>(threads) - 1) / static_cast<size_t>(threads);
@@ -436,6 +470,10 @@ int main(int argc, char ** argv)
     fmt::print(
         "  OutBlock cap: init={}  max={}  (avg rows/part\xe2\x89\x88{})\n", cap_init, cap_max, rpt / static_cast<size_t>(partitions));
     fmt::print("  radix mode  = {}\n", RadixShuffler::shouldUseSwwc(columns, partitions) ? "SWWC (NT stores)" : "direct");
+    fmt::print(
+        "  batched flush: max_blocks={}  max_bytes={} MiB\n",
+        batch_max_blocks ? batch_max_blocks : static_cast<size_t>(partitions),
+        static_cast<double>(batch_max_bytes ? batch_max_bytes : BatchedRadixShuffler::kDefaultMemBound) / (1 << 20));
     // Internal batch is max(1024, min(32768, P×16)); smaller block-rows still work
     // but process() may run multiple batches per input block.
     if (block_rows < static_cast<size_t>(batch))
@@ -459,10 +497,11 @@ int main(int argc, char ** argv)
 
     std::vector<double> mc_ns(static_cast<size_t>(reps));
     std::vector<double> rd_ns(static_cast<size_t>(reps));
+    std::vector<double> bt_ns(static_cast<size_t>(reps));
 
     // ── benchmark ─────────────────────────────────────────────────────────────
-    fmt::print("{:<4}  {:>12}  {:>12}  {:>6}\n", "rep", "memcpy ns/row", "radix ns/row", "ratio");
-    fmt::print("----  ------------  ------------  ------\n");
+    fmt::print("{:<4}  {:>12}  {:>12}  {:>12}  {:>6}\n", "rep", "memcpy ns/row", "radix ns/row", "batched ns/row", "ratio");
+    fmt::print("----  ------------  ------------  ------------  ------\n");
 
     for (int rep = 0; rep < reps; ++rep)
     {
@@ -531,23 +570,59 @@ int main(int argc, char ** argv)
             rd_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
         }
 
+        // ── batched radix — fresh BumpArena each rep ─────────────────────────
+        {
+            std::vector<BumpArena> bt_arenas;
+            bt_arenas.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
+                bt_arenas.emplace_back(kArenaSlabBytes);
+
+            for (int t = 0; t < threads; ++t)
+                parts[static_cast<size_t>(t)].clear();
+            const auto t0 = Clk::now();
+            std::vector<std::thread> ths;
+            ths.reserve(static_cast<size_t>(threads));
+            for (int t = 0; t < threads; ++t)
+            {
+                ths.emplace_back(
+                    [&, t]()
+                    {
+                        pinThread(t);
+                        runBatchedRadix(
+                            streams[static_cast<size_t>(t)],
+                            columns,
+                            partitions,
+                            parts[static_cast<size_t>(t)],
+                            bt_arenas[static_cast<size_t>(t)],
+                            cap_init,
+                            cap_max,
+                            batch_max_blocks,
+                            batch_max_bytes);
+                    });
+            }
+            for (auto & th : ths)
+                th.join();
+            bt_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
+        }
+
         fmt::print(
-            "{:<4}  {:>12.3f}  {:>12.3f}  {:>5.2f}x\n",
+            "{:<4}  {:>12.3f}  {:>12.3f}  {:>12.3f}  {:>5.2f}x\n",
             rep,
             mc_ns[static_cast<size_t>(rep)],
             rd_ns[static_cast<size_t>(rep)],
+            bt_ns[static_cast<size_t>(rep)],
             rd_ns[static_cast<size_t>(rep)] / mc_ns[static_cast<size_t>(rep)]);
     }
 
-    // ── sanity: scattered row count on thread 0 after last radix rep ─────────
+    // ── sanity: scattered row count on thread 0 after last batched rep ───────
     const size_t expected_data = rpt * static_cast<size_t>(columns) * 8;
-    size_t radix_used_rows = 0;
+    size_t batched_used_rows = 0;
     for (const auto & sv : parts[0])
     {
         for (const OutBlock * b = sv.head; b != nullptr; b = b->next)
-            radix_used_rows += b->filled;
+            batched_used_rows += b->filled;
     }
-    const size_t radix_used_bytes = radix_used_rows * static_cast<size_t>(columns) * sizeof(uint64_t);
+    const size_t batched_used_bytes = batched_used_rows * static_cast<size_t>(columns) * sizeof(uint64_t);
     fmt::print("\nArena usage after last rep (thread 0):\n");
     fmt::print(
         "  expected data  = {:>7.1f} MiB  ({} rows \xc3\x97 {} cols \xc3\x97 8 B)\n",
@@ -555,11 +630,14 @@ int main(int argc, char ** argv)
         rpt,
         columns);
     fmt::print(
-        "  radix   rows   = {:>7.1f} MiB  ({} rows scattered)\n", static_cast<double>(radix_used_bytes) / 1048576.0, radix_used_rows);
+        "  batched rows   = {:>7.1f} MiB  ({} rows scattered)\n", static_cast<double>(batched_used_bytes) / 1048576.0, batched_used_rows);
+    if (batched_used_rows != rpt)
+        fmt::print("  [ERROR] batched row count {} != expected {}\n", batched_used_rows, rpt);
 
     // ── summary ───────────────────────────────────────────────────────────────
     const auto mc = computeStats(std::move(mc_ns));
     const auto rd = computeStats(std::move(rd_ns));
+    const auto bt = computeStats(std::move(bt_ns));
 
     fmt::print("\nSummary (agg = wall_ns/total_rows;  per-thr = agg\xc3\x97threads;  GB/s = R+W)\n");
     fmt::print("{:<8}  {:>8}  {:>8}  {:>8}  {:>5}  {:>8}  {:>8}\n", "variant", "agg-min", "agg-p50", "agg-mean", "cv%", "GB/s", "per-thr");
@@ -579,6 +657,7 @@ int main(int argc, char ** argv)
     };
     print_row("memcpy", mc);
     print_row("radix", rd);
+    print_row("batched", bt);
 
     fmt::print(
         "\nOverhead (radix / memcpy):  best={:.3f}x  mean={:.3f}x"
@@ -587,6 +666,12 @@ int main(int argc, char ** argv)
         rd.mean / mc.mean,
         rd.pmin * static_cast<double>(threads),
         mc.pmin * static_cast<double>(threads));
+    fmt::print(
+        "Overhead (batched / memcpy):  best={:.3f}x  mean={:.3f}x"
+        "  (batched vs radix: {:.3f}x)\n",
+        bt.pmin / mc.pmin,
+        bt.mean / mc.mean,
+        bt.pmin / rd.pmin);
 
     // ── Type-sweep: same P/K/threads/reps, other ColumnPrimitives factories ───
     // UInt64 numbers above are the reference; below re-runs radix only with
@@ -600,7 +685,7 @@ int main(int argc, char ** argv)
     //  decimal64        8          32     same width as UInt64
     //  decimal32        4          16     half width
     //  fixedstr8        8          32     direct scatter (no SWWC)
-        //  null_uint64      9          36     ~50% nulls; 1+8 bytes logical/row
+    //  null_uint64      9          36     ~50% nulls; 1+8 bytes logical/row
     fmt::print("\nType-sweep (partitions={} columns={} threads={} reps={}):\n", partitions, columns, threads, reps);
     fmt::print("{:<12}  {:>6}  {:>7}  {:>8}  {:>8}\n", "type", "B/elem", "B/row", "ns/row", "GB/s(R+W)");
     fmt::print("------------  ------  -------  --------  --------\n");
