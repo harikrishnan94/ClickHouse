@@ -17,6 +17,7 @@
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
 #include <Common/RadixShuffle/OutBlock.h>
+#include <Common/RadixShuffle/PerBlockArenaShuffler.h>
 #include <Common/RadixShuffle/RadixShuffler.h>
 #include <Common/ThreadPool.h>
 #include <Common/assert_cast.h>
@@ -93,9 +94,9 @@ std::optional<Config> parseCLI(std::span<char * const> args)
             return std::nullopt;
         }
     }
-    if (cfg.variant != "radix" && cfg.variant != "batched")
+    if (cfg.variant != "radix" && cfg.variant != "batched" && cfg.variant != "perblock")
     {
-        fmt::print(stderr, "variant must be 'radix' or 'batched'\n");
+        fmt::print(stderr, "variant must be 'radix', 'batched', or 'perblock'\n");
         return std::nullopt;
     }
     if (cfg.alloc_backend != "icolumn" && cfg.alloc_backend != "aligned_alloc")
@@ -174,6 +175,19 @@ BatchedTimings runBatchedRadix(
     return op.timings();
 }
 
+
+PerBlockTimings runPerBlockArenaRadix(std::span<const DB::Columns> blocks, int K, int P, BatchedOutput & output)
+{
+    std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
+    const bool use_swwc = PerBlockArenaShuffler::shouldUseSwwc(K, P);
+    PerBlockArenaShuffler op(P, K, std::move(prims), use_swwc);
+    for (const auto & block : blocks)
+        op.process(block);
+    op.finish();
+    output = std::move(op.output());
+    return op.timings();
+}
+
 } // namespace
 
 
@@ -237,11 +251,12 @@ int main(int argc, char ** argv)
     fmt::print("  {:.2f} s\n\n", std::chrono::duration<double>(Clk::now() - tg0).count());
 
     std::vector<double> ns_vals(static_cast<size_t>(cfg.reps));
-    // radix path keeps PartState output; batched path uses IColumn output
+    // radix path keeps PartState output; batched/perblock paths use IColumn output
     std::vector<std::vector<PartState>> radix_parts(static_cast<size_t>(cfg.T));
     std::vector<BatchedOutput> batched_out(static_cast<size_t>(cfg.T));
-    // Per-thread timings from the last rep (batched only).
+    // Per-thread timings from the last rep.
     std::vector<BatchedTimings> last_rep_timings(static_cast<size_t>(cfg.T));
+    std::vector<PerBlockTimings> last_rep_pb_timings(static_cast<size_t>(cfg.T));
 
     for (int rep = 0; rep < cfg.reps; ++rep)
     {
@@ -266,6 +281,9 @@ int main(int argc, char ** argv)
                     if (cfg.variant == "radix")
                         runSmartRadix(
                             slice, cfg.K, cfg.P, radix_parts[static_cast<size_t>(t)], arenas[static_cast<size_t>(t)], cap_init, cap_max);
+                    else if (cfg.variant == "perblock")
+                        last_rep_pb_timings[static_cast<size_t>(t)]
+                            = runPerBlockArenaRadix(slice, cfg.K, cfg.P, batched_out[static_cast<size_t>(t)]);
                     else
                         last_rep_timings[static_cast<size_t>(t)] = runBatchedRadix(
                             slice,
@@ -291,7 +309,59 @@ int main(int argc, char ** argv)
     fmt::print(
         "\nSUMMARY variant={} K={} P={} T={}: pmin={:.3f} ns/row  pavg={:.3f} ns/row\n", cfg.variant, cfg.K, cfg.P, cfg.T, pmin, pavg);
 
-    if (cfg.variant == "batched")
+    if (cfg.variant == "perblock")
+    {
+        PerBlockTimings agg;
+        for (const auto & t : last_rep_pb_timings)
+        {
+            agg.pid_compute_ns += t.pid_compute_ns;
+            agg.histogram_ns += t.histogram_ns;
+            agg.alloc_ns += t.alloc_ns;
+            agg.on_grow_ns += t.on_grow_ns;
+            agg.scatter_ns += t.scatter_ns;
+            agg.finish_alloc_ns += t.finish_alloc_ns;
+            agg.finish_copy_ns += t.finish_copy_ns;
+            agg.total_process_ns += t.total_process_ns;
+            agg.total_finish_ns += t.total_finish_ns;
+            agg.blocks_processed += t.blocks_processed;
+            agg.rows_processed += t.rows_processed;
+            agg.chunks_allocated += t.chunks_allocated;
+            agg.bytes_allocated += t.bytes_allocated;
+            agg.output_blocks_emitted += t.output_blocks_emitted;
+        }
+        const auto nt = static_cast<double>(cfg.T);
+        const double rows_pt = static_cast<double>(agg.rows_processed) / nt;
+        const auto nspr = [&](uint64_t ns) { return static_cast<double>(ns) / nt / rows_pt; };
+        const double proc_t = nspr(agg.total_process_ns);
+        const double fin_t = nspr(agg.total_finish_ns);
+        const double tot = proc_t + fin_t;
+        const auto pct = [&](double v) { return tot > 0 ? 100.0 * v / tot : 0.0; };
+
+        fmt::print("\nOperation breakdown (last rep, avg across {} threads):\n", cfg.T);
+        fmt::print(
+            "  Blocks/thread: {}  rows/thread: {}  chunks/thread: {}  bytes/thread: {:.2f} MiB  out_blocks/thread: {}\n",
+            agg.blocks_processed / static_cast<size_t>(cfg.T),
+            static_cast<size_t>(rows_pt),
+            agg.chunks_allocated / static_cast<size_t>(cfg.T),
+            static_cast<double>(agg.bytes_allocated) / nt / 1048576.0,
+            agg.output_blocks_emitted / static_cast<size_t>(cfg.T));
+        fmt::print("  {:<26}  {:>9}  {:>7}\n", "Operation", "ns/row", "% total");
+        fmt::print("  {:-<26}  {:->9}  {:->7}\n", "", "", "");
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "process: pid_compute", nspr(agg.pid_compute_ns), pct(nspr(agg.pid_compute_ns)));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "process: histogram", nspr(agg.histogram_ns), pct(nspr(agg.histogram_ns)));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "process: alloc", nspr(agg.alloc_ns), pct(nspr(agg.alloc_ns)));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "process: on_grow_raw", nspr(agg.on_grow_ns), pct(nspr(agg.on_grow_ns)));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "process: scatter", nspr(agg.scatter_ns), pct(nspr(agg.scatter_ns)));
+        fmt::print(
+            "  {:<26}  {:>9.4f}  {:>6.1f}%\n", "finish: clone+resize", nspr(agg.finish_alloc_ns), pct(nspr(agg.finish_alloc_ns)));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "finish: copy", nspr(agg.finish_copy_ns), pct(nspr(agg.finish_copy_ns)));
+        fmt::print("  {:-<26}  {:->9}  {:->7}\n", "", "", "");
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "process() total", proc_t, pct(proc_t));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "finish() total", fin_t, pct(fin_t));
+        fmt::print("  {:<26}  {:>9.4f}  {:>6.1f}%\n", "INSTRUMENTED TOTAL", tot, 100.0);
+        fmt::print("  wall pmin={:.4f} ns/row (instrumentation overhead ~{:.1f}%)\n", pmin, pmin > 0 ? 100.0 * (tot - pmin) / pmin : 0.0);
+    }
+    else if (cfg.variant == "batched")
     {
         BatchedTimings agg;
         for (const auto & t : last_rep_timings)
@@ -362,6 +432,7 @@ int main(int argc, char ** argv)
     }
     else
     {
+        // batched (icolumn or aligned_alloc) or perblock — both expose BatchedOutput
         for (const auto & per_partition : batched_out[0])
             for (const auto & flush_block : per_partition)
                 if (!flush_block.empty())
