@@ -307,24 +307,18 @@ void runSmartRadix(
 }
 
 
+using BatchedOutput = std::vector<std::vector<DB::Columns>>; // [partition][flush_cycle]
+
 void runBatchedRadix(
-    const BlockStream & blocks,
-    int K,
-    int P,
-    std::vector<PartState> & parts,
-    BumpArena & arena,
-    size_t init_cap = kOutCapMin,
-    size_t max_cap = kOutCapMax,
-    size_t batch_max_blocks = 0,
-    size_t batch_max_bytes = 0)
+    const BlockStream & blocks, int K, int P, BatchedOutput & output, size_t batch_max_blocks = 0, size_t batch_max_bytes = 0)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
     const bool use_swwc = BatchedRadixShuffler::shouldUseSwwc(K, P);
-    BatchedRadixShuffler op(P, K, std::move(prims), arena, use_swwc, init_cap, max_cap, batch_max_blocks, batch_max_bytes);
+    BatchedRadixShuffler op(P, K, std::move(prims), use_swwc, batch_max_blocks, batch_max_bytes);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
-    parts = std::move(op.parts());
+    output = std::move(op.output());
 }
 
 
@@ -490,7 +484,8 @@ int main(int argc, char ** argv)
 
     // ── timed reps: fresh BumpArena per rep (no cross-rep reuse) ─────────────
     std::vector<PartState> mc_parts(static_cast<size_t>(threads));
-    std::vector<std::vector<PartState>> parts(static_cast<size_t>(threads));
+    std::vector<std::vector<PartState>> radix_parts(static_cast<size_t>(threads));
+    std::vector<BatchedOutput> bt_out(static_cast<size_t>(threads));
 
     // GB/s = gbs_k / ns_per_row; gbs_k counts read + write of K × 8 bytes/row.
     const double gbs_k = 2.0 * static_cast<double>(columns) * 8.0;
@@ -545,7 +540,7 @@ int main(int argc, char ** argv)
                 rd_arenas.emplace_back(kArenaSlabBytes);
 
             for (int t = 0; t < threads; ++t)
-                parts[static_cast<size_t>(t)].clear();
+                radix_parts[static_cast<size_t>(t)].clear();
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(threads));
@@ -559,7 +554,7 @@ int main(int argc, char ** argv)
                             streams[static_cast<size_t>(t)],
                             columns,
                             partitions,
-                            parts[static_cast<size_t>(t)],
+                            radix_parts[static_cast<size_t>(t)],
                             rd_arenas[static_cast<size_t>(t)],
                             cap_init,
                             cap_max);
@@ -570,15 +565,8 @@ int main(int argc, char ** argv)
             rd_ns[static_cast<size_t>(rep)] = std::chrono::duration<double>(Clk::now() - t0).count() * 1e9 / static_cast<double>(total);
         }
 
-        // ── batched radix — fresh BumpArena each rep ─────────────────────────
+        // ── batched radix ─────────────────────────────────────────────────────
         {
-            std::vector<BumpArena> bt_arenas;
-            bt_arenas.reserve(static_cast<size_t>(threads));
-            for (int t = 0; t < threads; ++t)
-                bt_arenas.emplace_back(kArenaSlabBytes);
-
-            for (int t = 0; t < threads; ++t)
-                parts[static_cast<size_t>(t)].clear();
             const auto t0 = Clk::now();
             std::vector<std::thread> ths;
             ths.reserve(static_cast<size_t>(threads));
@@ -592,10 +580,7 @@ int main(int argc, char ** argv)
                             streams[static_cast<size_t>(t)],
                             columns,
                             partitions,
-                            parts[static_cast<size_t>(t)],
-                            bt_arenas[static_cast<size_t>(t)],
-                            cap_init,
-                            cap_max,
+                            bt_out[static_cast<size_t>(t)],
                             batch_max_blocks,
                             batch_max_bytes);
                     });
@@ -617,13 +602,12 @@ int main(int argc, char ** argv)
     // ── sanity: scattered row count on thread 0 after last batched rep ───────
     const size_t expected_data = rpt * static_cast<size_t>(columns) * 8;
     size_t batched_used_rows = 0;
-    for (const auto & sv : parts[0])
-    {
-        for (const OutBlock * b = sv.head; b != nullptr; b = b->next)
-            batched_used_rows += b->filled;
-    }
+    for (const auto & per_partition : bt_out[0])
+        for (const auto & flush_block : per_partition)
+            if (!flush_block.empty())
+                batched_used_rows += flush_block[0]->size();
     const size_t batched_used_bytes = batched_used_rows * static_cast<size_t>(columns) * sizeof(uint64_t);
-    fmt::print("\nArena usage after last rep (thread 0):\n");
+    fmt::print("\nOutput after last rep (thread 0):\n");
     fmt::print(
         "  expected data  = {:>7.1f} MiB  ({} rows \xc3\x97 {} cols \xc3\x97 8 B)\n",
         static_cast<double>(expected_data) / 1048576.0,

@@ -1,14 +1,12 @@
 #pragma once
 
+#include <Columns/IColumn.h>
 #include <Columns/IColumn_fwd.h>
-#include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/ColumnPrimitives.h>
-#include <Common/RadixShuffle/OutBlock.h>
 #include <Common/RadixShuffle/PartitionTypes.h>
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <vector>
 
 
@@ -23,19 +21,48 @@ struct BatchedPhysColInfo
     bool use_nested;
 };
 
+/// Per-operation timing counters accumulated over the lifetime of one
+/// `BatchedRadixShuffler` instance.  All values are nanoseconds.
+struct BatchedTimings
+{
+    // process()
+    uint64_t pid_compute_ns = 0;
+    uint64_t histogram_ns = 0;
+    uint64_t buffer_push_ns = 0;
+
+    // flush() Phase 1 — IColumn allocation, broken down
+    uint64_t clone_empty_ns = 0;
+    uint64_t reserve_resize_ns = 0;
+    uint64_t on_grow_ns = 0;
+    uint64_t move_into_pending_ns = 0;
+
+    // flush() Phase 2 — scatter
+    uint64_t scatter_ns = 0;
+    uint64_t fence_drain_ns = 0;
+
+    // flush() Phase 3 — commit + reset
+    uint64_t commit_ns = 0;
+    uint64_t reset_ns = 0;
+
+    // totals + counters
+    uint64_t total_process_ns = 0;
+    uint64_t total_flush_ns = 0;
+    size_t flush_count = 0;
+    size_t rows_processed = 0;
+    size_t alloc_count = 0; // total cloneEmpty calls across all flushes
+};
+
 
 /// Batched radix partition operator.
 ///
 /// Like `RadixShuffler`, but buffers input blocks until either
 /// `max_buffered_blocks` blocks accumulate or `max_buffered_bytes` are buffered,
-/// then allocates exact-size `OutBlock`s per partition and scatters all buffered
-/// rows in one sweep.
+/// then allocates exact-size per-partition `IColumn` output columns and scatters
+/// all buffered rows in one sweep.
 ///
-/// Column data buffers are allocated independently via `std::aligned_alloc`
-/// (64-byte aligned) so each column of each partition occupies its own
-/// allocation — no inter-column or inter-partition sharing of cache lines or
-/// pages.  The `OutBlock` header itself comes from the `BumpArena`.
-/// All column allocations are owned by this object and freed in the destructor.
+/// Output is `output_[p]` — a vector of `Columns` blocks for partition `p`,
+/// one entry per flush cycle.  Each entry holds `num_physical_columns_` columns
+/// of exactly `accum_hist_[p]` rows.
 class BatchedRadixShuffler
 {
 public:
@@ -48,27 +75,21 @@ public:
     /// `max_buffered_bytes` — flush when buffered byte volume reaches this limit.
     ///   Pass 0 to use `kDefaultMemBound`.
     BatchedRadixShuffler(
-        int P,
-        int K,
-        std::vector<ColumnPrimitives> prims,
-        BumpArena & arena,
-        bool use_swwc,
-        size_t init_cap = kOutCapMin,
-        size_t max_cap = kOutCapMax,
-        size_t max_buffered_blocks = 0,
-        size_t max_buffered_bytes = 0);
-
-    /// Frees all per-column buffers allocated via `std::aligned_alloc` in flush().
-    ~BatchedRadixShuffler();
+        int P, int K, std::vector<ColumnPrimitives> prims, bool use_swwc, size_t max_buffered_blocks = 0, size_t max_buffered_bytes = 0);
 
     void process(const DB::Columns & columns);
     void finish();
 
-    [[nodiscard]] std::vector<PartState> & parts() noexcept { return parts_; }
-    [[nodiscard]] const std::vector<PartState> & parts() const noexcept { return parts_; }
+    /// Per-partition output.  `output()[p]` is a list of `Columns` blocks, one
+    /// per flush cycle; each block holds `num_physical_columns_` columns.
+    [[nodiscard]] std::vector<std::vector<DB::Columns>> & output() noexcept { return output_; }
+    [[nodiscard]] const std::vector<std::vector<DB::Columns>> & output() const noexcept { return output_; }
 
     [[nodiscard]] size_t maxBufferedBlocks() const noexcept { return max_buffered_blocks_; }
     [[nodiscard]] size_t maxBufferedBytes() const noexcept { return max_buffered_bytes_; }
+
+    /// Accumulated per-operation timings (valid after finish()).
+    [[nodiscard]] const BatchedTimings & timings() const noexcept { return timings_; }
 
 private:
     void flush();
@@ -78,7 +99,6 @@ private:
     int num_physical_columns_;
     bool use_swwc_;
     uint32_t mask_;
-    size_t init_cap_;
     size_t max_buffered_blocks_;
     size_t max_buffered_bytes_;
     size_t bytes_per_row_;
@@ -87,10 +107,9 @@ private:
     std::vector<ColumnPrimitives> phys_prims_;
     std::vector<BatchedPhysColInfo> phys_col_info_;
     std::vector<ScatterState> scatter_states_;
-    std::vector<PartState> parts_;
-    BumpArena & arena_;
 
-    std::vector<size_t> elem_sizes_;
+    /// output_[p] accumulates one Columns block per flush cycle.
+    std::vector<std::vector<DB::Columns>> output_;
 
     std::vector<uint32_t> accum_hist_;
 
@@ -103,14 +122,11 @@ private:
     std::vector<uint32_t> pos_;
     std::vector<uint8_t> cnt_;
 
-    /// Per-column buffers allocated via `std::aligned_alloc` during flush().
-    /// Each entry corresponds to one `OutBlock::cols[k]` pointer and is freed
-    /// by the destructor.
-    ///
-    /// Lifetime caveat: once `parts()` is moved out of this object, the
-    /// `OutBlock::cols[k]` pointers inside remain valid until `~BatchedRadixShuffler`
-    /// fires.  Callers must not access column data after the operator is destroyed.
-    std::vector<void *> col_allocs_;
+    /// Scratch: per-partition MutableColumn arrays built in flush() Phase 1,
+    /// consumed in Phase 2, then moved into output_ at the end of flush().
+    std::vector<MutableColumns> pending_cols_;
+
+    BatchedTimings timings_;
 };
 
 } // namespace DB

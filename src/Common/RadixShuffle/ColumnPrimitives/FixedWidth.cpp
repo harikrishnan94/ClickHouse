@@ -716,6 +716,42 @@ void computePidsFixedString(const ColumnPrimitives & /*self*/, const IColumn & s
 }
 
 
+// ── ResizeForScatter ──────────────────────────────────────────────────────────
+
+/// Resize a `ColumnVector<T>` to `rows` elements and return a raw pointer to
+/// element 0.  `PaddedPODArray` is 64-byte aligned — no extra step needed.
+template <typename T>
+void * resizeForScatterFixed(IColumn & col, size_t rows)
+{
+    auto & data = assert_cast<ColumnVector<T> &>(col).getData();
+    data.reserve(rows);
+    data.resize_assume_reserved(rows);
+    return data.data();
+}
+
+/// Resize a `ColumnDecimal<T>` to `rows` elements and return a raw pointer to
+/// element 0 (reinterpreted as the underlying NativeType storage).
+template <typename T>
+void * resizeForScatterDecimal(IColumn & col, size_t rows)
+{
+    auto & data = assert_cast<ColumnDecimal<T> &>(col).getData();
+    data.reserve(rows);
+    data.resize_assume_reserved(rows);
+    return data.data();
+}
+
+/// Resize a `ColumnFixedString` to `rows` strings and return a raw pointer to
+/// the first byte of the char storage.
+void * resizeForScatterFixedString(IColumn & col, size_t rows)
+{
+    auto & fs = assert_cast<ColumnFixedString &>(col);
+    auto & chars = fs.getChars();
+    chars.reserve(rows * fs.getN());
+    chars.resize_assume_reserved(rows * fs.getN());
+    return chars.data();
+}
+
+
 } // namespace
 
 
@@ -731,6 +767,7 @@ ColumnPrimitives makeFixedWidth()
     cp.scatter_raw_swwc = &scatterRawSwwcFixed<T>;
     cp.drain_raw = &drainRawFixed<T>;
     cp.on_grow_raw = &onGrowRawFixed<T>;
+    cp.resize_for_scatter = &resizeForScatterFixed<T>;
     cp.raw_elem_size = sizeof(T);
     return cp;
 }
@@ -768,6 +805,7 @@ ColumnPrimitives makeDecimal()
     cp.scatter_raw_swwc = &scatterRawSwwcDecimal<T>;
     cp.drain_raw = &drainRawFixed<NativeT>;
     cp.on_grow_raw = &onGrowRawFixed<NativeT>;
+    cp.resize_for_scatter = &resizeForScatterDecimal<T>;
     cp.raw_elem_size = sizeof(NativeT);
     return cp;
 }
@@ -792,6 +830,7 @@ ColumnPrimitives makeFixedString(size_t n)
     // scatter_raw_swwc and drain_raw are null — RadixShuffler
     // falls back to direct scatter when scatter_raw_swwc is null.
     cp.on_grow_raw = &onGrowRawFixed<unsigned char>;
+    cp.resize_for_scatter = &resizeForScatterFixedString;
     cp.raw_elem_size = n;
     return cp;
 }

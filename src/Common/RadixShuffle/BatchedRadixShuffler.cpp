@@ -8,35 +8,34 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
+#include <chrono>
 #include <cstring>
-#include <new>
+
+namespace
+{
+inline uint64_t elapsedNs(std::chrono::steady_clock::time_point t0) noexcept
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+}
+}
 
 
 namespace DB
 {
 
 BatchedRadixShuffler::BatchedRadixShuffler(
-    int P,
-    int K,
-    std::vector<ColumnPrimitives> prims,
-    BumpArena & arena,
-    bool use_swwc,
-    size_t init_cap,
-    size_t /*max_cap*/,
-    size_t max_buffered_blocks,
-    size_t max_buffered_bytes)
+    int P, int K, std::vector<ColumnPrimitives> prims, bool use_swwc, size_t max_buffered_blocks, size_t max_buffered_bytes)
     : num_partitions_(P)
     , num_columns_(K)
     , use_swwc_(use_swwc)
     , mask_(static_cast<uint32_t>(P) - 1)
-    , init_cap_(init_cap)
     , max_buffered_blocks_(max_buffered_blocks ? max_buffered_blocks : static_cast<size_t>(P))
     , max_buffered_bytes_(max_buffered_bytes ? max_buffered_bytes : kDefaultMemBound)
     , col_prims_(std::move(prims))
-    , arena_(arena)
+    , output_(static_cast<size_t>(P))
     , accum_hist_(static_cast<size_t>(P), 0)
     , cnt_(static_cast<size_t>(P), 0)
+    , pending_cols_(static_cast<size_t>(P))
 {
     for (size_t k = 0; k < static_cast<size_t>(num_columns_); ++k)
     {
@@ -62,24 +61,9 @@ BatchedRadixShuffler::BatchedRadixShuffler(
     for (int k = 0; k < num_physical_columns_; ++k)
         scatter_states_.emplace_back(static_cast<size_t>(num_partitions_));
 
-    elem_sizes_.resize(static_cast<size_t>(num_physical_columns_));
     bytes_per_row_ = 0;
     for (int k = 0; k < num_physical_columns_; ++k)
-    {
-        elem_sizes_[static_cast<size_t>(k)] = phys_prims_[static_cast<size_t>(k)].raw_elem_size;
-        bytes_per_row_ += elem_sizes_[static_cast<size_t>(k)];
-    }
-
-    parts_.assign(static_cast<size_t>(P), {});
-    for (auto & ps : parts_)
-        ps.next_cap = init_cap_;
-}
-
-
-BatchedRadixShuffler::~BatchedRadixShuffler()
-{
-    for (void * p : col_allocs_)
-        std::free(p);
+        bytes_per_row_ += phys_prims_[static_cast<size_t>(k)].raw_elem_size;
 }
 
 
@@ -94,55 +78,36 @@ static const IColumn & extractPhysCol(const DB::Columns & columns, const Batched
 }
 
 
-/// Allocate an `OutBlock` whose column data buffers are independent
-/// 64-byte-aligned heap allocations (one per physical column).
-///
-/// The `OutBlock` header itself comes from `arena` (a small bump allocation).
-/// Each column buffer is appended to `col_allocs` so the caller can free them
-/// later.  `cap` must already be a multiple of 64 (use `round64`) because
-/// `std::aligned_alloc` requires size to be a multiple of alignment.
-static OutBlock * allocOutBlockSeparateCols(
-    BumpArena & arena, int num_physical_columns, const size_t * elem_sizes, size_t cap, std::vector<void *> & col_allocs)
-{
-    constexpr size_t kHdrSize = (sizeof(OutBlock) + 63) & ~size_t{63};
-
-    char * raw = arena.alignedAlloc(kHdrSize, 64);
-    auto * nb = reinterpret_cast<OutBlock *>(raw);
-    nb->next = nullptr;
-    nb->filled = 0;
-    nb->capacity = cap;
-
-    for (int k = 0; k < num_physical_columns; ++k)
-    {
-        void * col_mem = std::aligned_alloc(64, cap * elem_sizes[static_cast<size_t>(k)]);
-        if (!col_mem)
-            throw std::bad_alloc{};
-        nb->cols[k] = col_mem;
-        col_allocs.push_back(col_mem);
-    }
-    for (int k = num_physical_columns; k < kMaxK; ++k)
-        nb->cols[k] = nullptr;
-
-    return nb;
-}
-
-
 void BatchedRadixShuffler::process(const DB::Columns & columns)
 {
     if (columns.empty() || columns[0]->size() == 0)
         return;
 
+    const auto proc_t0 = std::chrono::steady_clock::now();
     const size_t n = columns[0]->size();
-    const size_t pid_offset = buffered_pids_.size();
-    buffered_pids_.resize(pid_offset + n);
 
-    col_prims_[0].compute_pids(col_prims_[0], *columns[0], 0, static_cast<int>(n), mask_, buffered_pids_.data() + pid_offset);
+    {
+        const auto t = std::chrono::steady_clock::now();
+        const size_t pid_offset = buffered_pids_.size();
+        buffered_pids_.resize(pid_offset + n);
+        col_prims_[0].compute_pids(col_prims_[0], *columns[0], 0, static_cast<int>(n), mask_, buffered_pids_.data() + pid_offset);
+        timings_.pid_compute_ns += elapsedNs(t);
 
-    for (size_t j = 0; j < n; ++j)
-        ++accum_hist_[buffered_pids_[pid_offset + j]];
+        const auto th = std::chrono::steady_clock::now();
+        for (size_t j = 0; j < n; ++j)
+            ++accum_hist_[buffered_pids_[pid_offset + j]];
+        timings_.histogram_ns += elapsedNs(th);
+    }
 
-    buffered_blocks_.push_back(columns);
-    total_buffered_bytes_ += n * bytes_per_row_;
+    {
+        const auto t = std::chrono::steady_clock::now();
+        buffered_blocks_.push_back(columns);
+        total_buffered_bytes_ += n * bytes_per_row_;
+        timings_.buffer_push_ns += elapsedNs(t);
+    }
+
+    timings_.total_process_ns += elapsedNs(proc_t0);
+    timings_.rows_processed += n;
 
     if (buffered_blocks_.size() >= max_buffered_blocks_ || total_buffered_bytes_ >= max_buffered_bytes_)
         flush();
@@ -154,31 +119,49 @@ void BatchedRadixShuffler::flush()
     if (buffered_blocks_.empty())
         return;
 
-    // ── Phase 1: exact-size OutBlocks per active partition ────────────────
+    const auto flush_t0 = std::chrono::steady_clock::now();
+    ++timings_.flush_count;
+
+    // ── Phase 1: allocate per-partition output IColumns ───────────────────
     for (int p = 0; p < num_partitions_; ++p)
     {
         const uint32_t cnt = accum_hist_[static_cast<size_t>(p)];
         if (!cnt)
             continue;
 
-        auto & ps = parts_[static_cast<size_t>(p)];
-        const size_t cap = round64(cnt); // multiple of 64 — satisfies aligned_alloc requirement
-
-        OutBlock * nb = allocOutBlockSeparateCols(arena_, num_physical_columns_, elem_sizes_.data(), cap, col_allocs_);
-        nb->next = ps.head;
-        ps.head = ps.cur = nb;
-        nb->filled = cnt;
+        MutableColumns & mcols = pending_cols_[static_cast<size_t>(p)];
+        mcols.resize(static_cast<size_t>(num_physical_columns_));
 
         for (int k = 0; k < num_physical_columns_; ++k)
+        {
+            const IColumn & src = extractPhysCol(buffered_blocks_[0], phys_col_info_[static_cast<size_t>(k)]);
+
+            const auto t_clone = std::chrono::steady_clock::now();
+            auto col = src.cloneEmpty();
+            timings_.clone_empty_ns += elapsedNs(t_clone);
+            ++timings_.alloc_count;
+
+            const auto t_reserve = std::chrono::steady_clock::now();
+            void * ptr = phys_prims_[static_cast<size_t>(k)].resize_for_scatter(*col, static_cast<size_t>(cnt));
+            timings_.reserve_resize_ns += elapsedNs(t_reserve);
+
+            const auto t_on_grow = std::chrono::steady_clock::now();
             phys_prims_[static_cast<size_t>(k)].on_grow_raw(
                 phys_prims_[static_cast<size_t>(k)],
                 static_cast<size_t>(p),
-                ps.cur->cols[k],
-                ps.cur->capacity,
+                ptr,
+                static_cast<size_t>(cnt),
                 scatter_states_[static_cast<size_t>(k)]);
+            timings_.on_grow_ns += elapsedNs(t_on_grow);
+
+            const auto t_move = std::chrono::steady_clock::now();
+            mcols[static_cast<size_t>(k)] = std::move(col);
+            timings_.move_into_pending_ns += elapsedNs(t_move);
+        }
     }
 
     // ── Phase 2: block-major scatter ──────────────────────────────────────
+    const auto t_scatter = std::chrono::steady_clock::now();
     if (use_swwc_)
     {
         size_t pid_offset = 0;
@@ -210,6 +193,8 @@ void BatchedRadixShuffler::flush()
             }
         }
 
+        timings_.scatter_ns += elapsedNs(t_scatter);
+        const auto t_drain = std::chrono::steady_clock::now();
         std::atomic_thread_fence(std::memory_order_seq_cst);
 
         for (int p = 0; p < num_partitions_; ++p)
@@ -225,6 +210,7 @@ void BatchedRadixShuffler::flush()
                         scatter_states_[static_cast<size_t>(k)]);
             cnt_[static_cast<size_t>(p)] = 0;
         }
+        timings_.fence_drain_ns += elapsedNs(t_drain);
     }
     else
     {
@@ -242,13 +228,38 @@ void BatchedRadixShuffler::flush()
                 phys_prims_[static_cast<size_t>(k)].scatter_raw(sub_col, 0, pids, n, scatter_states_[static_cast<size_t>(k)]);
             }
         }
+        timings_.scatter_ns += elapsedNs(t_scatter);
     }
 
-    // Reset buffers and histogram.
-    buffered_blocks_.clear();
-    buffered_pids_.clear();
-    total_buffered_bytes_ = 0;
-    std::fill(accum_hist_.begin(), accum_hist_.end(), 0);
+    // ── Phase 3: commit pending columns into output_ ──────────────────────
+    {
+        const auto t = std::chrono::steady_clock::now();
+        for (int p = 0; p < num_partitions_; ++p)
+        {
+            if (!accum_hist_[static_cast<size_t>(p)])
+                continue;
+
+            MutableColumns & mcols = pending_cols_[static_cast<size_t>(p)];
+            DB::Columns frozen;
+            frozen.reserve(mcols.size());
+            for (auto & mc : mcols)
+                frozen.push_back(std::move(mc));
+            mcols.clear();
+            output_[static_cast<size_t>(p)].push_back(std::move(frozen));
+        }
+        timings_.commit_ns += elapsedNs(t);
+    }
+
+    {
+        const auto t = std::chrono::steady_clock::now();
+        buffered_blocks_.clear();
+        buffered_pids_.clear();
+        total_buffered_bytes_ = 0;
+        std::fill(accum_hist_.begin(), accum_hist_.end(), 0);
+        timings_.reset_ns += elapsedNs(t);
+    }
+
+    timings_.total_flush_ns += elapsedNs(flush_t0);
 }
 
 

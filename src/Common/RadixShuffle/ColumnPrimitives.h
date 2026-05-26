@@ -118,6 +118,13 @@ using RawDrainFn = void (*)(const ColumnPrimitives & self, size_t p, uint32_t cn
 /// `[capacity, capacity*(1+sizeof(T)))`.
 using RawOnGrowFn = void (*)(const ColumnPrimitives & self, size_t p, void * col_base, size_t capacity, ScatterState & state);
 
+/// Resize a mutable `IColumn` to `rows` elements and return a raw writable
+/// pointer to element 0.  Used by `BatchedRadixShuffler` to set up per-partition
+/// output columns before the scatter pass.  The pointer must remain valid until
+/// the column is destroyed; `PaddedPODArray` guarantees 64-byte alignment, so
+/// no extra alignment step is needed for SWWC NT stores.
+using ResizeForScatterFn = void * (*)(IColumn & col, size_t rows);
+
 
 /// Column-primitive triple resolved per column type.  After
 /// buildSchemaAndPrimitives fills in fixed_slot_indices and writes_varlen,
@@ -133,6 +140,7 @@ struct ColumnPrimitives
     RawScatterSwwcFn scatter_raw_swwc = nullptr;
     RawDrainFn drain_raw = nullptr;
     RawOnGrowFn on_grow_raw = nullptr;
+    ResizeForScatterFn resize_for_scatter = nullptr;
 
     /// Indices into PartSchema::fixed_slots that this primitive owns.
     /// For Nullable(X) the first index is always the NullMap slot; the
