@@ -17,6 +17,7 @@
 #include <DataTypes/DataTypesDecimal.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Common/RadixShuffle/Allocator.h>
+#include <Common/RadixShuffle/BatchedRadixShuffler.h>
 #include <Common/RadixShuffle/BumpArena.h>
 #include <Common/RadixShuffle/ColumnPrimitives.h>
 #include <Common/RadixShuffle/ColumnPrimitives/FixedWidth.h>
@@ -2089,6 +2090,323 @@ TEST(RadixShuffler, AdaptiveCaps)
         EXPECT_EQ(init % 64, 0u) << "init not multiple of 64 for P=" << num_partitions;
         EXPECT_EQ(maxc % 64, 0u) << "max not multiple of 64 for P=" << num_partitions;
     }
+}
+
+
+// ─────────────────────────── BatchedRadixShuffler tests ─────────────────────
+// These tests exercise the batching / deferred-scatter operator.
+// Coverage goals:
+//   • flat buffered_pids_ is correctly offset-walked per block
+//   • pid buffer is reused across multiple flush cycles without corruption
+//   • both direct and SWWC scatter paths produce correct output
+//   • Nullable columns, multi-column inputs
+//   • empty input early-return, single-block single-flush
+
+
+/// Round-trip helper for BatchedRadixShuffler: feeds `num_rows` rows split
+/// across `num_blocks` calls to `process()`, then checks multiset equality.
+template <typename T>
+size_t runBatchedNumericRoundTrip(
+    size_t num_rows,
+    int num_partitions,
+    size_t num_blocks = 4,
+    size_t max_buffered_blocks = 0,
+    size_t init_cap = kOutCapMin,
+    size_t max_cap = kOutCapMax)
+{
+    auto col = makeVec<T>(num_rows, 17);
+    const auto & src = assert_cast<const DB::ColumnVector<T> &>(*col);
+
+    std::vector<ColumnPrimitives> prims(1, makeFixedWidth<T>());
+    BumpArena arena(64ULL << 20);
+    const bool use_swwc = BatchedRadixShuffler::shouldUseSwwc(1, num_partitions);
+    BatchedRadixShuffler op(num_partitions, 1, std::move(prims), arena, use_swwc, init_cap, max_cap, max_buffered_blocks);
+
+    const size_t rows_per_block = (num_rows + num_blocks - 1) / num_blocks;
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const size_t start = b * rows_per_block;
+        const size_t end = std::min(start + rows_per_block, num_rows);
+        if (start >= end)
+            break;
+        DB::Columns blk = {col->cut(start, end - start)};
+        op.process(blk);
+    }
+    op.finish();
+
+    std::vector<T> collected = collectScalar<T>(op.parts(), 0);
+    EXPECT_EQ(collected.size(), num_rows);
+
+    std::vector<T> original(src.getData().begin(), src.getData().end());
+    std::sort(original.begin(), original.end());
+    std::sort(collected.begin(), collected.end());
+    EXPECT_EQ(original, collected) << "T=" << typeid(T).name() << " P=" << num_partitions << " N=" << num_rows;
+
+    return totalRows(op.parts());
+}
+
+
+TEST(BatchedRadixShuffler, ShouldUseSwwcCrossover)
+{
+    EXPECT_FALSE(BatchedRadixShuffler::shouldUseSwwc(1, 1));
+    EXPECT_FALSE(BatchedRadixShuffler::shouldUseSwwc(1, 511));
+    EXPECT_TRUE(BatchedRadixShuffler::shouldUseSwwc(1, 512));
+    EXPECT_FALSE(BatchedRadixShuffler::shouldUseSwwc(2, 31));
+    EXPECT_TRUE(BatchedRadixShuffler::shouldUseSwwc(2, 32));
+}
+
+TEST(BatchedRadixShuffler, DirectSingleBlockP4)
+{
+    // One block, one flush via finish() — baseline correctness.
+    runBatchedNumericRoundTrip<UInt64>(4096, 4, /*num_blocks=*/1, /*max_buffered_blocks=*/1);
+}
+
+TEST(BatchedRadixShuffler, DirectMultiFlushP4)
+{
+    // 6 blocks, max_buffered_blocks=2 → 3 mid-stream flushes + finish().
+    // Tests that pid buffer is correctly cleared and reused across flushes.
+    runBatchedNumericRoundTrip<UInt64>(6000, 4, /*num_blocks=*/6, /*max_buffered_blocks=*/2);
+}
+
+TEST(BatchedRadixShuffler, DirectMultiFlushP64)
+{
+    runBatchedNumericRoundTrip<UInt32>(8192, 64, /*num_blocks=*/8, /*max_buffered_blocks=*/2);
+}
+
+TEST(BatchedRadixShuffler, DirectManyFlushesP16)
+{
+    // 10 blocks, max_buffered_blocks=3 → many flush cycles.
+    // Verifies flat pid buffer offset arithmetic across all cycles.
+    runBatchedNumericRoundTrip<UInt64>(10000, 16, /*num_blocks=*/10, /*max_buffered_blocks=*/3);
+}
+
+TEST(BatchedRadixShuffler, DirectUnevenBlockSizes)
+{
+    // num_rows not divisible by num_blocks → last block is smaller.
+    runBatchedNumericRoundTrip<UInt32>(10001, 8, /*num_blocks=*/7, /*max_buffered_blocks=*/2);
+}
+
+TEST(BatchedRadixShuffler, SWWCSingleBlockP512)
+{
+    runBatchedNumericRoundTrip<UInt64>(8192, 512, /*num_blocks=*/1);
+}
+
+TEST(BatchedRadixShuffler, SWWCMultiFlushP512)
+{
+    // Multiple flushes through the SWWC scatter path.
+    runBatchedNumericRoundTrip<UInt64>(16384, 512, /*num_blocks=*/4, /*max_buffered_blocks=*/2);
+}
+
+TEST(BatchedRadixShuffler, SWWCManyFlushesP1024)
+{
+    runBatchedNumericRoundTrip<UInt64>(32768, 1024, /*num_blocks=*/8, /*max_buffered_blocks=*/2);
+}
+
+TEST(BatchedRadixShuffler, NullableUInt32P8MultiFlush)
+{
+    constexpr size_t num_rows = 2048;
+    constexpr int num_partitions = 8;
+    constexpr size_t num_blocks = 4;
+    constexpr size_t max_buffered_blocks = 2;
+
+    auto col = makeNullableVec<UInt32>(num_rows, 3);
+    const auto & nc = assert_cast<const DB::ColumnNullable &>(*col);
+
+    std::vector<ColumnPrimitives> prims(1, makeNullable(makeFixedWidth<UInt32>()));
+    BumpArena arena(32ULL << 20);
+    BatchedRadixShuffler op(num_partitions, 1, std::move(prims), arena, /*use_swwc=*/false, kOutCapMin, kOutCapMax, max_buffered_blocks);
+
+    const size_t rows_per_block = (num_rows + num_blocks - 1) / num_blocks;
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const size_t start = b * rows_per_block;
+        const size_t end = std::min(start + rows_per_block, num_rows);
+        if (start >= end)
+            break;
+        DB::Columns blk{col->cut(start, end - start)};
+        op.process(blk);
+    }
+    op.finish();
+
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
+
+    const auto & nulls = nc.getNullMapData();
+    const auto & vals = assert_cast<const DB::ColumnVector<UInt32> &>(nc.getNestedColumn()).getData();
+    std::vector<NV<UInt32>> orig;
+    for (size_t i = 0; i < num_rows; ++i)
+        orig.push_back({nulls[i] != 0, vals[i]});
+
+    auto coll = collectNullable<UInt32>(op.parts(), 0, 1);
+    ASSERT_EQ(coll.size(), num_rows);
+    std::sort(orig.begin(), orig.end());
+    std::sort(coll.begin(), coll.end());
+    EXPECT_EQ(orig, coll);
+}
+
+TEST(BatchedRadixShuffler, TwoColumnDirectP16MultiFlush)
+{
+    constexpr size_t num_rows = 4096;
+    constexpr int num_partitions = 16;
+    constexpr size_t num_blocks = 8;
+    constexpr size_t max_buffered_blocks = 2;
+
+    auto c0 = makeVec<UInt64>(num_rows, 1);
+    auto c1 = makeVec<UInt32>(num_rows, 2);
+
+    std::vector<ColumnPrimitives> prims = {makeFixedWidth<UInt64>(), makeFixedWidth<UInt32>()};
+    BumpArena arena(32ULL << 20);
+    BatchedRadixShuffler op(num_partitions, 2, std::move(prims), arena, /*use_swwc=*/false, kOutCapMin, kOutCapMax, max_buffered_blocks);
+
+    const size_t rows_per_block = (num_rows + num_blocks - 1) / num_blocks;
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const size_t start = b * rows_per_block;
+        const size_t end = std::min(start + rows_per_block, num_rows);
+        if (start >= end)
+            break;
+        DB::Columns blk{c0->cut(start, end - start), c1->cut(start, end - start)};
+        op.process(blk);
+    }
+    op.finish();
+
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
+
+    std::vector<UInt64> orig0(c0->getData().begin(), c0->getData().end());
+    auto coll0 = collectScalar<UInt64>(op.parts(), 0);
+    ASSERT_EQ(coll0.size(), num_rows);
+    std::sort(orig0.begin(), orig0.end());
+    std::sort(coll0.begin(), coll0.end());
+    EXPECT_EQ(orig0, coll0) << "col 0";
+
+    std::vector<UInt32> orig1(c1->getData().begin(), c1->getData().end());
+    auto coll1 = collectScalar<UInt32>(op.parts(), 1);
+    ASSERT_EQ(coll1.size(), num_rows);
+    std::sort(orig1.begin(), orig1.end());
+    std::sort(coll1.begin(), coll1.end());
+    EXPECT_EQ(orig1, coll1) << "col 1";
+}
+
+TEST(BatchedRadixShuffler, TwoColumnSWWCP32MultiFlush)
+{
+    constexpr size_t num_rows = 4096;
+    constexpr int num_partitions = 32;
+    constexpr size_t num_blocks = 6;
+    constexpr size_t max_buffered_blocks = 2;
+
+    auto c0 = makeVec<UInt64>(num_rows, 10);
+    auto c1 = makeVec<UInt64>(num_rows, 11);
+
+    std::vector<ColumnPrimitives> prims = {makeFixedWidth<UInt64>(), makeFixedWidth<UInt64>()};
+    BumpArena arena(32ULL << 20);
+    BatchedRadixShuffler op(num_partitions, 2, std::move(prims), arena, /*use_swwc=*/true, kOutCapMin, kOutCapMax, max_buffered_blocks);
+
+    const size_t rows_per_block = (num_rows + num_blocks - 1) / num_blocks;
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const size_t start = b * rows_per_block;
+        const size_t end = std::min(start + rows_per_block, num_rows);
+        if (start >= end)
+            break;
+        DB::Columns blk{c0->cut(start, end - start), c1->cut(start, end - start)};
+        op.process(blk);
+    }
+    op.finish();
+
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
+
+    for (int ci : {0, 1})
+    {
+        const auto & data = (ci == 0) ? c0->getData() : c1->getData();
+        std::vector<UInt64> orig(data.begin(), data.end());
+        auto coll = collectScalar<UInt64>(op.parts(), static_cast<size_t>(ci));
+        ASSERT_EQ(coll.size(), num_rows) << "col " << ci;
+        std::sort(orig.begin(), orig.end());
+        std::sort(coll.begin(), coll.end());
+        EXPECT_EQ(orig, coll) << "col " << ci;
+    }
+}
+
+TEST(BatchedRadixShuffler, EmptyInput)
+{
+    constexpr int num_partitions = 16;
+    std::vector<ColumnPrimitives> prims(1, makeFixedWidth<UInt64>());
+    BumpArena arena(1ULL << 20);
+    BatchedRadixShuffler op(
+        num_partitions, 1, std::move(prims), arena, /*use_swwc=*/false, kOutCapMin, kOutCapMax, /*max_buffered_blocks=*/4);
+
+    auto col = DB::ColumnVector<UInt64>::create();
+    DB::Columns blk{col->getPtr()};
+    op.process(blk);
+    op.finish();
+    EXPECT_EQ(totalRows(op.parts()), 0u);
+}
+
+TEST(BatchedRadixShuffler, EmptyColumns)
+{
+    constexpr int num_partitions = 4;
+    std::vector<ColumnPrimitives> prims(1, makeFixedWidth<UInt64>());
+    BumpArena arena(1ULL << 20);
+    BatchedRadixShuffler op(num_partitions, 1, std::move(prims), arena, /*use_swwc=*/false);
+
+    DB::Columns blk{};
+    op.process(blk);
+    op.finish();
+    EXPECT_EQ(totalRows(op.parts()), 0u);
+}
+
+TEST(BatchedRadixShuffler, SinglePartitionP1)
+{
+    // All rows hash to partition 0 with mask_=0.
+    constexpr size_t num_rows = 512;
+    runBatchedNumericRoundTrip<UInt32>(num_rows, /*P=*/1, /*num_blocks=*/4, /*max_buffered_blocks=*/2);
+}
+
+TEST(BatchedRadixShuffler, BytesBoundFlush)
+{
+    // Drive flush via max_buffered_bytes rather than block count.
+    // Set max_buffered_bytes to force a flush after the first block.
+    constexpr size_t num_rows = 8192;
+    constexpr int num_partitions = 16;
+    constexpr size_t num_blocks = 4;
+
+    auto col = makeVec<UInt64>(num_rows, 55);
+    const auto & src = assert_cast<const DB::ColumnVector<UInt64> &>(*col);
+
+    const size_t rows_per_block = (num_rows + num_blocks - 1) / num_blocks;
+    const size_t bytes_per_block = rows_per_block * sizeof(UInt64);
+
+    std::vector<ColumnPrimitives> prims(1, makeFixedWidth<UInt64>());
+    BumpArena arena(32ULL << 20);
+    BatchedRadixShuffler op(
+        num_partitions,
+        1,
+        std::move(prims),
+        arena,
+        /*use_swwc=*/false,
+        kOutCapMin,
+        kOutCapMax,
+        /*max_buffered_blocks=*/0,
+        /*max_buffered_bytes=*/bytes_per_block); // flush after every block
+
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const size_t start = b * rows_per_block;
+        const size_t end = std::min(start + rows_per_block, num_rows);
+        if (start >= end)
+            break;
+        DB::Columns blk{col->cut(start, end - start)};
+        op.process(blk);
+    }
+    op.finish();
+
+    EXPECT_EQ(totalRows(op.parts()), num_rows);
+
+    std::vector<UInt64> original(src.getData().begin(), src.getData().end());
+    auto collected = collectScalar<UInt64>(op.parts(), 0);
+    ASSERT_EQ(collected.size(), num_rows);
+    std::sort(original.begin(), original.end());
+    std::sort(collected.begin(), collected.end());
+    EXPECT_EQ(original, collected);
 }
 
 

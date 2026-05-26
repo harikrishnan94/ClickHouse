@@ -68,7 +68,6 @@ private:
     bool use_swwc_;
     uint32_t mask_;
     size_t init_cap_;
-    size_t max_cap_;
     size_t max_buffered_blocks_;
     size_t max_buffered_bytes_;
     size_t bytes_per_row_;
@@ -82,11 +81,12 @@ private:
 
     std::vector<size_t> elem_sizes_;
 
-    std::vector<uint32_t> scratch_pids_;
     std::vector<uint32_t> accum_hist_;
 
     std::vector<DB::Columns> buffered_blocks_;
-    std::vector<std::vector<uint32_t>> buffered_pids_;
+    /// Flat array of partition IDs for all buffered blocks, laid out contiguously.
+    /// Cleared (not freed) after each flush so capacity is reused across flushes.
+    std::vector<uint32_t> buffered_pids_;
     size_t total_buffered_bytes_ = 0;
 
     std::vector<uint32_t> pos_;

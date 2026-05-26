@@ -21,7 +21,7 @@ BatchedRadixShuffler::BatchedRadixShuffler(
     BumpArena & arena,
     bool use_swwc,
     size_t init_cap,
-    size_t max_cap,
+    size_t /*max_cap*/,
     size_t max_buffered_blocks,
     size_t max_buffered_bytes)
     : num_partitions_(P)
@@ -29,7 +29,6 @@ BatchedRadixShuffler::BatchedRadixShuffler(
     , use_swwc_(use_swwc)
     , mask_(static_cast<uint32_t>(P) - 1)
     , init_cap_(init_cap)
-    , max_cap_(max_cap)
     , max_buffered_blocks_(max_buffered_blocks ? max_buffered_blocks : static_cast<size_t>(P))
     , max_buffered_bytes_(max_buffered_bytes ? max_buffered_bytes : kDefaultMemBound)
     , col_prims_(std::move(prims))
@@ -92,16 +91,15 @@ void BatchedRadixShuffler::process(const DB::Columns & columns)
         return;
 
     const size_t n = columns[0]->size();
-    if (scratch_pids_.size() < n)
-        scratch_pids_.resize(n);
+    const size_t pid_offset = buffered_pids_.size();
+    buffered_pids_.resize(pid_offset + n);
 
-    col_prims_[0].compute_pids(col_prims_[0], *columns[0], 0, static_cast<int>(n), mask_, scratch_pids_.data());
+    col_prims_[0].compute_pids(col_prims_[0], *columns[0], 0, static_cast<int>(n), mask_, buffered_pids_.data() + pid_offset);
 
     for (size_t j = 0; j < n; ++j)
-        ++accum_hist_[scratch_pids_[j]];
+        ++accum_hist_[buffered_pids_[pid_offset + j]];
 
     buffered_blocks_.push_back(columns);
-    buffered_pids_.emplace_back(scratch_pids_.begin(), scratch_pids_.begin() + n);
 
     total_buffered_bytes_ += n * bytes_per_row_;
 
@@ -128,7 +126,6 @@ void BatchedRadixShuffler::flush()
         nb->next = ps.head;
         ps.head = ps.cur = nb;
         nb->filled = cnt;
-        ps.next_cap = std::min(cap * 2, max_cap_);
 
         for (int k = 0; k < num_physical_columns_; ++k)
             phys_prims_[static_cast<size_t>(k)].on_grow_raw(
@@ -142,11 +139,13 @@ void BatchedRadixShuffler::flush()
     // ── Phase 2: block-major scatter ─────────────────────────────────────────
     if (use_swwc_)
     {
+        size_t pid_offset = 0;
         for (size_t bi = 0; bi < buffered_blocks_.size(); ++bi)
         {
             const DB::Columns & block = buffered_blocks_[bi];
-            const std::vector<uint32_t> & pids = buffered_pids_[bi];
-            const int n = static_cast<int>(pids.size());
+            const int n = static_cast<int>(block[0]->size());
+            const uint32_t * pids = buffered_pids_.data() + pid_offset;
+            pid_offset += static_cast<size_t>(n);
 
             if (pos_.size() < static_cast<size_t>(n))
                 pos_.resize(static_cast<size_t>(n));
@@ -163,9 +162,9 @@ void BatchedRadixShuffler::flush()
                 const IColumn & sub_col = extractPhysCol(block, phys_col_info_[static_cast<size_t>(k)]);
                 auto & prim = phys_prims_[static_cast<size_t>(k)];
                 if (prim.scatter_raw_swwc)
-                    prim.scatter_raw_swwc(sub_col, 0, pids.data(), pos_.data(), n, scatter_states_[static_cast<size_t>(k)]);
+                    prim.scatter_raw_swwc(sub_col, 0, pids, pos_.data(), n, scatter_states_[static_cast<size_t>(k)]);
                 else
-                    prim.scatter_raw(sub_col, 0, pids.data(), n, scatter_states_[static_cast<size_t>(k)]);
+                    prim.scatter_raw(sub_col, 0, pids, n, scatter_states_[static_cast<size_t>(k)]);
             }
         }
 
@@ -187,16 +186,18 @@ void BatchedRadixShuffler::flush()
     }
     else
     {
+        size_t pid_offset = 0;
         for (size_t bi = 0; bi < buffered_blocks_.size(); ++bi)
         {
             const DB::Columns & block = buffered_blocks_[bi];
-            const std::vector<uint32_t> & pids = buffered_pids_[bi];
-            const int n = static_cast<int>(pids.size());
+            const int n = static_cast<int>(block[0]->size());
+            const uint32_t * pids = buffered_pids_.data() + pid_offset;
+            pid_offset += static_cast<size_t>(n);
 
             for (int k = 0; k < num_physical_columns_; ++k)
             {
                 const IColumn & sub_col = extractPhysCol(block, phys_col_info_[static_cast<size_t>(k)]);
-                phys_prims_[static_cast<size_t>(k)].scatter_raw(sub_col, 0, pids.data(), n, scatter_states_[static_cast<size_t>(k)]);
+                phys_prims_[static_cast<size_t>(k)].scatter_raw(sub_col, 0, pids, n, scatter_states_[static_cast<size_t>(k)]);
             }
         }
     }
