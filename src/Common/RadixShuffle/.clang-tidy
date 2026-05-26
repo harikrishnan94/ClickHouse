@@ -1,0 +1,4 @@
+---
+# RadixShuffle uses trailing-underscore private members (ClickHouse style).
+CheckOptions:
+  readability-identifier-naming.PrivateMemberSuffix: '_'
