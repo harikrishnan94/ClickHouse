@@ -74,8 +74,20 @@ public:
     ///   Pass 0 to use `P` (number of partitions).
     /// `max_buffered_bytes` — flush when buffered byte volume reaches this limit.
     ///   Pass 0 to use `kDefaultMemBound`.
+    /// `use_aligned_alloc` — when true, output buffers are allocated via
+    ///   `std::aligned_alloc(64, …)` instead of `cloneEmpty + reserve_resize`.
+    ///   No `IColumn` wrapping is produced; `output()` stays empty.  Used for
+    ///   apples-to-apples comparison against the historical OutBlock variant.
     BatchedRadixShuffler(
-        int P, int K, std::vector<ColumnPrimitives> prims, bool use_swwc, size_t max_buffered_blocks = 0, size_t max_buffered_bytes = 0);
+        int P,
+        int K,
+        std::vector<ColumnPrimitives> prims,
+        bool use_swwc,
+        size_t max_buffered_blocks = 0,
+        size_t max_buffered_bytes = 0,
+        bool use_aligned_alloc = false);
+
+    ~BatchedRadixShuffler();
 
     void process(const DB::Columns & columns);
     void finish();
@@ -98,6 +110,7 @@ private:
     int num_columns_;
     int num_physical_columns_;
     bool use_swwc_;
+    bool use_aligned_alloc_;
     uint32_t mask_;
     size_t max_buffered_blocks_;
     size_t max_buffered_bytes_;
@@ -125,6 +138,10 @@ private:
     /// Scratch: per-partition MutableColumn arrays built in flush() Phase 1,
     /// consumed in Phase 2, then moved into output_ at the end of flush().
     std::vector<MutableColumns> pending_cols_;
+
+    /// When `use_aligned_alloc_` is true, all `std::aligned_alloc`'d output
+    /// buffers go here so the destructor can free them.
+    std::vector<void *> aligned_allocs_;
 
     BatchedTimings timings_;
 };

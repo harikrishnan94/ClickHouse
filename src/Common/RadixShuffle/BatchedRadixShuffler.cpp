@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace
 {
@@ -24,10 +26,17 @@ namespace DB
 {
 
 BatchedRadixShuffler::BatchedRadixShuffler(
-    int P, int K, std::vector<ColumnPrimitives> prims, bool use_swwc, size_t max_buffered_blocks, size_t max_buffered_bytes)
+    int P,
+    int K,
+    std::vector<ColumnPrimitives> prims,
+    bool use_swwc,
+    size_t max_buffered_blocks,
+    size_t max_buffered_bytes,
+    bool use_aligned_alloc)
     : num_partitions_(P)
     , num_columns_(K)
     , use_swwc_(use_swwc)
+    , use_aligned_alloc_(use_aligned_alloc)
     , mask_(static_cast<uint32_t>(P) - 1)
     , max_buffered_blocks_(max_buffered_blocks ? max_buffered_blocks : static_cast<size_t>(P))
     , max_buffered_bytes_(max_buffered_bytes ? max_buffered_bytes : kDefaultMemBound)
@@ -64,6 +73,13 @@ BatchedRadixShuffler::BatchedRadixShuffler(
     bytes_per_row_ = 0;
     for (int k = 0; k < num_physical_columns_; ++k)
         bytes_per_row_ += phys_prims_[static_cast<size_t>(k)].raw_elem_size;
+}
+
+
+BatchedRadixShuffler::~BatchedRadixShuffler()
+{
+    for (void * p : aligned_allocs_)
+        std::free(p);
 }
 
 
@@ -122,7 +138,14 @@ void BatchedRadixShuffler::flush()
     const auto flush_t0 = std::chrono::steady_clock::now();
     ++timings_.flush_count;
 
-    // ── Phase 1: allocate per-partition output IColumns ───────────────────
+    // ── Phase 1: allocate per-partition output buffers ────────────────────
+    //
+    // Two backends produce the SAME on-the-wire write pointers for scatter:
+    //   • use_aligned_alloc_ == false: cloneEmpty + reserve_resize per (p,k).
+    //     Produces a typed IColumn pinned in pending_cols_[p][k].
+    //   • use_aligned_alloc_ == true : std::aligned_alloc(64, cap*elem_size)
+    //     per (p,k).  Skips IColumn entirely; output() stays empty.  Used
+    //     to isolate IColumn cost from scatter / page-fault cost.
     for (int p = 0; p < num_partitions_; ++p)
     {
         const uint32_t cnt = accum_hist_[static_cast<size_t>(p)];
@@ -130,20 +153,42 @@ void BatchedRadixShuffler::flush()
             continue;
 
         MutableColumns & mcols = pending_cols_[static_cast<size_t>(p)];
-        mcols.resize(static_cast<size_t>(num_physical_columns_));
+        if (!use_aligned_alloc_)
+            mcols.resize(static_cast<size_t>(num_physical_columns_));
 
         for (int k = 0; k < num_physical_columns_; ++k)
         {
-            const IColumn & src = extractPhysCol(buffered_blocks_[0], phys_col_info_[static_cast<size_t>(k)]);
+            void * ptr;
+            if (use_aligned_alloc_)
+            {
+                const auto t_clone = std::chrono::steady_clock::now();
+                const size_t bytes = static_cast<size_t>(cnt) * phys_prims_[static_cast<size_t>(k)].raw_elem_size;
+                // aligned_alloc requires size to be a multiple of alignment.
+                const size_t bytes_rounded = (bytes + 63) & ~size_t{63};
+                ptr = std::aligned_alloc(64, bytes_rounded);
+                if (!ptr)
+                    throw std::bad_alloc{};
+                aligned_allocs_.push_back(ptr);
+                timings_.clone_empty_ns += elapsedNs(t_clone);
+                ++timings_.alloc_count;
+                // reserve_resize / move steps are degenerate in this backend.
+            }
+            else
+            {
+                const auto t_clone = std::chrono::steady_clock::now();
+                const IColumn & src = extractPhysCol(buffered_blocks_[0], phys_col_info_[static_cast<size_t>(k)]);
+                auto col = src.cloneEmpty();
+                timings_.clone_empty_ns += elapsedNs(t_clone);
+                ++timings_.alloc_count;
 
-            const auto t_clone = std::chrono::steady_clock::now();
-            auto col = src.cloneEmpty();
-            timings_.clone_empty_ns += elapsedNs(t_clone);
-            ++timings_.alloc_count;
+                const auto t_reserve = std::chrono::steady_clock::now();
+                ptr = phys_prims_[static_cast<size_t>(k)].resize_for_scatter(*col, static_cast<size_t>(cnt));
+                timings_.reserve_resize_ns += elapsedNs(t_reserve);
 
-            const auto t_reserve = std::chrono::steady_clock::now();
-            void * ptr = phys_prims_[static_cast<size_t>(k)].resize_for_scatter(*col, static_cast<size_t>(cnt));
-            timings_.reserve_resize_ns += elapsedNs(t_reserve);
+                const auto t_move = std::chrono::steady_clock::now();
+                mcols[static_cast<size_t>(k)] = std::move(col);
+                timings_.move_into_pending_ns += elapsedNs(t_move);
+            }
 
             const auto t_on_grow = std::chrono::steady_clock::now();
             phys_prims_[static_cast<size_t>(k)].on_grow_raw(
@@ -153,10 +198,6 @@ void BatchedRadixShuffler::flush()
                 static_cast<size_t>(cnt),
                 scatter_states_[static_cast<size_t>(k)]);
             timings_.on_grow_ns += elapsedNs(t_on_grow);
-
-            const auto t_move = std::chrono::steady_clock::now();
-            mcols[static_cast<size_t>(k)] = std::move(col);
-            timings_.move_into_pending_ns += elapsedNs(t_move);
         }
     }
 
@@ -232,6 +273,8 @@ void BatchedRadixShuffler::flush()
     }
 
     // ── Phase 3: commit pending columns into output_ ──────────────────────
+    // Skipped for aligned_alloc backend (no IColumn to commit).
+    if (!use_aligned_alloc_)
     {
         const auto t = std::chrono::steady_clock::now();
         for (int p = 0; p < num_partitions_; ++p)

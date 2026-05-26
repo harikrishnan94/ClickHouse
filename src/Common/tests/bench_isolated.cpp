@@ -57,6 +57,7 @@ struct Config
     int reps = 5;
     size_t batch_max_blocks = 0;
     size_t batch_max_bytes = 0;
+    std::string alloc_backend = "icolumn"; // "icolumn" or "aligned_alloc"
 };
 
 
@@ -84,6 +85,8 @@ std::optional<Config> parseCLI(std::span<char * const> args)
             cfg.batch_max_blocks = std::stoull(args[++i]);
         else if (arg == "--batch-max-bytes" && i + 1 < args.size())
             cfg.batch_max_bytes = std::stoull(args[++i]);
+        else if (arg == "--alloc-backend" && i + 1 < args.size())
+            cfg.alloc_backend = args[++i];
         else
         {
             fmt::print(stderr, "unknown arg: {}\n", args[i]);
@@ -93,6 +96,11 @@ std::optional<Config> parseCLI(std::span<char * const> args)
     if (cfg.variant != "radix" && cfg.variant != "batched")
     {
         fmt::print(stderr, "variant must be 'radix' or 'batched'\n");
+        return std::nullopt;
+    }
+    if (cfg.alloc_backend != "icolumn" && cfg.alloc_backend != "aligned_alloc")
+    {
+        fmt::print(stderr, "--alloc-backend must be 'icolumn' or 'aligned_alloc'\n");
         return std::nullopt;
     }
     return cfg;
@@ -148,11 +156,17 @@ void runSmartRadix(
 
 
 BatchedTimings runBatchedRadix(
-    std::span<const DB::Columns> blocks, int K, int P, BatchedOutput & output, size_t batch_max_blocks = 0, size_t batch_max_bytes = 0)
+    std::span<const DB::Columns> blocks,
+    int K,
+    int P,
+    BatchedOutput & output,
+    size_t batch_max_blocks = 0,
+    size_t batch_max_bytes = 0,
+    bool use_aligned_alloc = false)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
     const bool use_swwc = BatchedRadixShuffler::shouldUseSwwc(K, P);
-    BatchedRadixShuffler op(P, K, std::move(prims), use_swwc, batch_max_blocks, batch_max_bytes);
+    BatchedRadixShuffler op(P, K, std::move(prims), use_swwc, batch_max_blocks, batch_max_bytes, use_aligned_alloc);
     for (const auto & block : blocks)
         op.process(block);
     op.finish();
@@ -207,7 +221,7 @@ int main(int argc, char ** argv)
         cfg.rows,
         cfg.block_rows,
         cfg.reps);
-    fmt::print("  batch_max_blocks={} batch_max_bytes={}\n", cfg.batch_max_blocks, cfg.batch_max_bytes);
+    fmt::print("  batch_max_blocks={} batch_max_bytes={} alloc_backend={}\n", cfg.batch_max_blocks, cfg.batch_max_bytes, cfg.alloc_backend);
     fmt::print(
         "  derived: use_swwc={} batch_size(radix)={} buffer_blocks(batched)={} buffer_bytes(batched)={}  ({:.1f} MiB)\n",
         use_swwc,
@@ -254,7 +268,13 @@ int main(int argc, char ** argv)
                             slice, cfg.K, cfg.P, radix_parts[static_cast<size_t>(t)], arenas[static_cast<size_t>(t)], cap_init, cap_max);
                     else
                         last_rep_timings[static_cast<size_t>(t)] = runBatchedRadix(
-                            slice, cfg.K, cfg.P, batched_out[static_cast<size_t>(t)], cfg.batch_max_blocks, cfg.batch_max_bytes);
+                            slice,
+                            cfg.K,
+                            cfg.P,
+                            batched_out[static_cast<size_t>(t)],
+                            cfg.batch_max_blocks,
+                            cfg.batch_max_bytes,
+                            cfg.alloc_backend == "aligned_alloc");
                 });
         }
         for (auto & th : ths)
@@ -347,7 +367,10 @@ int main(int argc, char ** argv)
                 if (!flush_block.empty())
                     out_rows += flush_block[0]->size();
     }
-    if (out_rows != rows_per_thread)
+    // Skip output-row sanity check when aligned_alloc backend is used: it
+    // intentionally produces no IColumn output (buffers freed by destructor).
+    const bool skip_sanity = cfg.variant == "batched" && cfg.alloc_backend == "aligned_alloc";
+    if (!skip_sanity && out_rows != rows_per_thread)
         fmt::print("[ERROR] output rows {} != expected {}\n", out_rows, rows_per_thread);
 
     return 0;

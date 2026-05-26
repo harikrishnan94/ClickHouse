@@ -720,11 +720,13 @@ void computePidsFixedString(const ColumnPrimitives & /*self*/, const IColumn & s
 
 /// Resize a `ColumnVector<T>` to `rows` elements and return a raw pointer to
 /// element 0.  `PaddedPODArray` is 64-byte aligned — no extra step needed.
+/// Uses `reserve_exact` to avoid `reserve`'s power-of-two rounding, which
+/// would allocate up to 2x the bytes needed for the scatter output.
 template <typename T>
 void * resizeForScatterFixed(IColumn & col, size_t rows)
 {
     auto & data = assert_cast<ColumnVector<T> &>(col).getData();
-    data.reserve(rows);
+    data.reserve_exact(rows);
     data.resize_assume_reserved(rows);
     return data.data();
 }
@@ -735,7 +737,7 @@ template <typename T>
 void * resizeForScatterDecimal(IColumn & col, size_t rows)
 {
     auto & data = assert_cast<ColumnDecimal<T> &>(col).getData();
-    data.reserve(rows);
+    data.reserve_exact(rows);
     data.resize_assume_reserved(rows);
     return data.data();
 }
@@ -746,7 +748,7 @@ void * resizeForScatterFixedString(IColumn & col, size_t rows)
 {
     auto & fs = assert_cast<ColumnFixedString &>(col);
     auto & chars = fs.getChars();
-    chars.reserve(rows * fs.getN());
+    chars.reserve_exact(rows * fs.getN());
     chars.resize_assume_reserved(rows * fs.getN());
     return chars.data();
 }
