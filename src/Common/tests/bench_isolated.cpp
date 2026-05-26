@@ -59,6 +59,7 @@ struct Config
     size_t batch_max_blocks = 0;
     size_t batch_max_bytes = 0;
     std::string alloc_backend = "icolumn"; // "icolumn" or "aligned_alloc"
+    bool skip_finish = false; // perblock only: measure process() without finish()
 };
 
 
@@ -88,6 +89,8 @@ std::optional<Config> parseCLI(std::span<char * const> args)
             cfg.batch_max_bytes = std::stoull(args[++i]);
         else if (arg == "--alloc-backend" && i + 1 < args.size())
             cfg.alloc_backend = args[++i];
+        else if (arg == "--skip-finish")
+            cfg.skip_finish = true;
         else
         {
             fmt::print(stderr, "unknown arg: {}\n", args[i]);
@@ -176,15 +179,18 @@ BatchedTimings runBatchedRadix(
 }
 
 
-PerBlockTimings runPerBlockArenaRadix(std::span<const DB::Columns> blocks, int K, int P, BatchedOutput & output)
+PerBlockTimings runPerBlockArenaRadix(std::span<const DB::Columns> blocks, int K, int P, BatchedOutput & output, bool skip_finish = false)
 {
     std::vector<ColumnPrimitives> prims(static_cast<size_t>(K), makeFixedWidth<UInt64>());
     const bool use_swwc = PerBlockArenaShuffler::shouldUseSwwc(K, P);
     PerBlockArenaShuffler op(P, K, std::move(prims), use_swwc);
     for (const auto & block : blocks)
         op.process(block);
-    op.finish();
-    output = std::move(op.output());
+    if (!skip_finish)
+    {
+        op.finish();
+        output = std::move(op.output());
+    }
     return op.timings();
 }
 
@@ -235,7 +241,7 @@ int main(int argc, char ** argv)
         cfg.rows,
         cfg.block_rows,
         cfg.reps);
-    fmt::print("  batch_max_blocks={} batch_max_bytes={} alloc_backend={}\n", cfg.batch_max_blocks, cfg.batch_max_bytes, cfg.alloc_backend);
+    fmt::print("  batch_max_blocks={} batch_max_bytes={} alloc_backend={} skip_finish={}\n", cfg.batch_max_blocks, cfg.batch_max_bytes, cfg.alloc_backend, cfg.skip_finish);
     fmt::print(
         "  derived: use_swwc={} batch_size(radix)={} buffer_blocks(batched)={} buffer_bytes(batched)={}  ({:.1f} MiB)\n",
         use_swwc,
@@ -283,7 +289,7 @@ int main(int argc, char ** argv)
                             slice, cfg.K, cfg.P, radix_parts[static_cast<size_t>(t)], arenas[static_cast<size_t>(t)], cap_init, cap_max);
                     else if (cfg.variant == "perblock")
                         last_rep_pb_timings[static_cast<size_t>(t)]
-                            = runPerBlockArenaRadix(slice, cfg.K, cfg.P, batched_out[static_cast<size_t>(t)]);
+                            = runPerBlockArenaRadix(slice, cfg.K, cfg.P, batched_out[static_cast<size_t>(t)], cfg.skip_finish);
                     else
                         last_rep_timings[static_cast<size_t>(t)] = runBatchedRadix(
                             slice,
@@ -440,7 +446,8 @@ int main(int argc, char ** argv)
     }
     // Skip output-row sanity check when aligned_alloc backend is used: it
     // intentionally produces no IColumn output (buffers freed by destructor).
-    const bool skip_sanity = cfg.variant == "batched" && cfg.alloc_backend == "aligned_alloc";
+    const bool skip_sanity = (cfg.variant == "batched" && cfg.alloc_backend == "aligned_alloc")
+        || (cfg.variant == "perblock" && cfg.skip_finish);
     if (!skip_sanity && out_rows != rows_per_thread)
         fmt::print("[ERROR] output rows {} != expected {}\n", out_rows, rows_per_thread);
 
