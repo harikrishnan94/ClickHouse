@@ -35,7 +35,11 @@ BatchedRadixShuffler::BatchedRadixShuffler(
     bool use_aligned_alloc)
     : num_partitions_(P)
     , num_columns_(K)
-    , use_swwc_(use_swwc)
+    // NT-store SWWC requires 64-byte-aligned output buffers.  The IColumn path
+    // allocates via PODArray (malloc-backed, 16-byte-aligned), so alignment is
+    // not guaranteed.  Disable SWWC for the IColumn path to avoid SIGSEGV from
+    // unaligned _mm512_stream_si512 / _mm256_stream_si256.
+    , use_swwc_(use_aligned_alloc ? use_swwc : false)
     , use_aligned_alloc_(use_aligned_alloc)
     , mask_(static_cast<uint32_t>(P) - 1)
     , max_buffered_blocks_(max_buffered_blocks ? max_buffered_blocks : static_cast<size_t>(P))
