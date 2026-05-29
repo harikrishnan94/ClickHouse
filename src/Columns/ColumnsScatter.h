@@ -7,13 +7,13 @@
 namespace DB::ColumnsScatter
 {
 
-/// Compute per-shard row-count histogram from a batch of pids spans.
+/// Count rows routed to each shard from a batch of pids spans.
 ///
-/// `per_shard_rows` must be pre-zeroed with size == num_shards. Call once per
+/// `rows_per_shard` must be pre-zeroed with size == num_shards. Call once per
 /// flush in BufferedShardByHashTransform before the per-column scatter loop;
 /// pass the result to every `scatter` call in that loop to eliminate the
-/// K − 1 redundant pids re-scans that the internal histogram path would do.
-void computeHistogram(std::span<const std::span<const UInt32>> pids_per_source, std::span<UInt32> per_shard_rows);
+/// K − 1 redundant pids re-scans that the internal counting path would do.
+void countRowsPerShard(std::span<const std::span<const UInt32>> pids_per_source, std::span<UInt32> rows_per_shard);
 
 /// Batched, type-dispatched physical scatter.
 ///
@@ -23,10 +23,10 @@ void computeHistogram(std::span<const std::span<const UInt32>> pids_per_source, 
 /// `pids_per_source[b][j]`. Destinations are allocated and exact-sized
 /// inside; the caller does not pre-reserve.
 ///
-/// `per_shard_rows` (optional): pre-computed histogram produced by
-/// `computeHistogram`.  When non-empty (size must equal `num_shards`) the
-/// histogram step inside each typed kernel is skipped, saving K−1 full pids
-/// re-scans per flush.  When empty the histogram is computed internally
+/// `rows_per_shard` (optional): pre-computed row counts produced by
+/// `countRowsPerShard`.  When non-empty (size must equal `num_shards`) the
+/// counting step inside each typed kernel is skipped, saving K−1 full pids
+/// re-scans per flush.  When empty the row counts are computed internally
 /// (backward-compatible convenience path used by callers that process only
 /// one column at a time).
 ///
@@ -60,6 +60,6 @@ void computeHistogram(std::span<const std::span<const UInt32>> pids_per_source, 
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
     size_t num_shards,
-    std::span<const UInt32> per_shard_rows = {});
+    std::span<const UInt32> rows_per_shard = {});
 
 } // namespace DB::ColumnsScatter

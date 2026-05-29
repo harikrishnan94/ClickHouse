@@ -27,7 +27,7 @@ namespace
 {
 
 /// Inline capacity of the per-partition scratch arrays (write-pointer caches,
-/// per-shard byte cursors, internal histogram). Each kernel stores these in an
+/// per-shard byte cursors, rows_per_shard scratch). Each kernel stores these in an
 /// `absl::InlinedVector<_, SCATTER_INLINE_SHARDS>`: for `num_shards <=
 /// SCATTER_INLINE_SHARDS` the storage lives entirely on the stack — same hot
 /// path as a fixed C array, no heap allocation, no per-row branching — and only
@@ -45,8 +45,8 @@ constexpr size_t SCATTER_INLINE_SHARDS = 256;
     M(UInt8) \
     M(UInt16) \
     M(UInt32) \
-    M(UInt64) M(UInt128) M(UInt256) M(Int8) M(Int16) M(Int32) M(Int64) M(Int128) M(Int256) M(BFloat16) M(Float32) M(Float64) M(UUID) \
-        M(IPv4) M(IPv6)
+    M(UInt64) \
+    M(UInt128) M(UInt256) M(Int8) M(Int16) M(Int32) M(Int64) M(Int128) M(Int256) M(BFloat16) M(Float32) M(Float64) M(UUID) M(IPv4) M(IPv6)
 
 #define SCATTER_DECIMAL_TYPES(M) M(Decimal32) M(Decimal64) M(Decimal128) M(Decimal256) M(DateTime64) M(Time64)
 
@@ -67,9 +67,9 @@ template <typename T>
 [[gnu::hot]] MutableColumns scatterFixed(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
     /// Write-pointer cache: inline (stack) for num_shards <= SCATTER_INLINE_SHARDS,
     /// heap-backed beyond. The hot loop indexes the raw `wp` data pointer, so its
@@ -83,8 +83,8 @@ template <typename T>
     for (size_t s = 0; s < num_shards; ++s)
     {
         auto col = ColumnVector<T>::create();
-        col->getData().reserve_exact(per_shard_rows[s]);
-        col->getData().resize_assume_reserved(per_shard_rows[s]);
+        col->getData().reserve_exact(rows_per_shard[s]);
+        col->getData().resize_assume_reserved(rows_per_shard[s]);
         wp[s] = col->getData().data();
         dst[s] = std::move(col);
     }
@@ -109,11 +109,11 @@ template <typename DecimalT>
 [[gnu::hot]] MutableColumns scatterDecimal(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
     using NativeT = DecimalT::NativeType;
 
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
     // Scale is taken from the first source column (all sources must share it).
     const auto & probe_col = assert_cast<const ColumnDecimal<DecimalT> &>(*source_columns[0]);
@@ -131,8 +131,8 @@ template <typename DecimalT>
     for (size_t s = 0; s < num_shards; ++s)
     {
         auto col = ColumnDecimal<DecimalT>::create(0, scale);
-        col->getData().reserve_exact(per_shard_rows[s]);
-        col->getData().resize_assume_reserved(per_shard_rows[s]);
+        col->getData().reserve_exact(rows_per_shard[s]);
+        col->getData().resize_assume_reserved(rows_per_shard[s]);
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         wp[s] = reinterpret_cast<NativeT *>(col->getData().data());
         dst[s] = std::move(col);
@@ -157,10 +157,10 @@ template <typename DecimalT>
 [[gnu::hot]] MutableColumns scatterFixedString(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
     const size_t n = assert_cast<const ColumnFixedString &>(*source_columns[0]).getN();
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
     absl::InlinedVector<UInt8 *, SCATTER_INLINE_SHARDS> wp_storage(num_shards);
     UInt8 ** wp = wp_storage.data();
@@ -169,8 +169,8 @@ template <typename DecimalT>
     for (size_t s = 0; s < num_shards; ++s)
     {
         auto col = ColumnFixedString::create(n);
-        col->getChars().reserve_exact(per_shard_rows[s] * n);
-        col->getChars().resize_assume_reserved(per_shard_rows[s] * n);
+        col->getChars().reserve_exact(rows_per_shard[s] * n);
+        col->getChars().resize_assume_reserved(rows_per_shard[s] * n);
         wp[s] = col->getChars().data();
         dst[s] = std::move(col);
     }
@@ -203,18 +203,18 @@ template <typename DecimalT>
 // factored into scatterFixed<UInt64> — each emitted offset is a per-partition
 // running cursor, not a copy of a source value.
 //
-// Row counts are supplied via `per_shard_rows` (pre-computed by the caller).
+// Row counts are supplied via `rows_per_shard` (pre-computed by the caller).
 // A single pass here computes only the per-shard BYTE counts, then scatters.
 
 [[gnu::hot]] MutableColumns scatterString(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
     // Single pass over source data: compute per-shard byte counts.
-    // Row counts come from the pre-computed histogram — no redundant pids scan.
+    // Row counts come from the pre-computed rows_per_shard — no redundant pids scan.
     PODArray<UInt64> per_shard_bytes(num_shards, 0);
     for (size_t b = 0; b < source_columns.size(); ++b)
     {
@@ -249,8 +249,8 @@ template <typename DecimalT>
         auto col = ColumnString::create();
         col->getChars().reserve_exact(per_shard_bytes[s]);
         col->getChars().resize_assume_reserved(per_shard_bytes[s]);
-        col->getOffsets().reserve_exact(per_shard_rows[s]);
-        col->getOffsets().resize_assume_reserved(per_shard_rows[s]);
+        col->getOffsets().reserve_exact(rows_per_shard[s]);
+        col->getOffsets().resize_assume_reserved(rows_per_shard[s]);
         char_ptrs[s] = col->getChars().data();
         off_ptrs[s] = col->getOffsets().data();
         abs_byte[s] = 0;
@@ -292,14 +292,14 @@ template <typename DecimalT>
 // ── Fallback ──────────────────────────────────────────────────────────────────
 // Per-source-column, per-shard: delegate to legacy IColumn::scatter().
 // Correct but allocating; used only for column types without a fast path.
-// Does not use per_shard_rows (IColumn::scatter computes counts internally).
+// Does not use rows_per_shard (IColumn::scatter computes counts internally).
 
 [[nodiscard]] MutableColumns scatterFallback(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
     // Create empty destinations from the first source column.
     MutableColumns dst(num_shards);
@@ -332,12 +332,12 @@ template <typename DecimalT>
 [[nodiscard]] MutableColumns scatterNullable(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows);
+    std::span<const UInt32> rows_per_shard);
 
 [[nodiscard]] MutableColumns scatterTuple(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows);
+    std::span<const UInt32> rows_per_shard);
 
 // ── O(1) dispatch table ───────────────────────────────────────────────────────
 // All kernels share one signature so they can sit in a single function-pointer
@@ -378,15 +378,15 @@ constexpr std::array<ScatterKernel, SCATTER_TABLE_SIZE> buildScatterTable()
 #undef SCATTER_FIXED_TYPES
 #undef SCATTER_DECIMAL_TYPES
 
-// ── Internal dispatch: histogram already computed ─────────────────────────────
-// All typed kernels receive the histogram — no redundant pids re-scan.
-// Composite types (Nullable, Tuple) forward the histogram into their recursive
-// scatter calls so it is never recomputed for nested types either.
+// ── Internal dispatch: row counts already computed ────────────────────────────
+// All typed kernels receive rows_per_shard — no redundant pids re-scan.
+// Composite types (Nullable, Tuple) forward rows_per_shard into their recursive
+// scatter calls so row counts are never recomputed for nested types either.
 
 [[nodiscard]] MutableColumns scatterDispatch(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
     const IColumn & probe = *source_columns[0];
 
@@ -396,28 +396,28 @@ constexpr std::array<ScatterKernel, SCATTER_TABLE_SIZE> buildScatterTable()
     /// before indexing the table. All other unsupported types report their own
     /// distinct index and land on the fallback default slot.
     if (probe.isConst() || probe.isSparse() || probe.isReplicated())
-        return scatterFallback(source_columns, pids_per_source, per_shard_rows);
+        return scatterFallback(source_columns, pids_per_source, rows_per_shard);
 
     static constexpr auto table = buildScatterTable();
-    return table[static_cast<size_t>(probe.getDataType())](source_columns, pids_per_source, per_shard_rows);
+    return table[static_cast<size_t>(probe.getDataType())](source_columns, pids_per_source, rows_per_shard);
 }
 
 } // anonymous namespace
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-void computeHistogram(std::span<const std::span<const UInt32>> pids_per_source, std::span<UInt32> per_shard_rows)
+void countRowsPerShard(std::span<const std::span<const UInt32>> pids_per_source, std::span<UInt32> rows_per_shard)
 {
     for (const auto & pids : pids_per_source)
         for (UInt32 p : pids)
-            per_shard_rows[p]++;
+            rows_per_shard[p]++;
 }
 
 MutableColumns scatter(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
     size_t num_shards,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
     chassert(!source_columns.empty());
     chassert(source_columns.size() == pids_per_source.size());
@@ -430,19 +430,19 @@ MutableColumns scatter(
         chassert(probe.getDataType() == source_columns[b]->getDataType());
 #endif
 
-    /// Histogram provided by caller — skip the per-call pids re-scan.
-    if (!per_shard_rows.empty())
+    /// Row counts provided by caller — skip the per-call pids re-scan.
+    if (!rows_per_shard.empty())
     {
-        chassert(per_shard_rows.size() == num_shards);
-        return scatterDispatch(source_columns, pids_per_source, per_shard_rows);
+        chassert(rows_per_shard.size() == num_shards);
+        return scatterDispatch(source_columns, pids_per_source, rows_per_shard);
     }
 
-    /// Convenience path: compute histogram internally (single-column callers).
+    /// Convenience path: count rows per shard internally (single-column callers).
     /// Inline (stack) for num_shards <= SCATTER_INLINE_SHARDS, heap-backed beyond;
     /// zero-initialised on construction.
-    absl::InlinedVector<UInt32, SCATTER_INLINE_SHARDS> hist(num_shards, 0);
-    computeHistogram(pids_per_source, std::span<UInt32>(hist.data(), num_shards));
-    return scatterDispatch(source_columns, pids_per_source, hist);
+    absl::InlinedVector<UInt32, SCATTER_INLINE_SHARDS> rows_per_shard_buf(num_shards, 0);
+    countRowsPerShard(pids_per_source, std::span<UInt32>(rows_per_shard_buf.data(), num_shards));
+    return scatterDispatch(source_columns, pids_per_source, rows_per_shard_buf);
 }
 
 namespace
@@ -450,28 +450,28 @@ namespace
 
 // ── Nullable scatter ──────────────────────────────────────────────────────────
 // Null map is just a ColumnVector<UInt8> — reuse scatterFixed<UInt8>.
-// Forward the pre-computed histogram to both the null-map and the nested call.
+// Forward the pre-computed rows_per_shard to both the null-map and the nested call.
 
 MutableColumns scatterNullable(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
-    // Scatter null maps — ColumnVector<UInt8> path, no histogram re-scan.
+    // Scatter null maps — ColumnVector<UInt8> path, no row-count re-scan.
     std::vector<const IColumn *> null_map_cols(source_columns.size());
     for (size_t b = 0; b < source_columns.size(); ++b)
         null_map_cols[b] = &assert_cast<const ColumnNullable &>(*source_columns[b]).getNullMapColumn();
 
-    MutableColumns scattered_null_maps = scatterFixed<UInt8>(null_map_cols, pids_per_source, per_shard_rows);
+    MutableColumns scattered_null_maps = scatterFixed<UInt8>(null_map_cols, pids_per_source, rows_per_shard);
 
-    // Scatter nested columns — forward histogram into recursive dispatch.
+    // Scatter nested columns — forward rows_per_shard into recursive dispatch.
     std::vector<const IColumn *> nested_cols(source_columns.size());
     for (size_t b = 0; b < source_columns.size(); ++b)
         nested_cols[b] = &assert_cast<const ColumnNullable &>(*source_columns[b]).getNestedColumn();
 
-    MutableColumns scattered_nested = scatterDispatch(nested_cols, pids_per_source, per_shard_rows);
+    MutableColumns scattered_nested = scatterDispatch(nested_cols, pids_per_source, rows_per_shard);
 
     // Wrap into ColumnNullable.
     MutableColumns dst(num_shards);
@@ -486,9 +486,9 @@ MutableColumns scatterNullable(
 MutableColumns scatterTuple(
     std::span<const IColumn * const> source_columns,
     std::span<const std::span<const UInt32>> pids_per_source,
-    std::span<const UInt32> per_shard_rows)
+    std::span<const UInt32> rows_per_shard)
 {
-    const size_t num_shards = per_shard_rows.size();
+    const size_t num_shards = rows_per_shard.size();
 
     const auto & probe_tuple = assert_cast<const ColumnTuple &>(*source_columns[0]);
     const size_t num_elements = probe_tuple.getColumns().size();
@@ -499,7 +499,7 @@ MutableColumns scatterTuple(
     {
         MutableColumns dst(num_shards);
         for (size_t s = 0; s < num_shards; ++s)
-            dst[s] = ColumnTuple::create(per_shard_rows[s]);
+            dst[s] = ColumnTuple::create(rows_per_shard[s]);
         return dst;
     }
 
@@ -512,10 +512,10 @@ MutableColumns scatterTuple(
             element_cols[e][b] = &tup.getColumn(e);
     }
 
-    // Scatter each element — forward the same histogram to every element scatter.
+    // Scatter each element — forward the same rows_per_shard to every element scatter.
     std::vector<MutableColumns> scattered_elements(num_elements);
     for (size_t e = 0; e < num_elements; ++e)
-        scattered_elements[e] = scatterDispatch(element_cols[e], pids_per_source, per_shard_rows);
+        scattered_elements[e] = scatterDispatch(element_cols[e], pids_per_source, rows_per_shard);
 
     // Assemble per-shard ColumnTuple.
     MutableColumns dst(num_shards);
