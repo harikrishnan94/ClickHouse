@@ -10,7 +10,6 @@
 #include <Common/HashTable/StringHashSet.h>
 #include <Common/SipHash.h>
 #include <Common/TargetSpecific.h>
-#include <Common/WeakHash.h>
 #include <Common/assert_cast.h>
 #include <Common/memcpySmall.h>
 
@@ -152,25 +151,6 @@ void ColumnFixedString::updateHashWithValue(size_t index, SipHash & hash) const
 void ColumnFixedString::updateHashWithValueRange(size_t begin, size_t end, SipHash & hash) const
 {
     hash.update(reinterpret_cast<const char *>(&chars[n * begin]), n * (end - begin));
-}
-
-WeakHash32 ColumnFixedString::getWeakHash32() const
-{
-    auto s = size();
-    WeakHash32 hash(s);
-
-    const UInt8 * pos = chars.data();
-    UInt32 * hash_data = hash.getData().data();
-
-    for (size_t row = 0; row < s; ++row)
-    {
-        *hash_data = ::updateWeakHash32(pos, n, *hash_data);
-
-        pos += n;
-        ++hash_data;
-    }
-
-    return hash;
 }
 
 /// Fold `n` bytes through fmix32 in 4-byte chunks and return the raw pre-final-fmix32 value.

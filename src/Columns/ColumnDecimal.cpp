@@ -6,7 +6,6 @@
 #include <Common/RadixSort.h>
 #include <Common/SipHash.h>
 #include <Common/TargetSpecific.h>
-#include <Common/WeakHash.h>
 #include <Common/assert_cast.h>
 #include <Common/iota.h>
 
@@ -167,26 +166,6 @@ template <is_decimal T>
 void ColumnDecimal<T>::updateHashWithValueRange(size_t begin, size_t end, SipHash & hash) const
 {
     hash.update(reinterpret_cast<const char *>(&data[begin]), (end - begin) * sizeof(T));
-}
-
-template <is_decimal T>
-WeakHash32 ColumnDecimal<T>::getWeakHash32() const
-{
-    auto s = data.size();
-    WeakHash32 hash(s);
-
-    const T * begin = data.data();
-    const T * end = begin + s;
-    UInt32 * hash_data = hash.getData().data();
-
-    while (begin < end)
-    {
-        *hash_data = static_cast<UInt32>(intHashCRC32(*begin, *hash_data));
-        ++begin;
-        ++hash_data;
-    }
-
-    return hash;
 }
 
 /// Extract raw uint32 for a decimal value (mirrors hashValueRaw32 in ColumnVector.cpp).

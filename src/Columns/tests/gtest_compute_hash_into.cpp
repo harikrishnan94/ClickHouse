@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <Columns/ColumnArray.h>
+#include <Columns/ColumnConst.h>
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnFixedString.h>
+#include <Columns/ColumnMap.h>
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnString.h>
+#include <Columns/ColumnTuple.h>
 #include <Columns/ColumnsNumber.h>
 #include <Common/HashCombine32.h>
 #include <Common/randomSeed.h>
@@ -44,6 +48,40 @@ std::vector<UInt32> randomUInts(size_t n)
     for (auto & x : v)
         x = static_cast<UInt32>(rng());
     return v;
+}
+
+/// Build a ColumnArray(UInt32) with random row lengths in [0, max_len].
+ColumnArray::MutablePtr makeUInt32ArrayColumn(size_t num_rows, size_t max_len)
+{
+    auto data = ColumnUInt32::create();
+    auto offsets = ColumnUInt64::create();
+    size_t acc = 0;
+    for (size_t i = 0; i < num_rows; ++i)
+    {
+        const size_t len = rng() % (max_len + 1);
+        for (size_t j = 0; j < len; ++j)
+            data->insert(static_cast<UInt64>(rng()));
+        acc += len;
+        offsets->insert(static_cast<UInt64>(acc));
+    }
+    return ColumnArray::create(std::move(data), std::move(offsets));
+}
+
+/// Verify that splitting the row range in two produces the same per-row hashes
+/// as a single call over the whole range.
+void expectRangeSplitConsistent(const IColumn & col)
+{
+    const size_t n = col.size();
+    std::vector<uint32_t> full(n);
+    std::vector<uint32_t> split(n);
+
+    col.computeHashInto(0, n, full.data(), true);
+
+    const size_t mid = n / 2;
+    col.computeHashInto(0, mid, split.data(), true);
+    col.computeHashInto(mid, n, split.data() + mid, true);
+
+    EXPECT_EQ(full, split);
 }
 } // namespace
 
@@ -333,4 +371,147 @@ TEST(ComputeHashInto, ColumnDecimalDistinctHashes)
 
     EXPECT_GT(count_unique(out32), n * 99 / 100) << "Decimal32: too many hash collisions";
     EXPECT_GT(count_unique(out64), n * 99 / 100) << "Decimal64: too many hash collisions";
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 11. ColumnTuple: chaining of children, range-split, and order sensitivity.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, ColumnTupleCompositionAndOrder)
+{
+    const size_t n = 1024;
+    ColumnPtr a = makeUInt32Column(randomUInts(n));
+    ColumnPtr b = makeStringColumn([&]
+    {
+        std::vector<std::string> v(n);
+        for (auto & s : v)
+            s = std::string(rng() % 17, 'x');
+        return v;
+    }());
+
+    auto tuple_ab = ColumnTuple::create(Columns{a, b});
+    expectRangeSplitConsistent(*tuple_ab);
+
+    // A tuple hash must equal manually chaining its children with the same flags.
+    std::vector<uint32_t> manual(n);
+    a->computeHashInto(0, n, manual.data(), true);
+    b->computeHashInto(0, n, manual.data(), false);
+
+    std::vector<uint32_t> via_tuple(n);
+    tuple_ab->computeHashInto(0, n, via_tuple.data(), true);
+    EXPECT_EQ(manual, via_tuple);
+
+    // Order matters: tuple(a, b) and tuple(b, a) must differ for most rows.
+    auto tuple_ba = ColumnTuple::create(Columns{b, a});
+    std::vector<uint32_t> ab(n);
+    std::vector<uint32_t> ba(n);
+    tuple_ab->computeHashInto(0, n, ab.data(), true);
+    tuple_ba->computeHashInto(0, n, ba.data(), true);
+
+    size_t differ = 0;
+    for (size_t i = 0; i < n; ++i)
+        differ += (ab[i] != ba[i]);
+    EXPECT_GT(differ, n * 9 / 10) << "tuple(a,b) and tuple(b,a) should differ for most rows";
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 12. ColumnArray: range-split consistency and length sensitivity.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, ColumnArrayRangeSplitAndLength)
+{
+    const size_t n = 2048;
+    auto arr = makeUInt32ArrayColumn(n, 6);
+    expectRangeSplitConsistent(*arr);
+
+    // Arrays of the same repeated element but different lengths must not collide:
+    // [7], [7, 7], [7, 7, 7], ...
+    auto data = ColumnUInt32::create();
+    auto offsets = ColumnUInt64::create();
+    const size_t m = 16;
+    size_t acc = 0;
+    for (size_t i = 1; i <= m; ++i)
+    {
+        for (size_t j = 0; j < i; ++j)
+            data->insert(static_cast<UInt64>(7));
+        acc += i;
+        offsets->insert(static_cast<UInt64>(acc));
+    }
+    auto repeated = ColumnArray::create(std::move(data), std::move(offsets));
+
+    std::vector<uint32_t> out(m);
+    repeated->computeHashInto(0, m, out.data(), true);
+
+    std::vector<uint32_t> sorted = out;
+    std::sort(sorted.begin(), sorted.end());
+    const size_t unique = static_cast<size_t>(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
+    EXPECT_EQ(unique, m) << "Arrays of the same element but different lengths must hash differently";
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 13. ColumnMap delegates to its nested array, so it stays range-split safe.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, ColumnMapRangeSplit)
+{
+    const size_t n = 1024;
+
+    // Map is stored as Array(Tuple(key, value)).
+    auto keys = ColumnUInt32::create();
+    auto values = ColumnUInt32::create();
+    auto offsets = ColumnUInt64::create();
+    size_t acc = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const size_t len = rng() % 4;
+        for (size_t j = 0; j < len; ++j)
+        {
+            keys->insert(static_cast<UInt64>(rng()));
+            values->insert(static_cast<UInt64>(rng()));
+        }
+        acc += len;
+        offsets->insert(static_cast<UInt64>(acc));
+    }
+    auto kv = ColumnTuple::create(Columns{std::move(keys), std::move(values)});
+    auto nested = ColumnArray::create(std::move(kv), std::move(offsets));
+    auto map = ColumnMap::create(std::move(nested));
+
+    expectRangeSplitConsistent(*map);
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 14. ColumnConst broadcasts a single element's hash to every row.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, ColumnConstBroadcast)
+{
+    const size_t n = 257;
+    auto inner = makeUInt32Column({0x12345678U});
+    auto col = ColumnConst::create(std::move(inner), n);
+
+    std::vector<uint32_t> out(n);
+    col->computeHashInto(0, n, out.data(), true);
+
+    for (size_t i = 1; i < n; ++i)
+        EXPECT_EQ(out[i], out[0]) << "All rows of a const column must hash identically (row " << i << ")";
+
+    expectRangeSplitConsistent(*col);
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 15. ColumnNullable range-split consistency (null mask mixed per row).
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, ColumnNullableRangeSplit)
+{
+    const size_t n = 1024;
+    auto nested = ColumnUInt32::create();
+    auto null_map = ColumnUInt8::create();
+    for (size_t i = 0; i < n; ++i)
+    {
+        nested->insert(static_cast<UInt64>(rng()));
+        null_map->insert(static_cast<UInt64>(rng() % 5 == 0 ? 1 : 0));
+    }
+    auto col = ColumnNullable::create(std::move(nested), std::move(null_map));
+    expectRangeSplitConsistent(*col);
 }

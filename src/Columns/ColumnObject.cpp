@@ -1159,15 +1159,20 @@ void ColumnObject::updateHashWithValueRange(size_t begin, size_t end, SipHash & 
     shared_data->updateHashWithValueRange(begin, end, hash);
 }
 
-WeakHash32 ColumnObject::getWeakHash32() const
+void ColumnObject::computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const
 {
-    WeakHash32 hash(size());
+    bool first = initial;
     for (const auto & [_, column] : typed_paths)
-        hash.update(column->getWeakHash32());
+    {
+        column->computeHashInto(row_begin, row_end, hash_out, first);
+        first = false;
+    }
     for (const auto & [_, column] : dynamic_paths_ptrs)
-        hash.update(column->getWeakHash32());
-    hash.update(shared_data->getWeakHash32());
-    return hash;
+    {
+        column->computeHashInto(row_begin, row_end, hash_out, first);
+        first = false;
+    }
+    shared_data->computeHashInto(row_begin, row_end, hash_out, first);
 }
 
 void ColumnObject::updateHashFast(SipHash & hash) const

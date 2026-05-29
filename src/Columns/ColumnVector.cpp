@@ -22,7 +22,6 @@
 #include <Common/RadixSort.h>
 #include <Common/SipHash.h>
 #include <Common/TargetSpecific.h>
-#include <Common/WeakHash.h>
 #include <Common/assert_cast.h>
 #include <Common/findExtreme.h>
 #include <Common/iota.h>
@@ -77,26 +76,6 @@ template <typename T>
 void ColumnVector<T>::updateHashWithValueRange(size_t begin, size_t end, SipHash & hash) const
 {
     hash.update(reinterpret_cast<const char *>(&data[begin]), (end - begin) * sizeof(T));
-}
-
-template <typename T>
-WeakHash32 ColumnVector<T>::getWeakHash32() const
-{
-    auto s = data.size();
-    WeakHash32 hash(s);
-
-    const T * begin = data.data();
-    const T * end = begin + s;
-    UInt32 * hash_data = hash.getData().data();
-
-    while (begin < end)
-    {
-        *hash_data = static_cast<UInt32>(hashCRC32(*begin, *hash_data));
-        ++begin;
-        ++hash_data;
-    }
-
-    return hash;
 }
 
 /// Extract the raw uint32 input for fmix32/fmix32Combined from a value of type T.

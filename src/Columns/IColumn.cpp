@@ -31,7 +31,6 @@
 #include <Processors/Transforms/ColumnGathererTransform.h>
 #include <Interpreters/RowRefs.h>
 #include <Common/Exception.h>
-#include <Common/HashCombine32.h>
 #include <Common/SipHash.h>
 
 using Hash = CityHash_v1_0_2::uint128;
@@ -977,25 +976,6 @@ template class IColumnHelper<ColumnObject, IColumn>;
 template class IColumnHelper<IColumnDummy, IColumn>;
 
 template class IColumnHelper<ColumnBLOB, IColumn>;
-
-void IColumn::computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const
-{
-    /// Slow fallback: delegates to getWeakHash32 which allocates.
-    /// Column types used as hash-partition keys should override this.
-    WeakHash32 wh = getWeakHash32();
-    const uint32_t * src = wh.getData().data();
-    const size_t n = row_end - row_begin;
-    if (initial)
-    {
-        for (size_t i = 0; i < n; ++i)
-            hash_out[i] = src[row_begin + i];
-    }
-    else
-    {
-        for (size_t i = 0; i < n; ++i)
-            hash_out[i] = fmix32Combined(src[row_begin + i], hash_out[i]);
-    }
-}
 
 void intrusive_ptr_add_ref(const IColumn * c)
 {
