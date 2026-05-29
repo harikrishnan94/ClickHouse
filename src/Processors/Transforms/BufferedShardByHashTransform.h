@@ -105,9 +105,9 @@ private:
     /// Pre-allocated buffers reused across every flush — avoids per-flush heap
     /// allocations that would otherwise dominate the batched scatter path.
     ///
-    /// row_histogram: per-shard row counts, size == num_shards.
+    /// rows_per_shard: per-shard row counts, size == num_shards.
     ///   Zeroed at the start of each flush; passed to ColumnsScatter::scatter
-    ///   for every column position so the histogram is computed only ONCE per
+    ///   for every column position so row counts are computed only ONCE per
     ///   flush (not K times — once per column).
     ///
     /// pids_spans_buf: view of each pending chunk's pids window inside pids.
@@ -117,7 +117,7 @@ private:
     /// col_ptrs_buf: pointer-to-column for the current column position.
     ///   Resized to pending_input.size() once per flush; refilled per column
     ///   position inside the loop.
-    PaddedPODArray<UInt32> row_histogram;
+    PaddedPODArray<UInt32> rows_per_shard;
     std::vector<std::span<const UInt32>> pids_spans_buf;
     std::vector<const IColumn *> col_ptrs_buf;
 

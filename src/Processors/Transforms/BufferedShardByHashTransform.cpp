@@ -31,8 +31,8 @@ BufferedShardByHashTransform::BufferedShardByHashTransform(
     /// capacity after the first flush, so later batches never reallocate.
     pids.reserve(DEFAULT_BLOCK_SIZE);
 
-    /// Pre-size row_histogram to num_shards once; zeroed before each flush.
-    row_histogram.resize(num_shards, 0);
+    /// Pre-size rows_per_shard to num_shards once; zeroed before each flush.
+    rows_per_shard.resize(num_shards, 0);
 }
 
 IProcessor::Status BufferedShardByHashTransform::prepare()
@@ -197,10 +197,10 @@ void BufferedShardByHashTransform::flushBatch()
     for (size_t b = 0; b < num_batched; ++b)
         pids_spans_buf[b] = {pids.data() + pending_input[b].pids_offset, pending_input[b].chunk.getNumRows()};
 
-    /// row_histogram: compute ONCE for all K columns.
+    /// rows_per_shard: count ONCE for all K columns.
     /// Zero-fill (capacity already num_shards from constructor).
-    std::fill(row_histogram.begin(), row_histogram.end(), 0);
-    ColumnsScatter::computeHistogram(pids_spans_buf, row_histogram);
+    std::fill(rows_per_shard.begin(), rows_per_shard.end(), 0);
+    ColumnsScatter::countRowsPerShard(pids_spans_buf, rows_per_shard);
 
     /// col_ptrs_buf: resize once; refilled per column position inside the loop.
     col_ptrs_buf.resize(num_batched);
@@ -214,9 +214,9 @@ void BufferedShardByHashTransform::flushBatch()
         for (size_t b = 0; b < num_batched; ++b)
             col_ptrs_buf[b] = pending_input[b].chunk.getColumns()[c].get();
 
-        /// Pass the pre-computed histogram: scatterFixed<T> et al skip their
+        /// Pass the pre-computed rows_per_shard: scatterFixed<T> et al skip their
         /// internal pids scan and go straight to allocation + scatter.
-        MutableColumns scattered = ColumnsScatter::scatter(col_ptrs_buf, pids_spans_buf, num_shards, row_histogram);
+        MutableColumns scattered = ColumnsScatter::scatter(col_ptrs_buf, pids_spans_buf, num_shards, rows_per_shard);
 
         for (size_t s = 0; s < num_shards; ++s)
             shard_cols[s].push_back(std::move(scattered[s]));
