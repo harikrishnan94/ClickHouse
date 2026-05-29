@@ -28,7 +28,6 @@ namespace DB
 class Arena;
 class ColumnGathererStream;
 class Field;
-class WeakHash32;
 class ColumnConst;
 class ColumnReplicated;
 class IDataType;
@@ -384,14 +383,10 @@ public:
     /// Default implementation calls updateHashWithValue for each element.
     virtual void updateHashWithValueRange(size_t begin, size_t end, SipHash & hash) const;
 
-    /// Get hash function value. Hash is calculated for each element.
-    /// It's a fast weak hash function. Mainly need to scatter data between threads.
-    /// WeakHash32 must have the same size as column.
-    virtual WeakHash32 getWeakHash32() const = 0;
-
-    /// Non-allocating per-row hash kernel.  Writes a 32-bit hash for each row in
+    /// Per-row weak hash kernel.  Writes a 32-bit hash for each row in
     /// [row_begin, row_end) into the caller-provided buffer `hash_out` (must hold
-    /// at least row_end - row_begin entries).
+    /// at least row_end - row_begin entries).  It's a fast weak hash function,
+    /// mainly needed to scatter data between threads.
     ///
     /// When `initial == true` the buffer is overwritten:
     ///     hash_out[i] = h(row_begin + i)
@@ -404,10 +399,9 @@ public:
     /// full avalanche.  The combine step injects the prior mid-fmix32 — one
     /// extra XOR vs plain fmix32, 1.54× faster than boost::hash_combine.
     ///
-    /// Implementations must not allocate.  The default implementation wraps
-    /// `getWeakHash32` and is correct but slow (still allocates internally).
-    /// Override for column types that appear in hash-partition key columns.
-    virtual void computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const;
+    /// Implementations of primitive columns must not allocate; composite columns
+    /// may use a transient scratch buffer for their nested columns.
+    virtual void computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const = 0;
 
     /// Update state of hash with all column.
     virtual void updateHashFast(SipHash & hash) const = 0;

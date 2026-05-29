@@ -9,7 +9,6 @@
 #include <Common/HashTable/StringHashSet.h>
 #include <Common/SipHash.h>
 #include <Common/TargetSpecific.h>
-#include <Common/WeakHash.h>
 #include <Common/assert_cast.h>
 
 #if USE_EMBEDDED_COMPILER
@@ -65,23 +64,6 @@ void ColumnNullable::updateHashWithValueRange(size_t begin, size_t end, SipHash 
     const auto & arr = getNullMapData();
     getNestedColumn().updateHashWithValueRange(begin, end, hash);
     hash.update(reinterpret_cast<const char *>(&arr[begin]), (end - begin) * sizeof(arr[0]));
-}
-
-WeakHash32 ColumnNullable::getWeakHash32() const
-{
-    auto s = size();
-
-    WeakHash32 hash = nested_column->getWeakHash32();
-
-    const auto & null_map_data = getNullMapData();
-    auto & hash_data = hash.getData();
-
-    /// Use default for nulls.
-    for (size_t row = 0; row < s; ++row)
-        if (null_map_data[row])
-            hash_data[row] = WeakHash32::kDefaultInitialValue;
-
-    return hash;
 }
 
 /// Mix the null-map byte into the per-row hash buffer.

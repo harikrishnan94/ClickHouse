@@ -7,7 +7,6 @@
 #include <IO/Operators.h>
 #include <IO/WriteBufferFromString.h>
 #include <Common/Arena.h>
-#include <Common/WeakHash.h>
 #include <Common/assert_cast.h>
 #include <Common/iota.h>
 #include <Common/typeid_cast.h>
@@ -415,15 +414,22 @@ void ColumnTuple::updateHashWithValueRange(size_t begin, size_t end, SipHash & h
         column->updateHashWithValueRange(begin, end, hash);
 }
 
-WeakHash32 ColumnTuple::getWeakHash32() const
+void ColumnTuple::computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const
 {
-    auto s = size();
-    WeakHash32 hash(s);
+    if (columns.empty())
+    {
+        if (initial)
+            for (size_t i = 0, n = row_end - row_begin; i < n; ++i)
+                hash_out[i] = 0;
+        return;
+    }
 
+    bool first = initial;
     for (const auto & column : columns)
-        hash.update(column->getWeakHash32());
-
-    return hash;
+    {
+        column->computeHashInto(row_begin, row_end, hash_out, first);
+        first = false;
+    }
 }
 
 void ColumnTuple::updateHashFast(SipHash & hash) const
