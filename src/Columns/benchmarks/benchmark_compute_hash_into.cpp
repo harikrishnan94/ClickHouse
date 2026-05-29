@@ -1,5 +1,4 @@
-/// Microbenchmark for IColumn::computeHashInto vs the legacy
-/// IColumn::getWeakHash32 chain.
+/// Microbenchmark for IColumn::computeHashInto.
 ///
 /// Measures per-row throughput for the hash-production step used by
 /// hash-partitioning operators (e.g. BufferedShardByHashTransform).
@@ -20,7 +19,6 @@
 #include <Interpreters/JoinUtils.h>
 #include <Common/MapToRange.h>
 #include <Common/PODArray.h>
-#include <Common/WeakHash.h>
 #include <Common/randomSeed.h>
 
 #include <benchmark/benchmark.h>
@@ -125,55 +123,14 @@ void BM_ComputeHashInto(benchmark::State & state, const std::vector<ColumnPtr> &
     state.counters["K"] = static_cast<double>(ncols);
 }
 
-/// ─── getWeakHash32 baseline ───────────────────────────────────────────────
-
-void BM_WeakHash32(benchmark::State & state, const std::vector<ColumnPtr> & cols)
-{
-    const size_t n = cols[0]->size();
-    const size_t ncols = cols.size();
-
-    for (auto _ : state)
-    {
-        WeakHash32 hash = cols[0]->getWeakHash32();
-        for (size_t k = 1; k < ncols; ++k)
-            hash.update(cols[k]->getWeakHash32());
-        benchmark::DoNotOptimize(hash.getData().data());
-    }
-
-    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(n));
-    state.counters["rows/iter"] = static_cast<double>(n);
-    state.counters["K"] = static_cast<double>(ncols);
-}
-
-/// ─── End-to-end hash → selector benchmarks ───────────────────────────────
+/// ─── End-to-end hash → selector benchmark ────────────────────────────────
 ///
-/// These capture the full pipeline as executed by
+/// Captures the full pipeline as executed by
 /// BufferedShardByHashTransform::generateOutputChunks:
+/// computeHashInto chain (0 allocations) + mapToRange SIMD.
 ///
-///   Old path: WeakHash32 chain (K allocations) + hashToSelector (1 more).
-///   New path: computeHashInto chain (0 allocations) + mapToRange SIMD.
-///
-/// Both buffers are constructed outside the timing loop on the new path so
-/// the per-iteration cost reflects steady-state behaviour.
-
-void BM_HashAndFastrange_Old(benchmark::State & state, const std::vector<ColumnPtr> & cols, size_t num_shards)
-{
-    const size_t n = cols[0]->size();
-    const size_t ncols = cols.size();
-    for (auto _ : state)
-    {
-        WeakHash32 hash = cols[0]->getWeakHash32();
-        for (size_t k = 1; k < ncols; ++k)
-            hash.update(cols[k]->getWeakHash32());
-        IColumn::Selector sel
-            = JoinCommon::hashToSelector(hash, [num_shards](size_t h) { return ((h & 0xFFFFFFFFULL) * num_shards) >> 32; });
-        benchmark::DoNotOptimize(sel.data());
-    }
-    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(n));
-    state.counters["rows/iter"] = static_cast<double>(n);
-    state.counters["K"] = static_cast<double>(ncols);
-    state.counters["P"] = static_cast<double>(num_shards);
-}
+/// Both buffers are constructed outside the timing loop so the per-iteration
+/// cost reflects steady-state behaviour.
 
 void BM_HashAndFastrange_New(benchmark::State & state, const std::vector<ColumnPtr> & cols, size_t num_shards)
 {
@@ -206,9 +163,6 @@ void BM_HashAndFastrange_New(benchmark::State & state, const std::vector<ColumnP
     { \
         static const auto cols_e2e_##tag##_K##K##_B##B##_P##P = make_fn(K, B); \
         benchmark::RegisterBenchmark( \
-            "BM_hashAndFastrange_old/" #tag "_K" #K "_B" #B "_P" #P, \
-            [](benchmark::State & st) { BM_HashAndFastrange_Old(st, cols_e2e_##tag##_K##K##_B##B##_P##P, P); }); \
-        benchmark::RegisterBenchmark( \
             "BM_hashAndFastrange_new/" #tag "_K" #K "_B" #B "_P" #P, \
             [](benchmark::State & st) { BM_HashAndFastrange_New(st, cols_e2e_##tag##_K##K##_B##B##_P##P, P); }); \
     } while (false)
@@ -219,8 +173,6 @@ void BM_HashAndFastrange_New(benchmark::State & state, const std::vector<ColumnP
         static const auto cols_##tag##_K##K##_B##B = make_fn(K, B); \
         benchmark::RegisterBenchmark( \
             "BM_computeHashInto/" #tag "_K" #K "_B" #B, [](benchmark::State & st) { BM_ComputeHashInto(st, cols_##tag##_K##K##_B##B); }); \
-        benchmark::RegisterBenchmark( \
-            "BM_weakHash32/" #tag "_K" #K "_B" #B, [](benchmark::State & st) { BM_WeakHash32(st, cols_##tag##_K##K##_B##B); }); \
     } while (false)
 
 } // namespace

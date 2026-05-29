@@ -9,7 +9,6 @@
 #include <Common/HashTable/Hash.h>
 #include <Common/HashTable/StringHashSet.h>
 #include <Common/SipHash.h>
-#include <Common/WeakHash.h>
 #include <Common/assert_cast.h>
 
 #if USE_EMBEDDED_COMPILER
@@ -125,20 +124,12 @@ static void NO_INLINE computeHashIntoStringImpl(
     {
         const auto offset = offsets[i];
         const auto str_size = offset - prev_offset;
-        *hash_data = ::updateWeakHash32(pos, str_size, initial ? WeakHash32::kDefaultInitialValue : *hash_data);
+        *hash_data = ::updateWeakHash32(pos, str_size, initial ? WEAK_HASH32_INITIAL_VALUE : *hash_data);
 
         pos += str_size;
         prev_offset = offset;
         ++hash_data;
     }
-}
-
-WeakHash32 ColumnString::getWeakHash32() const
-{
-    const auto s = offsets.size();
-    WeakHash32 hash(s);
-    computeHashIntoStringImpl(chars.data(), offsets.data(), 0, s, hash.getData().data(), true);
-    return hash;
 }
 
 void ColumnString::computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const
