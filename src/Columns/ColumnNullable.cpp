@@ -1,18 +1,20 @@
-#include <Common/Arena.h>
-#include <Common/HashTable/StringHashSet.h>
-#include <Common/SipHash.h>
-#include <Common/assert_cast.h>
-#include <Common/WeakHash.h>
-#include <Columns/ColumnNullable.h>
-#include <Columns/ColumnConst.h>
 #include <Columns/ColumnCompressed.h>
+#include <Columns/ColumnConst.h>
 #include <Columns/ColumnLowCardinality.h>
+#include <Columns/ColumnNullable.h>
 #include <Columns/MaskOperations.h>
 #include <IO/Operators.h>
+#include <Common/Arena.h>
+#include <Common/HashCombine32.h>
+#include <Common/HashTable/StringHashSet.h>
+#include <Common/SipHash.h>
+#include <Common/TargetSpecific.h>
+#include <Common/WeakHash.h>
+#include <Common/assert_cast.h>
 
 #if USE_EMBEDDED_COMPILER
-#include <DataTypes/Native.h>
-#include <llvm/IR/IRBuilder.h>
+#    include <DataTypes/Native.h>
+#    include <llvm/IR/IRBuilder.h>
 #endif
 
 
@@ -21,15 +23,16 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
-    extern const int ILLEGAL_COLUMN;
-    extern const int NOT_IMPLEMENTED;
-    extern const int BAD_ARGUMENTS;
+extern const int LOGICAL_ERROR;
+extern const int ILLEGAL_COLUMN;
+extern const int NOT_IMPLEMENTED;
+extern const int BAD_ARGUMENTS;
 }
 
 
 ColumnNullable::ColumnNullable(MutableColumnPtr && nested_column_, MutableColumnPtr && null_map_)
-    : nested_column(std::move(nested_column_)), null_map(std::move(null_map_))
+    : nested_column(std::move(nested_column_))
+    , null_map(std::move(null_map_))
 {
     /// ColumnNullable cannot have constant nested column. But constant argument could be passed. Materialize it.
     nested_column = getNestedColumn().convertToFullColumnIfConst();
@@ -79,6 +82,43 @@ WeakHash32 ColumnNullable::getWeakHash32() const
             hash_data[row] = WeakHash32::kDefaultInitialValue;
 
     return hash;
+}
+
+/// Mix the null-map byte into the per-row hash buffer.
+/// Each null_map[i] is 0 (not null) or 1 (null).
+/// fmix32Combined injects out[i] mid-fmix32 of null_map[i], combining both in one pass.
+/// The inner loop is vectorizable: zero-extend uint8 → uint32, fmix32Combined.
+MULTITARGET_FUNCTION_X86_V4_V3(
+    MULTITARGET_FUNCTION_HEADER(static void NO_INLINE),
+    applyNullMaskToHashImpl,
+    MULTITARGET_FUNCTION_BODY((const UInt8 * null_map, size_t n, uint32_t * out) /// NOLINT(bugprone-macro-repeated-side-effects)
+                              {
+                                  for (size_t i = 0; i < n; ++i)
+                                      out[i] = fmix32Combined(static_cast<uint32_t>(null_map[i]), out[i]);
+                              }))
+
+void ColumnNullable::computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const
+{
+    // First, hash the nested column values into the buffer.
+    nested_column->computeHashInto(row_begin, row_end, hash_out, initial);
+
+    // Then mix the null byte for each row so rows with identical nested bytes
+    // but different null states produce different hashes.
+    const UInt8 * nm = getNullMapData().data() + row_begin;
+    const size_t n = row_end - row_begin;
+#if USE_MULTITARGET_CODE
+    if (isArchSupported(TargetArch::x86_64_v4))
+    {
+        applyNullMaskToHashImpl_x86_64_v4(nm, n, hash_out);
+        return;
+    }
+    if (isArchSupported(TargetArch::x86_64_v3))
+    {
+        applyNullMaskToHashImpl_x86_64_v3(nm, n, hash_out);
+        return;
+    }
+#endif
+    applyNullMaskToHashImpl(nm, n, hash_out);
 }
 
 void ColumnNullable::updateHashFast(SipHash & hash) const
@@ -176,7 +216,8 @@ void ColumnNullable::insertData(const char * pos, size_t length)
     }
 }
 
-std::string_view ColumnNullable::serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const IColumn::SerializationSettings * settings) const
+std::string_view
+ColumnNullable::serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const IColumn::SerializationSettings * settings) const
 {
     const auto & arr = getNullMapData();
 
@@ -387,8 +428,8 @@ bool ColumnNullable::isComparatorCompilable() const
     return nested_column->isComparatorCompilable();
 }
 
-llvm::Value * ColumnNullable::compileComparator(llvm::IRBuilderBase & builder, llvm::Value * lhs, llvm::Value * rhs,
-                                            llvm::Value * nan_direction_hint) const
+llvm::Value * ColumnNullable::compileComparator(
+    llvm::IRBuilderBase & builder, llvm::Value * lhs, llvm::Value * rhs, llvm::Value * nan_direction_hint) const
 {
     llvm::IRBuilder<> & b = static_cast<llvm::IRBuilder<> &>(builder);
     auto * head = b.GetInsertBlock();
@@ -466,13 +507,19 @@ int ColumnNullable::doCompareAt(size_t n, size_t m, const IColumn & rhs_, int nu
     return compareAtImpl(n, m, rhs_, null_direction_hint);
 }
 
-int ColumnNullable::compareAtWithCollation(size_t n, size_t m, const IColumn & rhs_, int null_direction_hint, const Collator & collator) const
+int ColumnNullable::compareAtWithCollation(
+    size_t n, size_t m, const IColumn & rhs_, int null_direction_hint, const Collator & collator) const
 {
     return compareAtImpl(n, m, rhs_, null_direction_hint, &collator);
 }
 
-void ColumnNullable::getPermutationImpl(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                                    size_t limit, int null_direction_hint, Permutation & res, const Collator * collator) const
+void ColumnNullable::getPermutationImpl(
+    IColumn::PermutationSortDirection direction,
+    IColumn::PermutationSortStability stability,
+    size_t limit,
+    int null_direction_hint,
+    Permutation & res,
+    const Collator * collator) const
 {
     /// Cannot pass limit because of unknown amount of NULLs.
 
@@ -568,8 +615,14 @@ void ColumnNullable::getPermutationImpl(IColumn::PermutationSortDirection direct
     }
 }
 
-void ColumnNullable::updatePermutationImpl(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                                        size_t limit, int null_direction_hint, Permutation & res, EqualRanges & equal_ranges, const Collator * collator) const
+void ColumnNullable::updatePermutationImpl(
+    IColumn::PermutationSortDirection direction,
+    IColumn::PermutationSortStability stability,
+    size_t limit,
+    int null_direction_hint,
+    Permutation & res,
+    EqualRanges & equal_ranges,
+    const Collator * collator) const
 {
     if (equal_ranges.empty())
         return;
@@ -697,26 +750,46 @@ void ColumnNullable::updatePermutationImpl(IColumn::PermutationSortDirection dir
     }
 }
 
-void ColumnNullable::getPermutation(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                                size_t limit, int null_direction_hint, Permutation & res) const
+void ColumnNullable::getPermutation(
+    IColumn::PermutationSortDirection direction,
+    IColumn::PermutationSortStability stability,
+    size_t limit,
+    int null_direction_hint,
+    Permutation & res) const
 {
     getPermutationImpl(direction, stability, limit, null_direction_hint, res);
 }
 
-void ColumnNullable::updatePermutation(IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                                    size_t limit, int null_direction_hint, IColumn::Permutation & res, EqualRanges & equal_ranges) const
+void ColumnNullable::updatePermutation(
+    IColumn::PermutationSortDirection direction,
+    IColumn::PermutationSortStability stability,
+    size_t limit,
+    int null_direction_hint,
+    IColumn::Permutation & res,
+    EqualRanges & equal_ranges) const
 {
     updatePermutationImpl(direction, stability, limit, null_direction_hint, res, equal_ranges);
 }
 
-void ColumnNullable::getPermutationWithCollation(const Collator & collator, IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                                            size_t limit, int null_direction_hint, Permutation & res) const
+void ColumnNullable::getPermutationWithCollation(
+    const Collator & collator,
+    IColumn::PermutationSortDirection direction,
+    IColumn::PermutationSortStability stability,
+    size_t limit,
+    int null_direction_hint,
+    Permutation & res) const
 {
     getPermutationImpl(direction, stability, limit, null_direction_hint, res, &collator);
 }
 
-void ColumnNullable::updatePermutationWithCollation(const Collator & collator, IColumn::PermutationSortDirection direction, IColumn::PermutationSortStability stability,
-                                            size_t limit, int null_direction_hint, Permutation & res, EqualRanges & equal_ranges) const
+void ColumnNullable::updatePermutationWithCollation(
+    const Collator & collator,
+    IColumn::PermutationSortDirection direction,
+    IColumn::PermutationSortStability stability,
+    size_t limit,
+    int null_direction_hint,
+    Permutation & res,
+    EqualRanges & equal_ranges) const
 {
     updatePermutationImpl(direction, stability, limit, null_direction_hint, res, equal_ranges, &collator);
 }
@@ -814,11 +887,11 @@ ColumnPtr ColumnNullable::compress(bool force_compression) const
 
     size_t byte_size = nested_column->byteSize() + null_map->byteSize();
 
-    return ColumnCompressed::create(size(), byte_size,
+    return ColumnCompressed::create(
+        size(),
+        byte_size,
         [my_nested_column = std::move(nested_compressed), my_null_map = std::move(null_map_compressed)]
-        {
-            return ColumnNullable::create(my_nested_column->decompress(), my_null_map->decompress());
-        });
+        { return ColumnNullable::create(my_nested_column->decompress(), my_null_map->decompress()); });
 }
 
 
@@ -828,7 +901,8 @@ namespace
 /// The following function implements a slightly more general version
 /// of getExtremes() than the implementation from Not-Null IColumns.
 /// It takes into account the possible presence of nullable values.
-void getExtremesWithNulls(const IColumn & nested_column, const NullMap & null_array, Field & min, Field & max, size_t start, size_t end, bool null_last = false)
+void getExtremesWithNulls(
+    const IColumn & nested_column, const NullMap & null_array, Field & min, Field & max, size_t start, size_t end, bool null_last = false)
 {
     size_t number_of_nulls = 0;
     size_t n = end - start;
@@ -934,7 +1008,8 @@ void ColumnNullable::checkConsistency() const
             getNestedColumn().size());
 }
 
-ColumnPtr ColumnNullable::createWithOffsets(const IColumn::Offsets & offsets, const ColumnConst & column_with_default_value, size_t total_rows, size_t shift) const
+ColumnPtr ColumnNullable::createWithOffsets(
+    const IColumn::Offsets & offsets, const ColumnConst & column_with_default_value, size_t total_rows, size_t shift) const
 {
     if (empty())
         return cloneEmpty();
@@ -942,7 +1017,8 @@ ColumnPtr ColumnNullable::createWithOffsets(const IColumn::Offsets & offsets, co
     ColumnPtr new_values;
     ColumnPtr new_null_map;
 
-    const ColumnNullable & nullable_column_with_default_value = assert_cast<const ColumnNullable &>(column_with_default_value.getDataColumn());
+    const ColumnNullable & nullable_column_with_default_value
+        = assert_cast<const ColumnNullable &>(column_with_default_value.getDataColumn());
     if (nullable_column_with_default_value.isNullAt(0))
     {
         /// Value in main column, when null map is 1 is implementation defined. So, take any value.
@@ -951,7 +1027,8 @@ ColumnPtr ColumnNullable::createWithOffsets(const IColumn::Offsets & offsets, co
     }
     else
     {
-        new_values = nested_column->createWithOffsets(offsets, *ColumnConst::create(nullable_column_with_default_value.getNestedColumnPtr(), 1), total_rows, shift);
+        new_values = nested_column->createWithOffsets(
+            offsets, *ColumnConst::create(nullable_column_with_default_value.getNestedColumnPtr(), 1), total_rows, shift);
         new_null_map = null_map->createWithOffsets(offsets, *createColumnConst(null_map, Field(0u)), total_rows, shift);
     }
 
@@ -992,7 +1069,8 @@ ColumnPtr ColumnNullable::getNestedColumnWithDefaultOnNull() const
     return res;
 }
 
-void ColumnNullable::chooseDynamicStructureForMerge(const VectorWithMemoryTracking<ColumnPtr> & source_columns, std::optional<size_t> max_dynamic_subcolumns)
+void ColumnNullable::chooseDynamicStructureForMerge(
+    const VectorWithMemoryTracking<ColumnPtr> & source_columns, std::optional<size_t> max_dynamic_subcolumns)
 {
     VectorWithMemoryTracking<ColumnPtr> nested_source_columns;
     nested_source_columns.reserve(source_columns.size());
@@ -1066,7 +1144,8 @@ ColumnPtr makeNullableOrLowCardinalityNullableSafe(const ColumnPtr & column)
         return column;
 
     if (isColumnConst(*column))
-        return ColumnConst::create(makeNullableOrLowCardinalityNullableSafe(assert_cast<const ColumnConst &>(*column).getDataColumnPtr()), column->size());
+        return ColumnConst::create(
+            makeNullableOrLowCardinalityNullableSafe(assert_cast<const ColumnConst &>(*column).getDataColumnPtr()), column->size());
 
     if (column->lowCardinality())
         return assert_cast<const ColumnLowCardinality &>(*column).cloneNullable();

@@ -3,6 +3,7 @@
 #include <deque>
 
 #include <Columns/IColumn.h>
+#include <Common/PODArray.h>
 #include <Core/Block.h>
 #include <Core/Block_fwd.h>
 #include <Core/ColumnNumbers.h>
@@ -58,6 +59,7 @@ private:
     std::vector<std::deque<Chunk>> output_queues;
 
     /// Reused across input chunks to skip per-chunk reallocation.
+    PaddedPODArray<UInt32> hash_buffer;
     IColumn::Selector selector;
     std::vector<MutableColumns> shard_columns;
 };
