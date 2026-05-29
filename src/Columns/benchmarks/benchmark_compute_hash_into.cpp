@@ -180,7 +180,7 @@ void BM_HashAndFastrange_New(benchmark::State & state, const std::vector<ColumnP
     const size_t n = cols[0]->size();
     const size_t ncols = cols.size();
     PaddedPODArray<UInt32> hash_buf(n);
-    IColumn::Selector selector(n);
+    PaddedPODArray<UInt32> pids(n);  // mapToRange now writes UInt32
     const UInt32 p32 = static_cast<UInt32>(num_shards);
     for (auto _ : state)
     {
@@ -190,8 +190,8 @@ void BM_HashAndFastrange_New(benchmark::State & state, const std::vector<ColumnP
             cols[k]->computeHashInto(0, n, hash_buf.data(), initial);
             initial = false;
         }
-        mapToRange(hash_buf.data(), n, p32, selector.data());
-        benchmark::DoNotOptimize(selector.data());
+        mapToRange(hash_buf.data(), n, p32, pids.data());
+        benchmark::DoNotOptimize(pids.data());
     }
     state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(n));
     state.counters["rows/iter"] = static_cast<double>(n);
