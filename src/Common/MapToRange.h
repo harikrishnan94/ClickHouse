@@ -20,6 +20,9 @@ namespace DB
 /// vpmuludq (1 µop, 0.5c throughput) instead of vpmullq (3 µops).
 ///
 /// range_size must fit in uint32_t (any realistic partition count does).
-void mapToRange(const UInt32 * hashes, size_t n, UInt32 range_size, UInt64 * result);
+///
+/// UInt32 output — for use with ColumnsScatter::scatter.
+/// Halves selector bandwidth in the hot scatter inner loop.
+void mapToRange(const UInt32 * hashes, size_t n, UInt32 range_size, UInt32 * result);
 
 } // namespace DB
