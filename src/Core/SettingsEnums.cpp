@@ -56,7 +56,8 @@ IMPLEMENT_SETTING_MULTI_ENUM(JoinAlgorithm, ErrorCodes::UNKNOWN_JOIN,
      {"parallel_hash",        JoinAlgorithm::PARALLEL_HASH},
      {"direct",               JoinAlgorithm::DIRECT},
      {"full_sorting_merge",   JoinAlgorithm::FULL_SORTING_MERGE},
-     {"grace_hash",           JoinAlgorithm::GRACE_HASH}})
+     {"grace_hash",           JoinAlgorithm::GRACE_HASH},
+     {"best_effort_partition", JoinAlgorithm::BEST_EFFORT_PARTITION}})
 
 
 IMPLEMENT_SETTING_MULTI_ENUM(JoinOrderAlgorithm, ErrorCodes::BAD_ARGUMENTS,

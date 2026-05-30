@@ -3457,6 +3457,10 @@ Possible values:
 
  [Sort-merge algorithm](https://en.wikipedia.org/wiki/Sort-merge_join) with full sorting of joined tables before joining.
 
+- best_effort_partition
+
+ Best-effort partitioned hash join (Zukowski, Heman, Boncz, *Architecture-Conscious Hashing*, DaMoN 2006). The build side is radix-partitioned to leaf depth and a small per-leaf hash table is built for each partition. The probe side is partitioned with a bounded probe buffer (`max_bytes_in_join_probe_buffer`): once buffered probe rows exceed the budget the largest partition is probed and dropped, so probing is cache-resident and output is emitted incrementally. Experimental; currently supports only `INNER ALL` joins with a single disjunct.
+
 - prefer_partial_merge
 
  ClickHouse always tries to use `partial_merge` join if possible, otherwise, it uses `hash`. *Deprecated*, same as `partial_merge,hash`.
@@ -7696,6 +7700,12 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
     DECLARE(UInt64, parallel_hash_join_threshold, 100'000, R"(
 When hash-based join algorithm is applied, this threshold helps to decide between using `hash` and `parallel_hash` (only if estimation of the right table size is available).
 The former is used when we know that the right table size is below the threshold.
+)", 0) \
+    DECLARE(UInt64, max_bytes_in_join_probe_buffer, 512 * 1024 * 1024, R"(
+For the `best_effort_partition` join algorithm, the global budget in bytes for the transient probe-side buffer. When buffered probe rows exceed this budget, the largest buffered partition is probed against its hash table and dropped. This bounds the join's transient probe-side memory footprint independently of the probe-side cardinality. A value of 0 means buffer the entire probe stream before probing (degrades to a fully partitioned hash join).
+)", 0) \
+    DECLARE(UInt64, max_partitions_per_pass, 64, R"(
+For the `best_effort_partition` join algorithm, the upper bound on the fan-out of a single radix-partitioning pass. The total partition count is derived so each per-leaf hash table fits in cache; the shuffle is then split into as many passes as needed so no single pass exceeds this fan-out.
 )", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.

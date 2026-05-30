@@ -32,6 +32,7 @@
 
 #include <Dictionaries/IDictionary.h>
 #include <Interpreters/ArrayJoinAction.h>
+#include <Interpreters/BestEffortPartitionJoin.h>
 #include <Interpreters/ConcurrentHashJoin.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DirectJoin.h>
@@ -67,6 +68,8 @@ namespace Setting
     extern const SettingsBool allow_general_join_planning;
     extern const SettingsJoinAlgorithm join_algorithm;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 max_bytes_in_join_probe_buffer;
+    extern const SettingsUInt64 max_partitions_per_pass;
     extern const SettingsSeconds lock_acquire_timeout;
     extern const SettingsNonZeroUInt64 grace_hash_join_initial_buckets;
     extern const SettingsNonZeroUInt64 grace_hash_join_max_buckets;
@@ -1245,6 +1248,26 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             table_join, right_table_expression_header, params.join_any_take_last_row);
     }
 
+    if (algorithm == JoinAlgorithm::BEST_EFFORT_PARTITION)
+    {
+        if (BestEffortPartitionJoin::isSupported(table_join))
+            return std::make_shared<BestEffortPartitionJoin>(
+                table_join,
+                params.max_threads,
+                right_table_expression_header,
+                params.max_bytes_in_join_probe_buffer,
+                params.max_partitions_per_pass,
+                StatsCollectingParams{
+                    params.hash_table_key_hash,
+                    params.collect_hash_table_stats_during_joins,
+                    params.max_entries_for_hash_table_stats,
+                    params.max_size_to_preallocate_for_joins});
+
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Join algorithm 'best_effort_partition' currently supports only INNER ALL joins with a single equi-join disjunct");
+    }
+
     if (algorithm == JoinAlgorithm::FULL_SORTING_MERGE)
     {
         if (FullSortingMergeJoin::isSupported(table_join))
@@ -1319,6 +1342,8 @@ JoinAlgorithmParams::JoinAlgorithmParams(const Context & context)
     max_entries_for_hash_table_stats = context.getServerSettings()[ServerSetting::max_entries_for_hash_table_stats];
     hash_table_key_hash = 0;
     parallel_hash_join_threshold = settings[Setting::parallel_hash_join_threshold];
+    max_bytes_in_join_probe_buffer = settings[Setting::max_bytes_in_join_probe_buffer];
+    max_partitions_per_pass = settings[Setting::max_partitions_per_pass];
 
     grace_hash_join_initial_buckets = settings[Setting::grace_hash_join_initial_buckets];
     grace_hash_join_max_buckets = settings[Setting::grace_hash_join_max_buckets];
@@ -1348,6 +1373,8 @@ JoinAlgorithmParams::JoinAlgorithmParams(
     max_entries_for_hash_table_stats = max_entries_for_hash_table_stats_;
     hash_table_key_hash = hash_table_key_hash_;
     parallel_hash_join_threshold = join_settings.parallel_hash_join_threshold;
+    max_bytes_in_join_probe_buffer = join_settings.max_bytes_in_join_probe_buffer;
+    max_partitions_per_pass = join_settings.max_partitions_per_pass;
 
     grace_hash_join_initial_buckets = join_settings.grace_hash_join_initial_buckets;
     grace_hash_join_max_buckets = join_settings.grace_hash_join_max_buckets;
