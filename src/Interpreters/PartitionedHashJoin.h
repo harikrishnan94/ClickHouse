@@ -8,6 +8,7 @@
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/PartitionedHashConfig.h>
+#include <Interpreters/PartitionedHashShuffle.h>
 #include <base/types.h>
 
 namespace DB
@@ -22,12 +23,12 @@ class TableJoin;
   * budget, so a partitioned build working set beats the merged shared map of `parallel_hash` once the
   * hash table exceeds last-level cache.
   *
-  * P0 (this revision): a passthrough skeleton. The class is selectable end-to-end and forwards the
-  * whole `IJoin` surface to a single internal plain `HashJoin`, so results are identical to the `hash`
-  * algorithm. The radix shuffle, eager leaf-HT build, custom probe transform, hysteresis eviction, and
-  * auto-select land in later phases (P1..P9). `supportParallelJoin()` therefore returns `false` for now
-  * (the internal `HashJoin` is not safe for concurrent build); it flips to `true` in P3 once the
-  * lock-free per-leaf build exists.
+  * P3 (this revision): the build side is real. `addBlockToJoin` runs the lock-free per-build-thread
+  * (slot) radix shuffle into per-slot leaf chains, and `runPostBuildPhase` work-steals whole leaves to
+  * build one read-only per-leaf `HashJoin` each (move-not-copy). `supportParallelJoin()` is therefore
+  * `true`. Query results still ride a passthrough `HashJoin` rebuilt single-threaded in
+  * `onBuildPhaseFinish` (the `[PROXY]` path) until the custom probe transform lands (P4..P8). The probe
+  * scatter, hysteresis eviction, and auto-select land in later phases.
   */
 class PartitionedHashJoin : public IJoin
 {
@@ -49,10 +50,19 @@ public:
     void checkTypesOfKeys(const Block & block) const override;
     void initialize(const Block & left_sample_block) override;
     void onBuildPhaseFinish() override;
+
+    /// P3: the eager leaf-HT build is a post-build step (work-stealing over the query/pipeline pool).
+    bool hasPostBuildPhase() const override { return true; }
+    void runPostBuildPhase() override;
+
     JoinResultPtr joinBlock(Block block) override;
 
     /// The derived partition configuration (leaf count + pass schedule). For tests / diagnostics.
     const PartitionConfig & getPartitionConfig() const { return partition_config; }
+
+    /// Per-leaf built-HT row counts (0 for empty/unbuilt leaves), valid after runPostBuildPhase.
+    /// For tests / diagnostics: cell conservation + leaf-membership checks.
+    std::vector<size_t> getLeafRowCounts() const;
 
     void setTotals(const Block & block) override;
     const Block & getTotals() const override;
@@ -61,8 +71,8 @@ public:
     size_t getTotalByteCount() const override;
     bool alwaysReturnsEmptySet() const override;
 
-    /// See class comment: P0 keeps the build single-threaded for correctness.
-    bool supportParallelJoin() const override { return false; }
+    /// P3: the build is lock-free per-slot, so `FillingRightJoinSideTransform` may run in parallel.
+    bool supportParallelJoin() const override { return true; }
 
     IBlocksStreamPtr
     getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
@@ -70,47 +80,87 @@ public:
 private:
     std::shared_ptr<TableJoin> table_join;
     SharedHeader right_sample_block;
-    /// Stored for the lock-free parallel build in P3; unused until then.
-    [[maybe_unused]] size_t max_threads;
+    /// Number of lock-free build slots == max_threads (each concurrent build thread owns one slot).
+    size_t slots;
     bool any_take_last_row;
     /// Input-batching threshold for the build shuffle (the `shard_by_hash_input_batch_bytes` setting that
     /// BufferedShardByHashTransform uses; 0 = flush per block).
     size_t shard_by_hash_input_batch_bytes;
-    /// Diagnostic only: when true, skip the passthrough HashJoin build so the shuffle is timed alone
-    /// (results are incorrect; for measurement only).
+    /// Diagnostic only: when true, skip the passthrough HashJoin build so the shuffle/leaf build is timed
+    /// alone (query results become incorrect; for measurement only).
     bool debug_skip_passthrough;
 
+    /// Process-unique id used to map a build thread to its slot (see slot handout in the .cpp). Never
+    /// reused, so a stale thread-local cache entry can never alias a different join instance.
+    size_t instance_id;
+
     /// Partition config (leaf count + pass schedule) derived at construction from rhs_size_estimation
-    /// (BYTES, §2.3) + selected-column widths + max_partitions_per_pass (spec §5).
+    /// (right-side ROW count, §2.3) + selected-column widths + max_partitions_per_pass (spec §5).
     PartitionConfig partition_config;
     /// Right-block positions of the join key columns (for hashing/routing in addBlockToJoin).
     std::vector<size_t> key_indices;
 
-    /// P0/P2 correctness target. Replaced by per-leaf HashJoin instances in later phases.
+    /// The `[PROXY]` query-result path: a passthrough plain HashJoin rebuilt single-threaded in
+    /// onBuildPhaseFinish from the leaf chains. Removed once the custom probe transform lands.
     std::unique_ptr<HashJoin> hash_join;
 
-    // ── Deferred-cascade build shuffle state (single-threaded build in P2) ────────────────────────────
-    // Hash is computed once per block and carried as a trailing column. Pass 0 is eager (batched input);
-    // trailing passes are deferred and run per partition once it has accumulated the byte threshold, so
-    // every scatter operates on a large input. The per-thread [slot] dimension is added in P3.
+    // ── Lock-free per-slot deferred-cascade build shuffle state (P3) ──────────────────────────────────
+    // Each concurrent build thread owns exactly one BuildSlot, so addBlockToJoin needs no locks. The
+    // deferred cascade runs inside a slot: pass 0 is eager (batched input); trailing passes are deferred
+    // and run per partition once it accumulates the byte threshold. runPostBuildPhase gathers, per leaf,
+    // that leaf's fragments across all slots and builds the leaf HT.
 
-    /// Raw input blocks accumulated before the eager pass-0 flush.
-    std::vector<Columns> pending_input;
-    size_t pending_input_bytes = 0;
+    struct BuildSlot
+    {
+        /// Raw input blocks accumulated before the eager pass-0 flush.
+        std::vector<Columns> pending_input;
+        size_t pending_input_bytes = 0;
 
-    /// Intermediate stage buffers. `stage_buffers[s][prefix]` is a chain of carried-hash column groups
-    /// that have had passes 0..s-1 applied (valid for s in 1..numPasses-1; stage numPasses == leaves).
-    std::vector<std::vector<std::vector<Columns>>> stage_buffers;
-    std::vector<std::vector<size_t>> stage_buffer_bytes;
+        /// Intermediate stage buffers. `stage_buffers[s][prefix]` is a chain of column groups that have
+        /// had passes 0..s-1 applied (valid for s in 1..numPasses-1; stage numPasses == leaves).
+        std::vector<std::vector<std::vector<Columns>>> stage_buffers;
+        std::vector<std::vector<size_t>> stage_buffer_bytes;
 
-    /// Final per-leaf moved scatter-output column groups (hash dropped). Indexed by leaf in [0,total_leaves).
-    std::vector<std::vector<Columns>> leaf_chains;
+        /// Final per-leaf moved scatter-output column groups, indexed by leaf in [0, total_leaves).
+        std::vector<std::vector<Columns>> leaf_chains;
 
+        /// P1: reusable transient buffers for the radix scatter, allocated once and reused across every
+        /// pass/partition flush of this slot (owned by one thread; no locking). See `ScatterScratch`.
+        ScatterScratch scatter_scratch;
+        /// P2: reusable scatter-output containers, one per cascade stage (== pass index, [0, numPasses)).
+        /// A stage's children are consumed while deeper stages scatter into their own buffer, so each
+        /// stage needs its own; reusing them avoids reallocating the fanout-sized container every flush.
+        std::vector<std::vector<Columns>> stage_children;
+    };
+
+    std::vector<BuildSlot> build_slots;
+    /// Hands out a fresh slot index to each distinct build thread (lock-free, §3).
+    std::atomic<size_t> next_slot{0};
+    /// Work-steal cursor over slots for the parallel end-of-build drain (lock-free, §3).
+    std::atomic<size_t> next_drain_slot{0};
     std::atomic<size_t> ingested_rows{0};
 
-    void flushPass0();
-    void pushToStage(size_t stage, size_t prefix, Columns group);
-    void refineBuffer(size_t stage, size_t prefix);
+    /// Read-only per-leaf hash tables built eagerly in runPostBuildPhase. Indexed by leaf; empty leaves
+    /// stay null. Shared but read-only during the probe phase (spec invariant #3).
+    std::vector<std::unique_ptr<HashJoin>> leaf_joins;
+    /// Work-steal cursor over leaves for the eager build (lock-free, §3).
+    std::atomic<size_t> next_leaf{0};
+
+    /// Returns this thread's build slot, allocating one on first use (fail-close if slots exhausted).
+    BuildSlot & slotForCurrentThread();
+    void allocateSlotState(BuildSlot & slot) const;
+
+    void flushPass0(BuildSlot & slot);
+    void pushToStage(BuildSlot & slot, size_t stage, size_t prefix, Columns group);
+    void refineBuffer(BuildSlot & slot, size_t stage, size_t prefix);
+
+    /// End-of-build drain of one slot: flush its residual pending input through pass 0, then cascade every
+    /// remaining stage buffer down to leaves. One worker owns a slot, so its scratch is used race-free.
+    void drainSlot(BuildSlot & slot);
+
+    /// Eager build of one leaf: gather its fragments across all slots and build the leaf HashJoin.
+    /// Returns the number of build rows inserted (for cell conservation). Updates blocks_moved.
+    size_t buildLeaf(size_t leaf, std::atomic<size_t> & blocks_moved);
 };
 
 }
