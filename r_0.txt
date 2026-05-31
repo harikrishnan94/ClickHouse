@@ -1,0 +1,18 @@
+[info] data generation: 2423.43 ms  (build_rows=100000000, probe_rows=1000, threads=16, blocks(build)=10000, blocks(probe)=1)
+[info] CHJ rep 0: build 2614.78 ms, probe 1.09637 ms, e2e 2615.87 ms, out_rows 1000
+[info] CHJ rep 1: build 2057.71 ms, probe 1.05406 ms, e2e 2058.77 ms, out_rows 1000
+
+ Performance counter stats for '/home/ubuntu/phj-bench/build/src/phj-bench --scheme chj --build-rows 100000000 --probe-rows 1000 --build-payload-schema u64,u64,u64,u64,u64,u64,u64 --probe-payload-schema u64 --threads 16 --reps 2 --seed 42':
+
+      262242923696      cycles                                                                
+      274993662011      instructions                                                          
+         146835465      mem_load_retired.l3_miss                                              
+         216975746      dtlb_load_misses.walk_completed                                       
+           8768929      minor-faults                                                          
+
+       9.165096819 seconds time elapsed
+
+      31.887404000 seconds user
+      41.364793000 seconds sys
+
+

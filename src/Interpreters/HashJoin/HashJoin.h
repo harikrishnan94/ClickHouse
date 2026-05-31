@@ -114,7 +114,8 @@ public:
         bool any_take_last_row_ = false,
         size_t reserve_num_ = 0,
         const String & instance_id_ = "",
-        bool use_two_level_maps_ = false);
+        bool use_two_level_maps_ = false,
+        bool force_enable_prefetch_ = false);
 
     ~HashJoin() override;
 
@@ -500,6 +501,10 @@ public:
 
     bool enableLazyColumnsReplication() const { return enable_lazy_columns_replication; }
     bool enableSoftwarePrefetch() const { return enable_prefetch; }
+    /// Minimum hash-table buffer size (bytes) above which software prefetch is used. By default this is the
+    /// global `getMinBytesForPrefetchInJoin()` heuristic; the constructor's `force_enable_prefetch_` lowers it
+    /// to 0 so that even small (e.g. per-leaf partitioned) hash tables use prefetch.
+    size_t minBytesForPrefetch() const { return min_bytes_for_prefetch; }
 
     void setEnableLazyColumnsIndexing(bool value) override { enable_lazy_columns_indexing = value; }
 
@@ -567,6 +572,8 @@ private:
     bool enable_lazy_columns_replication = false;
     bool enable_lazy_columns_indexing = false;
     bool enable_prefetch = true;
+    /// Per-instance software-prefetch size threshold (see `minBytesForPrefetch`).
+    const size_t min_bytes_for_prefetch;
 
     /// When tracked memory consumption is more than a threshold, we will shrink to fit stored blocks.
     bool shrink_blocks = false;

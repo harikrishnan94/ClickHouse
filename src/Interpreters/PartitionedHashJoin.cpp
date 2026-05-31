@@ -1,10 +1,14 @@
 #include <Interpreters/PartitionedHashJoin.h>
 
 #include <atomic>
+#include <bit>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
+#include <vector>
 
+#include <Columns/ColumnVector.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/PartitionedHashShuffle.h>
 #include <Interpreters/TableJoin.h>
@@ -14,6 +18,7 @@
 #include <Common/Stopwatch.h>
 #include <Common/ThreadGroupSwitcher.h>
 #include <Common/ThreadPool.h>
+#include <Common/assert_cast.h>
 #include <Common/logger_useful.h>
 #include <Common/setThreadName.h>
 
@@ -421,11 +426,82 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
     if (leaf_rows == 0)
         return 0;
 
+    /// MEASUREMENT-ONLY (revert before commit): PHJ_SIMPLE_HT builds each leaf with a minimal 16-byte-cell
+    /// open-addressing table (inner join, single UInt64 key) instead of the general `HashJoin`/`RowRefList`,
+    /// to isolate the cold per-leaf HT-fill cost from the HashJoin machinery. Result is NOT probe-usable
+    /// (build timing only); use with an empty probe + skip-passthrough.
+    static const bool simple_ht = std::getenv("PHJ_SIMPLE_HT") != nullptr;
+    if (simple_ht)
+    {
+        struct Cell
+        {
+            UInt64 key;
+            UInt64 val;
+        };
+        static constexpr UInt64 EMPTY = std::numeric_limits<UInt64>::max();
+        const size_t cap = std::bit_ceil(std::max<size_t>(leaf_rows * 2, size_t{16}));
+        const size_t mask = cap - 1;
+        std::vector<Cell> cells(cap, Cell{0, EMPTY});
+        auto mix = [](UInt64 x) noexcept
+        {
+            x ^= x >> 33;
+            x *= 0xff51afd7ed558ccdULL;
+            x ^= x >> 33;
+            x *= 0xc4ceb9fe1a85ec53ULL;
+            x ^= x >> 33;
+            return x;
+        };
+        const size_t key_pos = key_indices[0];
+        size_t n = 0;
+        for (auto & slot : build_slots)
+        {
+            for (auto & group : slot.leaf_chains[leaf])
+            {
+                if (groupRows(group) == 0)
+                    continue;
+                const auto & keycol = assert_cast<const ColumnVector<UInt64> &>(*group[key_pos]);
+                const UInt64 * keys = keycol.getData().data();
+                const size_t rows = keycol.size();
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    const UInt64 k = keys[i];
+                    size_t pos = mix(k) & mask;
+                    while (cells[pos].val != EMPTY)
+                    {
+                        if (cells[pos].key == k)
+                            break;
+                        pos = (pos + 1) & mask;
+                    }
+                    if (cells[pos].val == EMPTY)
+                    {
+                        cells[pos].key = k;
+                        cells[pos].val = i;
+                        ++n;
+                    }
+                }
+            }
+            slot.leaf_chains[leaf].clear();
+            slot.leaf_chains[leaf].shrink_to_fit();
+        }
+        /// Make the inserts observable so the build cannot be elided; leaf_joins[leaf] stays null (no probe).
+        blocks_moved.fetch_add(n, std::memory_order_relaxed);
+        return leaf_rows;
+    }
+
     /// Reserve the leaf HT to its exact final size: the leaf row count is already known here, so the map
     /// is allocated once instead of growing through several resize() reallocations. This both removes the
     /// resize cost and collapses many small allocations into one, which sharply reduces the allocator
     /// (jemalloc extent) contention that otherwise serialises the concurrent per-leaf build.
-    auto leaf_join = std::make_unique<HashJoin>(table_join, right_sample_block, any_take_last_row, /*reserve_num=*/leaf_rows);
+    /// Each per-leaf HT is sized to ~L2 (well below the global 8 MB prefetch threshold), so software prefetch
+    /// would never engage with the default heuristic. Force it on for the leaf HTs via the constructor.
+    auto leaf_join = std::make_unique<HashJoin>(
+        table_join,
+        right_sample_block,
+        any_take_last_row,
+        /*reserve_num=*/leaf_rows,
+        /*instance_id=*/"",
+        /*use_two_level_maps=*/false,
+        /*force_enable_prefetch=*/true);
 
     size_t moved = 0;
     for (auto & slot : build_slots)
