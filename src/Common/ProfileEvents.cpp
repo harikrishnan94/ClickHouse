@@ -1429,6 +1429,17 @@ The server successfully detected this situation and will download merged part fr
     \
     M(JoinBuildPostProcessingMicroseconds, "Elapsed time of post-processing steps after building the right JOIN side.", ValueType::Microseconds) \
     \
+    M(PartitionedHashBuildShuffleMicroseconds, "PartitionedHashJoin: full multi-pass right shuffle (in addBlockToJoin).", ValueType::Microseconds) \
+    M(PartitionedHashBuildShufflePass0Microseconds, "PartitionedHashJoin: pass-0 multi-source scatter of the right shuffle.", ValueType::Microseconds) \
+    M(PartitionedHashBuildShuffleTrailingMicroseconds, "PartitionedHashJoin: trailing-pass (1..N) scatter of the right shuffle.", ValueType::Microseconds) \
+    M(PartitionedHashBuildHTMicroseconds, "PartitionedHashJoin: eager leaf HT construction (runPostBuildPhase).", ValueType::Microseconds) \
+    M(PartitionedHashProbeScatterMicroseconds, "PartitionedHashJoin: pass-1 scatter + refinement scatter on the probe side.", ValueType::Microseconds) \
+    M(PartitionedHashProbeMicroseconds, "PartitionedHashJoin: leaf HT lookup + output materialisation.", ValueType::Microseconds) \
+    M(PartitionedHashEvictionOverheadMicroseconds, "PartitionedHashJoin: hysteresis checks, argmax, buffer teardown.", ValueType::Microseconds) \
+    M(PartitionedHashScatterRows, "PartitionedHashJoin: rows scattered, counted per pass (denominator for ns/row).", ValueType::Number) \
+    M(PartitionedHashBuildScatterRows, "PartitionedHashJoin: build-side rows scattered, counted per pass (denominator for ns/row).", ValueType::Number) \
+    M(PartitionedHashBuildBlocksMoved, "PartitionedHashJoin: blocks moved (not copied) into HT storage.", ValueType::Number) \
+    \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIAPICalls, "Number of HTTP requests dispatched to AI providers.", ValueType::Number) \
