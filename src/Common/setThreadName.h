@@ -5,7 +5,7 @@
 namespace DB
 {
 
-#define THREAD_NAME_VALUES(M)\
+#define THREAD_NAME_VALUES(M) \
     M(AGGREGATED_ZOOKEEPER_LOG, "AggrZooLog") \
     M(AGGREGATOR_DESTRUCTION, "AggregDestruct") \
     M(AGGREGATOR_POOL, "AggregatorPool") \
@@ -115,6 +115,7 @@ namespace DB
     M(PARQUET_DECODER, "ParquetDecoder") \
     M(PARQUET_ENCODER, "ParquetEncoder") \
     M(PARQUET_PREFETCH, "ParquetPrefetch") \
+    M(PARTITIONED_JOIN, "PartitionedJoin") \
     M(PLAIN_REWRITABLE_META_LOAD, "PlainRWMetaLoad") \
     M(POLYGON_DICT_LOAD, "PolygonDict") \
     M(POOL_DELAYED_EXECUTION, "PoolDelayExec") \
@@ -163,16 +164,16 @@ namespace DB
     M(ZOOKEEPER_RECV, "ZooKeeperRecv") \
     M(ZOOKEEPER_SEND, "ZooKeeperSend") \
     M(BLOB_KILLER_TASK, "BlobKillerTask") \
-    M(BLOB_COPIER_TASK, "BlobCopierTask") \
+    M(BLOB_COPIER_TASK, "BlobCopierTask")
 
 
 enum class ThreadName : uint8_t
 {
     UNKNOWN = 0,
 
-    #define THREAD_NAME_ACTION(NAME, STR) NAME,
+#define THREAD_NAME_ACTION(NAME, STR) NAME,
     THREAD_NAME_VALUES(THREAD_NAME_ACTION)
-    #undef THREAD_NAME_ACTION
+#undef THREAD_NAME_ACTION
 };
 
 
