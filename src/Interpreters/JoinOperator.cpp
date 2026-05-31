@@ -49,6 +49,9 @@ namespace Setting
     extern const SettingsBool collect_hash_table_stats_during_joins;
     extern const SettingsUInt64 max_size_to_preallocate_for_joins;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 max_partitions_per_pass;
+    extern const SettingsUInt64 shard_by_hash_input_batch_bytes;
+    extern const SettingsBool partitioned_hash_debug_skip_passthrough;
 
     extern const SettingsBool joined_block_split_single_row;
     extern const SettingsBool parallel_non_joined_rows_processing;
@@ -165,6 +168,9 @@ JoinSettings::JoinSettings(const Settings & query_settings)
     collect_hash_table_stats_during_joins = query_settings[Setting::collect_hash_table_stats_during_joins];
     max_size_to_preallocate_for_joins = query_settings[Setting::max_size_to_preallocate_for_joins];
     parallel_hash_join_threshold = query_settings[Setting::parallel_hash_join_threshold];
+    max_partitions_per_pass = query_settings[Setting::max_partitions_per_pass];
+    shard_by_hash_input_batch_bytes = query_settings[Setting::shard_by_hash_input_batch_bytes];
+    partitioned_hash_debug_skip_passthrough = query_settings[Setting::partitioned_hash_debug_skip_passthrough];
 
     temporary_files_codec = query_settings[Setting::temporary_files_codec];
     temporary_files_buffer_size = query_settings[Setting::temporary_files_buffer_size];

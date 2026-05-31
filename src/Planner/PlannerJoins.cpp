@@ -41,6 +41,7 @@
 #include <Interpreters/IKeyValueEntity.h>
 #include <Interpreters/JoinSwitcher.h>
 #include <Interpreters/MergeJoin.h>
+#include <Interpreters/PartitionedHashJoin.h>
 #include <Interpreters/PasteJoin.h>
 #include <Interpreters/SpillingHashJoin.h>
 
@@ -67,6 +68,9 @@ namespace Setting
     extern const SettingsBool allow_general_join_planning;
     extern const SettingsJoinAlgorithm join_algorithm;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 max_partitions_per_pass;
+    extern const SettingsUInt64 shard_by_hash_input_batch_bytes;
+    extern const SettingsBool partitioned_hash_debug_skip_passthrough;
     extern const SettingsSeconds lock_acquire_timeout;
     extern const SettingsNonZeroUInt64 grace_hash_join_initial_buckets;
     extern const SettingsNonZeroUInt64 grace_hash_join_max_buckets;
@@ -1186,6 +1190,19 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             return std::make_shared<MergeJoin>(table_join, right_table_expression_header);
     }
 
+    if (algorithm == JoinAlgorithm::PARTITIONED_HASH)
+    {
+        return std::make_shared<PartitionedHashJoin>(
+            table_join,
+            right_table_expression_header,
+            params.max_threads,
+            params.rhs_size_estimation,
+            params.max_partitions_per_pass,
+            params.shard_by_hash_input_batch_bytes,
+            params.partitioned_hash_debug_skip_passthrough,
+            params.join_any_take_last_row);
+    }
+
     if (algorithm == JoinAlgorithm::HASH ||
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
         algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
@@ -1319,6 +1336,9 @@ JoinAlgorithmParams::JoinAlgorithmParams(const Context & context)
     max_entries_for_hash_table_stats = context.getServerSettings()[ServerSetting::max_entries_for_hash_table_stats];
     hash_table_key_hash = 0;
     parallel_hash_join_threshold = settings[Setting::parallel_hash_join_threshold];
+    max_partitions_per_pass = settings[Setting::max_partitions_per_pass];
+    shard_by_hash_input_batch_bytes = settings[Setting::shard_by_hash_input_batch_bytes];
+    partitioned_hash_debug_skip_passthrough = settings[Setting::partitioned_hash_debug_skip_passthrough];
 
     grace_hash_join_initial_buckets = settings[Setting::grace_hash_join_initial_buckets];
     grace_hash_join_max_buckets = settings[Setting::grace_hash_join_max_buckets];
@@ -1348,6 +1368,9 @@ JoinAlgorithmParams::JoinAlgorithmParams(
     max_entries_for_hash_table_stats = max_entries_for_hash_table_stats_;
     hash_table_key_hash = hash_table_key_hash_;
     parallel_hash_join_threshold = join_settings.parallel_hash_join_threshold;
+    max_partitions_per_pass = join_settings.max_partitions_per_pass;
+    shard_by_hash_input_batch_bytes = join_settings.shard_by_hash_input_batch_bytes;
+    partitioned_hash_debug_skip_passthrough = join_settings.partitioned_hash_debug_skip_passthrough;
 
     grace_hash_join_initial_buckets = join_settings.grace_hash_join_initial_buckets;
     grace_hash_join_max_buckets = join_settings.grace_hash_join_max_buckets;

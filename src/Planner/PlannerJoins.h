@@ -251,6 +251,14 @@ struct JoinAlgorithmParams
 
     UInt64 parallel_hash_join_threshold;
 
+    /// Per-pass fanout cap for `partitioned_hash` (6-bit cap = 64-way). Used by leaf-count derivation in later phases.
+    UInt64 max_partitions_per_pass = 64;
+    /// Input-batching threshold for the `partitioned_hash` build shuffle (the same setting
+    /// `BufferedShardByHashTransform` uses; 0 = flush per block).
+    UInt64 shard_by_hash_input_batch_bytes = 0;
+    /// Diagnostic only: skip the passthrough HashJoin build to time the shuffle in isolation.
+    bool partitioned_hash_debug_skip_passthrough = false;
+
     UInt64 grace_hash_join_initial_buckets;
     UInt64 grace_hash_join_max_buckets;
 

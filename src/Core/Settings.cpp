@@ -7702,6 +7702,12 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
 When hash-based join algorithm is applied, this threshold helps to decide between using `hash` and `parallel_hash` (only if estimation of the right table size is available).
 The former is used when we know that the right table size is below the threshold.
 )", 0) \
+    DECLARE(UInt64, max_partitions_per_pass, 64, R"(
+Per-pass fanout cap for the `partitioned_hash` join algorithm (6-bit cap = 64-way). Each radix-shuffle pass routes into at most this many partitions, keeping every pass in the flat region of the scatter cost curve.
+)", 0) \
+    DECLARE(Bool, partitioned_hash_debug_skip_passthrough, false, R"(
+Diagnostic only. When using the `partitioned_hash` join algorithm, skip the internal passthrough `HashJoin` build so the build-side radix shuffle can be timed in isolation (no co-running hash-table build competing for cache/memory bandwidth). Produces INCORRECT results — for measurement only.
+)", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.
 
