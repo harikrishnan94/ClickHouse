@@ -113,6 +113,11 @@ public:
         std::mutex mutex;
         std::unique_ptr<HashJoin> data;
         bool space_was_preallocated = false;
+        /// Used by the deferred build path: scattered right-side pieces (zero-copy: source block
+        /// reference + per-slot selector) are buffered here during ingestion instead of being
+        /// inserted into the hash table immediately. They are drained (reserved-to-exact-size, then
+        /// inserted) in `onBuildPhaseFinish`.
+        ScatteredBlocks buffered_blocks;
     };
 
     friend class NotJoinedHash;
@@ -128,10 +133,19 @@ private:
     StatsCollectingParams stats_collecting_params;
     const size_t external_join_threshold;
 
+    /// Whether the deferred build path is used. Enabled automatically when no cached row-count
+    /// estimate is available to size the hash tables from, minus the cases where
+    /// buffering-then-exact-sizing is unsafe (see constructor).
+    bool deferred_build_active = false;
+
     std::mutex totals_mutex;
     Block totals;
 
     ScatteredBlocks dispatchBlock(const Strings & key_columns_names, Block && from_block);
+
+    /// Drains `buffered_blocks` of every slot: reserves each slot's hash table to the exact number
+    /// of buffered rows, then inserts the buffered pieces. Runs slots in parallel.
+    void drainBufferedBlocks();
 };
 
 // The following two methods are deprecated and hopefully will be removed in the future.

@@ -160,6 +160,43 @@ void reserveSpaceInHashMaps(
     }
 }
 
+/// Reserve the buckets owned by slot `ind` to hold exactly `exact_rows_for_slot` elements in total.
+/// Used by the deferred build path, where the per-slot row count is known precisely after all right
+/// blocks have been buffered. This reserves the same per-bucket capacity that the statistics-driven
+/// path would reserve for a perfectly-estimated table, but derived from the exact buffered count
+/// rather than from prior-run statistics.
+void reserveExactSpaceInHashMaps(HashJoin & hash_join, size_t ind, size_t slots, size_t exact_rows_for_slot)
+{
+    if (exact_rows_for_slot == 0)
+        return;
+
+    auto reserve_space_in_buckets = [&](auto & maps, HashJoin::Type type, size_t idx)
+    {
+        APPLY_TO_MAP(
+            INVOKE_WITH_MAP,
+            type,
+            maps,
+            [&](auto & map)
+            {
+                size_t num_buckets_in_slot = 0;
+                for (size_t j = idx; j < map.NUM_BUCKETS; j += slots)
+                    ++num_buckets_in_slot;
+
+                if (num_buckets_in_slot == 0)
+                    return;
+
+                /// Round up so the reserved capacity is never below the exact count.
+                const size_t per_bucket = (exact_rows_for_slot + num_buckets_in_slot - 1) / num_buckets_in_slot;
+                for (size_t j = idx; j < map.NUM_BUCKETS; j += slots)
+                    map.impls[j].reserve(per_bucket);
+            })
+    };
+
+    const auto & right_data = hash_join.getJoinedData();
+    std::visit([&](auto & maps) { return reserve_space_in_buckets(maps, right_data->type, ind); }, right_data->maps.at(0));
+    ProfileEvents::increment(ProfileEvents::HashJoinPreallocatedElementsInHashTables, exact_rows_for_slot);
+}
+
 template <typename HashTable>
 concept HasGetBucketFromHashMemberFunc = requires {
     { std::declval<HashTable>().getBucketFromHash(static_cast<size_t>(0)) };
@@ -231,6 +268,22 @@ ConcurrentHashJoin::ConcurrentHashJoin(
         pool->wait();
         throw;
     }
+
+    /// The deferred build path is enabled automatically precisely when there is no cached row-count
+    /// estimate to size the per-slot hash tables from. Without a hint the immediate-insert path would
+    /// grow the tables by resizing from scratch; buffering the scattered blocks first lets us reserve
+    /// each table to the exact row count and insert once. When a hint IS available the immediate path
+    /// already reserves from it, so we keep it. The deferred path additionally requires the two-level
+    /// shared-map layout and is only safe for the common cases; anything else falls back to the
+    /// immediate-insert path (byte-for-byte the previous behavior).
+    deferred_build_active = !getSizeHint(stats_collecting_params).has_value()
+        && hash_joins[0]->data->twoLevelMapIsUsed()
+        && !any_take_last_row
+        && external_join_threshold == 0
+        && table_join->oneDisjunct()
+        && !isRightOrFull(table_join->kind())
+        && table_join->strictness() != JoinStrictness::Asof
+        && !table_join->sizeLimits().hasLimits();
 }
 
 ConcurrentHashJoin::~ConcurrentHashJoin()
@@ -283,6 +336,27 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
     Block right_block = hash_joins[0]->data->materializeColumnsFromRightBlock(right_block_);
 
     auto dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_right, std::move(right_block));
+
+    /// Deferred build path: buffer each per-slot scattered piece (zero-copy: shared source block +
+    /// selector) without touching the hash table. No hash-table insertion or preallocation happens
+    /// here; both are done in `onBuildPhaseFinish` once the exact per-slot row count is known.
+    if (deferred_build_active)
+    {
+        for (size_t i = 0; i < dispatched_blocks.size(); ++i)
+        {
+            auto & dispatched_block = dispatched_blocks[i];
+            if (!dispatched_block.rows())
+                continue;
+
+            auto & hash_join = hash_joins[i];
+            std::lock_guard lock(hash_join->mutex);
+            hash_join->buffered_blocks.emplace_back(std::move(dispatched_block));
+        }
+        /// The deferred path is only chosen when there are no size limits (see constructor), so there
+        /// is nothing to enforce during ingestion.
+        return true;
+    }
+
     size_t blocks_left = 0;
     for (const auto & block : dispatched_blocks)
     {
@@ -732,8 +806,58 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
     return hash_join->data->releaseJoinedBlocks(/*restructure=*/ false);
 }
 
+void ConcurrentHashJoin::drainBufferedBlocks()
+{
+    try
+    {
+        for (size_t i = 0; i < slots; ++i)
+        {
+            pool->scheduleOrThrow(
+                [&, i, thread_group = CurrentThread::getGroup()]()
+                {
+                    ThreadGroupSwitcher switcher(thread_group, ThreadName::CONCURRENT_JOIN);
+
+                    auto & hash_join = hash_joins[i];
+
+                    /// The exact number of rows that will be inserted into this slot's hash table.
+                    size_t exact_rows_for_slot = 0;
+                    for (const auto & scattered_block : hash_join->buffered_blocks)
+                        exact_rows_for_slot += scattered_block.rows();
+
+                    /// Reserve the slot's buckets to exactly this size ONCE, before inserting anything.
+                    reserveExactSpaceInHashMaps(*hash_join->data, i, slots, exact_rows_for_slot);
+                    hash_join->space_was_preallocated = true;
+
+                    /// Drain the buffered pieces into the now exactly-sized hash table.
+                    for (auto & scattered_block : hash_join->buffered_blocks)
+                    {
+                        if (!scattered_block.rows())
+                            continue;
+                        auto [block, selector] = std::move(scattered_block).detachData();
+                        hash_join->data->addBlockToJoin(block, std::move(selector), /*check_limits=*/false);
+                    }
+
+                    hash_join->buffered_blocks.clear();
+                });
+        }
+        pool->wait();
+    }
+    catch (...)
+    {
+        tryLogCurrentException(__PRETTY_FUNCTION__);
+        pool->wait();
+        throw;
+    }
+}
+
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    /// In the deferred build path, nothing has been inserted into the hash tables yet. Now that every
+    /// right block has been buffered, the per-slot row counts are exact, so we reserve each slot to its
+    /// exact size and insert. This must happen before the bucket merge below.
+    if (deferred_build_active)
+        drainBufferedBlocks();
+
     if (hash_joins[0]->data->twoLevelMapIsUsed())
     {
         // At this point, the build phase is finished. We need to build a shared common hash map to be used in the probe phase.
