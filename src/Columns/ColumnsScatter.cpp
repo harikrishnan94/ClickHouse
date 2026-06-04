@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <limits>
 #include <span>
 #include <type_traits>
@@ -447,13 +448,13 @@ MutableColumns scatter(
     /// so this only costs anything on the rare mixed/wrapped batch.
     absl::InlinedVector<ColumnPtr, SCATTER_INLINE_SOURCES> materialized;
     absl::InlinedVector<const IColumn *, SCATTER_INLINE_SOURCES> full_ptrs;
-    bool any_wrapper = false;
-    for (const IColumn * col : source_columns)
-        if (col->isConst() || col->isSparse() || col->isReplicated())
+    const auto any_wrapper = std::any_of(
+        source_columns.begin(), source_columns.end(),
+        [](const IColumn * col)
         {
-            any_wrapper = true;
-            break;
-        }
+            return col->isConst() || col->isSparse() || col->isReplicated();
+    });
+
     if (any_wrapper)
     {
         const size_t num_sources = source_columns.size();
@@ -473,13 +474,14 @@ MutableColumns scatter(
     /// count would wrap and the kernels would write out of bounds. No shard can hold
     /// more rows than the whole batch, so when the batch exceeds UINT32_MAX rows fall
     /// back to the size_t-safe per-source path (its destinations grow dynamically).
-    size_t total_rows = 0;
-    for (const auto & pids : pids_per_source)
-        total_rows += pids.size();
-    if (total_rows > std::numeric_limits<UInt32>::max())
     {
-        absl::InlinedVector<UInt32, SCATTER_INLINE_SHARDS> shard_count_placeholder(num_shards, 0);
-        return scatterFallback(source_columns, pids_per_source, std::span<const UInt32>(shard_count_placeholder.data(), num_shards));
+        const auto total_rows = std::accumulate(
+            pids_per_source.begin(), pids_per_source.end(), size_t{0}, [](auto sum, const auto & pids) { return sum + pids.size(); });
+        if (total_rows > std::numeric_limits<UInt32>::max()) [[unlikely]]
+        {
+            absl::InlinedVector<UInt32, SCATTER_INLINE_SHARDS> shard_count_placeholder(num_shards, 0);
+            return scatterFallback(source_columns, pids_per_source, std::span<const UInt32>(shard_count_placeholder.data(), num_shards));
+        }
     }
 
     /// Row counts provided by caller — skip the per-call pids re-scan.
