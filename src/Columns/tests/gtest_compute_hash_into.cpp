@@ -6,6 +6,7 @@
 #include <Columns/ColumnFixedString.h>
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnNullable.h>
+#include <Columns/ColumnSparse.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnTuple.h>
 #include <Columns/ColumnsNumber.h>
@@ -514,4 +515,141 @@ TEST(ComputeHashInto, ColumnNullableRangeSplit)
     }
     auto col = ColumnNullable::create(std::move(nested), std::move(null_map));
     expectRangeSplitConsistent(*col);
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 16. Representation independence (the Blocker-3 invariant).
+//
+//     For a composite key (prefix, c), the per-row hash must not depend on
+//     how column `c` is physically stored.  A materialized column and a
+//     transparent wrapper (ColumnConst / ColumnSparse / ColumnLowCardinality /
+//     ColumnReplicated) of the same logical values must compose identically
+//     after a shared prefix column, otherwise equal keys from different chunks
+//     route to different aggregation shards / grace_hash partitions.
+//
+//     Before the fix the leaf columns combined the *raw* value on initial=false
+//     while wrappers combined the *finalized* fmix32(raw); these tests fail in
+//     that state and pass once both combine the finalized per-row hash.
+// ──────────────────────────────────────────────────────────────────────
+namespace
+{
+/// Compose `prefix` (initial=true) then `second` (initial=false); return the per-row hash.
+std::vector<uint32_t> composeKey(const IColumn & prefix, const IColumn & second)
+{
+    const size_t n = prefix.size();
+    std::vector<uint32_t> h(n);
+    prefix.computeHashInto(0, n, h.data(), true);
+    second.computeHashInto(0, n, h.data(), false);
+    return h;
+}
+
+/// Wrap a single-row column into a ColumnConst broadcasting that value to `n` rows.
+ColumnPtr makeConst(ColumnPtr single_value, size_t n)
+{
+    return ColumnConst::create(std::move(single_value), n);
+}
+}
+
+TEST(ComputeHashInto, ReprIndependenceConstUInt64)
+{
+    const size_t n = 777;
+    const UInt64 value = 0x0123456789ABCDEFULL;
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    auto materialized = ColumnUInt64::create();
+    for (size_t i = 0; i < n; ++i)
+        materialized->insert(value);
+
+    auto one = ColumnUInt64::create();
+    one->insert(value);
+    auto as_const = makeConst(std::move(one), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *as_const))
+        << "Materialized UInt64 and ColumnConst(UInt64) of the same value must compose identically";
+}
+
+TEST(ComputeHashInto, ReprIndependenceConstString)
+{
+    const size_t n = 513;
+    const std::string value = "representation-independent";
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    auto materialized = makeStringColumn(std::vector<std::string>(n, value));
+
+    auto as_const = makeConst(makeStringColumn({value}), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *as_const))
+        << "Materialized String and ColumnConst(String) of the same value must compose identically";
+}
+
+TEST(ComputeHashInto, ReprIndependenceConstDecimal64)
+{
+    const size_t n = 401;
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    auto materialized = ColumnDecimal<Decimal64>::create(0, 4);
+    for (size_t i = 0; i < n; ++i)
+        materialized->insert(DecimalField<Decimal64>(Decimal64(static_cast<Int64>(1234567)), 4));
+
+    auto one = ColumnDecimal<Decimal64>::create(0, 4);
+    one->insert(DecimalField<Decimal64>(Decimal64(static_cast<Int64>(1234567)), 4));
+    auto as_const = makeConst(std::move(one), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *as_const))
+        << "Materialized Decimal64 and ColumnConst(Decimal64) of the same value must compose identically";
+}
+
+TEST(ComputeHashInto, ReprIndependenceConstFixedString)
+{
+    const size_t n = 333;
+    const size_t width = 8;
+    const char bytes[width] = {'f', 'i', 'x', 'e', 'd', '!', 0, 0};
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    auto materialized = ColumnFixedString::create(width);
+    for (size_t i = 0; i < n; ++i)
+        materialized->insertData(bytes, width);
+
+    auto one = ColumnFixedString::create(width);
+    one->insertData(bytes, width);
+    auto as_const = makeConst(std::move(one), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *as_const))
+        << "Materialized FixedString and ColumnConst(FixedString) of the same value must compose identically";
+}
+
+// ColumnSparse exercises the per-row gather combine path (the same fmix32Combined(value, prior)
+// shape that ColumnLowCardinality and ColumnReplicated use via ColumnIndex), with values that
+// vary per row rather than a single broadcast constant.
+TEST(ComputeHashInto, ReprIndependenceSparseUInt64)
+{
+    const size_t n = 1000;
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    // Default value 0 everywhere except a few ascending non-default positions.
+    const std::vector<size_t> positions = {3, 50, 51, 200, 777, 999};
+    const std::vector<UInt64> values = {7, 7, 8, 123456789ULL, 42, 0xFFFFFFFFFFFFFFFFULL};
+
+    auto materialized = ColumnUInt64::create();
+    for (size_t i = 0; i < n; ++i)
+    {
+        UInt64 v = 0;
+        for (size_t k = 0; k < positions.size(); ++k)
+            if (positions[k] == i)
+                v = values[k];
+        materialized->insert(v);
+    }
+
+    auto sp_values = ColumnUInt64::create();
+    sp_values->insert(static_cast<UInt64>(0)); // index 0 is the default
+    for (auto v : values)
+        sp_values->insert(v);
+    auto sp_offsets = ColumnUInt64::create();
+    for (auto p : positions)
+        sp_offsets->insert(static_cast<UInt64>(p));
+    auto sparse = ColumnSparse::create(std::move(sp_values), std::move(sp_offsets), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *sparse))
+        << "Materialized UInt64 and ColumnSparse(UInt64) with equal logical values must compose identically";
 }

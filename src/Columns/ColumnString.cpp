@@ -124,7 +124,12 @@ static void NO_INLINE computeHashIntoStringImpl(
     {
         const auto offset = offsets[i];
         const auto str_size = offset - prev_offset;
-        *hash_data = ::updateWeakHash32(pos, str_size, initial ? WEAK_HASH32_INITIAL_VALUE : *hash_data);
+        /// Always hash with the canonical seed, then combine the finalized per-row hash on the
+        /// non-initial path (instead of CRC-chaining the prior as the seed) so a materialized
+        /// column and a transparent wrapper (Const/LowCardinality/Sparse) of the same value
+        /// compose identically across chunks. See IColumn::computeHashInto.
+        const uint32_t h = ::updateWeakHash32(pos, str_size, WEAK_HASH32_INITIAL_VALUE);
+        *hash_data = initial ? h : fmix32Combined(h, *hash_data);
 
         pos += str_size;
         prev_offset = offset;

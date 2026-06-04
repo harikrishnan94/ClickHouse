@@ -181,7 +181,7 @@ template <is_decimal T>
     }
     else if constexpr (sizeof(NativeT) == sizeof(uint64_t))
     {
-        uint64_t bits;
+        uint64_t bits = 0;
         __builtin_memcpy(&bits, &native, sizeof(bits));
         return static_cast<uint32_t>(bits) ^ fmix32(static_cast<uint32_t>(bits >> 32));
     }
@@ -212,8 +212,11 @@ MULTITARGET_FUNCTION_X86_V4(
                                   }
                                   else
                                   {
+                                      // Combine the finalized per-row hash so materialized and wrapped
+                                      // (Const/LowCardinality/Sparse) representations compose identically.
+                                      // See IColumn::computeHashInto.
                                       for (size_t i = 0; i < n; ++i)
-                                          out[i] = fmix32Combined(hashDecimalRaw32(src[i]), out[i]);
+                                          out[i] = fmix32Combined(fmix32(hashDecimalRaw32(src[i])), out[i]);
                                   }
                               }))
 

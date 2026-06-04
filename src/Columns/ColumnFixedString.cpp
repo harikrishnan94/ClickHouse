@@ -188,8 +188,11 @@ MULTITARGET_FUNCTION_X86_V4(
             }
             else
             {
+                // Combine the finalized per-row hash so materialized and wrapped
+                // (Const/LowCardinality/Sparse) representations compose identically.
+                // See IColumn::computeHashInto.
                 for (size_t i = 0; i < n_rows; ++i)
-                    out[i] = fmix32Combined(hashFixedStringRaw32(chars + i * row_n, row_n), out[i]);
+                    out[i] = fmix32Combined(fmix32(hashFixedStringRaw32(chars + i * row_n, row_n)), out[i]);
             }
         }))
 
