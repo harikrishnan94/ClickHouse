@@ -497,13 +497,18 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
     /// on the build side). MEASUREMENT-ONLY (revert before commit): PHJ_FORCE_PREFETCH=1 lowers each leaf HT's
     /// prefetch threshold to 0 so the insert kernel issues software prefetches, for an A/B against the default.
     static const bool force_prefetch = std::getenv("PHJ_FORCE_PREFETCH") != nullptr;
+    /// MEASUREMENT-ONLY (revert before commit): PHJ_LEAF_TWOLEVEL=1 builds each leaf HashJoin with a
+    /// TwoLevelHashMap (256 sub-buckets) — the same map type `parallel_hash`/ConcurrentHashJoin uses — to
+    /// isolate whether the single-level-vs-two-level insert kernel (and its prefetch gating, since a
+    /// two-level map reports the aggregate >8 MB buffer size) explains the build-CPU gap vs `parallel_hash`.
+    static const bool leaf_twolevel = std::getenv("PHJ_LEAF_TWOLEVEL") != nullptr;
     auto leaf_join = std::make_unique<HashJoin>(
         table_join,
         right_sample_block,
         any_take_last_row,
         /*reserve_num=*/leaf_rows,
         /*instance_id=*/"",
-        /*use_two_level_maps=*/false,
+        /*use_two_level_maps=*/leaf_twolevel,
         /*force_enable_prefetch=*/force_prefetch);
 
     size_t moved = 0;
