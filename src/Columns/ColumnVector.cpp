@@ -92,20 +92,16 @@ template <typename T>
     {
         if constexpr (sizeof(T) == sizeof(uint32_t))
         {
-            uint32_t bits;
-            if (v == T{0})
-                bits = 0; // normalise -0.0 to +0.0
-            else
+            uint32_t bits = 0;
+            if (v != T{0})
                 __builtin_memcpy(&bits, &v, sizeof(bits));
             return bits;
         }
         else
         {
             static_assert(sizeof(T) == sizeof(uint64_t));
-            uint64_t bits;
-            if (v == T{0})
-                bits = 0;
-            else
+            uint64_t bits = 0;
+            if (v != T{0})
                 __builtin_memcpy(&bits, &v, sizeof(bits));
             return static_cast<uint32_t>(bits) ^ fmix32(static_cast<uint32_t>(bits >> 32));
         }
@@ -149,9 +145,12 @@ MULTITARGET_FUNCTION_X86_V4_V3(
                                   }
                                   else
                                   {
-                                      // Inject out[i] mid-fmix32: saves the separate hashCombine32 call.
+                                      // Combine the finalized per-row hash fmix32(raw), the same value the
+                                      // initial path produces, so a materialized column and a transparent
+                                      // wrapper (Const/LowCardinality/Sparse) of the same value compose
+                                      // identically across chunks. See IColumn::computeHashInto.
                                       for (size_t i = 0; i < n; ++i)
-                                          out[i] = fmix32Combined(hashValueRaw32(src[i]), out[i]);
+                                          out[i] = fmix32Combined(fmix32(hashValueRaw32(src[i])), out[i]);
                                   }
                               }))
 

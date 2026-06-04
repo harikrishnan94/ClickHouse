@@ -395,9 +395,21 @@ public:
     /// composing hashes across multiple key columns without intermediate allocations:
     ///     hash_out[i] = fmix32Combined(h(row_begin + i), hash_out[i])
     ///
-    /// `h` is a high-quality 32-bit hash (MurmurHash3 `fmix32` finalizer) with
-    /// full avalanche.  The combine step injects the prior mid-fmix32 — one
-    /// extra XOR vs plain fmix32, 1.54× faster than boost::hash_combine.
+    /// `h(row)` is the finalized per-row hash — exactly the value the column writes
+    /// on the `initial == true` path (a high-quality 32-bit MurmurHash3 `fmix32`
+    /// finalizer with full avalanche).
+    ///
+    /// REPRESENTATION-INDEPENDENCE CONTRACT: the non-initial path must combine this
+    /// same finalized `h(row)`, not a column-private intermediate (e.g. the raw value
+    /// before `fmix32`, or a CRC chained through the prior).  This is required so that
+    /// two physically different but logically equal columns — a materialized column and
+    /// a transparent wrapper of the same values (`ColumnConst`, `ColumnLowCardinality`,
+    /// `ColumnSparse`, `ColumnReplicated`) — produce identical composed hashes.  Wrappers
+    /// can only obtain the nested column's finalized `h` (via `computeHashInto(initial=true)`),
+    /// so every column must combine `h`, never its pre-finalized form.  Equivalently:
+    ///     computeHashInto(initial=false) == fmix32Combined(<initial value of the row>, prior)
+    /// Violating this routes equal multi-column keys to different aggregation shards or
+    /// `grace_hash` join partitions.
     ///
     /// Implementations of primitive columns must not allocate; composite columns
     /// may use a transient scratch buffer for their nested columns.
