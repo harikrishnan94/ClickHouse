@@ -669,6 +669,36 @@ TEST(ComputeHashInto, ReprIndependenceConstString)
         << "Materialized String and ColumnConst(String) of the same value must compose identically";
 }
 
+TEST(ComputeHashInto, ReprIndependenceConstTuple)
+{
+    // A composite second key must also compose representation-independently: streaming
+    // tuple elements into the prior hash would differ from a ColumnConst(Tuple), which
+    // combines the finalized tuple hash.
+    const size_t n = 401;
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    auto build_tuple = [](size_t rows) -> MutableColumnPtr
+    {
+        auto t_u32 = ColumnUInt32::create();
+        auto t_str = ColumnString::create();
+        for (size_t i = 0; i < rows; ++i)
+        {
+            t_u32->insert(static_cast<UInt64>(0xABCDEFu));
+            t_str->insertData("tup", 3);
+        }
+        MutableColumns elems;
+        elems.push_back(std::move(t_u32));
+        elems.push_back(std::move(t_str));
+        return ColumnTuple::create(std::move(elems));
+    };
+
+    auto materialized = build_tuple(n);
+    auto as_const = makeConst(build_tuple(1), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *as_const))
+        << "Materialized Tuple and ColumnConst(Tuple) of the same value must compose identically";
+}
+
 TEST(ComputeHashInto, ReprIndependenceConstDecimal64)
 {
     const size_t n = 401;
