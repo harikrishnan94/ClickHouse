@@ -954,7 +954,7 @@ void ColumnVariant::computeHashInto(size_t row_begin, size_t row_end, uint32_t *
 
     /// Calculate per-row hash for all variants once, then gather by discriminator.
     /// NULL rows contribute a constant (0), distinct from any variant value.
-    std::vector<PaddedPODArray<UInt32>> nested_hashes(variants.size());
+    std::vector<PaddedPODArray<UInt32>> nested_hashes(variants.size()); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t v = 0; v < variants.size(); ++v)
     {
         const size_t variant_size = variants[v]->size();

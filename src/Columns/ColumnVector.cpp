@@ -1273,14 +1273,16 @@ void ColumnVector<T>::updateAt(const IColumn & src, size_t dst_pos, size_t src_p
 
 DECLARE_DEFAULT_CODE(
     template <typename Container, typename Type>
-    void vectorIndexImpl(const Container & data, const PaddedPODArray<Type> & indexes, size_t limit, Container & res_data) {
+    void vectorIndexImpl(const Container & data, const PaddedPODArray<Type> & indexes, size_t limit, Container & res_data)
+    {
         for (size_t i = 0; i < limit; ++i)
             res_data[i] = data[indexes[i]];
     });
 
 DECLARE_X86_ICELAKE_SPECIFIC_CODE(
     template <typename Container, typename Type> __attribute__((no_sanitize("memory"))) /// False positive on _mm512_permutex2var_epi8
-    void vectorIndexImpl(const Container & data, const PaddedPODArray<Type> & indexes, size_t limit, Container & res_data) {
+    void vectorIndexImpl(const Container & data, const PaddedPODArray<Type> & indexes, size_t limit, Container & res_data)
+    {
         static constexpr UInt64 MASK64 = 0xffffffffffffffff;
         const size_t limit64 = limit & ~63;
         size_t pos = 0;

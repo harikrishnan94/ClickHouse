@@ -175,7 +175,7 @@ void BM_HashAndFastrange_New(benchmark::State & state, const std::vector<ColumnP
             "BM_computeHashInto/" #tag "_K" #K "_B" #B, [](benchmark::State & st) { BM_ComputeHashInto(st, cols_##tag##_K##K##_B##B); }); \
     } while (false)
 
-} // namespace
+}
 
 
 int main(int argc, char ** argv)

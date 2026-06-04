@@ -30,4 +30,4 @@ void mapToRange(const UInt32 * hashes, size_t n, UInt32 range_size, UInt32 * res
     mapToRangeImplU32(hashes, n, range_size, result);
 }
 
-} // namespace DB
+}
