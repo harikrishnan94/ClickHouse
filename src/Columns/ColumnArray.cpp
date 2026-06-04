@@ -327,9 +327,11 @@ void ColumnArray::computeHashInto(size_t row_begin, size_t row_end, uint32_t * h
     Offset prev_offset = elem_begin;
     for (size_t i = row_begin; i < row_end; ++i)
     {
-        /// Fold all element hashes of this row, with the array length implicitly mixed in
-        /// so arrays like [1], [1, 1, 1], [1, 1, 1, 1, 1], ... do not collide.
-        uint32_t acc = 0;
+        /// Seed the accumulator with the array length so it is mixed explicitly. Folding
+        /// alone does not encode the length: fmix32(0) == 0 and fmix32Combined(0, 0) == 0,
+        /// so without this seed all-zero arrays like [], [0], [0, 0], ... would hash to the
+        /// same value and route to shard 0.
+        uint32_t acc = static_cast<uint32_t>(offsets_data[i] - prev_offset);
         for (Offset row = prev_offset; row < offsets_data[i]; ++row)
             acc = fmix32Combined(elem_hash[row - elem_begin], acc);
 

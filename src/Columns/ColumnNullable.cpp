@@ -66,36 +66,78 @@ void ColumnNullable::updateHashWithValueRange(size_t begin, size_t end, SipHash 
     hash.update(reinterpret_cast<const char *>(&arr[begin]), (end - begin) * sizeof(arr[0]));
 }
 
-/// Mix the null-map byte into the per-row hash buffer.
-/// Each null_map[i] is 0 (not null) or 1 (null).
-/// fmix32Combined injects out[i] mid-fmix32 of null_map[i], combining both in one pass.
-/// The inner loop is vectorizable: zero-extend uint8 → uint32, fmix32Combined.
+/// A NULL row must hash to a fixed value that is independent of whatever bytes happen
+/// to sit in the nested column for that row, otherwise two SQL-equal NULL keys could
+/// route to different shards/partitions. We replace the nested hash of null rows with
+/// this constant rather than mixing the null byte into a payload-derived hash.
+static constexpr uint32_t NULL_ROW_HASH = 0x6e756c6cU; // 'null'
+
+/// Branchless in-place null select, used on the `initial == true` path where `out`
+/// already holds the nested column's finalized per-row hash. `null_mask` is all-zeros
+/// for non-null rows and all-ones for null rows, so the select carries no per-row
+/// branch and keeps the loop vectorizable (and the fixed-width nested SIMD path intact).
 MULTITARGET_FUNCTION_X86_V4(
     MULTITARGET_FUNCTION_HEADER(static void NO_INLINE),
-    applyNullMaskToHashImpl,
+    applyNullSelectInPlaceImpl,
     MULTITARGET_FUNCTION_BODY((const UInt8 * null_map, size_t n, uint32_t * out) /// NOLINT(bugprone-macro-repeated-side-effects)
                               {
                                   for (size_t i = 0; i < n; ++i)
-                                      out[i] = fmix32Combined(static_cast<uint32_t>(null_map[i]), out[i]);
+                                  {
+                                      const uint32_t null_mask = uint32_t{0} - static_cast<uint32_t>(null_map[i] != 0);
+                                      out[i] = (null_mask & NULL_ROW_HASH) | (~null_mask & out[i]);
+                                  }
+                              }))
+
+/// Branchless null select followed by composition with the prior key columns' hash,
+/// used on the `initial == false` path. `nested_hash` holds the nested column's
+/// finalized per-row hash; `out` holds the prior hash that the result combines into.
+MULTITARGET_FUNCTION_X86_V4(
+    MULTITARGET_FUNCTION_HEADER(static void NO_INLINE),
+    applyNullSelectAndCombineImpl,
+    MULTITARGET_FUNCTION_BODY((const UInt8 * null_map, const uint32_t * nested_hash, size_t n, uint32_t * out) /// NOLINT(bugprone-macro-repeated-side-effects)
+                              {
+                                  for (size_t i = 0; i < n; ++i)
+                                  {
+                                      const uint32_t null_mask = uint32_t{0} - static_cast<uint32_t>(null_map[i] != 0);
+                                      const uint32_t base = (null_mask & NULL_ROW_HASH) | (~null_mask & nested_hash[i]);
+                                      out[i] = fmix32Combined(base, out[i]);
+                                  }
                               }))
 
 void ColumnNullable::computeHashInto(size_t row_begin, size_t row_end, uint32_t * hash_out, bool initial) const
 {
-    // First, hash the nested column values into the buffer.
-    nested_column->computeHashInto(row_begin, row_end, hash_out, initial);
-
-    // Then mix the null byte for each row so rows with identical nested bytes
-    // but different null states produce different hashes.
     const UInt8 * nm = getNullMapData().data() + row_begin;
     const size_t n = row_end - row_begin;
+
+    if (initial)
+    {
+        /// Hash the nested values in place, then overwrite null rows with the fixed NULL
+        /// hash so their hidden payload cannot influence the routing hash.
+        nested_column->computeHashInto(row_begin, row_end, hash_out, /*initial=*/true);
+#if USE_MULTITARGET_CODE
+        if (isArchSupported(TargetArch::x86_64_v4))
+        {
+            applyNullSelectInPlaceImpl_x86_64_v4(nm, n, hash_out);
+            return;
+        }
+#endif
+        applyNullSelectInPlaceImpl(nm, n, hash_out);
+        return;
+    }
+
+    /// Non-initial: `hash_out` holds the prior key columns' hash, so the nested hash is
+    /// produced into a transient scratch buffer. Null rows then select the fixed NULL
+    /// hash before being combined into `hash_out`.
+    PaddedPODArray<UInt32> nested_hash(n);
+    nested_column->computeHashInto(row_begin, row_end, nested_hash.data(), /*initial=*/true);
 #if USE_MULTITARGET_CODE
     if (isArchSupported(TargetArch::x86_64_v4))
     {
-        applyNullMaskToHashImpl_x86_64_v4(nm, n, hash_out);
+        applyNullSelectAndCombineImpl_x86_64_v4(nm, nested_hash.data(), n, hash_out);
         return;
     }
 #endif
-    applyNullMaskToHashImpl(nm, n, hash_out);
+    applyNullSelectAndCombineImpl(nm, nested_hash.data(), n, hash_out);
 }
 
 void ColumnNullable::updateHashFast(SipHash & hash) const
