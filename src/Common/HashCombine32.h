@@ -44,4 +44,4 @@ namespace DB
     return x;
 }
 
-} // namespace DB
+}

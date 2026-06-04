@@ -25,4 +25,4 @@ namespace DB
 /// Halves selector bandwidth in the hot scatter inner loop.
 void mapToRange(const UInt32 * hashes, size_t n, UInt32 range_size, UInt32 * result);
 
-} // namespace DB
+}

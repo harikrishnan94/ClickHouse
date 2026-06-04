@@ -460,14 +460,14 @@ MutableColumns scatterNullable(
     const size_t num_shards = rows_per_shard.size();
 
     // Scatter null maps — ColumnVector<UInt8> path, no row-count re-scan.
-    std::vector<const IColumn *> null_map_cols(source_columns.size());
+    std::vector<const IColumn *> null_map_cols(source_columns.size()); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t b = 0; b < source_columns.size(); ++b)
         null_map_cols[b] = &assert_cast<const ColumnNullable &>(*source_columns[b]).getNullMapColumn();
 
     MutableColumns scattered_null_maps = scatterFixed<UInt8>(null_map_cols, pids_per_source, rows_per_shard);
 
     // Scatter nested columns — forward rows_per_shard into recursive dispatch.
-    std::vector<const IColumn *> nested_cols(source_columns.size());
+    std::vector<const IColumn *> nested_cols(source_columns.size()); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t b = 0; b < source_columns.size(); ++b)
         nested_cols[b] = &assert_cast<const ColumnNullable &>(*source_columns[b]).getNestedColumn();
 
@@ -504,7 +504,7 @@ MutableColumns scatterTuple(
     }
 
     // For each tuple element position, collect the element column from every source.
-    std::vector<std::vector<const IColumn *>> element_cols(num_elements, std::vector<const IColumn *>(source_columns.size()));
+    std::vector<std::vector<const IColumn *>> element_cols(num_elements, std::vector<const IColumn *>(source_columns.size())); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t b = 0; b < source_columns.size(); ++b)
     {
         const auto & tup = assert_cast<const ColumnTuple &>(*source_columns[b]);
@@ -513,7 +513,7 @@ MutableColumns scatterTuple(
     }
 
     // Scatter each element — forward the same rows_per_shard to every element scatter.
-    std::vector<MutableColumns> scattered_elements(num_elements);
+    std::vector<MutableColumns> scattered_elements(num_elements); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t e = 0; e < num_elements; ++e)
         scattered_elements[e] = scatterDispatch(element_cols[e], pids_per_source, rows_per_shard);
 
@@ -532,4 +532,4 @@ MutableColumns scatterTuple(
 
 } // anonymous namespace
 
-} // namespace DB::ColumnsScatter
+}

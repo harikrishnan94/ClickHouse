@@ -83,7 +83,7 @@ void expectRangeSplitConsistent(const IColumn & col)
 
     EXPECT_EQ(full, split);
 }
-} // namespace
+}
 
 
 // ──────────────────────────────────────────────────────────────────────

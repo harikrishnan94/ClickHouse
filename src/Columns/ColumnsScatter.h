@@ -62,4 +62,4 @@ void countRowsPerShard(std::span<const std::span<const UInt32>> pids_per_source,
     size_t num_shards,
     std::span<const UInt32> rows_per_shard = {});
 
-} // namespace DB::ColumnsScatter
+}

@@ -7,11 +7,6 @@
 #include <Common/HashCombine32.h>
 #include <Common/MapToRange.h>
 
-namespace DB::ErrorCodes
-{
-extern const int BAD_ARGUMENTS;
-}
-
 namespace DB
 {
 
