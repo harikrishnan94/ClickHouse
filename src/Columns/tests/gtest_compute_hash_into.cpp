@@ -218,6 +218,60 @@ TEST(ComputeHashInto, NullableNullStateDiscrimination)
 
 
 // ──────────────────────────────────────────────────────────────────────
+// 5b. ColumnNullable: NULL rows hash independently of their hidden nested
+//     payload, so SQL-equal NULL keys always route to the same shard.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, NullableNullPayloadIndependence)
+{
+    // Every row is NULL, but the (hidden) nested payload differs per row.
+    const size_t n = 64;
+    auto nested = ColumnUInt32::create();
+    auto null_map = ColumnUInt8::create();
+    for (size_t i = 0; i < n; ++i)
+    {
+        nested->insert(static_cast<UInt64>(i * 2654435761ULL)); // distinct hidden payloads
+        null_map->insert(static_cast<UInt64>(1)); // all rows NULL
+    }
+    auto col = ColumnNullable::create(std::move(nested), std::move(null_map));
+
+    std::vector<uint32_t> out(n);
+    col->computeHashInto(0, n, out.data(), true);
+
+    for (size_t i = 1; i < n; ++i)
+        EXPECT_EQ(out[i], out[0]) << "Two NULL rows with different hidden payloads must hash identically (row " << i << ")";
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 5c. ColumnNullable payload independence under composition (initial=false),
+//     which exercises the transient-scratch path of computeHashInto.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, NullableNullPayloadIndependenceComposed)
+{
+    // First key column identical across rows; second key column all-NULL with
+    // differing hidden payloads. The composed key hash must be identical per row.
+    const size_t n = 64;
+    auto col0 = ColumnUInt32::create();
+    auto nested = ColumnUInt32::create();
+    auto null_map = ColumnUInt8::create();
+    for (size_t i = 0; i < n; ++i)
+    {
+        col0->insert(static_cast<UInt64>(123)); // identical first key
+        nested->insert(static_cast<UInt64>(i * 2654435761ULL)); // distinct hidden payloads
+        null_map->insert(static_cast<UInt64>(1)); // all rows NULL
+    }
+    auto nullable = ColumnNullable::create(std::move(nested), std::move(null_map));
+
+    std::vector<uint32_t> out(n);
+    col0->computeHashInto(0, n, out.data(), true); // initial
+    nullable->computeHashInto(0, n, out.data(), false); // non-initial: scratch path
+
+    for (size_t i = 1; i < n; ++i)
+        EXPECT_EQ(out[i], out[0]) << "Composed key (k, NULL) must be payload-independent (row " << i << ")";
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
 // 6. ColumnString: zero-length, 1-byte, and longer strings all differ.
 // ──────────────────────────────────────────────────────────────────────
 TEST(ComputeHashInto, ColumnStringTailHandling)
@@ -447,6 +501,38 @@ TEST(ComputeHashInto, ColumnArrayRangeSplitAndLength)
     std::sort(sorted.begin(), sorted.end());
     const size_t unique = static_cast<size_t>(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
     EXPECT_EQ(unique, m) << "Arrays of the same element but different lengths must hash differently";
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// 12b. ColumnArray: all-zero / repeated-zero arrays of different lengths must
+//      not collapse to the same hash (and therefore all route to shard 0).
+//      fmix32(0) == 0 and fmix32Combined(0, 0) == 0, so the array length must be
+//      mixed explicitly; the [7]-based test above does not exercise this.
+// ──────────────────────────────────────────────────────────────────────
+TEST(ComputeHashInto, ColumnArrayAllZeroKeysDistinct)
+{
+    // [], [0], [0, 0], [0, 0, 0], [0, 0, 0, 0]
+    auto data = ColumnUInt32::create();
+    auto offsets = ColumnUInt64::create();
+    const size_t m = 5;
+    size_t acc = 0;
+    for (size_t len = 0; len < m; ++len)
+    {
+        for (size_t j = 0; j < len; ++j)
+            data->insert(static_cast<UInt64>(0));
+        acc += len;
+        offsets->insert(static_cast<UInt64>(acc));
+    }
+    auto arr = ColumnArray::create(std::move(data), std::move(offsets));
+
+    std::vector<uint32_t> out(m);
+    arr->computeHashInto(0, m, out.data(), true);
+
+    std::vector<uint32_t> sorted = out;
+    std::sort(sorted.begin(), sorted.end());
+    const size_t unique = static_cast<size_t>(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
+    EXPECT_EQ(unique, m) << "All-zero arrays of different lengths must hash differently (lengths 0..4)";
 }
 
 
