@@ -467,6 +467,21 @@ MutableColumns scatter(
         source_columns = std::span<const IColumn * const>(full_ptrs.data(), num_sources);
     }
 
+    /// Guard against UInt32 per-shard row-count overflow. The fast kernels reserve and
+    /// size their destinations from UInt32 counts, but the write pointers still emit
+    /// every row; if a single flush routed more than UINT32_MAX rows to one shard the
+    /// count would wrap and the kernels would write out of bounds. No shard can hold
+    /// more rows than the whole batch, so when the batch exceeds UINT32_MAX rows fall
+    /// back to the size_t-safe per-source path (its destinations grow dynamically).
+    size_t total_rows = 0;
+    for (const auto & pids : pids_per_source)
+        total_rows += pids.size();
+    if (total_rows > std::numeric_limits<UInt32>::max())
+    {
+        absl::InlinedVector<UInt32, SCATTER_INLINE_SHARDS> shard_count_placeholder(num_shards, 0);
+        return scatterFallback(source_columns, pids_per_source, std::span<const UInt32>(shard_count_placeholder.data(), num_shards));
+    }
+
     /// Row counts provided by caller — skip the per-call pids re-scan.
     if (!rows_per_shard.empty())
     {
