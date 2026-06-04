@@ -699,6 +699,36 @@ TEST(ComputeHashInto, ReprIndependenceConstTuple)
         << "Materialized Tuple and ColumnConst(Tuple) of the same value must compose identically";
 }
 
+TEST(ComputeHashInto, ReprIndependenceConstArray)
+{
+    // ColumnArray must combine the finalized per-row hash on the non-initial path, so a
+    // materialized Array and a ColumnConst(Array) of the same value compose identically.
+    const size_t n = 333;
+    auto prefix = makeUInt32Column(randomUInts(n));
+
+    auto build_array = [](size_t rows) -> MutableColumnPtr
+    {
+        auto data = ColumnUInt32::create();
+        auto offsets = ColumnArray::ColumnOffsets::create();
+        UInt64 off = 0;
+        for (size_t i = 0; i < rows; ++i)
+        {
+            data->insert(static_cast<UInt64>(10));
+            data->insert(static_cast<UInt64>(20));
+            data->insert(static_cast<UInt64>(30));
+            off += 3;
+            offsets->insert(off);
+        }
+        return ColumnArray::create(std::move(data), std::move(offsets));
+    };
+
+    auto materialized = build_array(n);
+    auto as_const = makeConst(build_array(1), n);
+
+    EXPECT_EQ(composeKey(*prefix, *materialized), composeKey(*prefix, *as_const))
+        << "Materialized Array and ColumnConst(Array) of the same value must compose identically";
+}
+
 TEST(ComputeHashInto, ReprIndependenceConstDecimal64)
 {
     const size_t n = 401;

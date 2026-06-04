@@ -502,6 +502,34 @@ MutableColumns scatter(
 namespace
 {
 
+/// Materialize transparent wrappers (Const/Sparse/Replicated) collected from a composite
+/// column's subcolumns so the recursive scatterDispatch sees a single concrete
+/// representation per position. The top-level scatter() only normalizes the outer column,
+/// not subcolumns that differ across chunks — e.g. a sparse tuple element in one chunk and
+/// a full one in another. Materialized columns are owned by `holder`, which must outlive the
+/// dispatch call. No-op (no copy) when every column is already full.
+void materializeWrappers(
+    std::vector<const IColumn *> & cols, // STYLE_CHECK_ALLOW_STD_CONTAINERS
+    absl::InlinedVector<ColumnPtr, SCATTER_INLINE_SOURCES> & holder)
+{
+    bool any_wrapper = false;
+    for (const IColumn * c : cols)
+        if (c->isConst() || c->isSparse() || c->isReplicated())
+        {
+            any_wrapper = true;
+            break;
+        }
+    if (!any_wrapper)
+        return;
+
+    holder.reserve(cols.size());
+    for (const IColumn *& c : cols)
+    {
+        holder.push_back(c->convertToFullIfNeeded());
+        c = holder.back().get();
+    }
+}
+
 // ── Nullable scatter ──────────────────────────────────────────────────────────
 // Null map is just a ColumnVector<UInt8> — reuse scatterFixed<UInt8>.
 // Forward the pre-computed rows_per_shard to both the null-map and the nested call.
@@ -524,6 +552,11 @@ MutableColumns scatterNullable(
     std::vector<const IColumn *> nested_cols(source_columns.size()); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t b = 0; b < source_columns.size(); ++b)
         nested_cols[b] = &assert_cast<const ColumnNullable &>(*source_columns[b]).getNestedColumn();
+
+    /// Nested columns can differ in concrete representation across chunks (e.g. sparse in
+    /// one, full in another); normalize before the recursive dispatch.
+    absl::InlinedVector<ColumnPtr, SCATTER_INLINE_SOURCES> nested_holder;
+    materializeWrappers(nested_cols, nested_holder);
 
     MutableColumns scattered_nested = scatterDispatch(nested_cols, pids_per_source, rows_per_shard);
 
@@ -567,9 +600,15 @@ MutableColumns scatterTuple(
     }
 
     // Scatter each element — forward the same rows_per_shard to every element scatter.
+    // Element columns can differ in concrete representation across chunks (e.g. a sparse
+    // element in one chunk, full in another); normalize before the recursive dispatch.
     std::vector<MutableColumns> scattered_elements(num_elements); // STYLE_CHECK_ALLOW_STD_CONTAINERS
     for (size_t e = 0; e < num_elements; ++e)
+    {
+        absl::InlinedVector<ColumnPtr, SCATTER_INLINE_SOURCES> elem_holder;
+        materializeWrappers(element_cols[e], elem_holder);
         scattered_elements[e] = scatterDispatch(element_cols[e], pids_per_source, rows_per_shard);
+    }
 
     // Assemble per-shard ColumnTuple.
     MutableColumns dst(num_shards);

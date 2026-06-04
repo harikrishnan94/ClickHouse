@@ -10,6 +10,24 @@
 namespace DB
 {
 
+namespace
+{
+/// Hard cap on the number of input chunks (blocks) accumulated per flush, in addition to
+/// the byte budget. The byte budget uses physical `Chunk::bytes()`, which does not bound
+/// row count for const-heavy chunks: `ColumnConst::byteSize()` is one stored value, so a
+/// query like `GROUP BY toUInt64(1)` can add tens of thousands of rows (and pids) per chunk
+/// while adding only a few bytes, leaving `pids`/scatter allocations effectively unbounded.
+///
+/// 100 is chosen so it never preempts the byte budget for real data: a flush holds at most
+/// MAX_PENDING_BLOCKS chunks of up to `max_block_size` (~65536) rows each, so reaching a
+/// budget B within the cap needs only B/100 bytes per chunk — at the largest practically
+/// useful budget (64 MiB) that is ~640 KiB/chunk, i.e. ~10 bytes per row, which any real
+/// aggregation input (key plus aggregated columns) exceeds. So for budgets <= 64 MiB the
+/// byte budget governs normal data and this cap only bounds degenerate const-heavy chunks,
+/// limiting a flush to ~100 * max_block_size (~6.5M) rows.
+constexpr size_t MAX_PENDING_BLOCKS = 100;
+}
+
 BufferedShardByHashTransform::BufferedShardByHashTransform(
     SharedHeader header, size_t num_shards_, ColumnNumbers key_columns_, size_t batch_threshold_bytes_)
     : IProcessor(InputPorts{header}, OutputPorts{num_shards_, header})
@@ -142,8 +160,11 @@ void BufferedShardByHashTransform::work()
         /// Otherwise, chunk boundaries are never split, so a batch may overshoot
         /// the budget by at most one input chunk's bytes. Counting bytes keeps
         /// each flush short and its per-shard buffers small for wide rows, while
-        /// narrow rows accumulate until the budget is reached.
-        if (batch_threshold_bytes == 0 || accumulated_bytes >= batch_threshold_bytes)
+        /// narrow rows accumulate until the budget is reached. The MAX_PENDING_BLOCKS
+        /// cap additionally bounds the row count for const-heavy chunks, whose physical
+        /// bytes do not reflect their row count.
+        if (batch_threshold_bytes == 0 || accumulated_bytes >= batch_threshold_bytes
+            || pending_input.size() >= MAX_PENDING_BLOCKS)
             has_pending_flush = true;
     }
 
