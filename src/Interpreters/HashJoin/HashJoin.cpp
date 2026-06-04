@@ -160,7 +160,8 @@ HashJoin::HashJoin(
     bool any_take_last_row_,
     size_t reserve_num_,
     const String & instance_id_,
-    bool use_two_level_maps)
+    bool use_two_level_maps,
+    bool force_enable_prefetch_)
     : table_join(table_join_)
     , kind(table_join->kind())
     , strictness(table_join->strictness())
@@ -176,6 +177,7 @@ HashJoin::HashJoin(
     , joined_block_split_single_row(table_join->joinedBlockAllowSplitSingleRow())
     , enable_lazy_columns_replication(table_join->enableColumnsLazyReplication())
     , enable_prefetch(table_join->enableSoftwarePrefetchInJoin())
+    , min_bytes_for_prefetch(force_enable_prefetch_ ? 0 : getMinBytesForPrefetchInJoin())
     , instance_log_id(!instance_id_.empty() ? "(" + instance_id_ + ") " : "")
     , log(getLogger("HashJoin"))
 {

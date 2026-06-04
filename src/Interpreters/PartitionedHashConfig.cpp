@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 
 #if defined(OS_LINUX)
-#include <unistd.h>
+#    include <unistd.h>
 #endif
 
 namespace DB
@@ -59,6 +60,19 @@ PartitionConfig derivePartitionConfig(const PartitionConfigInputs & inputs)
 {
     size_t total_leaves;
 
+    /// MEASUREMENT-ONLY override (revert before commit): force a specific leaf count for A/B experiments,
+    /// e.g. PHJ_FORCE_LEAVES=1024 to study fewer/larger leaves vs the derived ~L2-sized count.
+    if (const char * e = std::getenv("PHJ_FORCE_LEAVES"))
+    {
+        if (size_t forced = std::strtoull(e, nullptr, 10); forced > 0)
+        {
+            PartitionConfig config;
+            config.pass_bits = factorisePassBits(roundUpPow2(forced), inputs.max_partitions_per_pass);
+            config.total_leaves = size_t{1} << config.totalBits();
+            return config;
+        }
+    }
+
     if (!inputs.rhs_rows_estimation.has_value())
     {
         total_leaves = PHJ_DEFAULT_LEAVES;
@@ -71,8 +85,7 @@ PartitionConfig derivePartitionConfig(const PartitionConfigInputs & inputs)
         /// per-row bytes incl. HT cell overhead (spec §5.2).
         const auto rhs_rows = static_cast<double>(*inputs.rhs_rows_estimation);
 
-        const double real_build_bytes
-            = rhs_rows * static_cast<double>(inputs.key_bytes + inputs.cell_bytes + inputs.payload_bytes);
+        const double real_build_bytes = rhs_rows * static_cast<double>(inputs.key_bytes + inputs.cell_bytes + inputs.payload_bytes);
         const double usable_l2 = PHJ_L2_HEADROOM * static_cast<double>(l2_bytes);
 
         auto num_leaves = static_cast<size_t>(std::ceil(real_build_bytes / std::max(usable_l2, 1.0)));

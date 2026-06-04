@@ -126,6 +126,7 @@ public:
         , additional_filter_required_rhs_pos(additional_filter_required_rhs_pos_)
         , rows_to_add(left_block_.rows())
         , enable_prefetch(join.enableSoftwarePrefetch())
+        , min_bytes_for_prefetch(join.minBytesForPrefetch())
         , is_join_get(is_join_get_)
     {
         size_t num_columns_to_add = block_with_columns_to_add.columns();
@@ -234,6 +235,8 @@ public:
     size_t rows_to_add;
     bool need_filter = false;
     bool enable_prefetch = true;
+    /// Software-prefetch size threshold inherited from the owning HashJoin (see HashJoin::minBytesForPrefetch).
+    size_t min_bytes_for_prefetch = 0;
 
     MutableColumns columns;
     IColumn::Offsets offsets_to_replicate;

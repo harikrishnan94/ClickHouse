@@ -39,10 +39,10 @@ constexpr bool join_prefetch_supported = KeyGetter::has_cheap_key_calculation
 /// must have it enabled and the map must be large enough that we expect non-trivial
 /// cache misses to amortize the prefetch cost.
 template <typename Map>
-ALWAYS_INLINE bool shouldUseJoinPrefetch(bool enable_prefetch, const Map * map)
+ALWAYS_INLINE bool shouldUseJoinPrefetch(bool enable_prefetch, const Map * map, size_t min_bytes_for_prefetch)
 {
     return enable_prefetch && map != nullptr
-        && map->getBufferSizeInBytes() > getMinBytesForPrefetchInJoin();
+        && map->getBufferSizeInBytes() > min_bytes_for_prefetch;
 }
 
 template <typename Selector>
@@ -277,7 +277,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
 
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = shouldUseJoinPrefetch(join.enable_prefetch, &map);
+        use_prefetch = shouldUseJoinPrefetch(join.enable_prefetch, &map, join.min_bytes_for_prefetch);
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -589,7 +589,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, map);
+        use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, map, added_columns.min_bytes_for_prefetch);
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -715,7 +715,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
+        use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0], added_columns.min_bytes_for_prefetch);
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -993,7 +993,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
 
         bool use_prefetch = false;
         if constexpr (can_prefetch)
-            use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
+            use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0], added_columns.min_bytes_for_prefetch);
 
         const size_t selector_size = selector.size();
         auto prefetcher = makeJoinPrefetcher(use_prefetch, selector_size,
