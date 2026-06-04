@@ -38,6 +38,10 @@ namespace
 /// upper bound on `num_shards`.
 constexpr size_t SCATTER_INLINE_SHARDS = 256;
 
+/// Inline capacity for the per-flush list of source columns (one per pending chunk),
+/// used only on the rare path that materializes transparent wrappers before dispatch.
+constexpr size_t SCATTER_INLINE_SOURCES = 64;
+
 /// Type lists driving the O(1) dispatch table below. Each entry is a `TypeIndex`
 /// enumerator whose physical column maps to `scatterFixed`/`scatterDecimal`.
 /// Adding a fast-path numeric/decimal type is a one-token edit here.
@@ -425,10 +429,43 @@ MutableColumns scatter(
 
 #ifdef DEBUG_OR_SANITIZER_BUILD
     const IColumn & probe = *source_columns[0];
-    /// All source columns must have the same concrete type.
+    /// All source columns must share the same logical type. Concrete representation
+    /// may differ across chunks (full vs ColumnConst/ColumnSparse/...) — that is
+    /// normalized away below before dispatch.
     for (size_t b = 1; b < source_columns.size(); ++b)
         chassert(probe.getDataType() == source_columns[b]->getDataType());
 #endif
+
+    /// Source columns at one position are only guaranteed to share the same logical
+    /// type, not the same concrete representation: a position can mix a materialized
+    /// column with a `ColumnConst`/`ColumnSparse`/`ColumnReplicated` (e.g. after
+    /// constant folding or `UNION`). The typed kernels `assert_cast` every source to
+    /// the probe's concrete class and `getDataType()` is representation-blind, so a
+    /// mixed batch would mis-cast or materialize wrong values. Materialize any
+    /// transparent wrappers up front so the dispatch below sees a single representation.
+    /// `convertToFullIfNeeded` returns `getPtr()` (no copy) for already-full columns,
+    /// so this only costs anything on the rare mixed/wrapped batch.
+    absl::InlinedVector<ColumnPtr, SCATTER_INLINE_SOURCES> materialized;
+    absl::InlinedVector<const IColumn *, SCATTER_INLINE_SOURCES> full_ptrs;
+    bool any_wrapper = false;
+    for (const IColumn * col : source_columns)
+        if (col->isConst() || col->isSparse() || col->isReplicated())
+        {
+            any_wrapper = true;
+            break;
+        }
+    if (any_wrapper)
+    {
+        const size_t num_sources = source_columns.size();
+        materialized.reserve(num_sources);
+        full_ptrs.reserve(num_sources);
+        for (const IColumn * col : source_columns)
+        {
+            materialized.push_back(col->convertToFullIfNeeded());
+            full_ptrs.push_back(materialized.back().get());
+        }
+        source_columns = std::span<const IColumn * const>(full_ptrs.data(), num_sources);
+    }
 
     /// Row counts provided by caller — skip the per-call pids re-scan.
     if (!rows_per_shard.empty())

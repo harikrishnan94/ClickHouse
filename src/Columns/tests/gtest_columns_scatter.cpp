@@ -424,3 +424,99 @@ TEST(ColumnsScatter, LargeDecimalBatched)
     auto p1 = randomPids(num_rows, num_shards);
     checkEquivalence(cols, {p0, p1}, num_shards);
 }
+
+namespace
+{
+/// Independent oracle for batches whose chunks mix concrete representations.
+/// `referenceScatter` is only correct on homogeneous full inputs, so materialize
+/// every source first and scatter the full versions. `ColumnsScatter::scatter` must
+/// reach the same result while normalizing representations internally.
+void checkScatterAgainstMaterialized(
+    const std::vector<ColumnPtr> & cols, const std::vector<std::vector<UInt32>> & pids, size_t num_shards)
+{
+    std::vector<const IColumn *> col_ptrs(cols.size());
+    std::vector<std::span<const UInt32>> pid_spans(cols.size());
+    for (size_t b = 0; b < cols.size(); ++b)
+    {
+        col_ptrs[b] = cols[b].get();
+        pid_spans[b] = pids[b];
+    }
+    auto got = ColumnsScatter::scatter(col_ptrs, pid_spans, num_shards);
+
+    std::vector<ColumnPtr> full(cols.size());
+    std::vector<const IColumn *> full_ptrs(cols.size());
+    for (size_t b = 0; b < cols.size(); ++b)
+    {
+        full[b] = cols[b]->convertToFullIfNeeded();
+        full_ptrs[b] = full[b].get();
+    }
+    auto ref = referenceScatter(full_ptrs, pids, num_shards);
+
+    ASSERT_EQ(got.size(), num_shards);
+    for (size_t s = 0; s < num_shards; ++s)
+        assertColumnsEqual(*got[s], *ref[s]);
+}
+
+ColumnPtr makeConstUInt64(UInt64 value, size_t num_rows)
+{
+    auto one = ColumnUInt64::create();
+    one->insertValue(value);
+    return ColumnConst::create(std::move(one), num_rows);
+}
+
+ColumnPtr makeConstString(const std::string & value, size_t num_rows)
+{
+    auto one = ColumnString::create();
+    one->insertData(value.data(), value.size());
+    return ColumnConst::create(std::move(one), num_rows);
+}
+}
+
+TEST(ColumnsScatter, MixedConstFirstUInt64)
+{
+    // Const chunk first: the fallback must not clone a ColumnConst destination and
+    // then insert materialized values into it.
+    constexpr size_t num_shards = 5;
+    const size_t n0 = 200;
+    const size_t n1 = 300;
+    const size_t n2 = 250;
+    std::vector<ColumnPtr> cols = {makeConstUInt64(777, n0), makeUInt64Col(n1, 10), makeConstUInt64(888, n2)};
+    std::vector<std::vector<UInt32>> pids = {randomPids(n0, num_shards), randomPids(n1, num_shards), randomPids(n2, num_shards)};
+    checkScatterAgainstMaterialized(cols, pids, num_shards);
+}
+
+TEST(ColumnsScatter, MixedMaterializedFirstUInt64)
+{
+    // Materialized chunk first: the fast typed kernel must not assert_cast the later
+    // ColumnConst onto ColumnVector.
+    constexpr size_t num_shards = 4;
+    const size_t n0 = 300;
+    const size_t n1 = 200;
+    std::vector<ColumnPtr> cols = {makeUInt64Col(n0, 0), makeConstUInt64(42, n1)};
+    std::vector<std::vector<UInt32>> pids = {randomPids(n0, num_shards), randomPids(n1, num_shards)};
+    checkScatterAgainstMaterialized(cols, pids, num_shards);
+}
+
+TEST(ColumnsScatter, TwoConstsDifferentValues)
+{
+    // Homogeneous ColumnConst but with different constant values across chunks: a
+    // single ColumnConst destination cannot hold both, so it must be materialized.
+    constexpr size_t num_shards = 4;
+    const size_t n0 = 250;
+    const size_t n1 = 250;
+    std::vector<ColumnPtr> cols = {makeConstUInt64(5, n0), makeConstUInt64(9, n1)};
+    std::vector<std::vector<UInt32>> pids = {randomPids(n0, num_shards), randomPids(n1, num_shards)};
+    checkScatterAgainstMaterialized(cols, pids, num_shards);
+}
+
+TEST(ColumnsScatter, MixedConstMaterializedString)
+{
+    // Variable-width fallback path with a mixed ColumnConst(String) / ColumnString batch.
+    constexpr size_t num_shards = 5;
+    const size_t n0 = 200;
+    const size_t n1 = 150;
+    const size_t n2 = 220;
+    std::vector<ColumnPtr> cols = {makeStringCol(n0), makeConstString("konst", n1), makeStringCol(n2)};
+    std::vector<std::vector<UInt32>> pids = {randomPids(n0, num_shards), randomPids(n1, num_shards), randomPids(n2, num_shards)};
+    checkScatterAgainstMaterialized(cols, pids, num_shards);
+}
