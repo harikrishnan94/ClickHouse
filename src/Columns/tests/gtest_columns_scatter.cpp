@@ -5,6 +5,7 @@
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnFixedString.h>
 #include <Columns/ColumnNullable.h>
+#include <Columns/ColumnSparse.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnTuple.h>
 #include <Columns/ColumnsNumber.h>
@@ -518,5 +519,43 @@ TEST(ColumnsScatter, MixedConstMaterializedString)
     const size_t n2 = 220;
     std::vector<ColumnPtr> cols = {makeStringCol(n0), makeConstString("konst", n1), makeStringCol(n2)};
     std::vector<std::vector<UInt32>> pids = {randomPids(n0, num_shards), randomPids(n1, num_shards), randomPids(n2, num_shards)};
+    checkScatterAgainstMaterialized(cols, pids, num_shards);
+}
+
+TEST(ColumnsScatter, TupleWithSparseElement)
+{
+    // A Tuple element can have a different concrete representation across chunks (full in
+    // one, ColumnSparse in another). The recursive tuple scatter must normalize element
+    // columns before dispatch, otherwise the typed kernel assert_casts the sparse element.
+    constexpr size_t num_shards = 4;
+    const size_t n0 = 300;
+    const size_t n1 = 250;
+
+    auto build_full_tuple = [](size_t rows) -> ColumnPtr
+    {
+        auto u = ColumnUInt64::create();
+        for (size_t i = 0; i < rows; ++i)
+            u->insertValue(i * 3 + 1);
+        MutableColumns elems;
+        elems.push_back(std::move(u));
+        return ColumnTuple::create(std::move(elems));
+    };
+
+    auto build_sparse_tuple = [](size_t rows) -> ColumnPtr
+    {
+        auto vals = ColumnUInt64::create();
+        vals->insertValue(0); // index 0 is the sparse default
+        vals->insertValue(7);
+        vals->insertValue(9);
+        auto offs = ColumnUInt64::create();
+        offs->insertValue(5);
+        offs->insertValue(100);
+        MutableColumns elems;
+        elems.push_back(ColumnSparse::create(std::move(vals), std::move(offs), rows));
+        return ColumnTuple::create(std::move(elems));
+    };
+
+    std::vector<ColumnPtr> cols = {build_full_tuple(n0), build_sparse_tuple(n1)};
+    std::vector<std::vector<UInt32>> pids = {randomPids(n0, num_shards), randomPids(n1, num_shards)};
     checkScatterAgainstMaterialized(cols, pids, num_shards);
 }

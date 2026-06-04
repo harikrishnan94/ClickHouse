@@ -335,8 +335,11 @@ void ColumnArray::computeHashInto(size_t row_begin, size_t row_end, uint32_t * h
         for (Offset row = prev_offset; row < offsets_data[i]; ++row)
             acc = fmix32Combined(elem_hash[row - elem_begin], acc);
 
+        /// Combine the finalized per-row hash (the same value the initial path writes), so a
+        /// materialized Array and a ColumnConst(Array) of the same value compose identically.
+        const uint32_t value = fmix32(acc);
         uint32_t & out = hash_out[i - row_begin];
-        out = initial ? fmix32(acc) : fmix32Combined(acc, out);
+        out = initial ? value : fmix32Combined(value, out);
 
         prev_offset = offsets_data[i];
     }
