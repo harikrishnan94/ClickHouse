@@ -1220,6 +1220,11 @@ JoinResultPtr PartitionedHashJoin::joinBlock(Block block)
 
 void PartitionedHashJoin::setTotals(const Block & block)
 {
+    /// `supportParallelJoin()` is true, so FillingRightJoinSideTransform runs one build stream per
+    /// `max_threads` and each stream calls setTotals on the shared passthrough `hash_join`. The base
+    /// IJoin::setTotals just does `totals = block`, which is not safe under concurrent assignment and
+    /// crashes in `Block::operator=` (vector reallocation freeing memory another thread reads). Serialize.
+    std::lock_guard lock(totals_mutex);
     hash_join->setTotals(block);
 }
 

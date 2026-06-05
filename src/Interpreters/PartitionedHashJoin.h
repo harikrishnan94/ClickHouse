@@ -110,6 +110,8 @@ private:
     /// The `[PROXY]` query-result path: a passthrough plain HashJoin rebuilt single-threaded in
     /// onBuildPhaseFinish from the leaf chains. Removed once the custom probe transform lands.
     std::unique_ptr<HashJoin> hash_join;
+    /// Serializes concurrent setTotals() from the parallel build streams (see setTotals).
+    std::mutex totals_mutex;
 
     // ── Lock-free per-slot deferred-cascade build shuffle state (P3) ──────────────────────────────────
     // Each concurrent build thread owns exactly one BuildSlot, so addBlockToJoin needs no locks. The

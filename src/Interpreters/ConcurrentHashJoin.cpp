@@ -81,6 +81,10 @@ namespace
 
 using BlockHashes = std::vector<UInt64>;
 
+/// MEASUREMENT-ONLY (revert before commit): hands out a distinct id to each ConcurrentHashJoin instance
+/// (including clones created for parallel build) so the dispatch-row/wall logs can be disambiguated.
+std::atomic<size_t> g_chj_instance_counter{0};
+
 /// MEASUREMENT-ONLY: per-subtable cell-buffer size stats for JOIN_LOG_SUBTABLE_SIZES experiments.
 struct ChjSubtableSizeStats
 {
@@ -337,6 +341,7 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     , external_join_threshold(external_join_threshold_)
 {
     hash_joins.resize(slots);
+    instance_id = g_chj_instance_counter.fetch_add(1, std::memory_order_relaxed);
 
     const bool force_single_level = std::getenv("CHJ_FORCE_SINGLE_LEVEL") != nullptr; /// NOLINT(concurrency-mt-unsafe)
     const bool defer_build = std::getenv("CHJ_DEFER_BUILD") != nullptr; /// NOLINT(concurrency-mt-unsafe)
@@ -833,6 +838,12 @@ static ScatteredBlocks scatterBlocksWithSelector(size_t num_shards, const IColum
 
 ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_names, Block && from_block)
 {
+    /// MEASUREMENT-ONLY (revert before commit): count every incoming block exactly once, before the
+    /// single-shard early return, into an instance-local atomic. ProfileEvents is emitted once per instance
+    /// in onBuildPhaseFinish (the per-call increment was split across clones/threads and undercounted).
+    dispatch_calls_total.fetch_add(1, std::memory_order_relaxed);
+    dispatch_rows_total.fetch_add(from_block.rows(), std::memory_order_relaxed);
+
     const size_t num_shards = hash_joins.size();
     if (num_shards == 1)
     {
@@ -869,7 +880,8 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
     auto result = (!force_copy_scatter && use_zero_copy_approach) ? scatterBlocksWithSelector(num_shards, selector, from_block)
                                                                   : scatterBlocksByCopying(num_shards, selector, from_block);
     ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinDispatchMicroseconds, watch.elapsedMicroseconds());
-    ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinDispatchRows, rows);
+    /// NOTE: ConcurrentHashJoinDispatchRows is emitted once per instance in onBuildPhaseFinish (see header).
+    UNUSED(rows);
     dispatch_wall_last_end_ns.store(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
         std::memory_order_relaxed);
@@ -921,14 +933,31 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
-    std::call_once(dispatch_wall_end_flag, [this]
+    /// MEASUREMENT-ONLY (revert before commit): emit this instance's dispatch totals exactly once. Because the
+    /// planner clones the join for parallel build, each clone emits its own contribution here (summed by
+    /// ProfileEvents into the query total) instead of relying on a per-call increment that the clone/thread
+    /// split was dropping.
     {
+        const auto rows_total = dispatch_rows_total.load(std::memory_order_relaxed);
+        const auto calls_total = dispatch_calls_total.load(std::memory_order_relaxed);
         const auto begin_ns = dispatch_wall_begin_ns.load(std::memory_order_relaxed);
         const auto end_ns = dispatch_wall_last_end_ns.load(std::memory_order_relaxed);
-        if (begin_ns > 0 && end_ns >= begin_ns)
-            ProfileEvents::increment(
-                ProfileEvents::ConcurrentHashJoinDispatchWallMicroseconds, static_cast<UInt64>((end_ns - begin_ns) / 1000));
-    });
+        const Int64 wall_us = (begin_ns > 0 && end_ns >= begin_ns) ? (end_ns - begin_ns) / 1000 : 0;
+
+        if (rows_total > 0)
+            ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinDispatchRows, rows_total);
+        if (wall_us > 0)
+            ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinDispatchWallMicroseconds, static_cast<UInt64>(wall_us));
+
+        LOG_INFO(
+            getLogger("ConcurrentHashJoin"),
+            "dispatch totals: instance_id={} slots={} calls={} rows={} wall_us={}",
+            instance_id,
+            slots,
+            calls_total,
+            rows_total,
+            wall_us);
+    }
 
     static const bool defer_build = std::getenv("CHJ_DEFER_BUILD") != nullptr; /// NOLINT(concurrency-mt-unsafe)
     if (defer_build)

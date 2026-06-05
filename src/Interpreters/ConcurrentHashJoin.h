@@ -134,6 +134,16 @@ private:
     std::once_flag dispatch_wall_begin_flag;
     std::once_flag dispatch_wall_end_flag;
 
+    /// MEASUREMENT-ONLY (revert before commit): the planner clones this join for parallel build, so the
+    /// per-call ProfileEvents increment of dispatched rows is split across clone instances / threads and
+    /// the query-attributed total undercounts the build rows. Accumulate into an instance-local atomic in
+    /// dispatchBlock (counted once per incoming block, before any early return) and emit it exactly once in
+    /// onBuildPhaseFinish so every instance contributes its true scatter-row count to the query.
+    std::atomic<UInt64> dispatch_rows_total{0};
+    std::atomic<UInt64> dispatch_calls_total{0};
+    /// Distinct instance id (++ on construction) used only to disambiguate clones in measurement logs.
+    size_t instance_id = 0;
+
     ScatteredBlocks dispatchBlock(const Strings & key_columns_names, Block && from_block);
 };
 
