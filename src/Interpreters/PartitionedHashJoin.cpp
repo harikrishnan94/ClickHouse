@@ -685,6 +685,40 @@ void PartitionedHashJoin::runPostBuildPhase()
     leaf_joins.resize(total_leaves);
     next_leaf.store(0, std::memory_order_relaxed);
 
+    /// MEASUREMENT-ONLY: JOIN_LOG_CHAIN_BYTES=1 logs the actual memory held in the scattered leaf_chains
+    /// after the shuffle (before the leaf-HT build), to settle whether PHJ persists a full scattered copy.
+    static const bool log_chain_bytes = std::getenv("JOIN_LOG_CHAIN_BYTES") != nullptr;
+    if (log_chain_bytes)
+    {
+        size_t groups = 0;
+        size_t rows = 0;
+        size_t byte_size = 0;
+        size_t allocated = 0;
+        for (const auto & slot : build_slots)
+            for (const auto & chain : slot.leaf_chains)
+                for (const auto & group : chain)
+                {
+                    if (group.empty())
+                        continue;
+                    ++groups;
+                    rows += group[0]->size();
+                    for (const auto & col : group)
+                    {
+                        byte_size += col->byteSize();
+                        allocated += col->allocatedBytes();
+                    }
+                }
+        LOG_INFO(
+            getLogger("PartitionedHashJoin"),
+            "leaf_chains held after shuffle: {} groups, {} rows, byteSize={} ({:.2f} GiB), allocatedBytes={} ({:.2f} GiB)",
+            groups,
+            rows,
+            byte_size,
+            static_cast<double>(byte_size) / (1024.0 * 1024.0 * 1024.0),
+            allocated,
+            static_cast<double>(allocated) / (1024.0 * 1024.0 * 1024.0));
+    }
+
     /// MEASUREMENT-ONLY (revert before commit): PHJ_SKIP_LEAF_BUILD returns before the eager leaf-HT build,
     /// leaving the scattered per-slot chains in place. Together with debug_skip_passthrough this isolates the
     /// build-side scatter + source scan from the leaf-HT construction, so a perf/iMC A/B (full vs skip) yields
