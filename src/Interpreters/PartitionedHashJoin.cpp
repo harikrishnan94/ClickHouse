@@ -502,14 +502,20 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
     /// isolate whether the single-level-vs-two-level insert kernel (and its prefetch gating, since a
     /// two-level map reports the aggregate >8 MB buffer size) explains the build-CPU gap vs `parallel_hash`.
     static const bool leaf_twolevel = std::getenv("PHJ_LEAF_TWOLEVEL") != nullptr;
-    auto leaf_join = std::make_unique<HashJoin>(
-        table_join,
-        right_sample_block,
-        any_take_last_row,
-        /*reserve_num=*/leaf_rows,
-        /*instance_id=*/"",
-        /*use_two_level_maps=*/leaf_twolevel,
-        /*force_enable_prefetch=*/force_prefetch);
+    /// PHJ_PREWARM_MAPS: the map was already allocated and reserved in the pre-warm pass; reuse it.
+    static const bool prewarm_maps_insert = std::getenv("PHJ_PREWARM_MAPS") != nullptr;
+    std::unique_ptr<HashJoin> leaf_join;
+    if (prewarm_maps_insert && leaf_joins[leaf])
+        leaf_join = std::move(leaf_joins[leaf]);
+    else
+        leaf_join = std::make_unique<HashJoin>(
+            table_join,
+            right_sample_block,
+            any_take_last_row,
+            /*reserve_num=*/leaf_rows,
+            /*instance_id=*/"",
+            /*use_two_level_maps=*/leaf_twolevel,
+            /*force_enable_prefetch=*/force_prefetch);
 
     size_t moved = 0;
     for (auto & slot : build_slots)
@@ -550,6 +556,39 @@ void PartitionedHashJoin::runPostBuildPhase()
     static const bool skip_leaf_build = std::getenv("PHJ_SKIP_LEAF_BUILD") != nullptr;
     if (skip_leaf_build)
         return;
+
+    /// MEASUREMENT-ONLY: PHJ_PREWARM_MAPS=1 splits runPostBuildPhase into two parallel passes:
+    ///   pass 1: count rows per leaf + construct+reserve the leaf HashJoin (warms all cell-array pages).
+    ///   pass 2: insert rows into the already-warmed maps.
+    /// Hypothesis: if the IPI-storm root cause is 16 workers simultaneously writing to cold CoW pages
+    /// WHILE ALSO doing insertions, separating the two phases should show whether pre-warming helps.
+    /// If IPIs still dominate after pre-warming, the cause is the parallel allocation itself (not the
+    /// interleaving with inserts). Result is probe-usable.
+    static const bool prewarm_maps = std::getenv("PHJ_PREWARM_MAPS") != nullptr;
+    if (prewarm_maps)
+    {
+        /// Pre-compute per-leaf row counts in parallel, allocate and reserve all leaf HashJoins.
+        std::vector<size_t> leaf_row_counts(total_leaves, 0);
+        runParallelWorkers(
+            slots,
+            [&](size_t /*worker_idx*/)
+            {
+                size_t leaf;
+                while ((leaf = next_leaf.fetch_add(1, std::memory_order_relaxed)) < total_leaves)
+                {
+                    size_t cnt = 0;
+                    for (auto & slot : build_slots)
+                        for (const auto & group : slot.leaf_chains[leaf])
+                            cnt += groupRows(group);
+                    leaf_row_counts[leaf] = cnt;
+                    if (cnt > 0)
+                        leaf_joins[leaf] = std::make_unique<HashJoin>(
+                            table_join, right_sample_block, any_take_last_row, /*reserve_num=*/cnt);
+                }
+            });
+        /// Reset cursor and do the insert pass into already-warmed maps.
+        next_leaf.store(0, std::memory_order_relaxed);
+    }
 
     std::atomic<size_t> blocks_moved{0};
 
