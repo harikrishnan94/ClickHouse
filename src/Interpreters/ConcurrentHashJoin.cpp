@@ -37,6 +37,7 @@
 #include <numeric>
 #include <deque>
 #include <iterator>
+#include <optional>
 #include <thread>
 
 using namespace DB;
@@ -112,15 +113,23 @@ void collectChjSubtableSizes(const HashJoin & join, ChjSubtableSizeStats & stats
     if (!data || data->maps.empty())
         return;
 
-    if (data->type != HashJoin::Type::two_level_key64)
-        return;
-
     std::visit(
         [&](const auto & maps)
         {
-            if (maps.two_level_key64)
-                for (const auto & impl : maps.two_level_key64->impls)
-                    stats.add(impl.getBufferSizeInBytes());
+            switch (data->type)
+            {
+                case HashJoin::Type::key64:
+                    if (maps.key64)
+                        stats.add(maps.key64->getBufferSizeInBytes());
+                    break;
+                case HashJoin::Type::two_level_key64:
+                    if (maps.two_level_key64)
+                        for (const auto & impl : maps.two_level_key64->impls)
+                            stats.add(impl.getBufferSizeInBytes());
+                    break;
+                default:
+                    break;
+            }
         },
         data->maps.at(0));
 }
@@ -185,9 +194,47 @@ UInt32 toPowerOfTwo(UInt32 x)
     return static_cast<UInt32>(1) << (32 - std::countl_zero(x - 1));
 }
 
+std::optional<size_t> readEnvSize(const char * name)
+{
+    if (const char * value = std::getenv(name)) /// NOLINT(concurrency-mt-unsafe)
+    {
+        char * end = nullptr;
+        const UInt64 parsed = std::strtoull(value, &end, 10);
+        if (end != value)
+            return static_cast<size_t>(parsed);
+    }
+    return std::nullopt;
+}
+
+std::optional<size_t> getConfiguredReserveRows(const StatsCollectingParams & stats_collecting_params)
+{
+    if (auto configured = readEnvSize("CHJ_RESERVE_TOTAL_ROWS"))
+        return configured;
+
+    if (auto hint = getSizeHint(stats_collecting_params))
+        return hint->ht_size;
+
+    return std::nullopt;
+}
+
 HashJoin::RightTableDataPtr getData(const std::shared_ptr<ConcurrentHashJoin::InternalHashJoin> & join)
 {
     return join->data->getJoinedData();
+}
+
+void reserveSingleLevelHashMap(HashJoin & hash_join, size_t reserve_rows)
+{
+    const auto & right_data = hash_join.getJoinedData();
+    if (!right_data || right_data->maps.empty() || right_data->type != HashJoin::Type::key64)
+        return;
+
+    std::visit(
+        [&](auto & maps)
+        {
+            if (maps.key64)
+                maps.key64->reserve(reserve_rows);
+        },
+        right_data->maps.at(0));
 }
 
 void reserveSpaceInHashMaps(
@@ -197,11 +244,11 @@ void reserveSpaceInHashMaps(
     size_t slots,
     size_t external_join_threshold)
 {
-    if (auto hint = getSizeHint(stats_collecting_params))
+    if (auto configured_reserve_size = getConfiguredReserveRows(stats_collecting_params))
     {
         /// Hash map is shared between all `HashJoin` instances, so the `median_size` is actually the total size
         /// we need to preallocate in all buckets of all hash maps.
-        const size_t reserve_size = hint->ht_size;
+        const size_t reserve_size = *configured_reserve_size;
 
         /// When a `SpillingHashJoin` wraps us, `external_join_threshold` is the auto-spill memory cap.
         /// Statistics-driven preallocation can reserve many gigabytes up front based on a previous larger
@@ -286,6 +333,19 @@ ConcurrentHashJoin::ConcurrentHashJoin(
 {
     hash_joins.resize(slots);
 
+    const bool force_single_level = std::getenv("CHJ_FORCE_SINGLE_LEVEL") != nullptr; /// NOLINT(concurrency-mt-unsafe)
+    const bool defer_build = std::getenv("CHJ_DEFER_BUILD") != nullptr; /// NOLINT(concurrency-mt-unsafe)
+    const size_t reserve_total_rows = readEnvSize("CHJ_RESERVE_TOTAL_ROWS").value_or(0);
+    if (defer_build)
+        deferred_blocks.resize(slots);
+
+    LOG_INFO(
+        getLogger("ConcurrentHashJoin"),
+        "Measurement knobs: force_single_level={} reserve_total_rows={} defer_build={}",
+        force_single_level,
+        reserve_total_rows,
+        defer_build);
+
     try
     {
         for (size_t i = 0; i < slots; ++i)
@@ -295,8 +355,12 @@ ConcurrentHashJoin::ConcurrentHashJoin(
                 {
                     ThreadGroupSwitcher switcher(thread_group, ThreadName::CONCURRENT_JOIN);
 
-                    /// reserve is not needed anyway - either we will use fixed-size hash map or shared two-level map (then reserve will be done in a special way below)
-                    const size_t reserve_size = 0;
+                    /// reserve is not needed anyway - either we will use fixed-size hash map or shared two-level map
+                    /// (then reserve will be done in a special way below). CHJ_RESERVE_TOTAL_ROWS is a
+                    /// measurement-only override for forcing PHJ-like exact pre-reserve on single-level slots.
+                    const size_t reserve_size = force_single_level && !defer_build && reserve_total_rows
+                        ? (reserve_total_rows + slots - 1) / slots
+                        : 0;
 
                     auto inner_hash_join = std::make_shared<InternalHashJoin>();
                     inner_hash_join->data = std::make_unique<HashJoin>(
@@ -305,7 +369,7 @@ ConcurrentHashJoin::ConcurrentHashJoin(
                         any_take_last_row_,
                         reserve_size,
                         fmt::format("concurrent{}", i),
-                        /*use_two_level_maps*/ true);
+                        /*use_two_level_maps*/ !force_single_level);
                     inner_hash_join->data->setMaxJoinedBlockRows(table_join->maxJoinedBlockRows());
                     inner_hash_join->data->setMaxJoinedBlockBytes(table_join->maxJoinedBlockBytes());
                     hash_joins[i] = std::move(inner_hash_join);
@@ -371,6 +435,20 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
     Block right_block = hash_joins[0]->data->materializeColumnsFromRightBlock(right_block_);
 
     auto dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_right, std::move(right_block));
+    static const bool defer_build = std::getenv("CHJ_DEFER_BUILD") != nullptr; /// NOLINT(concurrency-mt-unsafe)
+    if (defer_build)
+    {
+        for (size_t i = 0; i < dispatched_blocks.size(); ++i)
+        {
+            if (!dispatched_blocks[i].rows())
+                continue;
+
+            std::lock_guard lock(hash_joins[i]->mutex);
+            deferred_blocks[i].push_back(std::move(dispatched_blocks[i]));
+        }
+        return true;
+    }
+
     size_t blocks_left = 0;
     for (const auto & block : dispatched_blocks)
     {
@@ -822,8 +900,44 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    static const bool defer_build = std::getenv("CHJ_DEFER_BUILD") != nullptr; /// NOLINT(concurrency-mt-unsafe)
+    if (defer_build)
+    {
+        for (size_t i = 0; i < slots; ++i)
+        {
+            pool->scheduleOrThrow(
+                [&, i, thread_group = CurrentThread::getGroup()]()
+                {
+                    ThreadGroupSwitcher switcher(thread_group, ThreadName::CONCURRENT_JOIN);
+
+                    auto & hash_join = hash_joins[i];
+                    std::lock_guard lock(hash_join->mutex);
+
+                    if (!hash_join->space_was_preallocated)
+                    {
+                        if (hash_join->data->twoLevelMapIsUsed())
+                            reserveSpaceInHashMaps(*hash_join->data, i, stats_collecting_params, slots, external_join_threshold);
+                        else if (auto reserve_total_rows = readEnvSize("CHJ_RESERVE_TOTAL_ROWS"))
+                            reserveSingleLevelHashMap(*hash_join->data, (*reserve_total_rows + slots - 1) / slots);
+
+                        hash_join->space_was_preallocated = true;
+                    }
+
+                    for (auto & scattered_block : deferred_blocks[i])
+                    {
+                        auto [block, selector] = std::move(scattered_block).detachData();
+                        if (!hash_join->data->addBlockToJoin(block, std::move(selector), /*check_limits=*/false))
+                            throw Exception(ErrorCodes::SET_SIZE_LIMIT_EXCEEDED, "Set size limit exceeded while building deferred ConcurrentHashJoin slot");
+                    }
+
+                    deferred_blocks[i].clear();
+                });
+        }
+        pool->wait();
+    }
+
     /// MEASUREMENT-ONLY: log per-slot bucket buffer sizes before the merge (streaming-build state).
-    static const bool log_subtable_sizes = std::getenv("JOIN_LOG_SUBTABLE_SIZES") != nullptr;
+    static const bool log_subtable_sizes = std::getenv("JOIN_LOG_SUBTABLE_SIZES") != nullptr; /// NOLINT(concurrency-mt-unsafe)
     if (log_subtable_sizes)
     {
         ChjSubtableSizeStats stats;

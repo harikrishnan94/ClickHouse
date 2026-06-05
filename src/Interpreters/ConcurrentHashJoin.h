@@ -9,7 +9,7 @@
 #include <base/types.h>
 #include <Common/ThreadPool_fwd.h>
 #include <Interpreters/TableJoin.h>
-#include <atomic>
+#include <vector>
 
 namespace DB
 {
@@ -118,6 +118,7 @@ private:
     bool any_take_last_row;
     std::unique_ptr<ThreadPool> pool;
     std::vector<std::shared_ptr<InternalHashJoin>> hash_joins;
+    std::vector<ScatteredBlocks> deferred_blocks;
     bool build_phase_finished = false;
 
     StatsCollectingParams stats_collecting_params;
