@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <vector>
 
+#include <Columns/ColumnsNumber.h>
 #include <Columns/ColumnVector.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/PartitionedHashShuffle.h>
@@ -32,6 +35,7 @@ extern const Event PartitionedHashBuildScatterRows;
 extern const Event PartitionedHashBuildBlocksMoved;
 extern const Event PartitionedHashBuildHTMicroseconds;
 extern const Event PartitionedHashBuildFinishDrainMicroseconds;
+extern const Event PartitionedHashBuildScatterWallMicroseconds;
 }
 
 namespace DB
@@ -44,6 +48,8 @@ extern const int LOGICAL_ERROR;
 
 namespace
 {
+
+constexpr UInt32 PREALLOC_STREAM_FLUSH_ROWS = 64'000;
 
 /// Per-row fixed width of a (sample, empty) column; falls back to a coarse estimate for variable types.
 size_t fixedRowBytes(const ColumnPtr & col)
@@ -64,6 +70,108 @@ size_t groupBytes(const Columns & group)
     for (const auto & col : group)
         bytes += col->byteSize();
     return bytes;
+}
+
+void computePidsForSource(
+    const Columns & source,
+    const std::vector<size_t> & key_indices,
+    UInt32 shift,
+    UInt32 fanout,
+    PaddedPODArray<UInt32> & pids,
+    PaddedPODArray<UInt32> & histogram,
+    PaddedPODArray<UInt32> & hashes)
+{
+    const size_t rows = groupRows(source);
+    hashes.resize(rows);
+
+    bool initial = true;
+    for (size_t key_index : key_indices)
+    {
+        source[key_index]->computeHashInto(0, rows, hashes.data(), initial);
+        initial = false;
+    }
+
+    const UInt32 mask = fanout - 1;
+    pids.resize(rows);
+    for (size_t row = 0; row < rows; ++row)
+    {
+        const UInt32 pid = (hashes[row] >> shift) & mask;
+        pids[row] = pid;
+        ++histogram[pid];
+    }
+}
+
+void computePidsAndHistogram(
+    const std::vector<Columns> & sources,
+    const std::vector<size_t> & key_indices,
+    UInt32 shift,
+    UInt32 fanout,
+    ScatterScratch & scratch,
+    PaddedPODArray<UInt32> & histogram)
+{
+    scratch.pids.resize(sources.size());
+    histogram.resize(fanout);
+    std::fill(histogram.begin(), histogram.end(), UInt32{0});
+
+    for (size_t source_index = 0; source_index < sources.size(); ++source_index)
+        computePidsForSource(
+            sources[source_index],
+            key_indices,
+            shift,
+            fanout,
+            scratch.pids[source_index],
+            histogram,
+            scratch.hashes);
+}
+
+/// Measurement-only exact-preallocation scatter for UInt64 columns. It deliberately mirrors the
+/// requested experiment: all output columns are exact-sized before row copying starts.
+void scatterUInt64ExactWithPids(
+    const std::vector<Columns> & sources,
+    const std::vector<PaddedPODArray<UInt32>> & pids_per_source,
+    const PaddedPODArray<UInt32> & histogram,
+    size_t & scattered_rows,
+    std::vector<Columns> & children)
+{
+    const size_t fanout = histogram.size();
+    const size_t num_cols = sources.empty() ? 0 : sources[0].size();
+
+    children.clear();
+    children.resize(fanout);
+    for (auto & child : children)
+        child.resize(num_cols);
+
+    size_t rows = 0;
+    for (const auto & source : sources)
+        rows += groupRows(source);
+    scattered_rows += rows;
+
+    std::vector<UInt64 *> write_ptrs(fanout);
+    for (size_t col_index = 0; col_index < num_cols; ++col_index)
+    {
+        for (const auto & source : sources)
+        {
+            if (!typeid_cast<const ColumnUInt64 *>(source[col_index].get()))
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "PHJ_PREALLOC_PASS_SCATTER supports only UInt64 columns");
+        }
+
+        for (size_t partition = 0; partition < fanout; ++partition)
+        {
+            auto column = ColumnUInt64::create();
+            column->getData().reserve_exact(histogram[partition]);
+            column->getData().resize_assume_reserved(histogram[partition]);
+            write_ptrs[partition] = column->getData().data();
+            children[partition][col_index] = std::move(column);
+        }
+
+        for (size_t source_index = 0; source_index < sources.size(); ++source_index)
+        {
+            const auto & src_data = assert_cast<const ColumnUInt64 &>(*sources[source_index][col_index]).getData();
+            const auto & pids = pids_per_source[source_index];
+            for (size_t row = 0; row < pids.size(); ++row)
+                *write_ptrs[pids[row]]++ = src_data[row];
+        }
+    }
 }
 
 /// MEASUREMENT-ONLY: collect per-subtable cell-buffer sizes from a HashJoin map (single-level or two-level).
@@ -277,6 +385,8 @@ PartitionedHashJoin::PartitionedHashJoin(
     , any_take_last_row(any_take_last_row_)
     , shard_by_hash_input_batch_bytes(shard_by_hash_input_batch_bytes_)
     , debug_skip_passthrough(debug_skip_passthrough_)
+    , debug_prealloc_pass_scatter(std::getenv("PHJ_PREALLOC_PASS_SCATTER") != nullptr)
+    , debug_prealloc_stream_scatter(std::getenv("PHJ_PREALLOC_STREAM_SCATTER") != nullptr)
     , instance_id(g_instance_counter.fetch_add(1, std::memory_order_relaxed))
     , hash_join(std::make_unique<HashJoin>(table_join, right_sample_block, any_take_last_row))
 {
@@ -346,6 +456,28 @@ void PartitionedHashJoin::allocateSlotState(BuildSlot & slot) const
         slot.stage_buffers[s].resize(count);
         slot.stage_buffer_bytes[s].assign(count, 0);
     }
+
+    if (num_passes != 0)
+    {
+        const size_t fanout0 = size_t{1} << partition_config.pass_bits[0];
+        slot.prealloc_pass0_hist.resize(fanout0);
+        std::fill(slot.prealloc_pass0_hist.begin(), slot.prealloc_pass0_hist.end(), UInt32{0});
+
+        slot.stream_pending.resize(num_passes);
+        UInt8 bits_so_far_stream = 0;
+        for (size_t stage = 0; stage < num_passes; ++stage)
+        {
+            const size_t prefix_count = size_t{1} << bits_so_far_stream;
+            const size_t fanout = size_t{1} << partition_config.pass_bits[stage];
+            slot.stream_pending[stage].resize(prefix_count);
+            for (auto & pending : slot.stream_pending[stage])
+            {
+                pending.hist.resize(fanout);
+                std::fill(pending.hist.begin(), pending.hist.end(), UInt32{0});
+            }
+            bits_so_far_stream = static_cast<UInt8>(bits_so_far_stream + partition_config.pass_bits[stage]);
+        }
+    }
 }
 
 PartitionedHashJoin::BuildSlot & PartitionedHashJoin::slotForCurrentThread()
@@ -368,6 +500,13 @@ PartitionedHashJoin::BuildSlot & PartitionedHashJoin::slotForCurrentThread()
 
 bool PartitionedHashJoin::addBlockToJoin(const Block & block, bool /*check_limits*/)
 {
+    std::call_once(scatter_wall_begin_flag, [this]
+    {
+        scatter_wall_begin_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+            std::memory_order_relaxed);
+    });
+
     /// P3: shuffle-only. The right block is radix-shuffled, lock-free, into THIS thread's build slot.
     /// The passthrough HashJoin (the `[PROXY]` query-result path) is rebuilt single-threaded later, in
     /// onBuildPhaseFinish, because the plain HashJoin is not safe for concurrent build.
@@ -378,6 +517,31 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & block, bool /*check_limit
     ingested_rows.fetch_add(rows, std::memory_order_relaxed);
 
     BuildSlot & slot = slotForCurrentThread();
+
+    if (debug_prealloc_stream_scatter)
+    {
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildBlocksMoved, 1);
+        preallocStreamPushToStage(slot, 0, 0, block.getColumns());
+        return true;
+    }
+
+    if (debug_prealloc_pass_scatter)
+    {
+        if (partition_config.numPasses() == 0)
+        {
+            slot.leaf_chains[0].push_back(block.getColumns());
+            return true;
+        }
+
+        const UInt32 fanout0 = UInt32{1} << partition_config.pass_bits[0];
+        const UInt32 shift0 = partition_config.shiftForPass(0);
+        slot.prealloc_inputs.push_back(block.getColumns());
+        auto & pids = slot.prealloc_pass0_pids.emplace_back();
+        computePidsForSource(
+            slot.prealloc_inputs.back(), key_indices, shift0, fanout0, pids, slot.prealloc_pass0_hist, slot.scatter_scratch.hashes);
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildBlocksMoved, 1);
+        return true;
+    }
 
     /// Degenerate single-leaf config: no partitioning, collect raw blocks into leaf 0.
     if (partition_config.numPasses() == 0)
@@ -478,6 +642,132 @@ void PartitionedHashJoin::drainSlot(BuildSlot & slot)
             refineBuffer(slot, stage, prefix);
 }
 
+void PartitionedHashJoin::preallocScatterSlot(BuildSlot & slot)
+{
+    if (partition_config.numPasses() == 0)
+        return;
+
+    std::vector<Columns> current;
+    {
+        size_t scattered_rows = 0;
+        Stopwatch watch;
+        scatterUInt64ExactWithPids(
+            slot.prealloc_inputs, slot.prealloc_pass0_pids, slot.prealloc_pass0_hist, scattered_rows, current);
+        const auto us = watch.elapsedMicroseconds();
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShufflePass0Microseconds, us);
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShuffleMicroseconds, us);
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildScatterRows, scattered_rows);
+    }
+
+    slot.prealloc_inputs.clear();
+    slot.prealloc_pass0_pids.clear();
+
+    PaddedPODArray<UInt32> histogram;
+    std::vector<Columns> single_source;
+    single_source.reserve(1);
+
+    for (size_t stage = 1; stage < partition_config.numPasses(); ++stage)
+    {
+        const UInt32 fanout = UInt32{1} << partition_config.pass_bits[stage];
+        const UInt32 shift = partition_config.shiftForPass(stage);
+        std::vector<Columns> next(current.size() * fanout);
+
+        size_t scattered_rows = 0;
+        Stopwatch watch;
+        for (size_t prefix = 0; prefix < current.size(); ++prefix)
+        {
+            if (groupRows(current[prefix]) == 0)
+                continue;
+
+            single_source.clear();
+            single_source.push_back(std::move(current[prefix]));
+            computePidsAndHistogram(single_source, key_indices, shift, fanout, slot.scatter_scratch, histogram);
+
+            std::vector<Columns> children;
+            scatterUInt64ExactWithPids(single_source, slot.scatter_scratch.pids, histogram, scattered_rows, children);
+            for (UInt32 pid = 0; pid < fanout; ++pid)
+                next[prefix * fanout + pid] = std::move(children[pid]);
+        }
+        const auto us = watch.elapsedMicroseconds();
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShuffleTrailingMicroseconds, us);
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShuffleMicroseconds, us);
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildScatterRows, scattered_rows);
+
+        current = std::move(next);
+    }
+
+    for (size_t leaf = 0; leaf < current.size(); ++leaf)
+        if (groupRows(current[leaf]) != 0)
+            slot.leaf_chains[leaf].push_back(std::move(current[leaf]));
+}
+
+void PartitionedHashJoin::preallocStreamPushToStage(BuildSlot & slot, size_t stage, size_t prefix, Columns group)
+{
+    if (groupRows(group) == 0)
+        return;
+
+    if (stage == partition_config.numPasses())
+    {
+        slot.leaf_chains[prefix].push_back(std::move(group));
+        return;
+    }
+
+    auto & pending = slot.stream_pending[stage][prefix];
+    const UInt32 fanout = UInt32{1} << partition_config.pass_bits[stage];
+    const UInt32 shift = partition_config.shiftForPass(stage);
+
+    pending.inputs.push_back(std::move(group));
+    auto & pids = pending.pids.emplace_back();
+    computePidsForSource(
+        pending.inputs.back(),
+        key_indices,
+        shift,
+        fanout,
+        pids,
+        pending.hist,
+        slot.scatter_scratch.hashes);
+
+    if (std::any_of(pending.hist.begin(), pending.hist.end(), [](UInt32 rows) { return rows >= PREALLOC_STREAM_FLUSH_ROWS; }))
+        preallocStreamFlushPending(slot, stage, prefix);
+}
+
+void PartitionedHashJoin::preallocStreamFlushPending(BuildSlot & slot, size_t stage, size_t prefix)
+{
+    auto & pending = slot.stream_pending[stage][prefix];
+    if (pending.inputs.empty())
+        return;
+
+    const UInt32 fanout = UInt32{1} << partition_config.pass_bits[stage];
+
+    size_t scattered_rows = 0;
+    Stopwatch watch;
+    std::vector<Columns> children;
+    scatterUInt64ExactWithPids(pending.inputs, pending.pids, pending.hist, scattered_rows, children);
+    const auto us = watch.elapsedMicroseconds();
+
+    if (stage == 0)
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShufflePass0Microseconds, us);
+    else
+        ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShuffleTrailingMicroseconds, us);
+    ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShuffleMicroseconds, us);
+    ProfileEvents::increment(ProfileEvents::PartitionedHashBuildScatterRows, scattered_rows);
+
+    pending.inputs.clear();
+    pending.pids.clear();
+    std::fill(pending.hist.begin(), pending.hist.end(), UInt32{0});
+
+    const size_t child_prefix_base = prefix * fanout;
+    for (UInt32 pid = 0; pid < fanout; ++pid)
+        preallocStreamPushToStage(slot, stage + 1, child_prefix_base + pid, std::move(children[pid]));
+}
+
+void PartitionedHashJoin::preallocStreamDrainSlot(BuildSlot & slot)
+{
+    for (size_t stage = 0; stage < partition_config.numPasses(); ++stage)
+        for (size_t prefix = 0; prefix < slot.stream_pending[stage].size(); ++prefix)
+            preallocStreamFlushPending(slot, stage, prefix);
+}
+
 void PartitionedHashJoin::onBuildPhaseFinish()
 {
     /// Drain the residual per-slot shuffle buffers down to leaves. At high thread counts most trailing-pass
@@ -493,9 +783,26 @@ void PartitionedHashJoin::onBuildPhaseFinish()
         {
             size_t s;
             while ((s = next_drain_slot.fetch_add(1, std::memory_order_relaxed)) < slots)
-                drainSlot(build_slots[s]);
+            {
+                if (debug_prealloc_stream_scatter)
+                    preallocStreamDrainSlot(build_slots[s]);
+                else if (debug_prealloc_pass_scatter)
+                    preallocScatterSlot(build_slots[s]);
+                else
+                    drainSlot(build_slots[s]);
+            }
         });
     ProfileEvents::increment(ProfileEvents::PartitionedHashBuildFinishDrainMicroseconds, drain_watch.elapsedMicroseconds());
+
+    std::call_once(scatter_wall_end_flag, [this]
+    {
+        const auto end_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const auto begin_ns = scatter_wall_begin_ns.load(std::memory_order_relaxed);
+        if (begin_ns > 0 && end_ns >= begin_ns)
+            ProfileEvents::increment(
+                ProfileEvents::PartitionedHashBuildScatterWallMicroseconds, static_cast<UInt64>((end_ns - begin_ns) / 1000));
+    });
 
     /// Runtime conservation check on the REAL workload: rows across all slot leaf chains == ingested.
     size_t leaf_rows = 0;

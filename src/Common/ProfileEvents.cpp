@@ -1458,7 +1458,8 @@ The server successfully detected this situation and will download merged part fr
     M(PartitionedHashBuildShuffleMicroseconds, "PartitionedHashJoin: full multi-pass right shuffle (in addBlockToJoin).", ValueType::Microseconds) \
     M(PartitionedHashBuildShufflePass0Microseconds, "PartitionedHashJoin: pass-0 multi-source scatter of the right shuffle.", ValueType::Microseconds) \
     M(PartitionedHashBuildShuffleTrailingMicroseconds, "PartitionedHashJoin: trailing-pass (1..N) scatter of the right shuffle.", ValueType::Microseconds) \
-    M(PartitionedHashBuildFinishDrainMicroseconds, "PartitionedHashJoin: single-threaded drain of residual per-slot shuffle buffers in onBuildPhaseFinish (wall).", ValueType::Microseconds) \
+    M(PartitionedHashBuildFinishDrainMicroseconds, "PartitionedHashJoin: wall time of parallel drain of residual per-slot shuffle buffers in onBuildPhaseFinish.", ValueType::Microseconds) \
+    M(PartitionedHashBuildScatterWallMicroseconds, "PartitionedHashJoin: wall span from first addBlockToJoin to end of build shuffle drain in onBuildPhaseFinish (once per query).", ValueType::Microseconds) \
     M(PartitionedHashBuildHTMicroseconds, "PartitionedHashJoin: eager leaf HT construction (runPostBuildPhase).", ValueType::Microseconds) \
     M(PartitionedHashProbeScatterMicroseconds, "PartitionedHashJoin: pass-1 scatter + refinement scatter on the probe side.", ValueType::Microseconds) \
     M(PartitionedHashProbeMicroseconds, "PartitionedHashJoin: leaf HT lookup + output materialisation.", ValueType::Microseconds) \

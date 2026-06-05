@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -89,6 +90,10 @@ private:
     /// Diagnostic only: when true, skip the passthrough HashJoin build so the shuffle/leaf build is timed
     /// alone (query results become incorrect; for measurement only).
     bool debug_skip_passthrough;
+    /// Measurement-only: batch each radix pass, exact-allocate output columns from histograms, then scatter.
+    bool debug_prealloc_pass_scatter;
+    /// Measurement-only: like prealloc pass scatter, but flush each stage when one output reaches 64K rows.
+    bool debug_prealloc_stream_scatter;
 
     /// Process-unique id used to map a build thread to its slot (see slot handout in the .cpp). Never
     /// reused, so a stale thread-local cache entry can never alias a different join instance.
@@ -131,6 +136,23 @@ private:
         /// A stage's children are consumed while deeper stages scatter into their own buffer, so each
         /// stage needs its own; reusing them avoids reallocating the fanout-sized container every flush.
         std::vector<std::vector<Columns>> stage_children;
+
+        /// Measurement-only PHJ_PREALLOC_PASS_SCATTER state. Pass 0 is collected in addBlockToJoin:
+        /// raw input groups, their pass-0 pids, and one exact histogram over pass-0 partitions.
+        std::vector<Columns> prealloc_inputs;
+        std::vector<PaddedPODArray<UInt32>> prealloc_pass0_pids;
+        PaddedPODArray<UInt32> prealloc_pass0_hist;
+
+        struct PreallocPending
+        {
+            std::vector<Columns> inputs;
+            std::vector<PaddedPODArray<UInt32>> pids;
+            PaddedPODArray<UInt32> hist;
+        };
+
+        /// Measurement-only PHJ_PREALLOC_STREAM_SCATTER state. `stream_pending[s][prefix]` buffers
+        /// sources for one pass/prefix until any output partition reaches the row threshold.
+        std::vector<std::vector<PreallocPending>> stream_pending;
     };
 
     std::vector<BuildSlot> build_slots;
@@ -146,6 +168,11 @@ private:
     /// Work-steal cursor over leaves for the eager build (lock-free, §3).
     std::atomic<size_t> next_leaf{0};
 
+    /// Build-shuffle wall span: first addBlockToJoin -> end of onBuildPhaseFinish drain (ProfileEvents, once).
+    std::atomic<Int64> scatter_wall_begin_ns{0};
+    std::once_flag scatter_wall_begin_flag;
+    std::once_flag scatter_wall_end_flag;
+
     /// Returns this thread's build slot, allocating one on first use (fail-close if slots exhausted).
     BuildSlot & slotForCurrentThread();
     void allocateSlotState(BuildSlot & slot) const;
@@ -157,6 +184,12 @@ private:
     /// End-of-build drain of one slot: flush its residual pending input through pass 0, then cascade every
     /// remaining stage buffer down to leaves. One worker owns a slot, so its scratch is used race-free.
     void drainSlot(BuildSlot & slot);
+
+    /// Measurement-only exact-allocation pass cascade for PHJ_PREALLOC_PASS_SCATTER.
+    void preallocScatterSlot(BuildSlot & slot);
+    void preallocStreamPushToStage(BuildSlot & slot, size_t stage, size_t prefix, Columns group);
+    void preallocStreamFlushPending(BuildSlot & slot, size_t stage, size_t prefix);
+    void preallocStreamDrainSlot(BuildSlot & slot);
 
     /// Eager build of one leaf: gather its fragments across all slots and build the leaf HashJoin.
     /// Returns the number of build rows inserted (for cell conservation). Updates blocks_moved.
