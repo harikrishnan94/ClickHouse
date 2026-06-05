@@ -15,6 +15,8 @@
 #include <Poco/Logger.h>
 #include <sys/mman.h> /// MADV_POPULATE_WRITE
 
+#include <cstdlib> /// std::getenv, std::strtoull (measurement-only POPULATE_THRESHOLD override)
+
 
 namespace DB
 {
@@ -130,7 +132,21 @@ void checkSize(size_t size)
 
 
 /// Constant is chosen almost arbitrarily, what I observed is 128KB is too small, 1MB is almost indistinguishable from 64MB and 1GB is too large.
-extern const size_t POPULATE_THRESHOLD = std::max(Int64{16 * 1024 * 1024}, ::getPageSize());
+/// MEASUREMENT-ONLY (revert before commit): CH_POPULATE_THRESHOLD_BYTES overrides the MADV_POPULATE_WRITE gate
+/// so the leaf-HT IPI root-cause can be A/B'd on the real allocator path — set it tiny to populate every HT
+/// buffer (incl. PHJ's 2 MiB leaves) or huge to disable populate entirely (incl. CHJ's 32 MiB buckets).
+static size_t readPopulateThreshold()
+{
+    if (const char * e = std::getenv("CH_POPULATE_THRESHOLD_BYTES"))
+    {
+        char * end = nullptr;
+        const unsigned long long v = std::strtoull(e, &end, 10);
+        if (end != e)
+            return std::max<size_t>(static_cast<size_t>(v), static_cast<size_t>(::getPageSize()));
+    }
+    return std::max(Int64{16 * 1024 * 1024}, ::getPageSize());
+}
+extern const size_t POPULATE_THRESHOLD = readPopulateThreshold();
 
 template <bool clear_memory_, bool populate>
 void * Allocator<clear_memory_, populate>::alloc(size_t size, size_t alignment)
