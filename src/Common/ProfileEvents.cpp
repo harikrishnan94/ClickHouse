@@ -1455,6 +1455,19 @@ The server successfully detected this situation and will download merged part fr
     \
     M(JoinBuildPostProcessingMicroseconds, "Elapsed time of post-processing steps after building the right JOIN side.", ValueType::Microseconds) \
     \
+    M(RadixHashBuildSelectMicroseconds, "RadixHashJoin: time spent hashing keys, computing the uint16 leaf id and updating the per-thread histogram in addBlockToJoin (no scatter).", ValueType::Microseconds) \
+    M(RadixHashBuildScatterMicroseconds, "RadixHashJoin: time spent in the deferred SWWC/NT key+ref scatter in runPostBuildPhase.", ValueType::Microseconds) \
+    M(RadixHashBuildHTMicroseconds, "RadixHashJoin: time spent building the 16-byte-cell leaf hash tables.", ValueType::Microseconds) \
+    M(RadixHashProbeSelectMicroseconds, "RadixHashJoin: probe Phase 1 selector (hash + leaf id).", ValueType::Microseconds) \
+    M(RadixHashProbeScatterMicroseconds, "RadixHashJoin: probe Phase 2 key + LeftRef scatter (variant B).", ValueType::Microseconds) \
+    M(RadixHashProbeLookupMicroseconds, "RadixHashJoin: per-leaf hash-table lookup and ref collection.", ValueType::Microseconds) \
+    M(RadixHashProbeGatherMicroseconds, "RadixHashJoin: build/left payload gather and output materialisation via colptr tables.", ValueType::Microseconds) \
+    M(RadixHashScatterRows, "RadixHashJoin: number of rows scattered, counted per pass (ns/row denominator).", ValueType::Number) \
+    M(RadixHashNTStoreBytes, "RadixHashJoin: bytes written via non-temporal stores during SWWC flushes.", ValueType::Bytes) \
+    M(RadixHashHugePagesUsed, "RadixHashJoin: number of THP arena slabs successfully madvise(MADV_HUGEPAGE)-backed.", ValueType::Number) \
+    M(RadixHashHugePagesFailed, "RadixHashJoin: number of THP arena slabs where madvise(MADV_HUGEPAGE) failed (fail-open to 4 KiB pages).", ValueType::Number) \
+    M(RadixHashBuildBlocksMoved, "RadixHashJoin: number of build blocks accumulated by move (not copy).", ValueType::Number) \
+    \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIAPICalls, "Number of HTTP requests dispatched to AI providers.", ValueType::Number) \
