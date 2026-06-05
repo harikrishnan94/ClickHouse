@@ -23,35 +23,37 @@ namespace DB::RadixShuffle
   * sequence sharing the same `pid`. Column-major keeps the per-partition output dense and lets the key
   * width vary independently of the `8 B` ref (a fused cell would need a single fixed element size).
   *
-  * **Supported key widths.** Any fixed width of `1..64` bytes (e.g. `UInt8…UInt256`, `UUID`,
-  * `Decimal*`, `FixedString(<=64)`), or any width that is a whole multiple of `64` (e.g.
-  * `FixedString(64)`, `FixedString(128)`). Other widths (`> 64` and not a multiple of `64`) are out of
-  * scope for the join's key gate and are not handled by the SWWC path. The `BuildRef` column is always
-  * `8 B`.
+  * **Supported element widths: multiples of 4 only.** A width of `4..64` that is a multiple of 4
+  * (`UInt32`, `UInt64`, `UInt128`/`UUID`, `UInt256`, `Decimal*`, `FixedString(N)` with `4 | N <= 64`),
+  * or any whole multiple of `64` (`FixedString(64)`, `FixedString(128)`, …). Sub-`4 B` and non-multiple
+  * -of-4 widths are out of scope (the join's key gate must reject `UInt8`/`UInt16`/`Date`/`Enum8/16`).
+  * The minimum copy granularity is `4 B`, which lets a grand `switch(width)` dispatch to a
+  * width-templated kernel where every copy is `__builtin_memcpy_inline` of a compile-time size — i.e.
+  * **direct typed stores, no `memcpy` call anywhere** (including the residual drain). The `BuildRef`
+  * column is always `8 B`.
   *
-  * **The kernel** uses software write-combining (SWWC) with non-temporal (NT) stores. The SWWC path
-  * has three width regimes, all driven by `64 B` NT lines:
-  *   - **W divides 64** (`1,2,4,8,16,32`): each row is staged into an L1/L2-resident per-partition
-  *     `64 B` line holding `64 / W` slots; a full line is flushed with one `_mm512_stream_si512` (or
-  *     two `_mm256_stream_si256` on AVX2). One `64 B` staging line per partition.
-  *   - **W is a multiple of 64** (`64,128,…`): each element is already a whole number of `64 B` lines,
-  *     so it is streamed directly to the output with `W / 64` NT stores — no staging line is needed.
-  *   - **W <= 64 but does not divide 64** (`3,5,6,7,…,63`): a per-partition `64 B` write-combining
-  *     line is filled as a byte stream; whenever it fills, it is flushed with one NT store and the
-  *     element's remainder carries over (at most one straddle per element since `W <= 64`).
-  * NT stores bypass the cache (no read-for-ownership, no pollution), so the streamed outputs never
-  * evict the staging / `pid` / hash-table working set. Under the realistic alloc+first-touch-fault
-  * model (P2 calibration) this wins over the direct batched scatter only at high per-pass fanout
-  * (`P >= 2048`, where the direct scatter's many output streams would otherwise pollute the cache) and
-  * only when NT stores are actually emitted; at lower fanout, or in a build without NT (the default
-  * `x86-64-v2` build, `ENABLE_MULTITARGET_CODE=0`), the direct scatter is faster — see `shouldUseSwwc`.
+  * **Two scatter paths.**
+  *   - **Direct** (always available): plain typed per-partition write pointers, no staging, no NT.
+  *     Width-templated for the common widths, a `4 B`-stride typed-store loop for other multiples of 4.
+  *   - **SWWC + NT** (only when `ntStoresAvailable()`): software write-combining with non-temporal
+  *     stores. A row is staged into an L1/L2-resident per-partition `64 B` line and a full line is
+  *     flushed with one `_mm512_stream_si512` (or two `_mm256_stream_si256` on AVX2), which bypasses
+  *     the cache (no read-for-ownership, no pollution) so the streamed outputs never evict the staging
+  *     / `pid` / hash-table working set. SWWC tiles only widths that divide 64 (`{4,8,16,32}`); a width
+  *     that is a multiple of 64 is streamed directly (`width / 64` NT lines, no staging); any other
+  *     multiple of 4 (`12,20,24,…`) cannot tile a `64 B` line without a large `lcm(width,64)` buffer,
+  *     so it uses the direct path.
+  *
+  * **SWWC exists only when NT stores do.** There is no scalar write-combine fallback (it would be
+  * strictly slower than direct). When NT is unavailable — the default `x86-64-v2` build
+  * (`ENABLE_MULTITARGET_CODE=0`), or a non-`v3`/`v4` CPU — `scatterColumn(use_swwc=true)` runs the
+  * direct path. Under the realistic alloc+first-touch-fault model (P2 calibration) SWWC + NT beats the
+  * direct scatter only at high per-pass fanout (`P >= 2048`) — see `shouldUseSwwc`.
   *
   * Routing is the top-bit slice of the stored `uint16` leaf id: `part = (pid >> shift) & mask`
   * (spec section 4.5). There is no re-hash and no separate count pass; the per-partition output bases
   * are exact-sized from the P1 histogram and must be `64 B`-aligned (required by the NT stores).
-  *
-  * Below the SWWC engagement threshold (`shouldUseSwwc`) a pass falls back to the non-SWWC batched
-  * scatter (plain typed per-partition write pointers). `ColumnsScatter::scatter` is never used.
+  * `ColumnsScatter::scatter` is never used; the only fallback is the direct batched scatter.
   */
 
 /// Build-side reference: which accumulated block, and which row within it (spec section 4.6).
@@ -63,13 +65,13 @@ struct BuildRef
 };
 static_assert(sizeof(BuildRef) == 8, "BuildRef must be exactly 8 bytes for the 16 B leaf cell");
 
-/// Whether non-temporal (NT) stores are compiled in AND supported by the current CPU. When false, the
-/// SWWC path's flush degrades to a scalar `memcpy` write-combine (an extra staging copy with no
-/// cache-bypass benefit), which is strictly slower than the direct batched scatter — so SWWC must not
-/// be engaged. NT requires a multitarget build (`ENABLE_MULTITARGET_CODE=1`, which `src/CMakeLists.txt`
-/// disables at the `x86-64-v2` baseline) on a `v3`/`v4`-capable CPU. (P2 finding: in the default
-/// `x86-64-v2` reldeb build NT is dormant, so `shouldUseSwwc` returns false and the join uses the
-/// direct scatter; in a multitarget build the NT path activates automatically.)
+/// Whether non-temporal (NT) stores are compiled in AND supported by the current CPU. When false there
+/// is no SWWC path at all — `scatterColumn(use_swwc=true)` runs the direct batched scatter (a scalar
+/// write-combine would only add a staging copy with no cache-bypass benefit, so it is not offered). NT
+/// requires a multitarget build (`ENABLE_MULTITARGET_CODE=1`, which `src/CMakeLists.txt` disables at the
+/// `x86-64-v2` baseline) on a `v3`/`v4`-capable CPU. (P2 finding: in the default `x86-64-v2` reldeb
+/// build NT is dormant, so `shouldUseSwwc` returns false and the join uses the direct scatter; in a
+/// multitarget build the NT path activates automatically.)
 bool ntStoresAvailable() noexcept;
 
 /// SWWC engagement rule, recalibrated in P2 under the realistic alloc+first-touch-fault model
@@ -134,7 +136,7 @@ struct ScatterStats
   *
   * `pid`        : `n` stored `uint16` leaf ids (P1 selector output).
   * `src`        : `n` contiguous fixed-width elements of `elem_width` bytes each.
-  * `elem_width` : element width in bytes — `1..64`, or any multiple of `64` (see header doc).
+  * `elem_width` : element width in bytes — a multiple of 4 in `[4, 64]`, or any multiple of `64`.
   * `partitions` : this pass's fanout `P = 1 << pass_bits`.
   * `out`        : `partitions` per-partition output bases, each `64 B`-aligned (when `use_swwc`) with
   *                capacity `>= hist[p] * elem_width` bytes (exact-sized from the histogram).

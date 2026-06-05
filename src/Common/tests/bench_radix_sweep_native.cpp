@@ -20,10 +20,11 @@
 //
 // "nt/bt" = direct/swwc (> 1 means write-combining + NT still wins after alloc+fault is counted).
 //
-// NOTE: the "swwc" column measures whatever flush the linked Scatter.o emits. In the default
-// x86-64-v2 build (ENABLE_MULTITARGET_CODE=0) the flush is a scalar memcpy (no NT stores) and loses to
-// direct everywhere; the genuine NT path (vmovntdq/vmovntps) is only emitted in a multitarget build,
-// where SWWC+NT wins at high fanout (P >= 2048). See analysis/radix_hash_p2_analysis.md.
+// NOTE: SWWC exists only when NT stores are available. In the default x86-64-v2 build
+// (ENABLE_MULTITARGET_CODE=0) NT is dormant, so scatterColumn(use_swwc=true) runs the DIRECT path and
+// the "swwc" and "direct" columns are identical. The genuine NT path (vmovntdq/vmovntps) is only
+// emitted in a multitarget build, where SWWC+NT wins at high fanout (P >= 2048). See
+// analysis/radix_hash_p2_analysis.md. (Key widths swept here are all multiples of 4, the supported set.)
 
 #include <pthread.h>
 #include <sys/mman.h>

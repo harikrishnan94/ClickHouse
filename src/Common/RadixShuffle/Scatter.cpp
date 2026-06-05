@@ -7,10 +7,7 @@
 #    include <immintrin.h> /// __m512i / __m256i and the NT-store intrinsics for the v4/v3 flush helpers
 #endif
 
-#include <atomic>
-#include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <utility>
 
 namespace DB
@@ -27,21 +24,95 @@ namespace DB::RadixShuffle
 namespace
 {
 
+inline UInt32 route(UInt16 pid, UInt32 shift, UInt32 mask) noexcept
+{
+    return (static_cast<UInt32>(pid) >> shift) & mask;
+}
+
+/// ---- Direct (non-SWWC) batched scatter -------------------------------------------------------
+/// Plain typed per-partition write pointers, no staging, no NT stores. This is the only scatter
+/// fallback (`ColumnsScatter::scatter` is never used) and the path the join uses whenever NT stores
+/// are unavailable or below the SWWC fanout threshold. Every copy is `__builtin_memcpy_inline` of a
+/// compile-time size, so it lowers to direct typed stores — there is no `memcpy` call anywhere.
+
+/// Compile-time width (a multiple of 4): the per-element copy is a single inlined typed store.
+template <UInt32 width>
+ScatterStats scatterColumnDirectTiled(
+    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t partitions, void * const * out,
+    ScatterScratch & scratch)
+{
+    static_assert(width >= 4 && width % 4 == 0, "scatter width must be a multiple of 4");
+    void ** cur = scratch.cursors();
+    for (size_t p = 0; p < partitions; ++p)
+        cur[p] = out[p];
+
+    for (size_t j = 0; j < n; ++j)
+    {
+        const UInt32 p = route(pid[j], shift, mask);
+        char * d = static_cast<char *>(cur[p]);
+        __builtin_memcpy_inline(d, src + j * width, width); /// constant width -> direct typed store(s)
+        cur[p] = d + width;
+    }
+    return {};
+}
+
+/// Runtime width that is a multiple of 4 (the uncommon FixedString widths and large multiples of 64):
+/// copied in `4 B` units with inlined `movl`s — a typed-store loop, still no `memcpy` call.
+ScatterStats scatterColumnDirectGeneric(
+    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t width, size_t partitions,
+    void * const * out, ScatterScratch & scratch)
+{
+    void ** cur = scratch.cursors();
+    for (size_t p = 0; p < partitions; ++p)
+        cur[p] = out[p];
+
+    for (size_t j = 0; j < n; ++j)
+    {
+        const UInt32 p = route(pid[j], shift, mask);
+        char * d = static_cast<char *>(cur[p]);
+        const char * s = src + j * width;
+        for (size_t b = 0; b < width; b += 4)
+            __builtin_memcpy_inline(d + b, s + b, 4); /// 4 B typed stores; width is a multiple of 4
+        cur[p] = d + width;
+    }
+    return {};
+}
+
+/// Grand dispatch on the runtime width: the common fixed widths are width-templated (fully unrolled
+/// typed stores); any other multiple of 4 falls to the generic `4 B`-stride copy. No `memcpy` call.
+ScatterStats scatterColumnDirectDispatch(
+    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t elem_width, size_t partitions,
+    void * const * out, ScatterScratch & scratch)
+{
+    switch (elem_width)
+    {
+        case 4: return scatterColumnDirectTiled<4>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 8: return scatterColumnDirectTiled<8>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 16: return scatterColumnDirectTiled<16>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 32: return scatterColumnDirectTiled<32>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 64: return scatterColumnDirectTiled<64>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 128: return scatterColumnDirectTiled<128>(pid, shift, mask, n, src, partitions, out, scratch);
+        default:
+            chassert(elem_width % 4 == 0 && "RadixShuffle scatter supports element widths that are multiples of 4");
+            return scatterColumnDirectGeneric(pid, shift, mask, n, src, elem_width, partitions, out, scratch);
+    }
+}
+
+#if USE_MULTITARGET_CODE
+
 constexpr UInt32 LINE_BYTES = 64;
 
 /// Flush one full 64 B SWWC write-combining line to the partition's write cursor with a non-temporal
 /// store, then advance the cursor by 64 B. The store bypasses the cache (no read-for-ownership, no
-/// pollution), so the streamed outputs never evict the staging / pid / hash-table working set. The
-/// `staging_line` is 64 B-aligned (scratch staging is 64 B-aligned, each line at a 64 B offset) and
-/// `out` is 64 B-aligned (the per-partition output base is 64 B-aligned and only advances by 64 B).
+/// pollution), so the streamed outputs never evict the staging / pid / hash-table working set. Both
+/// the `staging_line` and `out` are 64 B-aligned (staging is 64 B-aligned with each line at a 64 B
+/// offset; the per-partition output base is 64 B-aligned and only advances by whole 64 B lines).
 using FlushFn = void (*)(const void * staging_line, void *& out);
 
 /// Stream `lines` 64 B lines straight from a (possibly unaligned) source element to the 64 B-aligned
-/// output cursor — used for keys whose width is a whole multiple of 64 B (no staging line needed,
-/// each element is already a whole number of NT lines).
+/// output cursor — for keys whose width is a whole multiple of 64 B (each element is already a whole
+/// number of NT lines, so no staging line is needed).
 using StreamFn = void (*)(const void * src, void *& out, size_t lines);
-
-#if USE_MULTITARGET_CODE
 
 DECLARE_X86_64_V4_SPECIFIC_CODE(
     inline void flushLine64(const void * staging_line, void *& out) /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -87,43 +158,21 @@ DECLARE_X86_64_V3_SPECIFIC_CODE(
     }
 ) /// DECLARE_X86_64_V3_SPECIFIC_CODE
 
-#endif
-
-/// Scalar fallback (no AVX-512 / AVX2 or multitarget disabled): plain copies. Correct, just without
-/// the cache-bypassing benefit.
-void flushLine64Scalar(const void * staging_line, void *& out)
-{
-    __builtin_memcpy_inline(out, staging_line, 64); /// constant size -> inlined vector copy, never a memcpy call
-    out = reinterpret_cast<char *>(out) + 64; /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-}
-
-void streamLinesScalar(const void * src, void *& out, size_t lines)
-{
-    std::memcpy(out, src, lines * 64);
-    out = reinterpret_cast<char *>(out) + lines * 64; /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-}
-
-/// Pick the best NT variants once per scatter (not per row), so the hot loop has no ISA branch.
+/// Pick the best NT variant once per scatter (not per row), so the hot loop has no ISA branch. Only
+/// ever called when `ntStoresAvailable()` (the SWWC path is gated on it), so a scalar fallback is
+/// neither needed nor offered — SWWC exists only when NT stores do.
 FlushFn selectFlush() noexcept
 {
-#if USE_MULTITARGET_CODE
     if (isArchSupported(TargetArch::x86_64_v4))
         return &TargetSpecific::x86_64_v4::flushLine64;
-    if (isArchSupported(TargetArch::x86_64_v3))
-        return &TargetSpecific::x86_64_v3::flushLine64;
-#endif
-    return &flushLine64Scalar;
+    return &TargetSpecific::x86_64_v3::flushLine64;
 }
 
 StreamFn selectStream() noexcept
 {
-#if USE_MULTITARGET_CODE
     if (isArchSupported(TargetArch::x86_64_v4))
         return &TargetSpecific::x86_64_v4::streamLines;
-    if (isArchSupported(TargetArch::x86_64_v3))
-        return &TargetSpecific::x86_64_v3::streamLines;
-#endif
-    return &streamLinesScalar;
+    return &TargetSpecific::x86_64_v3::streamLines;
 }
 
 /// Make the NT stores globally visible before the caller reads the outputs (NT stores are weakly
@@ -134,7 +183,7 @@ void streamingFence() noexcept
 }
 
 /// Total bytes flushed via NT stores so far = how far each cursor advanced past its (unmodified) base.
-/// Must be read after the main loop but before the scalar residual drain (which advances no cursor).
+/// Read after the main loop but before the scalar residual drain (which advances no cursor).
 size_t ntBytesFromCursors(void * const * cursors, void * const * base, size_t partitions) noexcept
 {
     size_t nt = 0;
@@ -143,20 +192,15 @@ size_t ntBytesFromCursors(void * const * cursors, void * const * base, size_t pa
     return nt;
 }
 
-inline UInt32 route(UInt16 pid, UInt32 shift, UInt32 mask) noexcept
-{
-    return (static_cast<UInt32>(pid) >> shift) & mask;
-}
-
-/// SWWC scatter for a `width` that divides 64 (`{1,2,4,8,16,32}`): one 64 B staging line per partition
+/// SWWC scatter for a `width` that divides 64 (`{4,8,16,32}`): one 64 B staging line per partition
 /// holding `64 / width` slots; a full line is NT-flushed. `width` is a compile-time constant so the
-/// per-row staging write lowers to a single typed store (the hot path the §9.2 gate is measured on).
+/// per-row staging write and the residual drain are single typed stores — no `memcpy` call.
 template <UInt32 width>
-ScatterStats scatterColumnTiled(
+ScatterStats scatterColumnTiledSwwc(
     const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t partitions, void * const * out,
     ScatterScratch & scratch)
 {
-    static_assert(width >= 1 && width <= 32 && 64 % width == 0, "tiled SWWC width must divide 64 and be <= 32 (64 streams directly)");
+    static_assert(width >= 4 && width <= 32 && 64 % width == 0, "tiled SWWC width must divide 64 and be in [4, 32]");
 
     char * staging = scratch.staging();
     void ** cur = scratch.cursors();
@@ -174,7 +218,7 @@ ScatterStats scatterColumnTiled(
         const UInt32 p = route(pid[j], shift, mask);
         char * line = staging + static_cast<size_t>(p) * LINE_BYTES;
         UInt32 f = fill[p];
-        __builtin_memcpy_inline(line + f, src + j * width, width); /// constant width -> single typed store, never a memcpy call
+        __builtin_memcpy_inline(line + f, src + j * width, width); /// constant width -> single typed store
         f += width;
         if (f == LINE_BYTES)
         {
@@ -187,75 +231,22 @@ ScatterStats scatterColumnTiled(
     streamingFence();
     const size_t nt = ntBytesFromCursors(cur, out, partitions);
 
-    /// Drain the residual (< one line) of each partition with ordinary stores.
-    for (size_t p = 0; p < partitions; ++p)
-        if (const UInt32 f = fill[p])
-            std::memcpy(cur[p], staging + p * LINE_BYTES, f);
-
-    return ScatterStats{nt};
-}
-
-/// SWWC scatter for a width `1..64` that does NOT divide 64: a per-partition 64 B write-combining line
-/// is filled as a byte stream; whenever it fills, it is NT-flushed and the element's remainder carries
-/// over. Because `W <= 64`, each element straddles at most one line boundary.
-ScatterStats scatterColumnBytes(
-    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t width, size_t partitions,
-    void * const * out, ScatterScratch & scratch)
-{
-    chassert(width <= 64);
-    const UInt32 w = static_cast<UInt32>(width);
-
-    char * staging = scratch.staging();
-    void ** cur = scratch.cursors();
-    UInt32 * fill = scratch.fill();
+    /// Drain the residual (< one line) of each partition: whole `width`-elements, typed-store each.
     for (size_t p = 0; p < partitions; ++p)
     {
-        chassert(reinterpret_cast<uintptr_t>(out[p]) % 64 == 0); /// NOLINT
-        cur[p] = out[p];
-        fill[p] = 0;
+        const UInt32 f = fill[p];
+        char * d = static_cast<char *>(cur[p]);
+        const char * s = staging + static_cast<size_t>(p) * LINE_BYTES;
+        for (UInt32 b = 0; b < f; b += width)
+            __builtin_memcpy_inline(d + b, s + b, width);
     }
-
-    const FlushFn flush = selectFlush();
-    for (size_t j = 0; j < n; ++j)
-    {
-        const UInt32 p = route(pid[j], shift, mask);
-        const char * e = src + j * width;
-        char * line = staging + static_cast<size_t>(p) * LINE_BYTES;
-        UInt32 f = fill[p];
-        if (f + w <= LINE_BYTES)
-        {
-            std::memcpy(line + f, e, w);
-            f += w;
-            if (f == LINE_BYTES)
-            {
-                flush(line, cur[p]);
-                f = 0;
-            }
-        }
-        else
-        {
-            const UInt32 first = LINE_BYTES - f;
-            std::memcpy(line + f, e, first);
-            flush(line, cur[p]);
-            std::memcpy(line, e + first, w - first);
-            f = w - first;
-        }
-        fill[p] = f;
-    }
-
-    streamingFence();
-    const size_t nt = ntBytesFromCursors(cur, out, partitions);
-
-    for (size_t p = 0; p < partitions; ++p)
-        if (const UInt32 f = fill[p])
-            std::memcpy(cur[p], staging + p * LINE_BYTES, f);
 
     return ScatterStats{nt};
 }
 
 /// SWWC scatter for a width that is a whole multiple of 64 B: each element is `width / 64` NT lines,
 /// streamed straight to the output cursor — no staging line and no residual drain.
-ScatterStats scatterColumnStream(
+ScatterStats scatterColumnStreamSwwc(
     const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t width, size_t partitions,
     void * const * out, ScatterScratch & scratch)
 {
@@ -280,46 +271,28 @@ ScatterStats scatterColumnStream(
     return ScatterStats{ntBytesFromCursors(cur, out, partitions)};
 }
 
-/// Non-SWWC batched fallback for a `width` that divides 64 (compile-time): plain typed per-partition
-/// write pointers, no staging, no NT stores. This is the only scatter fallback (`ColumnsScatter` is
-/// never used) and the `nt/bt` baseline the calibration compares SWWC against.
-template <UInt32 width>
-ScatterStats scatterColumnDirectTiled(
-    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t partitions, void * const * out,
-    ScatterScratch & scratch)
-{
-    void ** cur = scratch.cursors();
-    for (size_t p = 0; p < partitions; ++p)
-        cur[p] = out[p];
-
-    for (size_t j = 0; j < n; ++j)
-    {
-        const UInt32 p = route(pid[j], shift, mask);
-        char * d = static_cast<char *>(cur[p]);
-        __builtin_memcpy_inline(d, src + j * width, width); /// constant width -> single typed store
-        cur[p] = d + width;
-    }
-    return {};
-}
-
-/// Non-SWWC batched fallback for an arbitrary width.
-ScatterStats scatterColumnDirectRuntime(
-    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t width, size_t partitions,
+/// SWWC dispatch (NT-only; reached only when `ntStoresAvailable()`). The 64 B staging line tiles
+/// without a straddle only for widths that divide 64 (`{4,8,16,32}`); multiples of 64 stream directly.
+/// Any other multiple of 4 (`12,20,24,…`) cannot tile a 64 B line cleanly without a much larger
+/// `lcm(width,64)` staging buffer, so it uses the direct path instead (which handles any multiple of 4).
+ScatterStats scatterColumnSwwcDispatch(
+    const UInt16 * pid, UInt32 shift, UInt32 mask, size_t n, const char * src, size_t elem_width, size_t partitions,
     void * const * out, ScatterScratch & scratch)
 {
-    void ** cur = scratch.cursors();
-    for (size_t p = 0; p < partitions; ++p)
-        cur[p] = out[p];
-
-    for (size_t j = 0; j < n; ++j)
+    switch (elem_width)
     {
-        const UInt32 p = route(pid[j], shift, mask);
-        char * d = static_cast<char *>(cur[p]);
-        std::memcpy(d, src + j * width, width);
-        cur[p] = d + width;
+        case 4: return scatterColumnTiledSwwc<4>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 8: return scatterColumnTiledSwwc<8>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 16: return scatterColumnTiledSwwc<16>(pid, shift, mask, n, src, partitions, out, scratch);
+        case 32: return scatterColumnTiledSwwc<32>(pid, shift, mask, n, src, partitions, out, scratch);
+        default:
+            if (elem_width % 64 == 0)
+                return scatterColumnStreamSwwc(pid, shift, mask, n, src, elem_width, partitions, out, scratch);
+            return scatterColumnDirectDispatch(pid, shift, mask, n, src, elem_width, partitions, out, scratch);
     }
-    return {};
 }
+
+#endif
 
 }
 
@@ -335,11 +308,9 @@ bool ntStoresAvailable() noexcept
 bool shouldUseSwwc([[maybe_unused]] int num_columns, int partitions) noexcept
 {
     /// Recalibrated in P2 under the realistic alloc+fault model (`bench_radix_sweep_native`, 16
-    /// threads, fresh output + first-touch faults per rep). SWWC + NT beats the direct batched
-    /// scatter only at high fanout (`P >= 2048`: ~+10% across key widths) and only when NT stores are
-    /// actually emitted; at `P <= 1024` the per-partition outputs stay cache-resident and the direct
-    /// scatter wins, and with NT unavailable (non-multitarget build) the staging copy makes SWWC
-    /// strictly slower than direct. So engage SWWC iff NT is available and `partitions >= 2048`.
+    /// threads): SWWC + NT beats the direct batched scatter only at high fanout (`P >= 2048`, ~+10%)
+    /// and only when NT stores are actually emitted; at lower fanout, or in a build without NT, the
+    /// direct scatter wins. So engage SWWC iff NT is available and `partitions >= 2048`.
     return ntStoresAvailable() && partitions >= 2048;
 }
 
@@ -400,45 +371,22 @@ ScatterStats scatterColumn(
     size_t partitions,
     void * const * out,
     ScatterScratch & scratch,
-    bool use_swwc)
+    [[maybe_unused]] bool use_swwc)
 {
     chassert(scratch.maxPartitions() >= partitions);
     chassert(mask == static_cast<UInt32>(partitions) - 1); /// window must select exactly [0, partitions)
-    chassert(elem_width >= 1);
+    chassert(elem_width >= 4 && elem_width % 4 == 0 && "RadixShuffle scatter supports element widths that are multiples of 4");
 
     const auto * bytes = static_cast<const char *>(src);
 
-    if (!use_swwc)
-    {
-        switch (elem_width)
-        {
-            case 1: return scatterColumnDirectTiled<1>(pid, shift, mask, n, bytes, partitions, out, scratch);
-            case 2: return scatterColumnDirectTiled<2>(pid, shift, mask, n, bytes, partitions, out, scratch);
-            case 4: return scatterColumnDirectTiled<4>(pid, shift, mask, n, bytes, partitions, out, scratch);
-            case 8: return scatterColumnDirectTiled<8>(pid, shift, mask, n, bytes, partitions, out, scratch);
-            case 16: return scatterColumnDirectTiled<16>(pid, shift, mask, n, bytes, partitions, out, scratch);
-            case 32: return scatterColumnDirectTiled<32>(pid, shift, mask, n, bytes, partitions, out, scratch);
-            default: return scatterColumnDirectRuntime(pid, shift, mask, n, bytes, elem_width, partitions, out, scratch);
-        }
-    }
+#if USE_MULTITARGET_CODE
+    /// SWWC exists only when NT stores are available (otherwise it would be a scalar write-combine that
+    /// is strictly slower than the direct scatter). When NT is unavailable the request runs direct.
+    if (use_swwc && ntStoresAvailable())
+        return scatterColumnSwwcDispatch(pid, shift, mask, n, bytes, elem_width, partitions, out, scratch);
+#endif
 
-    /// Widths that are a whole multiple of 64 B stream directly (no staging line).
-    if (elem_width % 64 == 0)
-        return scatterColumnStream(pid, shift, mask, n, bytes, elem_width, partitions, out, scratch);
-
-    /// Width <= 64: tiled (divides 64) or byte-stream write-combining (does not).
-    switch (elem_width)
-    {
-        case 1: return scatterColumnTiled<1>(pid, shift, mask, n, bytes, partitions, out, scratch);
-        case 2: return scatterColumnTiled<2>(pid, shift, mask, n, bytes, partitions, out, scratch);
-        case 4: return scatterColumnTiled<4>(pid, shift, mask, n, bytes, partitions, out, scratch);
-        case 8: return scatterColumnTiled<8>(pid, shift, mask, n, bytes, partitions, out, scratch);
-        case 16: return scatterColumnTiled<16>(pid, shift, mask, n, bytes, partitions, out, scratch);
-        case 32: return scatterColumnTiled<32>(pid, shift, mask, n, bytes, partitions, out, scratch);
-        default:
-            chassert(elem_width <= 64 && "SWWC supports widths 1..64 or any multiple of 64");
-            return scatterColumnBytes(pid, shift, mask, n, bytes, elem_width, partitions, out, scratch);
-    }
+    return scatterColumnDirectDispatch(pid, shift, mask, n, bytes, elem_width, partitions, out, scratch);
 }
 
 ScatterStats scatterKeyRefTwoColumn(

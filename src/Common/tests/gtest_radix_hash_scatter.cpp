@@ -132,11 +132,13 @@ void expectColumnMatchesReference(
 
 }
 
-/// The core differential test: across a width sweep that exercises every code path — tiled SWWC
-/// (W | 64), byte-stream SWWC (W <= 64, W does not divide 64), multi-line NT streaming (W a multiple
-/// of 64), and the direct batched fallback — both the SWWC and the non-SWWC scatter must reproduce a
-/// scalar reference byte-for-byte. This validates conservation, routing (part = (pid>>shift)&mask),
-/// arrival order, and content simultaneously, and (transitively) that SWWC == direct.
+/// The core differential test: across a width sweep of multiples of 4 that exercises every code path —
+/// tiled SWWC (`width | 64`), multi-line NT streaming (`width` a multiple of 64), and the direct
+/// batched scatter (templated + generic, and the path SWWC routes non-`÷64` widths to) — both the SWWC
+/// and the non-SWWC scatter must reproduce a scalar reference byte-for-byte. This validates
+/// conservation, routing (`part = (pid>>shift)&mask`), arrival order, and content simultaneously, and
+/// (transitively) that SWWC == direct. (In a non-NT build `use_swwc=true` runs the direct path, so the
+/// NT SWWC kernel itself is exercised only in a multitarget build.)
 TEST(RadixHashScatter, ColumnWidthSweepMatchesReference)
 {
     constexpr UInt32 total_bits = 10;
@@ -147,20 +149,26 @@ TEST(RadixHashScatter, ColumnWidthSweepMatchesReference)
 
     const std::vector<UInt16> pid = makePid(n, total_bits, 0xABCDEF);
 
-    /// 1..64 (divisors and non-divisors of 64) plus multiples of 64.
-    for (size_t width : {size_t{1}, size_t{2}, size_t{3}, size_t{4}, size_t{5}, size_t{6}, size_t{7}, size_t{8},
-                         size_t{9}, size_t{12}, size_t{16}, size_t{24}, size_t{32}, size_t{48}, size_t{63},
-                         size_t{64}, size_t{128}, size_t{192}, size_t{256}})
+    /// Multiples of 4: divisors of 64 (4,8,16,32,64), non-divisor multiples of 4 (12,20,24,28,36,48,60),
+    /// and multiples of 64 (64,128,192,256).
+    for (size_t width : {size_t{4}, size_t{8}, size_t{12}, size_t{16}, size_t{20}, size_t{24}, size_t{28},
+                         size_t{32}, size_t{36}, size_t{48}, size_t{60}, size_t{64}, size_t{128}, size_t{192},
+                         size_t{256}})
     {
         expectColumnMatchesReference(pid, shift, mask, n, width, partitions, /*use_swwc=*/true, width);
         expectColumnMatchesReference(pid, shift, mask, n, width, partitions, /*use_swwc=*/false, width);
     }
 }
 
-/// `nt_store_bytes` is reported and non-zero whenever SWWC flushes whole lines (large n, divisor and
-/// multiple-of-64 widths both flush every element); the direct path reports zero.
+/// `nt_store_bytes` is reported and non-zero whenever SWWC flushes whole lines (the divisor and
+/// multiple-of-64 widths flush every element); the direct path reports zero. SWWC exists only when NT
+/// stores do, so this is meaningful only in a multitarget build.
 TEST(RadixHashScatter, NTStoreBytesAccounting)
 {
+    if (!ntStoresAvailable())
+        GTEST_SKIP() << "NT stores unavailable in this build (x86-64-v2 / ENABLE_MULTITARGET_CODE=0); "
+                        "scatterColumn(use_swwc=true) runs the direct path";
+
     constexpr UInt32 total_bits = 8;
     constexpr UInt32 shift = 0;
     constexpr size_t partitions = 1u << total_bits; /// 256
@@ -227,7 +235,9 @@ TEST(RadixHashScatter, TwoColumnKeyRefPairingAndBijection)
         ScatterScratch scratch(partitions);
         const ScatterStats stats = scatterKeyRefTwoColumn(
             pid.data(), shift, mask, n, keys.data(), key_width, refs.data(), partitions, kbase.data(), rbase.data(), scratch, true);
-        EXPECT_GT(stats.nt_store_bytes, 0u);
+        /// NT stores only in a multitarget build; without NT, use_swwc=true runs the direct path (0 NT bytes).
+        if (ntStoresAvailable())
+            EXPECT_GT(stats.nt_store_bytes, 0u);
 
         std::vector<char> seen(n, 0);
         size_t total = 0;
@@ -255,12 +265,12 @@ TEST(RadixHashScatter, TwoColumnKeyRefPairingAndBijection)
     }
 }
 
-/// Small inputs exercise residual drains in every SWWC path: tiled (W=8), byte-stream (W=7, with
-/// straddle), and multi-line streaming (W=64). Empty and residual-only partitions must still match
-/// the reference.
+/// Small inputs exercise residual drains: tiled SWWC (W=4,8 — drains whole-element residuals),
+/// a non-divisor multiple of 4 routed to direct (W=24), and multi-line streaming (W=64). Empty and
+/// residual-only partitions must still match the reference.
 TEST(RadixHashScatter, SmallAndResidualDrain)
 {
-    for (size_t width : {size_t{7}, size_t{8}, size_t{24}, size_t{64}})
+    for (size_t width : {size_t{4}, size_t{8}, size_t{24}, size_t{64}})
     {
         for (size_t n : {size_t{0}, size_t{1}, size_t{7}, size_t{8}, size_t{9}, size_t{63}, size_t{64}, size_t{65}, size_t{1000}})
         {
