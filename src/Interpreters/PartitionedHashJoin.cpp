@@ -630,6 +630,12 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
     /// MEASUREMENT-ONLY: PHJ_MADV_POPULATE=1 prefaults each leaf map's cell array via MADV_POPULATE_WRITE
     /// after reserve, before insert — tests whether eager prefault removes the parallel CoW-fault IPI storm.
     static const bool madv_populate = std::getenv("PHJ_MADV_POPULATE") != nullptr;
+    /// MEASUREMENT-ONLY: PHJ_NO_RESERVE=1 builds each leaf map with reserve_num=0 (grow by resize, like
+    /// `parallel_hash`'s incremental buckets) instead of pre-reserving to the exact leaf size. Tests whether
+    /// the reserve-to-exact-size + read-before-write-probe pattern (first touch of a pre-reserved cell page is
+    /// the insert's `isZero` READ -> RO zero-page mapping -> CoW on the following write -> TLB-shootdown IPI)
+    /// is what makes PHJ inserts CoW-fault while `parallel_hash`'s resize-grown maps anonymous-fault.
+    static const bool no_reserve = std::getenv("PHJ_NO_RESERVE") != nullptr;
     std::unique_ptr<HashJoin> leaf_join;
     if (prealloc_insert && leaf_joins[leaf])
         leaf_join = std::move(leaf_joins[leaf]);
@@ -639,7 +645,7 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
             table_join,
             right_sample_block,
             any_take_last_row,
-            /*reserve_num=*/leaf_rows,
+            /*reserve_num=*/no_reserve ? 0 : leaf_rows,
             /*instance_id=*/"",
             /*use_two_level_maps=*/leaf_twolevel,
             /*force_enable_prefetch=*/force_prefetch);

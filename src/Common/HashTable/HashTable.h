@@ -21,10 +21,8 @@
 #include <math.h>
 #include <string.h>
 
-#if defined(MADV_POPULATE_WRITE)
-#include <sys/mman.h>
+#include <sys/mman.h> /// MADV_POPULATE_WRITE (measurement-only prefaultBufferPages)
 #include <base/getPageSize.h>
-#endif
 
 #ifdef DBMS_HASH_MAP_DEBUG_RESIZES
     #include <iostream>
