@@ -7,13 +7,19 @@
 
 #include <Common/Stopwatch.h>
 
+#include <fmt/format.h>
+
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <fstream>
+#include <iostream>
+#include <iterator>
+#include <map>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -51,33 +57,55 @@ std::vector<UInt64> randomKeys(size_t n, uint64_t seed)
 }
 
 /// Read /proc/self/smaps and return AnonHugePages (in bytes) of the VMA containing `ptr`, or -1.
-long anonHugePagesForPtr(const void * ptr)
+Int64 anonHugePagesForPtr(const void * ptr)
 {
-    auto addr = reinterpret_cast<uintptr_t>(ptr);
+    const auto addr = reinterpret_cast<uintptr_t>(ptr);
     std::ifstream smaps("/proc/self/smaps");
     if (!smaps)
         return -1;
 
+    auto parse = [](std::string_view sv, auto & out, int base)
+    {
+        while (!sv.empty() && sv.front() == ' ')
+            sv.remove_prefix(1);
+        return std::from_chars(sv.data(), sv.data() + sv.size(), out, base).ec == std::errc{};
+    };
+
+    static constexpr std::string_view anon_key = "AnonHugePages:";
     std::string line;
     bool in_range = false;
     while (std::getline(smaps, line))
     {
-        // VMA header line: "7f...-7f... rw-p ..."
-        uintptr_t start = 0;
-        uintptr_t end = 0;
-        if (std::sscanf(line.c_str(), "%lx-%lx", &start, &end) == 2 && line.find(' ') != std::string::npos
-            && line.find('-') < line.find(' '))
+        const std::string_view sv{line};
+        const size_t dash = sv.find('-');
+        const size_t space = sv.find(' ');
+        if (dash != std::string_view::npos && space != std::string_view::npos && dash < space)
         {
-            in_range = (addr >= start && addr < end);
+            // VMA header line: "7f...-7f... rw-p ..."
+            uintptr_t start = 0;
+            uintptr_t end = 0;
+            if (parse(sv.substr(0, dash), start, 16) && parse(sv.substr(dash + 1, space - dash - 1), end, 16))
+                in_range = (addr >= start && addr < end);
         }
-        else if (in_range && line.rfind("AnonHugePages:", 0) == 0)
+        else if (in_range && sv.starts_with(anon_key))
         {
-            long kb = 0;
-            if (std::sscanf(line.c_str(), "AnonHugePages: %ld kB", &kb) == 1)
-                return kb * 1024;
+            // "AnonHugePages:        2048 kB"
+            UInt64 kb = 0;
+            if (parse(sv.substr(anon_key.size()), kb, 10))
+                return static_cast<Int64>(kb) * 1024;
         }
     }
     return -1;
+}
+
+/// True if the system transparent-hugepage mode is `madvise` or `always` (so `madvise` can back THP).
+bool thpModeIsActive()
+{
+    std::ifstream f("/sys/kernel/mm/transparent_hugepage/enabled");
+    if (!f)
+        return false;
+    const std::string s{std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+    return s.contains("[madvise]") || s.contains("[always]");
 }
 
 }
@@ -109,6 +137,7 @@ TEST(RadixHashSelector, PartitionConfigInvariants)
 
     const UInt32 bits_per_pass = 10; // floor(log2(1024))
     bool seen_16 = false;
+    std::map<UInt32, std::vector<UInt32>> splits; // total_bits -> pass_bits
     for (auto est : estimates)
     {
         auto cfg = PartitionConfig::make(est, l2, cap);
@@ -135,18 +164,19 @@ TEST(RadixHashSelector, PartitionConfigInvariants)
             EXPECT_LE(hi - lo, 1u);
         const UInt32 expected_passes = cfg.total_bits == 0 ? 1 : (cfg.total_bits + bits_per_pass - 1) / bits_per_pass;
         EXPECT_EQ(cfg.pass_bits.size(), expected_passes);
+        splits.emplace(cfg.total_bits, cfg.pass_bits);
         if (cfg.total_bits == 16)
             seen_16 = true;
     }
     EXPECT_TRUE(seen_16) << "sweep should reach total_bits = 16 (MAX_LEAVES)";
 
-    // Known multi-pass factorisations from the spec.
-    auto bits_for = [&](UInt32 total)
-    {
-        // Reconstruct via a crafted config is awkward; instead validate the documented examples.
-        return total;
-    };
-    (void)bits_for;
+    // The documented multi-pass factorisations from the spec (section 5.3).
+    using Bits = std::vector<UInt32>;
+    EXPECT_EQ(splits[8], (Bits{8}));
+    EXPECT_EQ(splits[10], (Bits{10}));
+    EXPECT_EQ(splits[11], (Bits{6, 5}));
+    EXPECT_EQ(splits[13], (Bits{7, 6}));
+    EXPECT_EQ(splits[16], (Bits{8, 8}));
 }
 
 /// (i)+(ii) pid is the top total_bits of computeHashInto; histogram sums to N and matches a reference.
@@ -259,6 +289,32 @@ TEST(RadixHashSelector, BuildProbeBitIdentical)
     }
 }
 
+/// Degenerate single-leaf config (num_leaves=1, shift=32): all pids 0, hist[0]==n. Exercises the
+/// 64-bit-shift UB-avoidance for total_bits==0 at runtime.
+TEST(RadixHashSelector, SinglePartition)
+{
+    PartitionConfig cfg;
+    cfg.num_leaves = 1;
+    cfg.total_bits = 0;
+    cfg.shift = PartitionConfig::HASH_BITS; // 32
+    cfg.pass_bits = {0};
+
+    const size_t n = 100'000;
+    auto col = makeKeyColumn(randomKeys(n, 0xBEEF));
+    Selector sel(cfg);
+    std::vector<UInt32> h(n);
+    std::vector<UInt16> p(n);
+    sel.process(*col, n, h.data(), p.data());
+    for (size_t j = 0; j < n; ++j)
+        ASSERT_EQ(p[j], 0u);
+
+    std::vector<UInt32> hist;
+    const UInt64 total = sel.mergedHistogram(hist);
+    ASSERT_EQ(hist.size(), 1u);
+    ASSERT_EQ(hist[0], n);
+    ASSERT_EQ(total, n);
+}
+
 /// (vi) HugeArena returns 2 MiB-aligned (first) pointers, respects per-alloc alignment, fail-open.
 TEST(RadixHashSelector, HugeArenaAlignment)
 {
@@ -323,7 +379,8 @@ TEST(RadixHashSelector, TopBitUniformity)
     var /= static_cast<double>(cfg.num_leaves);
     const double cv = std::sqrt(var) / mean;
 
-    std::printf("[uniformity] total_bits=16 leaves=%zu n=%zu mean=%.1f min=%u max=%u empty=%zu cv=%.4f\n",
+    std::cout << fmt::format(
+        "[uniformity] total_bits=16 leaves={} n={} mean={:.1f} min={} max={} empty={} cv={:.4f}\n",
         cfg.num_leaves, n, mean, lo, hi, empty, cv);
 
     EXPECT_EQ(empty, 0u) << "sequential keys must not leave empty leaves at total_bits=16";
@@ -344,7 +401,10 @@ TEST(RadixHashSelector, PerfAndThp)
     {
         std::vector<UInt32> h(n);
         std::vector<UInt16> p(n);
-        UInt64 best_hash = ~0ull, best_pid = ~0ull, best_pidhist = ~0ull, best_total = ~0ull;
+        UInt64 best_hash = ~0ull;
+        UInt64 best_pid = ~0ull;
+        UInt64 best_pidhist = ~0ull;
+        UInt64 best_total = ~0ull;
         for (int rep = 0; rep < 3; ++rep)
         {
             { Stopwatch sw; col->computeHashInto(0, n, h.data(), true); best_hash = std::min(best_hash, sw.elapsedNanoseconds()); }
@@ -352,7 +412,8 @@ TEST(RadixHashSelector, PerfAndThp)
             { Selector s(cfg); Stopwatch sw; s.pidsFromHashes(h.data(), n, p.data()); best_pidhist = std::min(best_pidhist, sw.elapsedNanoseconds()); }
             { Selector s(cfg); Stopwatch sw; s.process(*col, n, h.data(), p.data()); best_total = std::min(best_total, sw.elapsedNanoseconds()); }
         }
-        std::printf("[perf] single-thread ns/row (best of 3, leaves=%zu): hash=%.3f  pid=%.3f  pid+hist=%.3f  (hist=%.3f)  fused_total=%.3f\n",
+        std::cout << fmt::format(
+            "[perf] single-thread ns/row (best of 3, leaves={}): hash={:.3f}  pid={:.3f}  pid+hist={:.3f}  (hist={:.3f})  fused_total={:.3f}\n",
             cfg.num_leaves, per_row(best_hash), per_row(best_pid), per_row(best_pidhist),
             per_row(best_pidhist) - per_row(best_pid), per_row(best_total));
     }
@@ -386,7 +447,8 @@ TEST(RadixHashSelector, PerfAndThp)
             th.join();
         const double slowest_ns_per_row = static_cast<double>(max_ns.load()) / static_cast<double>(len);
         const double throughput_mrows = static_cast<double>(n) / (static_cast<double>(wall.elapsedNanoseconds()) / 1e3);
-        std::printf("[perf] 16-thread: slowest-thread %.3f ns/row (fused, leaves=%zu); aggregate throughput %.1f Mrows/s\n",
+        std::cout << fmt::format(
+            "[perf] 16-thread: slowest-thread {:.3f} ns/row (fused, leaves={}); aggregate throughput {:.1f} Mrows/s\n",
             slowest_ns_per_row, cfg.num_leaves, throughput_mrows);
     }
 
@@ -397,15 +459,20 @@ TEST(RadixHashSelector, PerfAndThp)
         auto * pids = arena.allocArray<UInt16>(pid_count);
         for (size_t i = 0; i < pid_count; i += 4096 / sizeof(UInt16))
             pids[i] = 1; // fault every page
-        const long anon_huge = anonHugePagesForPtr(pids);
-        std::printf("[thp] pid arena: slabs=%zu used=%zu failed=%zu AnonHugePages=%ld bytes (%.1f MiB)\n",
+        const Int64 anon_huge = anonHugePagesForPtr(pids);
+        std::cout << fmt::format(
+            "[thp] pid arena: slabs={} used={} failed={} AnonHugePages={} bytes ({:.1f} MiB)\n",
             arena.slabCount(), arena.hugePagesUsed(), arena.hugePagesFailed(),
             anon_huge, anon_huge < 0 ? 0.0 : static_cast<double>(anon_huge) / 1024.0 / 1024.0);
 
-        // On this environment THP mode is `madvise`; the arena madvise should succeed.
-        EXPECT_GT(arena.hugePagesUsed(), 0u);
-        // AnonHugePages may be -1 if smaps is unavailable; when present it should be > 0 here.
-        if (anon_huge >= 0)
-            EXPECT_GT(anon_huge, 0) << "arena range is not THP-backed";
+        // Only assert THP backing when the system mode actually allows madvise-backed huge pages;
+        // otherwise the arena's fail-open path (4 KiB pages) is the correct behaviour.
+        if (thpModeIsActive())
+        {
+            EXPECT_GT(arena.hugePagesUsed(), 0u);
+            // AnonHugePages is -1 if smaps is unavailable; when present it should be > 0 here.
+            if (anon_huge >= 0)
+                EXPECT_GT(anon_huge, 0) << "arena range is not THP-backed";
+        }
     }
 }
