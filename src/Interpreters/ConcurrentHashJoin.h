@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <Analyzer/IQueryTreeNode.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashTablesStatistics.h>
@@ -126,6 +128,11 @@ private:
 
     std::mutex totals_mutex;
     Block totals;
+
+    std::atomic<Int64> dispatch_wall_begin_ns{0};
+    std::atomic<Int64> dispatch_wall_last_end_ns{0};
+    std::once_flag dispatch_wall_begin_flag;
+    std::once_flag dispatch_wall_end_flag;
 
     ScatteredBlocks dispatchBlock(const Strings & key_columns_names, Block && from_block);
 };

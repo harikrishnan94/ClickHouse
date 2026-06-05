@@ -18,6 +18,7 @@
 #include <Common/CurrentThread.h>
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
+#include <Common/Stopwatch.h>
 #include <Common/ThreadPool.h>
 #include <Common/AllocatorWithMemoryTracking.h>
 #include <Common/setThreadName.h>
@@ -32,6 +33,7 @@
 #include <base/types.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <numeric>
@@ -62,6 +64,9 @@ using namespace DB;
 namespace ProfileEvents
 {
 extern const Event HashJoinPreallocatedElementsInHashTables;
+extern const Event ConcurrentHashJoinDispatchMicroseconds;
+extern const Event ConcurrentHashJoinDispatchWallMicroseconds;
+extern const Event ConcurrentHashJoinDispatchRows;
 }
 
 namespace CurrentMetrics
@@ -836,6 +841,15 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
         return res;
     }
 
+    std::call_once(dispatch_wall_begin_flag, [this]
+    {
+        dispatch_wall_begin_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+            std::memory_order_relaxed);
+    });
+
+    Stopwatch watch;
+    const size_t rows = from_block.rows();
     IColumn::Selector selector = selectDispatchBlock(*hash_joins[0]->data, num_shards, key_columns_names, from_block);
 
     /// With zero-copy approach we won't copy the source columns, but will create a new one with indices.
@@ -851,8 +865,15 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
               { return sum + (type->haveMaximumSizeOfValue() ? type->getMaximumSizeOfValueInMemory() : threshold + 1); })
         > threshold;
 
-    return use_zero_copy_approach ? scatterBlocksWithSelector(num_shards, selector, from_block)
-                                  : scatterBlocksByCopying(num_shards, selector, from_block);
+    static const bool force_copy_scatter = std::getenv("CHJ_COPYING_SCATTER") != nullptr; /// NOLINT(concurrency-mt-unsafe)
+    auto result = (!force_copy_scatter && use_zero_copy_approach) ? scatterBlocksWithSelector(num_shards, selector, from_block)
+                                                                  : scatterBlocksByCopying(num_shards, selector, from_block);
+    ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinDispatchMicroseconds, watch.elapsedMicroseconds());
+    ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinDispatchRows, rows);
+    dispatch_wall_last_end_ns.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+        std::memory_order_relaxed);
+    return result;
 }
 
 IQueryTreeNode::HashState preCalculateCacheKey(const QueryTreeNodePtr & right_table_expression, const SelectQueryInfo & select_query_info)
@@ -900,6 +921,15 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    std::call_once(dispatch_wall_end_flag, [this]
+    {
+        const auto begin_ns = dispatch_wall_begin_ns.load(std::memory_order_relaxed);
+        const auto end_ns = dispatch_wall_last_end_ns.load(std::memory_order_relaxed);
+        if (begin_ns > 0 && end_ns >= begin_ns)
+            ProfileEvents::increment(
+                ProfileEvents::ConcurrentHashJoinDispatchWallMicroseconds, static_cast<UInt64>((end_ns - begin_ns) / 1000));
+    });
+
     static const bool defer_build = std::getenv("CHJ_DEFER_BUILD") != nullptr; /// NOLINT(concurrency-mt-unsafe)
     if (defer_build)
     {

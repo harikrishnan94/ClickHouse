@@ -94,6 +94,8 @@ private:
     bool debug_prealloc_pass_scatter;
     /// Measurement-only: like prealloc pass scatter, but flush each stage when one output reaches 64K rows.
     bool debug_prealloc_stream_scatter;
+    /// Measurement-only: exact preallocation path, but replace random scatter stores with sequential memcpy.
+    bool debug_prealloc_memcpy_scatter;
 
     /// Process-unique id used to map a build thread to its slot (see slot handout in the .cpp). Never
     /// reused, so a stale thread-local cache entry can never alias a different join instance.

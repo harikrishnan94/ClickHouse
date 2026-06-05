@@ -1467,6 +1467,9 @@ The server successfully detected this situation and will download merged part fr
     M(PartitionedHashScatterRows, "PartitionedHashJoin: rows scattered, counted per pass (denominator for ns/row).", ValueType::Number) \
     M(PartitionedHashBuildScatterRows, "PartitionedHashJoin: build-side rows scattered, counted per pass (denominator for ns/row).", ValueType::Number) \
     M(PartitionedHashBuildBlocksMoved, "PartitionedHashJoin: blocks moved (not copied) into HT storage.", ValueType::Number) \
+    M(ConcurrentHashJoinDispatchMicroseconds, "ConcurrentHashJoin: wall time spent dispatching/scattering blocks to slots.", ValueType::Microseconds) \
+    M(ConcurrentHashJoinDispatchWallMicroseconds, "ConcurrentHashJoin: wall span from first build dispatch start to last build dispatch end.", ValueType::Microseconds) \
+    M(ConcurrentHashJoinDispatchRows, "ConcurrentHashJoin: rows dispatched/scattered to slots.", ValueType::Number) \
     \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \

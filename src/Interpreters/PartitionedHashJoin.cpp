@@ -5,6 +5,7 @@
 #include <bit>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -131,7 +132,8 @@ void scatterUInt64ExactWithPids(
     const std::vector<PaddedPODArray<UInt32>> & pids_per_source,
     const PaddedPODArray<UInt32> & histogram,
     size_t & scattered_rows,
-    std::vector<Columns> & children)
+    std::vector<Columns> & children,
+    bool memcpy_only)
 {
     const size_t fanout = histogram.size();
     const size_t num_cols = sources.empty() ? 0 : sources[0].size();
@@ -164,12 +166,43 @@ void scatterUInt64ExactWithPids(
             children[partition][col_index] = std::move(column);
         }
 
-        for (size_t source_index = 0; source_index < sources.size(); ++source_index)
+        if (memcpy_only)
         {
-            const auto & src_data = assert_cast<const ColumnUInt64 &>(*sources[source_index][col_index]).getData();
-            const auto & pids = pids_per_source[source_index];
-            for (size_t row = 0; row < pids.size(); ++row)
-                *write_ptrs[pids[row]]++ = src_data[row];
+            size_t source_index = 0;
+            size_t source_offset = 0;
+            for (size_t partition = 0; partition < fanout; ++partition)
+            {
+                UInt64 * dst = write_ptrs[partition];
+                size_t remaining = histogram[partition];
+                while (remaining != 0)
+                {
+                    while (source_index < sources.size() && source_offset == groupRows(sources[source_index]))
+                    {
+                        ++source_index;
+                        source_offset = 0;
+                    }
+                    if (source_index >= sources.size())
+                        throw Exception(ErrorCodes::LOGICAL_ERROR, "PHJ memcpy scatter exhausted input unexpectedly");
+
+                    const auto & src_data = assert_cast<const ColumnUInt64 &>(*sources[source_index][col_index]).getData();
+                    const size_t available = src_data.size() - source_offset;
+                    const size_t to_copy = std::min(remaining, available);
+                    memcpy(dst, src_data.data() + source_offset, to_copy * sizeof(UInt64));
+                    dst += to_copy;
+                    source_offset += to_copy;
+                    remaining -= to_copy;
+                }
+            }
+        }
+        else
+        {
+            for (size_t source_index = 0; source_index < sources.size(); ++source_index)
+            {
+                const auto & src_data = assert_cast<const ColumnUInt64 &>(*sources[source_index][col_index]).getData();
+                const auto & pids = pids_per_source[source_index];
+                for (size_t row = 0; row < pids.size(); ++row)
+                    *write_ptrs[pids[row]]++ = src_data[row];
+            }
         }
     }
 }
@@ -387,6 +420,7 @@ PartitionedHashJoin::PartitionedHashJoin(
     , debug_skip_passthrough(debug_skip_passthrough_)
     , debug_prealloc_pass_scatter(std::getenv("PHJ_PREALLOC_PASS_SCATTER") != nullptr)
     , debug_prealloc_stream_scatter(std::getenv("PHJ_PREALLOC_STREAM_SCATTER") != nullptr)
+    , debug_prealloc_memcpy_scatter(std::getenv("PHJ_PREALLOC_MEMCPY_SCATTER") != nullptr)
     , instance_id(g_instance_counter.fetch_add(1, std::memory_order_relaxed))
     , hash_join(std::make_unique<HashJoin>(table_join, right_sample_block, any_take_last_row))
 {
@@ -652,7 +686,7 @@ void PartitionedHashJoin::preallocScatterSlot(BuildSlot & slot)
         size_t scattered_rows = 0;
         Stopwatch watch;
         scatterUInt64ExactWithPids(
-            slot.prealloc_inputs, slot.prealloc_pass0_pids, slot.prealloc_pass0_hist, scattered_rows, current);
+            slot.prealloc_inputs, slot.prealloc_pass0_pids, slot.prealloc_pass0_hist, scattered_rows, current, debug_prealloc_memcpy_scatter);
         const auto us = watch.elapsedMicroseconds();
         ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShufflePass0Microseconds, us);
         ProfileEvents::increment(ProfileEvents::PartitionedHashBuildShuffleMicroseconds, us);
@@ -684,7 +718,8 @@ void PartitionedHashJoin::preallocScatterSlot(BuildSlot & slot)
             computePidsAndHistogram(single_source, key_indices, shift, fanout, slot.scatter_scratch, histogram);
 
             std::vector<Columns> children;
-            scatterUInt64ExactWithPids(single_source, slot.scatter_scratch.pids, histogram, scattered_rows, children);
+            scatterUInt64ExactWithPids(
+                single_source, slot.scatter_scratch.pids, histogram, scattered_rows, children, debug_prealloc_memcpy_scatter);
             for (UInt32 pid = 0; pid < fanout; ++pid)
                 next[prefix * fanout + pid] = std::move(children[pid]);
         }
@@ -742,7 +777,7 @@ void PartitionedHashJoin::preallocStreamFlushPending(BuildSlot & slot, size_t st
     size_t scattered_rows = 0;
     Stopwatch watch;
     std::vector<Columns> children;
-    scatterUInt64ExactWithPids(pending.inputs, pending.pids, pending.hist, scattered_rows, children);
+    scatterUInt64ExactWithPids(pending.inputs, pending.pids, pending.hist, scattered_rows, children, debug_prealloc_memcpy_scatter);
     const auto us = watch.elapsedMicroseconds();
 
     if (stage == 0)
