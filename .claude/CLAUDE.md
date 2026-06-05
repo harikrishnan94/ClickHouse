@@ -190,11 +190,11 @@ This is the ClickHouse C++/CMake monorepo. See `docs/en/development/build.md` an
 export CC=clang-21 CXX=clang++-21
 export PATH="/usr/local/cargo/bin:$PATH"
 mkdir -p build && cd build
-cmake -D CMAKE_BUILD_TYPE=Debug ..
+cmake -D CMAKE_BUILD_TYPE=Release ..
 cd build && ninja clickhouse > build/build_clickhouse.log 2>&1   # do not pass -j
 ```
 
-First full `ninja clickhouse` from scratch takes ~60–90 minutes on an 8-core VM; incremental rebuilds are much faster with `ccache`. The binary is at `build/programs/clickhouse` (~6 GB Debug).
+First full `ninja clickhouse` from scratch takes ~60–90 minutes on an 8-core VM; incremental rebuilds are much faster with `ccache`. The binary is at `build/programs/clickhouse` (~1–2 GB Release).
 
 ### Run server (dev, without system install)
 
