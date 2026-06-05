@@ -1,5 +1,6 @@
 #include <Interpreters/PartitionedHashJoin.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstdlib>
@@ -63,6 +64,128 @@ size_t groupBytes(const Columns & group)
     for (const auto & col : group)
         bytes += col->byteSize();
     return bytes;
+}
+
+/// MEASUREMENT-ONLY: collect per-subtable cell-buffer sizes from a HashJoin map (single-level or two-level).
+struct SubtableSizeStats
+{
+    size_t count = 0;
+    size_t nonempty = 0;
+    size_t sum_bytes = 0;
+    size_t min_bytes = std::numeric_limits<size_t>::max();
+    size_t max_bytes = 0;
+    std::vector<size_t> sizes;
+
+    void add(size_t bytes)
+    {
+        ++count;
+        if (bytes > 0)
+            ++nonempty;
+        sum_bytes += bytes;
+        min_bytes = std::min(min_bytes, bytes);
+        max_bytes = std::max(max_bytes, bytes);
+        sizes.push_back(bytes);
+    }
+
+    size_t medianBytes() const
+    {
+        if (sizes.empty())
+            return 0;
+        auto sorted = sizes;
+        std::sort(sorted.begin(), sorted.end());
+        return sorted[sorted.size() / 2];
+    }
+};
+
+void collectHashJoinSubtableSizes(const HashJoin & join, SubtableSizeStats & stats)
+{
+    const auto & data = join.getJoinedData();
+    if (!data || data->maps.empty())
+        return;
+
+    const auto type = data->type;
+    std::visit(
+        [&](const auto & maps)
+        {
+            switch (type)
+            {
+                case HashJoin::Type::key64:
+                    if (maps.key64)
+                        stats.add(maps.key64->getBufferSizeInBytes());
+                    break;
+                case HashJoin::Type::two_level_key64:
+                    if (maps.two_level_key64)
+                        for (const auto & impl : maps.two_level_key64->impls)
+                            stats.add(impl.getBufferSizeInBytes());
+                    break;
+                default:
+                    break;
+            }
+        },
+        data->maps.at(0));
+}
+
+void prefaultHashJoinMapBuffers(HashJoin & join)
+{
+    const auto & data = join.getJoinedData();
+    if (!data || data->maps.empty())
+        return;
+
+    const auto type = data->type;
+    std::visit(
+        [&](auto & maps)
+        {
+            switch (type)
+            {
+                case HashJoin::Type::key64:
+                    if (maps.key64)
+                        maps.key64->prefaultBufferPages();
+                    break;
+                case HashJoin::Type::two_level_key64:
+                    if (maps.two_level_key64)
+                        for (auto & impl : maps.two_level_key64->impls)
+                            impl.prefaultBufferPages();
+                    break;
+                default:
+                    break;
+            }
+        },
+        data->maps.at(0));
+}
+
+void logSubtableSizeStats(const char * label, const SubtableSizeStats & stats)
+{
+    if (stats.count == 0)
+    {
+        LOG_INFO(getLogger("PartitionedHashJoin"), "{} subtable sizes: (none)", label);
+        return;
+    }
+    size_t at_min = 0;
+    size_t at_2mib = 0;
+    size_t at_max = 0;
+    for (size_t b : stats.sizes)
+    {
+        if (b == stats.min_bytes)
+            ++at_min;
+        if (b == 2097152)
+            ++at_2mib;
+        if (b == stats.max_bytes)
+            ++at_max;
+    }
+    LOG_INFO(
+        getLogger("PartitionedHashJoin"),
+        "{} subtable sizes: count={} nonempty={} min={} median={} max={} sum={} avg={} at_min={} at_2MiB={} at_max={}",
+        label,
+        stats.count,
+        stats.nonempty,
+        stats.min_bytes == std::numeric_limits<size_t>::max() ? 0 : stats.min_bytes,
+        stats.medianBytes(),
+        stats.max_bytes,
+        stats.sum_bytes,
+        stats.count ? stats.sum_bytes / stats.count : 0,
+        at_min,
+        at_2mib,
+        at_max);
 }
 
 /// Process-unique id generator: a join id is never reused, so a stale thread-local slot-cache entry can
@@ -502,12 +625,16 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
     /// isolate whether the single-level-vs-two-level insert kernel (and its prefetch gating, since a
     /// two-level map reports the aggregate >8 MB buffer size) explains the build-CPU gap vs `parallel_hash`.
     static const bool leaf_twolevel = std::getenv("PHJ_LEAF_TWOLEVEL") != nullptr;
-    /// PHJ_PREWARM_MAPS: the map was already allocated and reserved in the pre-warm pass; reuse it.
-    static const bool prewarm_maps_insert = std::getenv("PHJ_PREWARM_MAPS") != nullptr;
+    /// PHJ_PREWARM_MAPS / PHJ_SERIAL_ALLOC: the map was already allocated and reserved in the pre-pass; reuse it.
+    static const bool prealloc_insert = std::getenv("PHJ_PREWARM_MAPS") != nullptr || std::getenv("PHJ_SERIAL_ALLOC") != nullptr;
+    /// MEASUREMENT-ONLY: PHJ_MADV_POPULATE=1 prefaults each leaf map's cell array via MADV_POPULATE_WRITE
+    /// after reserve, before insert — tests whether eager prefault removes the parallel CoW-fault IPI storm.
+    static const bool madv_populate = std::getenv("PHJ_MADV_POPULATE") != nullptr;
     std::unique_ptr<HashJoin> leaf_join;
-    if (prewarm_maps_insert && leaf_joins[leaf])
+    if (prealloc_insert && leaf_joins[leaf])
         leaf_join = std::move(leaf_joins[leaf]);
     else
+    {
         leaf_join = std::make_unique<HashJoin>(
             table_join,
             right_sample_block,
@@ -516,6 +643,9 @@ size_t PartitionedHashJoin::buildLeaf(size_t leaf, std::atomic<size_t> & blocks_
             /*instance_id=*/"",
             /*use_two_level_maps=*/leaf_twolevel,
             /*force_enable_prefetch=*/force_prefetch);
+        if (madv_populate)
+            prefaultHashJoinMapBuffers(*leaf_join);
+    }
 
     size_t moved = 0;
     for (auto & slot : build_slots)
@@ -565,28 +695,53 @@ void PartitionedHashJoin::runPostBuildPhase()
     /// If IPIs still dominate after pre-warming, the cause is the parallel allocation itself (not the
     /// interleaving with inserts). Result is probe-usable.
     static const bool prewarm_maps = std::getenv("PHJ_PREWARM_MAPS") != nullptr;
-    if (prewarm_maps)
+    /// MEASUREMENT-ONLY: PHJ_SERIAL_ALLOC=1 allocates+reserves all leaf maps on one thread (optionally
+    /// with PHJ_MADV_POPULATE), then parallel workers insert only — tests whether serializing allocation
+    /// removes cross-core TLB-shootdown IPIs while keeping parallel insert.
+    static const bool serial_alloc = std::getenv("PHJ_SERIAL_ALLOC") != nullptr;
+    static const bool madv_populate_build = std::getenv("PHJ_MADV_POPULATE") != nullptr;
+    static const bool leaf_twolevel_build = std::getenv("PHJ_LEAF_TWOLEVEL") != nullptr;
+    static const bool force_prefetch_build = std::getenv("PHJ_FORCE_PREFETCH") != nullptr;
+    if (prewarm_maps || serial_alloc)
     {
-        /// Pre-compute per-leaf row counts in parallel, allocate and reserve all leaf HashJoins.
-        std::vector<size_t> leaf_row_counts(total_leaves, 0);
-        runParallelWorkers(
-            slots,
-            [&](size_t /*worker_idx*/)
+        auto alloc_one_leaf = [&](size_t leaf)
+        {
+            size_t cnt = 0;
+            for (auto & slot : build_slots)
+                for (const auto & group : slot.leaf_chains[leaf])
+                    cnt += groupRows(group);
+            if (cnt > 0)
             {
-                size_t leaf;
-                while ((leaf = next_leaf.fetch_add(1, std::memory_order_relaxed)) < total_leaves)
+                leaf_joins[leaf] = std::make_unique<HashJoin>(
+                    table_join,
+                    right_sample_block,
+                    any_take_last_row,
+                    /*reserve_num=*/cnt,
+                    /*instance_id=*/"",
+                    /*use_two_level_maps=*/leaf_twolevel_build,
+                    /*force_enable_prefetch=*/force_prefetch_build);
+                if (madv_populate_build)
+                    prefaultHashJoinMapBuffers(*leaf_joins[leaf]);
+            }
+        };
+
+        if (serial_alloc)
+        {
+            for (size_t leaf = 0; leaf < total_leaves; ++leaf)
+                alloc_one_leaf(leaf);
+        }
+        else
+        {
+            runParallelWorkers(
+                slots,
+                [&](size_t /*worker_idx*/)
                 {
-                    size_t cnt = 0;
-                    for (auto & slot : build_slots)
-                        for (const auto & group : slot.leaf_chains[leaf])
-                            cnt += groupRows(group);
-                    leaf_row_counts[leaf] = cnt;
-                    if (cnt > 0)
-                        leaf_joins[leaf] = std::make_unique<HashJoin>(
-                            table_join, right_sample_block, any_take_last_row, /*reserve_num=*/cnt);
-                }
-            });
-        /// Reset cursor and do the insert pass into already-warmed maps.
+                    size_t leaf;
+                    while ((leaf = next_leaf.fetch_add(1, std::memory_order_relaxed)) < total_leaves)
+                        alloc_one_leaf(leaf);
+                });
+        }
+        /// Reset cursor and do the insert pass into already-allocated maps.
         next_leaf.store(0, std::memory_order_relaxed);
     }
 
@@ -651,6 +806,17 @@ void PartitionedHashJoin::runPostBuildPhase()
         slots,
         total_cells == 0 ? 0.0 : 100.0 * static_cast<double>(max_worker_rows) / static_cast<double>(total_cells),
         blocks_moved.load(std::memory_order_relaxed));
+
+    /// MEASUREMENT-ONLY: JOIN_LOG_SUBTABLE_SIZES=1 logs per-leaf cell-buffer size distribution after build.
+    static const bool log_subtable_sizes = std::getenv("JOIN_LOG_SUBTABLE_SIZES") != nullptr;
+    if (log_subtable_sizes)
+    {
+        SubtableSizeStats stats;
+        for (const auto & leaf_join : leaf_joins)
+            if (leaf_join)
+                collectHashJoinSubtableSizes(*leaf_join, stats);
+        logSubtableSizeStats("PHJ leaf", stats);
+    }
 }
 
 void PartitionedHashJoin::checkTypesOfKeys(const Block & block) const

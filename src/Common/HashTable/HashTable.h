@@ -21,6 +21,11 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(MADV_POPULATE_WRITE)
+#include <sys/mman.h>
+#include <base/getPageSize.h>
+#endif
+
 #ifdef DBMS_HASH_MAP_DEBUG_RESIZES
     #include <iostream>
     #include <iomanip>
@@ -1485,6 +1490,28 @@ public:
     size_t getBufferSizeInBytes() const
     {
         return grower.bufSize() * sizeof(Cell);
+    }
+
+    /// MEASUREMENT-ONLY helper: prefault cell-array pages via MADV_POPULATE_WRITE (bypasses Allocator's 16 MiB threshold).
+    /// Used by PHJ leaf-HT perf experiments to test whether eager prefault removes the parallel CoW-fault IPI storm.
+    void prefaultBufferPages() const
+    {
+#if defined(MADV_POPULATE_WRITE)
+        if (!buf)
+            return;
+
+        const size_t len = getBufferSizeInBytes();
+        const size_t page_size = getPageSize();
+        if (len < page_size)
+            return;
+
+        const uintptr_t address_numeric = reinterpret_cast<uintptr_t>(buf);
+        const size_t next_page_start = ((address_numeric + page_size - 1) / page_size) * page_size;
+        void * aligned_buf = reinterpret_cast<void *>(next_page_start);
+        const size_t aligned_len = len - (next_page_start - address_numeric);
+        if (aligned_len >= page_size)
+            ::madvise(aligned_buf, aligned_len, MADV_POPULATE_WRITE);
+#endif
     }
 
     size_t getBufferSizeInCells() const

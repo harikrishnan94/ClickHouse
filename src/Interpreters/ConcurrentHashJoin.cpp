@@ -22,6 +22,7 @@
 #include <Common/AllocatorWithMemoryTracking.h>
 #include <Common/setThreadName.h>
 #include <Common/ThreadGroupSwitcher.h>
+#include <Common/logger_useful.h>
 #include <Common/typeid_cast.h>
 
 #include <Interpreters/HashJoin/HashJoin.h>
@@ -31,6 +32,8 @@
 #include <base/types.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <limits>
 #include <numeric>
 #include <deque>
 #include <iterator>
@@ -71,6 +74,91 @@ namespace
 {
 
 using BlockHashes = std::vector<UInt64>;
+
+/// MEASUREMENT-ONLY: per-subtable cell-buffer size stats for JOIN_LOG_SUBTABLE_SIZES experiments.
+struct ChjSubtableSizeStats
+{
+    size_t count = 0;
+    size_t nonempty = 0;
+    size_t sum_bytes = 0;
+    size_t min_bytes = std::numeric_limits<size_t>::max();
+    size_t max_bytes = 0;
+    std::vector<size_t> sizes;
+
+    void add(size_t bytes)
+    {
+        ++count;
+        if (bytes > 0)
+            ++nonempty;
+        sum_bytes += bytes;
+        min_bytes = std::min(min_bytes, bytes);
+        max_bytes = std::max(max_bytes, bytes);
+        sizes.push_back(bytes);
+    }
+
+    size_t medianBytes() const
+    {
+        if (sizes.empty())
+            return 0;
+        auto sorted = sizes;
+        std::sort(sorted.begin(), sorted.end());
+        return sorted[sorted.size() / 2];
+    }
+};
+
+void collectChjSubtableSizes(const HashJoin & join, ChjSubtableSizeStats & stats)
+{
+    const auto & data = join.getJoinedData();
+    if (!data || data->maps.empty())
+        return;
+
+    if (data->type != HashJoin::Type::two_level_key64)
+        return;
+
+    std::visit(
+        [&](const auto & maps)
+        {
+            if (maps.two_level_key64)
+                for (const auto & impl : maps.two_level_key64->impls)
+                    stats.add(impl.getBufferSizeInBytes());
+        },
+        data->maps.at(0));
+}
+
+void logChjSubtableSizeStats(const char * label, const ChjSubtableSizeStats & stats)
+{
+    if (stats.count == 0)
+    {
+        LOG_INFO(getLogger("ConcurrentHashJoin"), "{} subtable sizes: (none)", label);
+        return;
+    }
+    size_t at_min = 0;
+    size_t at_2mib = 0;
+    size_t at_max = 0;
+    for (size_t b : stats.sizes)
+    {
+        if (b == stats.min_bytes)
+            ++at_min;
+        if (b == 2097152)
+            ++at_2mib;
+        if (b == stats.max_bytes)
+            ++at_max;
+    }
+    LOG_INFO(
+        getLogger("ConcurrentHashJoin"),
+        "{} subtable sizes: count={} nonempty={} min={} median={} max={} sum={} avg={} at_min={} at_2MiB={} at_max={}",
+        label,
+        stats.count,
+        stats.nonempty,
+        stats.min_bytes == std::numeric_limits<size_t>::max() ? 0 : stats.min_bytes,
+        stats.medianBytes(),
+        stats.max_bytes,
+        stats.sum_bytes,
+        stats.count ? stats.sum_bytes / stats.count : 0,
+        at_min,
+        at_2mib,
+        at_max);
+}
 
 void updateStatistics(const auto & hash_joins, const DB::StatsCollectingParams & params)
 {
@@ -734,6 +822,16 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    /// MEASUREMENT-ONLY: log per-slot bucket buffer sizes before the merge (streaming-build state).
+    static const bool log_subtable_sizes = std::getenv("JOIN_LOG_SUBTABLE_SIZES") != nullptr;
+    if (log_subtable_sizes)
+    {
+        ChjSubtableSizeStats stats;
+        for (const auto & hash_join : hash_joins)
+            collectChjSubtableSizes(*hash_join->data, stats);
+        logChjSubtableSizeStats("CHJ slot-bucket (pre-merge)", stats);
+    }
+
     if (hash_joins[0]->data->twoLevelMapIsUsed())
     {
         // At this point, the build phase is finished. We need to build a shared common hash map to be used in the probe phase.
