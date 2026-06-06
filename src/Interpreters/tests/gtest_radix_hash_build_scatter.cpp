@@ -1351,8 +1351,8 @@ TEST(RadixHashBuildScatter, MemoryConsumptionTest)
     const size_t num_blocks = (n + block_rows - 1) / block_rows;
     const size_t expected_output_bytes = n * (kw + sizeof(RadixShuffle::BuildRef));
 
-    /// Build.
-    BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
+    /// Build. scatter_thp=true exercises the THP-backed output arena path (MADV_HUGEPAGE).
+    BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads, GrowingArena::DEFAULT_MAX_BLOCK, /*scatter_thp=*/true);
     std::mt19937_64 rng(0xBEEFDEAD); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::vector<Block> blks;
     blks.reserve(num_blocks);
