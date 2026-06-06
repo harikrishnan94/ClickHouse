@@ -1,6 +1,7 @@
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 
 #include <Common/Exception.h>
+#include <Common/ProfileEvents.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -8,6 +9,12 @@
 
 #include <sys/mman.h>
 #include <unistd.h>
+
+namespace ProfileEvents
+{
+extern const Event RadixHashHugePagesUsed;
+extern const Event RadixHashHugePagesFailed;
+}
 
 namespace DB
 {
@@ -40,14 +47,18 @@ size_t roundUp(size_t v, size_t a)
 
 }
 
-GrowingArena::GrowingArena(size_t max_block_bytes)
-    : max_block(std::max<size_t>(roundUp(max_block_bytes, pageSize()), pageSize()))
+GrowingArena::GrowingArena(size_t max_block_bytes, bool use_thp)
+    : max_block(std::max<size_t>(roundUp(max_block_bytes, use_thp ? HUGE_PAGE : pageSize()), pageSize()))
     , next_block_size(std::min(roundUp(INITIAL_BLOCK, pageSize()), max_block))
+    , thp(use_thp)
 {
+    /// With THP, blocks are 2 MiB-rounded; start the geometric growth at one huge page.
+    if (thp)
+        next_block_size = std::min(HUGE_PAGE, max_block);
 }
 
 GrowingArena::GrowingArena(GrowingArena && other) noexcept
-    : blocks(std::move(other.blocks)), max_block(other.max_block), next_block_size(other.next_block_size)
+    : blocks(std::move(other.blocks)), max_block(other.max_block), next_block_size(other.next_block_size), thp(other.thp)
 {
     other.blocks.clear();
 }
@@ -60,6 +71,7 @@ GrowingArena & GrowingArena::operator=(GrowingArena && other) noexcept
         blocks = std::move(other.blocks);
         max_block = other.max_block;
         next_block_size = other.next_block_size;
+        thp = other.thp;
         other.blocks.clear();
     }
     return *this;
@@ -81,13 +93,23 @@ void GrowingArena::freeAll() noexcept
 void GrowingArena::addBlock(size_t min_bytes)
 {
     /// Geometric growth capped at `max_block`; a single allocation larger than the cap gets its own
-    /// page-rounded dedicated block so the allocation stays contiguous.
+    /// dedicated block so the allocation stays contiguous. With THP every block is 2 MiB-rounded.
+    const size_t grain = thp ? HUGE_PAGE : pageSize();
     const size_t want = std::max(next_block_size, min_bytes);
-    const size_t size = roundUp(want, pageSize());
+    const size_t size = roundUp(want, grain);
 
     void * base = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED)
         throw Exception(ErrorCodes::CANNOT_ALLOCATE_MEMORY, "RadixHash::GrowingArena failed to mmap {} bytes", size);
+
+    if (thp)
+    {
+        /// Fail-open: on a madvise error the block is still correct, just on 4 KiB pages (slower TLB).
+        if (::madvise(base, size, MADV_HUGEPAGE) == 0)
+            ProfileEvents::increment(ProfileEvents::RadixHashHugePagesUsed);
+        else
+            ProfileEvents::increment(ProfileEvents::RadixHashHugePagesFailed);
+    }
 
     blocks.push_back(Block{static_cast<char *>(base), size, 0});
 

@@ -1465,6 +1465,10 @@ The server successfully detected this situation and will download merged part fr
     M(RadixHashScatterRows, "RadixHashJoin: number of rows scattered, counted per pass (ns/row denominator).", ValueType::Number) \
     M(RadixHashNTStoreBytes, "RadixHashJoin: bytes written via non-temporal stores during SWWC flushes.", ValueType::Bytes) \
     M(RadixHashBuildBlocksMoved, "RadixHashJoin: number of build blocks accumulated by move (not copy).", ValueType::Number) \
+    M(RadixHashHugePagesUsed, "RadixHashJoin: arena slabs successfully backed by transparent huge pages (madvise(MADV_HUGEPAGE) succeeded).", ValueType::Number) \
+    M(RadixHashHugePagesFailed, "RadixHashJoin: arena slabs where madvise(MADV_HUGEPAGE) failed (fail-open to 4 KiB pages).", ValueType::Number) \
+    M(RadixHashProbeRows, "RadixHashJoin: number of left (probe) rows processed by joinBlock.", ValueType::Number) \
+    M(RadixHashOutputRows, "RadixHashJoin: number of joined output rows emitted by joinBlock.", ValueType::Number) \
     \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \

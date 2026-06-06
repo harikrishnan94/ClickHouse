@@ -39,6 +39,11 @@ struct LeafArrays
 
     std::vector<void *> key_base; /// num_leaves; nullptr for an empty leaf
     std::vector<RadixShuffle::BuildRef *> ref_base; /// num_leaves
+    /// Per-leaf 32-bit row-hash arrays, populated only when `scatterToLeaves(..., with_leaf_hash=true)`
+    /// (phase P4): `hash_base[L][i]` is the `IColumn::computeHashInto` hash of the build row whose key
+    /// is `key_base[L][i]` — the leaf-HT bucket (spec section 5.6) Fibonacci-mixes exactly this value so
+    /// the bucket is identical on build and probe. Empty (size 0) when leaf hashes were not requested.
+    std::vector<void *> hash_base; /// num_leaves when with_leaf_hash, else empty; UInt32* per leaf
     std::vector<UInt64> leaf_rows; /// num_leaves; == global_hist[L]
 
     /// Gate statistics (spec section 9.3/9.4).
@@ -53,6 +58,7 @@ struct LeafArrays
         return static_cast<const char *>(key_base[leaf]) + i * key_width;
     }
     const RadixShuffle::BuildRef & refAt(size_t leaf, size_t i) const { return ref_base[leaf][i]; }
+    UInt32 hashAt(size_t leaf, size_t i) const { return static_cast<const UInt32 *>(hash_base[leaf])[i]; }
 };
 
 /** BuildStore — the radix hash join build path, steps 1+2+4 (spec sections 4.2, 4.6), implemented as
@@ -108,7 +114,10 @@ public:
 
     /// Step 4. Deferred exact key+ref scatter into per-leaf arrays, parallelised on `pool`.
     /// `num_threads >= 1` (work units are stolen across that many workers drawn from `pool`).
-    LeafArrays scatterToLeaves(ThreadPool & pool, size_t num_threads);
+    /// When `with_leaf_hash` is true (phase P4), the per-row 32-bit routing hash is also scattered into
+    /// per-leaf `hash_base` arrays (one `UInt32` per build row, aligned with key/ref), so the leaf-HT
+    /// build can Fibonacci-mix the exact same hash the probe side derives (spec section 5.6, 15.9).
+    LeafArrays scatterToLeaves(ThreadPool & pool, size_t num_threads, bool with_leaf_hash = false);
 
     const PartitionConfig & config() const { return cfg; }
     size_t packedKeyWidth() const { return key_width; }
@@ -117,6 +126,12 @@ public:
     const std::vector<UInt64> & globalHistogram() const { return global_hist; }
     const std::vector<UInt64> & offsets() const { return offset; }
     size_t numBlocks() const { return global_blocks.size(); }
+    size_t totalRows() const { return total_rows; }
+
+    /// Exclusive per-block row offset (block_base[b] = Σ rows of blocks 0..b-1), so a build row's flat
+    /// index across all blocks is `block_base[ref.block_no] + ref.row_no - 1` — the 1D mapping used by
+    /// the leaf-HT `next_chain` (phase P4, spec section 5.6). Size numBlocks()+1; back() == totalRows().
+    const std::vector<UInt64> & blockBase() const { return block_base; }
 
 private:
     /// Per-build-worker state (one slot per concurrent `add` thread). Move-only; owned via unique_ptr
@@ -144,7 +159,8 @@ private:
 
     /// Initialise a LeafArrays ready for population (worker_counts resized to num_threads,
     /// key/ref/leaf_rows zeroed to num_leaves, arena attached). Setup only — not on the O(N) path.
-    LeafArrays makeLeafArrays(size_t num_threads) const;
+    /// When `with_leaf_hash`, hash_base is also sized to num_leaves (per-leaf UInt32 hash arrays).
+    LeafArrays makeLeafArrays(size_t num_threads, bool with_leaf_hash) const;
 
     /// Record the scatter ProfileEvents and trim the output arena tail.
     void finalizeScatter(LeafArrays & out, const Stopwatch & sw, std::atomic<UInt64> & total_bytes, size_t num_passes) const;
@@ -166,6 +182,7 @@ private:
     /// pass the scattered key+ref land in the pre-allocated `out.key_base/ref_base[leaf]` directly;
     /// intermediate passes allocate a per-call RAII `GrowingArena` (freed on return -> lowest peak
     /// intermediate memory), scatter key+ref+hash into children, then recurse depth-first.
+    /// `with_leaf_hash`: at the last pass, also scatter the carried row hashes into `out.hash_base`.
     void refineDepthFirst(
         size_t global_first_leaf,
         const void * in_keys,
@@ -176,7 +193,8 @@ private:
         UInt32 bits_consumed,
         LeafArrays & out,
         const std::vector<UInt64> & gh_prefix,
-        RefineWorkerScratch & ws);
+        RefineWorkerScratch & ws,
+        bool with_leaf_hash);
 
     /// Worker kernel: scatter key + BuildRef (and, iff carry_hash, the uint32 row hash) for all build
     /// blocks into `num_parts` partitions using static per-thread ownership. Each build thread (slot)
@@ -197,8 +215,8 @@ private:
         std::atomic<UInt64> & total_bytes,
         std::vector<UInt64> & worker_counts);
 
-    LeafArrays scatterSinglePass(ThreadPool & pool, size_t num_threads);
-    LeafArrays scatterMultiPass(ThreadPool & pool, size_t num_threads);
+    LeafArrays scatterSinglePass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash);
+    LeafArrays scatterMultiPass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash);
 
     PartitionConfig cfg;
     std::vector<size_t> key_positions;
@@ -223,6 +241,8 @@ private:
     std::vector<UInt32> global_rows_of_block;
     std::vector<UInt64> global_hist; /// num_leaves
     std::vector<UInt64> offset; /// num_leaves, exclusive prefix sum of global_hist
+    UInt64 total_rows = 0; /// Σ rows over all build blocks (== Σ global_hist)
+    std::vector<UInt64> block_base; /// numBlocks()+1, exclusive prefix sum of per-block row counts
 
     /// Per-slot static scatter ownership (set by finishBuild).
     /// `used_slots[w]` = index of the w-th active LocalBuildState slot in concatenation order.

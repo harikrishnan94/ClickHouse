@@ -25,14 +25,21 @@ namespace DB::RadixHash
   *
   * Pointers returned by `alloc` are stable for the arena's lifetime; all memory is `munmap`-ed on
   * destruction. One arena is owned per worker (pid) or per result (output), so it needs no locking.
+  *
+  * Optional transparent huge pages (spec section 4.4): with `use_thp = true` every block is
+  * `2 MiB`-rounded and `madvise(MADV_HUGEPAGE)`-ed (fail-open — on error the block still works on
+  * `4 KiB` pages). This is the TLB-friendly backing for the random-access leaf hash tables (phase P4);
+  * the default (`false`) keeps the streaming build-scatter arenas on ordinary pages (P3). Each madvise
+  * success/failure is counted into `RadixHashHugePagesUsed` / `RadixHashHugePagesFailed`.
   */
 class GrowingArena
 {
 public:
     static constexpr size_t DEFAULT_MAX_BLOCK = 8 * 1024 * 1024; /// 8 MiB cap (configurable)
     static constexpr size_t INITIAL_BLOCK = 64 * 1024; /// first block size, doubles up to the cap
+    static constexpr size_t HUGE_PAGE = 2 * 1024 * 1024; /// x86 2 MiB THP unit (block size/alignment when use_thp)
 
-    explicit GrowingArena(size_t max_block_bytes = DEFAULT_MAX_BLOCK);
+    explicit GrowingArena(size_t max_block_bytes = DEFAULT_MAX_BLOCK, bool use_thp = false);
     ~GrowingArena();
 
     GrowingArena(const GrowingArena &) = delete;
@@ -75,6 +82,7 @@ private:
     std::vector<Block> blocks;
     size_t max_block;
     size_t next_block_size;
+    bool thp = false;
 
     void addBlock(size_t min_bytes);
     void freeAll() noexcept;

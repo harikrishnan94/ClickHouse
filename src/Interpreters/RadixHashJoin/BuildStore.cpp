@@ -372,11 +372,18 @@ void BuildStore::finishBuild()
     offset.resize(nl);
     std::exclusive_scan(global_hist.begin(), global_hist.end(), offset.begin(), UInt64{0});
 
+    /// Per-block exclusive row-offset prefix sum: block_base[b] = Σ rows of blocks 0..b-1. Gives the
+    /// flat next_chain index of a build row (phase P4): flat(ref) = block_base[ref.block_no] + row_no-1.
+    block_base.assign(global_blocks.size() + 1, 0);
+    for (size_t b = 0; b < global_rows_of_block.size(); ++b)
+        block_base[b + 1] = block_base[b] + global_rows_of_block[b];
+    total_rows = block_base.empty() ? 0 : block_base.back();
+
     finished = true;
 }
 
 
-LeafArrays BuildStore::makeLeafArrays([[maybe_unused]] size_t /*num_threads_hint*/) const
+LeafArrays BuildStore::makeLeafArrays([[maybe_unused]] size_t /*num_threads_hint*/, bool with_leaf_hash) const
 {
     LeafArrays out;
     out.num_leaves = cfg.num_leaves;
@@ -384,6 +391,8 @@ LeafArrays BuildStore::makeLeafArrays([[maybe_unused]] size_t /*num_threads_hint
     out.arena = GrowingArena(arena_max_block);
     out.key_base.assign(cfg.num_leaves, nullptr);
     out.ref_base.assign(cfg.num_leaves, nullptr);
+    if (with_leaf_hash)
+        out.hash_base.assign(cfg.num_leaves, nullptr);
     out.leaf_rows.assign(cfg.num_leaves, 0);
     /// One counter per build thread (used slot); the scatter assigns each thread's block count here.
     out.worker_block_counts.assign(used_slots.size(), 0);
@@ -397,8 +406,8 @@ void BuildStore::finalizeScatter(
     size_t num_passes) const
 {
     ProfileEvents::increment(ProfileEvents::RadixHashBuildScatterMicroseconds, sw.elapsedMicroseconds());
-    const UInt64 total_rows = std::accumulate(global_hist.begin(), global_hist.end(), UInt64{0});
-    ProfileEvents::increment(ProfileEvents::RadixHashScatterRows, total_rows * num_passes);
+    const UInt64 scattered_rows = std::accumulate(global_hist.begin(), global_hist.end(), UInt64{0});
+    ProfileEvents::increment(ProfileEvents::RadixHashScatterRows, scattered_rows * num_passes);
     out.bytes_scattered = total_bytes.load();
     out.arena.trim();
 }
@@ -419,7 +428,8 @@ void BuildStore::refineDepthFirst(
     UInt32 bits_consumed,
     LeafArrays & out,
     const std::vector<UInt64> & gh_prefix,
-    RefineWorkerScratch & ws)
+    RefineWorkerScratch & ws,
+    bool with_leaf_hash)
 {
     const UInt32 pass_bits = cfg.pass_bits[pass_index];
     const size_t fanout = size_t{1} << pass_bits;
@@ -435,13 +445,14 @@ void BuildStore::refineDepthFirst(
 
     if (is_last)
     {
-        /// Point directly at the pre-allocated final leaf arrays; ws.pout is not used here.
+        /// Point directly at the pre-allocated final leaf arrays. When leaf hashes are requested,
+        /// ws.pout points at the per-leaf hash arrays and the carried in_hashes are scattered too.
         for (size_t c = 0; c < fanout; ++c)
         {
             const size_t gidx = global_first_leaf + c * leaves_per_child;
             ws.kout[c] = out.key_base[gidx];
             ws.rout[c] = out.ref_base[gidx];
-            ws.pout[c] = nullptr; /// explicit: unused but zeroed to avoid latent misread
+            ws.pout[c] = with_leaf_hash ? out.hash_base[gidx] : nullptr;
         }
 
         scatterKeyRefTwoColumn(
@@ -449,6 +460,14 @@ void BuildStore::refineDepthFirst(
             ws.kout.data(), ws.rout.data(), ws.scratch, shouldUseSwwc(2, static_cast<int>(fanout)));
 
         ws.local_bytes += rows * (kw + sizeof(BuildRef));
+
+        if (with_leaf_hash)
+        {
+            scatterColumn(
+                in_hashes, routing_shift, mask, rows, in_hashes, sizeof(UInt32),
+                fanout, ws.pout.data(), ws.scratch, shouldUseSwwc(1, static_cast<int>(fanout)));
+            ws.local_bytes += rows * sizeof(UInt32);
+        }
     }
     else
     {
@@ -501,7 +520,8 @@ void BuildStore::refineDepthFirst(
                 new_bits,
                 out,
                 gh_prefix,
-                ws);
+                ws,
+                with_leaf_hash);
             /// Child c fully consumed — release its key/ref/hash memory from child_arena.
             if (arrs.key[c])
                 child_arena.releaseRange(arrs.key[c], roundUpTo64(child_counts[c] * kw));
@@ -531,6 +551,11 @@ void BuildStore::scatterBlocksIntoPartitions(
     const size_t kw = key_width;
     const bool multi_col = key_positions.size() > 1;
     const size_t num_used = used_slots.size();
+
+    /// Empty build (no accumulated blocks): nothing to scatter. Guard here so the worker body never
+    /// indexes the empty per-slot block-range arrays (runOnPool would still run worker 0 for num_used<=1).
+    if (num_used == 0)
+        return;
 
     /// At high fanout the per-pass scatter routes through SWWC + NT (only emitted in a multitarget
     /// build); below the threshold, or without NT, it uses the direct incremental cursors. The hash
@@ -628,7 +653,9 @@ void BuildStore::scatterBlocksIntoPartitions(
                     keys_ptr = packed.data();
                 }
                 else
+                {
                     keys_ptr = raw_keys + r0 * kw;
+                }
 
                 if (use_swwc)
                 {
@@ -674,16 +701,19 @@ void BuildStore::scatterBlocksIntoPartitions(
 }
 
 
-LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads)
+LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
 {
-    LeafArrays out = makeLeafArrays(num_threads);
+    LeafArrays out = makeLeafArrays(num_threads, with_leaf_hash);
     const size_t nl = cfg.num_leaves;
     const size_t num_used = used_slots.size();
 
-    /// Allocate each leaf's key and ref arrays exactly once (NC gate: O(num_leaves) carves).
-    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, /*carry_hash=*/false);
+    /// Allocate each leaf's key and ref arrays (and, for P4, the per-leaf hash array) exactly once
+    /// (NC gate: O(num_leaves) carves).
+    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, /*carry_hash=*/with_leaf_hash);
     out.key_base = std::move(arrs.key);
     out.ref_base = std::move(arrs.ref);
+    if (with_leaf_hash)
+        out.hash_base = std::move(arrs.hash);
     out.alloc_count = arrs.alloc_count;
     for (size_t leaf = 0; leaf < nl; ++leaf)
         out.leaf_rows[leaf] = global_hist[leaf];
@@ -713,17 +743,23 @@ LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads)
 
     std::atomic<UInt64> total_bytes{0};
     Stopwatch sw;
-    scatterBlocksIntoPartitions</*carry_hash=*/false>(
-        pool, nl, shift, mask,
-        thr_off, out.key_base.data(), out.ref_base.data(), /*hash_base_arr=*/nullptr,
-        total_bytes, out.worker_block_counts);
+    if (with_leaf_hash)
+        scatterBlocksIntoPartitions</*carry_hash=*/true>(
+            pool, nl, shift, mask,
+            thr_off, out.key_base.data(), out.ref_base.data(), out.hash_base.data(),
+            total_bytes, out.worker_block_counts);
+    else
+        scatterBlocksIntoPartitions</*carry_hash=*/false>(
+            pool, nl, shift, mask,
+            thr_off, out.key_base.data(), out.ref_base.data(), /*hash_base_arr=*/nullptr,
+            total_bytes, out.worker_block_counts);
 
     finalizeScatter(out, sw, total_bytes, /*num_passes=*/1);
     return out;
 }
 
 
-LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads)
+LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
 {
     const size_t nl = cfg.num_leaves;
     const size_t kw = key_width;
@@ -733,12 +769,15 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads)
     std::vector<UInt64> gh_prefix(nl + 1, 0);
     std::inclusive_scan(global_hist.begin(), global_hist.end(), gh_prefix.begin() + 1);
 
-    /// Pre-allocate ALL final leaf key/ref arrays exactly once (NC gate: O(num_leaves) carves).
-    LeafArrays out = makeLeafArrays(num_threads);
+    /// Pre-allocate ALL final leaf key/ref arrays (and, for P4, hash arrays) exactly once
+    /// (NC gate: O(num_leaves) carves).
+    LeafArrays out = makeLeafArrays(num_threads, with_leaf_hash);
     {
-        auto arrs = allocExactPartitions(out.arena, global_hist, kw, /*carry_hash=*/false);
+        auto arrs = allocExactPartitions(out.arena, global_hist, kw, /*carry_hash=*/with_leaf_hash);
         out.key_base = std::move(arrs.key);
         out.ref_base = std::move(arrs.ref);
+        if (with_leaf_hash)
+            out.hash_base = std::move(arrs.hash);
         out.alloc_count = arrs.alloc_count;
         for (size_t leaf = 0; leaf < nl; ++leaf)
             out.leaf_rows[leaf] = global_hist[leaf];
@@ -852,7 +891,8 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads)
                 pass0_bits,
                 out,
                 gh_prefix,
-                ws);
+                ws,
+                with_leaf_hash);
 
             /// Partition p is fully consumed — release its level0 memory back to the OS.
             if (level0.key[p])
@@ -871,15 +911,15 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads)
 }
 
 
-LeafArrays BuildStore::scatterToLeaves(ThreadPool & pool, size_t num_threads)
+LeafArrays BuildStore::scatterToLeaves(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
 {
     chassert(finished);
     if (num_threads == 0)
         num_threads = 1;
 
     LeafArrays out = cfg.pass_bits.size() <= 1
-        ? scatterSinglePass(pool, num_threads)
-        : scatterMultiPass(pool, num_threads);
+        ? scatterSinglePass(pool, num_threads, with_leaf_hash)
+        : scatterMultiPass(pool, num_threads, with_leaf_hash);
 
     /// For single-pass: trim hash arenas now that scatter is done.
     /// For multi-pass: already trimmed inside scatterMultiPass right after pass-0 completed.
