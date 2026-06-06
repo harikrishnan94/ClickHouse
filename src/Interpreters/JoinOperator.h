@@ -101,7 +101,6 @@ struct JoinSettings
 
     /* Radix hash join settings */
     UInt64 max_partitions_per_pass;
-    bool radix_hash_scatter_use_thp;
     UInt64 join_output_by_rowlist_perkey_rows_threshold;
     bool allow_experimental_join_right_table_sorting;
     UInt64 join_to_sort_minimum_perkey_rows;

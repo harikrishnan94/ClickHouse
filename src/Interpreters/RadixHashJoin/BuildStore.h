@@ -100,8 +100,7 @@ public:
         std::vector<size_t> key_positions_,
         std::vector<size_t> key_widths_,
         size_t max_threads_,
-        size_t arena_max_block_ = GrowingArena::DEFAULT_MAX_BLOCK,
-        bool scatter_thp_ = false);
+        size_t arena_max_block_ = GrowingArena::DEFAULT_MAX_BLOCK);
     ~BuildStore();
 
     BuildStore(const BuildStore &) = delete;
@@ -227,7 +226,6 @@ private:
     size_t key_width; /// packed key width (sum of key_widths)
     size_t max_threads;
     size_t arena_max_block;
-    bool scatter_thp; /// when true, back per-leaf output arrays with MADV_HUGEPAGE (2 MiB THP)
 
     /// Unique non-zero id of this instance, so the per-thread worker-slot cache cannot be confused by a
     /// later BuildStore reusing the same heap address (the raw `this` pointer is not enough).

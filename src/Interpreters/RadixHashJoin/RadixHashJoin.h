@@ -41,8 +41,7 @@ public:
         SharedHeader right_sample_block_,
         size_t max_threads_,
         std::optional<UInt64> rhs_size_estimation_,
-        UInt64 max_partitions_per_pass_,
-        bool scatter_thp_ = false);
+        UInt64 max_partitions_per_pass_);
 
     ~RadixHashJoin() override;
 
@@ -79,7 +78,6 @@ private:
     size_t max_threads;
     std::optional<UInt64> rhs_size_estimation;
     UInt64 max_partitions_per_pass;
-    bool scatter_thp;
 
     /// All radix-path state (build store, leaf HTs, colptr tables, output plan). Defined in the
     /// .cpp so this header stays free of the RadixHash internals.

@@ -50,7 +50,6 @@ namespace Setting
     extern const SettingsUInt64 max_size_to_preallocate_for_joins;
     extern const SettingsUInt64 parallel_hash_join_threshold;
     extern const SettingsUInt64 max_partitions_per_pass;
-    extern const SettingsBool radix_hash_scatter_use_thp;
 
     extern const SettingsBool joined_block_split_single_row;
     extern const SettingsBool parallel_non_joined_rows_processing;
@@ -169,7 +168,6 @@ JoinSettings::JoinSettings(const Settings & query_settings)
     max_size_to_preallocate_for_joins = query_settings[Setting::max_size_to_preallocate_for_joins];
     parallel_hash_join_threshold = query_settings[Setting::parallel_hash_join_threshold];
     max_partitions_per_pass = query_settings[Setting::max_partitions_per_pass];
-    radix_hash_scatter_use_thp = query_settings[Setting::radix_hash_scatter_use_thp];
 
     temporary_files_codec = query_settings[Setting::temporary_files_codec];
     temporary_files_buffer_size = query_settings[Setting::temporary_files_buffer_size];
@@ -220,7 +218,6 @@ JoinSettings::JoinSettings(const QueryPlanSerializationSettings & settings)
     max_size_to_preallocate_for_joins = settings[QueryPlanSerializationSetting::max_size_to_preallocate_for_joins];
     parallel_hash_join_threshold = settings[QueryPlanSerializationSetting::parallel_hash_join_threshold];
     max_partitions_per_pass = settings[QueryPlanSerializationSetting::max_partitions_per_pass];
-    radix_hash_scatter_use_thp = false; /// not serialized in query plans
 
     joined_block_split_single_row = settings[QueryPlanSerializationSetting::joined_block_split_single_row];
     parallel_non_joined_rows_processing = settings[QueryPlanSerializationSetting::parallel_non_joined_rows_processing];

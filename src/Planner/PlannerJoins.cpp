@@ -69,7 +69,6 @@ namespace Setting
     extern const SettingsJoinAlgorithm join_algorithm;
     extern const SettingsUInt64 parallel_hash_join_threshold;
     extern const SettingsUInt64 max_partitions_per_pass;
-    extern const SettingsBool radix_hash_scatter_use_thp;
     extern const SettingsSeconds lock_acquire_timeout;
     extern const SettingsNonZeroUInt64 grace_hash_join_initial_buckets;
     extern const SettingsNonZeroUInt64 grace_hash_join_max_buckets;
@@ -1274,8 +1273,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 right_table_expression_header,
                 params.max_threads,
                 params.rhs_size_estimation,
-                params.max_partitions_per_pass,
-                params.scatter_thp);
+                params.max_partitions_per_pass);
 
         /// Key gate failed: fall back cleanly to parallel_hash (spec section 7.2).
         return createRadixHashJoinFallback(table_join, right_table_expression_header, params);
@@ -1415,7 +1413,6 @@ JoinAlgorithmParams::JoinAlgorithmParams(const Context & context)
     hash_table_key_hash = 0;
     parallel_hash_join_threshold = settings[Setting::parallel_hash_join_threshold];
     max_partitions_per_pass = settings[Setting::max_partitions_per_pass];
-    scatter_thp = settings[Setting::radix_hash_scatter_use_thp];
 
     grace_hash_join_initial_buckets = settings[Setting::grace_hash_join_initial_buckets];
     grace_hash_join_max_buckets = settings[Setting::grace_hash_join_max_buckets];
@@ -1446,7 +1443,6 @@ JoinAlgorithmParams::JoinAlgorithmParams(
     hash_table_key_hash = hash_table_key_hash_;
     parallel_hash_join_threshold = join_settings.parallel_hash_join_threshold;
     max_partitions_per_pass = join_settings.max_partitions_per_pass;
-    scatter_thp = join_settings.radix_hash_scatter_use_thp;
 
     grace_hash_join_initial_buckets = join_settings.grace_hash_join_initial_buckets;
     grace_hash_join_max_buckets = join_settings.grace_hash_join_max_buckets;

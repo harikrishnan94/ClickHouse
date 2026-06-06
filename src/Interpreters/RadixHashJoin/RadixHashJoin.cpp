@@ -2,7 +2,6 @@
 
 #include <Interpreters/RadixHashJoin/BuildStore.h>
 #include <Interpreters/RadixHashJoin/ColPtrTables.h>
-#include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 
@@ -107,14 +106,12 @@ RadixHashJoin::RadixHashJoin(
     SharedHeader right_sample_block_,
     size_t max_threads_,
     std::optional<UInt64> rhs_size_estimation_,
-    UInt64 max_partitions_per_pass_,
-    bool scatter_thp_)
+    UInt64 max_partitions_per_pass_)
     : table_join(std::move(table_join_))
     , right_sample_block(right_sample_block_)
     , max_threads(std::max<size_t>(max_threads_, 1))
     , rhs_size_estimation(rhs_size_estimation_)
     , max_partitions_per_pass(max_partitions_per_pass_)
-    , scatter_thp(scatter_thp_)
     , state(std::make_unique<RadixState>())
 {
     /// The planner gate (radixHashJoinApplicable in PlannerJoins.cpp) guarantees all invariants below.
@@ -155,8 +152,7 @@ RadixHashJoin::RadixHashJoin(
 
     state->cfg = RadixHash::PartitionConfig::make(rhs_size_estimation, detectL2Bytes(), max_partitions_per_pass);
     state->build_store = std::make_unique<RadixHash::BuildStore>(
-        state->cfg, state->key_positions, state->key_widths, max_threads,
-        RadixHash::GrowingArena::DEFAULT_MAX_BLOCK, scatter_thp);
+        state->cfg, state->key_positions, state->key_widths, max_threads);
 
     /// Output plan: split right keys vs payload, the required right keys (copied from the left side),
     /// and which left columns survive into the result (spec section 5.4, analyzer column rules).

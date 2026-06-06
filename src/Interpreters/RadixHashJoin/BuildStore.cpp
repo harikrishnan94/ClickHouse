@@ -167,6 +167,13 @@ struct PartitionArrays
 /// Allocate exactly-sized, 64 B-aligned key/ref/(hash) arrays for every non-empty partition from
 /// `arena`. This is the single place that does per-leaf/per-partition allocation (O(num_parts) carves),
 /// used by scatterSinglePass (leaves), level0, and every refine level.
+///
+/// All three sections are packed into one contiguous alloc per partition:
+///   [ key_section | ref_section | hash_section (if carry_hash) ]
+/// Each section is roundUpTo64 bytes; sub-pointers are naturally 64 B-aligned since the base is
+/// LINE_BYTES-aligned and each section size is a multiple of LINE_BYTES. This halves the number
+/// of arena alloc calls (1 instead of 2-3) and allows the incremental release in refine passes to
+/// issue a single madvise(MADV_DONTNEED) over the whole combined block.
 PartitionArrays allocExactPartitions(
     GrowingArena & arena,
     std::span<const UInt64> counts,
@@ -184,11 +191,15 @@ PartitionArrays allocExactPartitions(
     {
         if (counts[p] == 0)
             continue;
-        out.key[p] = arena.alloc(roundUpTo64(counts[p] * kw), LINE_BYTES);
-        out.ref[p] = static_cast<BuildRef *>(arena.alloc(roundUpTo64(counts[p] * sizeof(BuildRef)), LINE_BYTES));
+        const size_t key_bytes  = roundUpTo64(counts[p] * kw);
+        const size_t ref_bytes  = roundUpTo64(counts[p] * sizeof(BuildRef));
+        const size_t hash_bytes = carry_hash ? roundUpTo64(counts[p] * sizeof(UInt32)) : 0;
+        char * base = static_cast<char *>(arena.alloc(key_bytes + ref_bytes + hash_bytes, LINE_BYTES));
+        out.key[p] = base;
+        out.ref[p] = reinterpret_cast<BuildRef *>(base + key_bytes);
         if (carry_hash)
-            out.hash[p] = arena.alloc(roundUpTo64(counts[p] * sizeof(UInt32)), LINE_BYTES);
-        out.alloc_count += carry_hash ? 3 : 2;
+            out.hash[p] = base + key_bytes + ref_bytes;
+        ++out.alloc_count; /// one combined alloc per non-empty partition
     }
     return out;
 }
@@ -209,14 +220,12 @@ BuildStore::BuildStore(
     std::vector<size_t> key_positions_,
     std::vector<size_t> key_widths_,
     size_t max_threads_,
-    size_t arena_max_block_,
-    bool scatter_thp_)
+    size_t arena_max_block_)
     : cfg(std::move(cfg_))
     , key_positions(std::move(key_positions_))
     , key_widths(std::move(key_widths_))
     , max_threads(std::max<size_t>(max_threads_, 1))
     , arena_max_block(arena_max_block_)
-    , scatter_thp(scatter_thp_)
     , instance_id(nextInstanceId())
 {
     chassert(!key_positions.empty() && key_positions.size() == key_widths.size());
@@ -390,7 +399,7 @@ LeafArrays BuildStore::makeLeafArrays([[maybe_unused]] size_t /*num_threads_hint
     LeafArrays out;
     out.num_leaves = cfg.num_leaves;
     out.key_width = key_width;
-    out.arena = GrowingArena(arena_max_block, scatter_thp);
+    out.arena = GrowingArena(arena_max_block, /*use_thp=*/true);
     out.key_base.assign(cfg.num_leaves, nullptr);
     out.ref_base.assign(cfg.num_leaves, nullptr);
     if (with_leaf_hash)
@@ -524,13 +533,15 @@ void BuildStore::refineDepthFirst(
                 gh_prefix,
                 ws,
                 with_leaf_hash);
-            /// Child c fully consumed — release its key/ref/hash memory from child_arena.
+            /// Child c fully consumed — release its contiguous key+ref+hash block from child_arena
+            /// in one madvise(MADV_DONTNEED) call (single alloc from allocExactPartitions).
             if (arrs.key[c])
-                child_arena.releaseRange(arrs.key[c], roundUpTo64(child_counts[c] * kw));
-            if (arrs.ref[c])
-                child_arena.releaseRange(arrs.ref[c], roundUpTo64(child_counts[c] * sizeof(BuildRef)));
-            if (arrs.hash[c])
-                child_arena.releaseRange(arrs.hash[c], roundUpTo64(child_counts[c] * sizeof(UInt32)));
+            {
+                const size_t total = roundUpTo64(child_counts[c] * kw)
+                                   + roundUpTo64(child_counts[c] * sizeof(BuildRef))
+                                   + roundUpTo64(child_counts[c] * sizeof(UInt32));
+                child_arena.releaseRange(arrs.key[c], total);
+            }
         }
         /// child_arena mapped memory released below (destructor calls munmap).
     }
@@ -846,7 +857,7 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
 
     CascadeLevel level0;
     level0.num_parts = p0;
-    level0.arena = GrowingArena(arena_max_block, scatter_thp);
+    level0.arena = GrowingArena(arena_max_block, /*use_thp=*/true);
     {
         auto arrs = allocExactPartitions(level0.arena, level0_counts, kw, /*carry_hash=*/true);
         level0.key   = std::move(arrs.key);
@@ -896,13 +907,15 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
                 ws,
                 with_leaf_hash);
 
-            /// Partition p is fully consumed — release its level0 memory back to the OS.
+            /// Partition p is fully consumed — release its contiguous key+ref+hash block
+            /// back to the OS in one madvise(MADV_DONTNEED) call.
             if (level0.key[p])
-                level0.arena.releaseRange(level0.key[p], roundUpTo64(level0.count[p] * kw));
-            if (level0.ref[p])
-                level0.arena.releaseRange(level0.ref[p], roundUpTo64(level0.count[p] * sizeof(BuildRef)));
-            if (level0.hash[p])
-                level0.arena.releaseRange(level0.hash[p], roundUpTo64(level0.count[p] * sizeof(UInt32)));
+            {
+                const size_t total = roundUpTo64(level0.count[p] * kw)
+                                   + roundUpTo64(level0.count[p] * sizeof(BuildRef))
+                                   + roundUpTo64(level0.count[p] * sizeof(UInt32));
+                level0.arena.releaseRange(level0.key[p], total);
+            }
         }
 
         total_bytes.fetch_add(ws.local_bytes, std::memory_order_relaxed);
