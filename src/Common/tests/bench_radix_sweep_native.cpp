@@ -20,10 +20,11 @@
 //
 // "nt/bt" = direct/swwc (> 1 means write-combining + NT still wins after alloc+fault is counted).
 //
-// NOTE: SWWC exists only when NT stores are available. In the default x86-64-v2 build
-// (ENABLE_MULTITARGET_CODE=0) NT is dormant, so scatterColumn(use_swwc=true) runs the DIRECT path and
-// the "swwc" and "direct" columns are identical. The genuine NT path (vmovntdq/vmovntps) is only
-// emitted in a multitarget build, where SWWC+NT wins at high fanout (P >= 2048). See
+// NOTE: SWWC exists only when NT stores are available. This build is `x86-64-v3`
+// (`ENABLE_MULTITARGET_CODE=1`), so NT is active: `scatterColumn(use_swwc=true)` runs the genuine NT
+// path (`vmovntdq`/`vmovntps`) and the "swwc" and "direct" columns differ, with SWWC+NT winning at
+// high fanout (P >= 2048). In a `x86-64-v2` build (`ENABLE_MULTITARGET_CODE=0`) NT is dormant, so
+// `scatterColumn(use_swwc=true)` falls back to the DIRECT path and the two columns are identical. See
 // analysis/radix_hash_p2_analysis.md. (Key widths swept here are all multiples of 4, the supported set.)
 
 #include <pthread.h>
@@ -147,7 +148,7 @@ double measure(
     int P,
     int T,
     size_t rows_per_thread,
-    const std::vector<UInt16> & pid,
+    const std::vector<UInt32> & pid,
     const std::vector<char> & keybuf,
     const std::vector<BuildRef> & refs,
     bool swwc)
@@ -227,7 +228,7 @@ int main(int /*argc*/, char ** /*argv*/)
 
     fmt::print("Generating {} rows (pid 14-bit + {} GiB key bytes + 8 B ref)...\n", kTotalRows, kKeyBufBytes >> 30);
     const auto tg0 = Clk::now();
-    std::vector<UInt16> pid(kTotalRows);
+    std::vector<UInt32> pid(kTotalRows);
     std::vector<char> keybuf(kKeyBufBytes);
     std::vector<BuildRef> refs(kTotalRows);
     {
@@ -236,7 +237,7 @@ int main(int /*argc*/, char ** /*argv*/)
         for (size_t i = 0; i < kTotalRows; ++i)
         {
             const UInt64 k = rng();
-            pid[i] = static_cast<UInt16>(k & pid_mask); /// uniform in [0, 16384)
+            pid[i] = static_cast<UInt32>(k & pid_mask); /// uniform in [0, 16384)
             refs[i] = BuildRef{0, static_cast<UInt32>(i)};
         }
         /// Key content is irrelevant to throughput; fill the reusable key buffer with a cheap pattern.

@@ -1164,8 +1164,11 @@ QueryTreeNodePtr getJoinExpressionFromNode(const JoinNode & join_node)
 }
 
 /// The applicability gate for `radix_hash` (spec sections 7.2 / 8): a v1 RadixHashJoin requires an
-/// inner join over a single fixed-width key of <= 8 bytes (one disjunct, no special storage). Any
-/// other shape (composite, > 8-byte, nullable, low-cardinality, or non-fixed-width keys) must fall
+/// inner `ALL` equi-join with one disjunct, no special storage, over one or more fixed-width key
+/// columns (composite keys are packed row-major and hashed by a chained `computeHashInto`). The
+/// packed key width (the sum of the column widths) must be a multiple of 4 bytes — the SWWC/direct
+/// scatter granularity (P2). Any other shape (nullable, low-cardinality, non-fixed-width, or a packed
+/// width that is not a multiple of 4, e.g. a lone `UInt8`/`UInt16`/`Date`/`Enum8`/`Enum16`) must fall
 /// back to `parallel_hash`.
 static bool radixHashJoinApplicable(
     const std::shared_ptr<TableJoin> & table_join,
@@ -1183,21 +1186,30 @@ static bool radixHashJoinApplicable(
         return false;
 
     const auto & key_names_right = table_join->getOnlyClause().key_names_right;
-    if (key_names_right.size() != 1)
+    if (key_names_right.empty())
         return false;
 
-    const auto * key_column = right_table_expression_header->findByName(key_names_right[0]);
-    if (!key_column)
-        return false;
+    size_t packed_key_width = 0;
+    for (const auto & key_name : key_names_right)
+    {
+        const auto * key_column = right_table_expression_header->findByName(key_name);
+        if (!key_column)
+            return false;
 
-    const auto & type = key_column->type;
-    if (type->isNullable() || type->lowCardinality())
-        return false;
-    if (!type->haveMaximumSizeOfValue())
-        return false;
+        const auto & type = key_column->type;
+        if (type->isNullable() || type->lowCardinality())
+            return false;
+        if (!type->haveMaximumSizeOfValue())
+            return false;
 
-    const size_t key_width = type->getMaximumSizeOfValueInMemory();
-    return key_width != 0 && key_width <= 8;
+        const size_t width = type->getMaximumSizeOfValueInMemory();
+        if (width == 0)
+            return false;
+        packed_key_width += width;
+    }
+
+    /// The scatter granularity is 4 bytes (P2): the packed key width must be a multiple of 4.
+    return packed_key_width % 4 == 0;
 }
 
 /// Fallback used when `radix_hash` is requested but its key gate does not hold: prefer
