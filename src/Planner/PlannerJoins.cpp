@@ -1208,8 +1208,9 @@ static bool radixHashJoinApplicable(
         packed_key_width += width;
     }
 
-    /// The scatter granularity is 4 bytes (P2): the packed key width must be a multiple of 4.
-    return packed_key_width % 4 == 0;
+    /// The scatter granularity is 4 bytes (P2) and the leaf-cell template covers widths in [4, 64]:
+    /// the packed key width must be a multiple of 4 and fit within one leaf cell.
+    return packed_key_width % 4 == 0 && packed_key_width >= 4 && packed_key_width <= 64;
 }
 
 /// Fallback used when `radix_hash` is requested but its key gate does not hold: prefer
@@ -1272,8 +1273,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 right_table_expression_header,
                 params.max_threads,
                 params.rhs_size_estimation,
-                params.max_partitions_per_pass,
-                params.join_any_take_last_row);
+                params.max_partitions_per_pass);
 
         /// Key gate failed: fall back cleanly to parallel_hash (spec section 7.2).
         return createRadixHashJoinFallback(table_join, right_table_expression_header, params);
