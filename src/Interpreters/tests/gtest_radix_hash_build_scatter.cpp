@@ -1340,7 +1340,7 @@ TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
 /// resident alongside the output). Uses a forced multi-pass schedule. Runs in under 2 s.
 TEST(RadixHashBuildScatter, MemoryConsumptionTest)
 {
-    const size_t n = 4'000'007;
+    const size_t n = 10'000'007;
     const size_t num_threads = 4;
     const size_t block_rows = 65536;
     const size_t kw = sizeof(UInt64);
