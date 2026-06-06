@@ -61,8 +61,8 @@ constexpr size_t leafCellBytes(size_t key_width) noexcept
 inline UInt64 leafBucket(UInt32 h, UInt64 num_buckets) noexcept
 {
     const UInt32 mixed = h * 0x9E3779B9u; /// 2^32 * (golden ratio); spreads entropy into the high bits
-    const int lg = std::countr_zero(num_buckets);
-    const int shift = lg >= 32 ? 0 : 32 - lg;
+    const unsigned log2_buckets = std::countr_zero(num_buckets);
+    const unsigned shift = log2_buckets >= 32 ? 0u : 32u - log2_buckets;
     return static_cast<UInt64>(mixed >> shift);
 }
 
@@ -78,7 +78,7 @@ inline UInt64 leafFlat(RadixShuffle::BuildRef ref, const UInt64 * block_base) no
 /// `__builtin_memcpy_inline` / `__builtin_memcmp` of a compile-time size (no runtime memcpy).
 template <size_t key_width>
 inline void leafInsert(
-    const LeafHT & ht, UInt32 h, const void * key, RadixShuffle::BuildRef ref, const UInt64 * block_base) noexcept
+    LeafHT & ht, UInt32 h, const void * key, RadixShuffle::BuildRef ref, const UInt64 * block_base) noexcept
 {
     static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
     constexpr size_t stride = leafCellBytes(key_width);

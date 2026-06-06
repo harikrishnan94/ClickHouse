@@ -40,7 +40,7 @@ ThreadPool makePool(size_t threads)
 }
 
 template <typename T>
-typename ColumnVector<T>::MutablePtr makeColumn(const std::vector<T> & vals)
+ColumnVector<T>::MutablePtr makeColumn(const std::vector<T> & vals)
 {
     auto col = ColumnVector<T>::create();
     auto & data = col->getData();
@@ -275,7 +275,7 @@ TEST(RadixHashBuildScatter, ConservationSinglePassU64)
 {
     const size_t n = 1'000'003;
     const auto keys = randomKeys(n, 0xC0FFEE);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192); /// 2048 leaves, 1 pass
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192); /// 2048 leaves, 1 pass
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, /*max_threads=*/1);
@@ -296,7 +296,7 @@ TEST(RadixHashBuildScatter, ConservationSinglePassU32)
     for (size_t i = 0; i < n; ++i)
         keys[i] = static_cast<UInt32>(rng());
 
-    auto cfg = PartitionConfig::make(UInt64(50'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(50'000'000), l2_bytes, 8192);
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     BuildStore store(cfg, {0}, {sizeof(UInt32)}, 1);
@@ -320,7 +320,7 @@ TEST(RadixHashBuildScatter, ConservationSinglePassSwwc)
     const auto keys = randomKeys(n, 0x5EED5);
     const size_t num_threads = 8;
     const size_t num_blocks = 128;
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192); /// 2048 leaves, 1 pass
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192); /// 2048 leaves, 1 pass
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
     ASSERT_GE(cfg.num_leaves, 256u) << "need fanout >= 256 so the scatter routes through SWWC";
 
@@ -381,7 +381,7 @@ TEST(RadixHashBuildScatter, MultiColumnKeyU64x2)
     const auto k0 = randomKeys(n, 0x111);
     const auto k1 = randomKeys(n, 0x222);
 
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     const std::vector<size_t> key_pos{0, 1};
@@ -425,7 +425,7 @@ TEST(RadixHashBuildScatter, MultiColumnKeyU64x2)
 TEST(RadixHashBuildScatter, MultiColumnMixedWidth)
 {
     const size_t n = 333'333;
-    auto cfg = PartitionConfig::make(UInt64(20'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(20'000'000), l2_bytes, 8192);
 
     std::mt19937_64 rng(0xDEAD); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed) -- deterministic test
     BuildStore store(cfg, {0, 1}, {sizeof(UInt32), sizeof(UInt64)}, 2);
@@ -463,7 +463,7 @@ TEST(RadixHashBuildScatter, MultiPassMembership)
 {
     const size_t n = 800'011;
     const auto keys = randomKeys(n, 0xFACADE);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64); /// 2048 leaves -> {6,5}
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64); /// 2048 leaves -> {6,5}
     ASSERT_EQ(cfg.pass_bits.size(), 2u);
     ASSERT_EQ(cfg.pass_bits[0], 6u);
     ASSERT_EQ(cfg.pass_bits[1], 5u);
@@ -483,7 +483,7 @@ TEST(RadixHashBuildScatter, MultiPassMultiColumn)
     const size_t n = 600'013;
     const auto k0 = randomKeys(n, 0xA1);
     const auto k1 = randomKeys(n, 0xB2);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64);
     ASSERT_EQ(cfg.pass_bits.size(), 2u);
 
     const std::vector<size_t> key_pos{0, 1};
@@ -515,7 +515,7 @@ TEST(RadixHashBuildScatter, SingleLeaf)
 {
     const size_t n = 123'457;
     const auto keys = randomKeys(n, 0x1234);
-    auto cfg = PartitionConfig::make(UInt64(1), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(1), l2_bytes, 8192);
     ASSERT_EQ(cfg.num_leaves, 1u);
 
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1);
@@ -531,7 +531,7 @@ TEST(RadixHashBuildScatter, SingleLeaf)
 /// Empty and odd-sized blocks interleaved with normal ones.
 TEST(RadixHashBuildScatter, EmptyAndOddBlocks)
 {
-    auto cfg = PartitionConfig::make(UInt64(10'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(10'000'000), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1);
 
     std::mt19937_64 rng(0x9999); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed) -- deterministic test
@@ -560,7 +560,7 @@ TEST(RadixHashBuildScatter, ChunkedScatterLargeBlock)
 {
     const size_t n = 50'000; /// one block, ~49 chunks of 1024
     const auto keys = randomKeys(n, 0xC4);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
 
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1);
     store.add(makeBlock1<UInt64>(keys, 1, 1)); /// single big block
@@ -580,7 +580,7 @@ TEST(RadixHashBuildScatter, ParallelBuildMatchesSerial)
     const size_t num_threads = 8;
     const size_t num_blocks = 200;
 
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
     const size_t per = (n + num_blocks - 1) / num_blocks;
@@ -616,7 +616,7 @@ TEST(RadixHashBuildScatter, ParallelBuildMatchesSerial)
 /// More distinct build threads than max_threads is a fail-close error (never silent corruption).
 TEST(RadixHashBuildScatter, SlotExhaustionThrows)
 {
-    auto cfg = PartitionConfig::make(UInt64(1'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(1'000'000), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, /*max_threads=*/2);
 
     std::atomic<int> threw{0};
@@ -647,7 +647,7 @@ TEST(RadixHashBuildScatter, ZeroCopyBytesAccounting)
 {
     const size_t n = 400'009;
     const auto keys = randomKeys(n, 0x2C0DE);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
@@ -666,7 +666,7 @@ TEST(RadixHashBuildScatter, NoAllocatorChurn)
 {
     const size_t n = 1'000'003;
     const auto keys = randomKeys(n, 0xA110C);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
 
     auto run = [&](size_t num_blocks)
     {
@@ -694,7 +694,7 @@ TEST(RadixHashBuildScatter, ParallelScatterEngagesWorkers)
     const auto keys = randomKeys(n, 0xB055);
     const size_t num_threads = 8;
     const size_t num_blocks = 256;
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
 
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
@@ -756,14 +756,14 @@ TEST(RadixHashBuildScatter, PartitionConfigInvariants)
     ASSERT_EQ(def.pass_bits.size(), 1u);
     EXPECT_EQ(def.pass_bits[0], 8u);
 
-    auto big = PartitionConfig::make(UInt64(100'000'000), l2, cap); /// -> 2048 leaves, single pass
+    auto big = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2, cap); /// -> 2048 leaves, single pass
     EXPECT_EQ(big.num_leaves, 2048u);
     EXPECT_EQ(big.total_bits, 11u);
     ASSERT_EQ(big.pass_bits.size(), 1u); /// BITS_PER_PASS=13, so 11 <= 13 -> single pass
     EXPECT_EQ(big.pass_bits[0], 11u);
 
     /// With the old cap=10 config ({6,5}) still correctly factored via cap=64 -> {6,5}.
-    auto two_pass = PartitionConfig::make(UInt64(100'000'000), l2, /*max_partitions_per_pass=*/64);
+    auto two_pass = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2, /*max_partitions_per_pass=*/64);
     EXPECT_EQ(two_pass.num_leaves, 2048u);
     ASSERT_EQ(two_pass.pass_bits.size(), 2u);
     EXPECT_EQ(two_pass.pass_bits[0], 6u);
@@ -773,7 +773,7 @@ TEST(RadixHashBuildScatter, PartitionConfigInvariants)
     ///   num_leaves is a power of two in [1, MAX_LEAVES]; total_bits == log2(num_leaves);
     ///   shift == 32 - total_bits; sum(pass_bits) == total_bits; max - min <= 1.
     bool seen_20 = false;
-    for (UInt64 e = 1; e <= UInt64(1e11); e = e * 2 + 1)
+    for (UInt64 e = 1; e <= static_cast<UInt64>(1e11); e = e * 2 + 1)
     {
         auto cfg = PartitionConfig::make(e, l2, cap);
         EXPECT_LE(cfg.num_leaves, PartitionConfig::MAX_LEAVES);
@@ -841,7 +841,7 @@ TEST(RadixHashBuildScatter, ConservationThreeColumnU64)
     const auto k0 = randomKeys(n, 0xA01);
     const auto k1 = randomKeys(n, 0xA02);
     const auto k2 = randomKeys(n, 0xA03);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     const std::vector<size_t> kpos{0, 1, 2};
@@ -873,7 +873,7 @@ TEST(RadixHashBuildScatter, ConservationFourColumnU64)
     auto k1 = gen(0xB02);
     auto k2 = gen(0xB03);
     auto k3 = gen(0xB04);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
 
     const std::vector<size_t> kpos{0,1,2,3};
     const std::vector<size_t> kw{8,8,8,8};
@@ -901,7 +901,7 @@ TEST(RadixHashBuildScatter, MultiPassThreeColumnU64)
     const auto k0 = randomKeys(n, 0xC01);
     const auto k1 = randomKeys(n, 0xC02);
     const auto k2 = randomKeys(n, 0xC03);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64);
     ASSERT_EQ(cfg.pass_bits.size(), 2u);
 
     const std::vector<size_t> kpos{0,1,2};
@@ -927,7 +927,7 @@ TEST(RadixHashBuildScatter, ThreePassRecursion)
 {
     const size_t n = 800'011;
     const auto keys = randomKeys(n, 0xD0D0D0);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, /*max_partitions_per_pass=*/16);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/16);
     ASSERT_EQ(cfg.num_leaves, 2048u);
     ASSERT_EQ(cfg.pass_bits.size(), 3u);
     EXPECT_EQ(cfg.pass_bits[0], 4u); /// p0 = 16
@@ -950,7 +950,7 @@ TEST(RadixHashBuildScatter, ThreePassWideKey)
     const auto k0 = randomKeys(n, 0xE01);
     const auto k1 = randomKeys(n, 0xE02);
     const auto k2 = randomKeys(n, 0xE03);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, /*max_partitions_per_pass=*/16);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/16);
     ASSERT_EQ(cfg.pass_bits.size(), 3u);
 
     const std::vector<size_t> kpos{0,1,2};
@@ -981,7 +981,7 @@ TEST(RadixHashBuildScatter, ScatterNsPerRowBench)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
     std::mt19937_64 rng(0xBE0C); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed) -- deterministic test
@@ -1033,7 +1033,7 @@ TEST(RadixHashBuildScatter, AddNsPerRowBench)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
     std::mt19937_64 rng(0xBE0C); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
@@ -1083,7 +1083,7 @@ TEST(RadixHashBuildScatter, ScatterTwoPassBench)
     const size_t block_rows = 65536;
 
     /// Force a {6,5} two-pass schedule (cap=64 -> bits_per_pass=6 -> 2 passes for 11 bits).
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, /*max_partitions_per_pass=*/64);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, /*max_partitions_per_pass=*/64);
     ASSERT_EQ(cfg.pass_bits.size(), 2u);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
@@ -1135,7 +1135,7 @@ TEST(RadixHashBuildScatter, ScatterWideKeyBench)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
     const std::vector<size_t> kpos{0, 1, 2, 3};
     const std::vector<size_t> kw_arr{8, 8, 8, 8};
@@ -1190,7 +1190,7 @@ TEST(RadixHashBuildScatter, ScatterThreePassBench)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, /*max_partitions_per_pass=*/16);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, /*max_partitions_per_pass=*/16);
     ASSERT_EQ(cfg.pass_bits.size(), 3u);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
@@ -1241,7 +1241,7 @@ TEST(RadixHashBuildScatter, ConservationLargeLeafCount)
     /// table_bytes = 1B * 32 = 32 GB; usable_l2 = 0.8 * 256 KB ≈ 205 KB;
     /// n_leaves = ceil(32 GB / 205 KB) = 152588 -> roundUpToPow2 = 262144 (2^18).
     const size_t l2_small = 256 * 1024;
-    auto cfg = PartitionConfig::make(UInt64(1'000'000'000), l2_small, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(1'000'000'000), l2_small, 8192);
     ASSERT_GT(cfg.num_leaves, 65536u) << "config must have >65536 leaves for this test";
     ASSERT_EQ(cfg.pass_bits.size(), 2u) << "expected 2-pass schedule for 18 bits with cap=8192";
 
@@ -1267,7 +1267,7 @@ TEST(RadixHashBuildScatter, ConservationLargeLeafCount)
 TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
 {
     const size_t l2_small = 256 * 1024;
-    auto cfg = PartitionConfig::make(UInt64(1'000'000'000), l2_small, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(1'000'000'000), l2_small, 8192);
     ASSERT_EQ(cfg.pass_bits.size(), 2u) << "need a multi-pass schedule (carry_hash=true pass-0)";
     ASSERT_GE(size_t{1} << cfg.pass_bits[0], 256u) << "pass-0 fanout must be >= 256 to route through SWWC";
     ASSERT_GE(size_t{1} << cfg.pass_bits[1], 256u) << "refine fanout must be >= 256 to route through SWWC";
@@ -1328,8 +1328,8 @@ TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
     /// (last) refine pass scatters key + ref.
     const UInt64 kw = sizeof(UInt64);
     const UInt64 expected_bytes
-        = UInt64(n) * (kw + sizeof(RadixShuffle::BuildRef) + sizeof(UInt32))
-        + UInt64(n) * (kw + sizeof(RadixShuffle::BuildRef));
+        = static_cast<UInt64>(n) * (kw + sizeof(RadixShuffle::BuildRef) + sizeof(UInt32))
+        + static_cast<UInt64>(n) * (kw + sizeof(RadixShuffle::BuildRef));
     EXPECT_EQ(leaves.bytes_scattered, expected_bytes);
 }
 
@@ -1345,7 +1345,7 @@ TEST(RadixHashBuildScatter, MemoryConsumptionTest)
     const size_t block_rows = 65536;
     const size_t kw = sizeof(UInt64);
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, /*max_partitions_per_pass=*/64);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, /*max_partitions_per_pass=*/64);
     ASSERT_GE(cfg.pass_bits.size(), 2u);
 
     const size_t num_blocks = (n + block_rows - 1) / block_rows;
@@ -1428,7 +1428,7 @@ TEST(RadixHashBuildScatter, EndToEndBuildSmall)
     const size_t num_threads = 16;
     const size_t block_rows = 2048;
 
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192); /// 2048 leaves, 1 pass {11}
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192); /// 2048 leaves, 1 pass {11}
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     const std::vector<std::vector<size_t>> configs = {
@@ -1499,7 +1499,7 @@ TEST(RadixHashBuildScatter, EndToEndBuildBench)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, 8192); /// 2048 leaves, 1 pass {11}
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192); /// 2048 leaves, 1 pass {11}
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     const std::vector<std::vector<size_t>> configs = {

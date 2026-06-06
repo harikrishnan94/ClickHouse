@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <numeric>
 
 #include <unistd.h>
 
@@ -146,9 +147,8 @@ RadixHashJoin::RadixHashJoin(
             ErrorCodes::LOGICAL_ERROR,
             "RadixHashJoin: packed key width {} must be a multiple of 4 in [4, 64]", state->key_width);
 
-    state->key_offsets.assign(state->key_widths.size(), 0);
-    for (size_t c = 1; c < state->key_widths.size(); ++c)
-        state->key_offsets[c] = state->key_offsets[c - 1] + state->key_widths[c - 1];
+    state->key_offsets.resize(state->key_widths.size());
+    std::exclusive_scan(state->key_widths.begin(), state->key_widths.end(), state->key_offsets.begin(), size_t{0});
 
     state->cfg = RadixHash::PartitionConfig::make(rhs_size_estimation, detectL2Bytes(), max_partitions_per_pass);
     state->build_store = std::make_unique<RadixHash::BuildStore>(
@@ -268,9 +268,9 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
         /// Phase 1 — selector: one chained 32-bit computeHashInto over the left key columns.
         Stopwatch sw_sel;
         std::vector<UInt32> hashes(n, 0);
-        for (size_t c = 0; c < st.key_names_left.size(); ++c)
-            block.getByName(st.key_names_left[c]).column->computeHashInto(
-                0, n, hashes.data(), /*initial=*/c == 0);
+        for (size_t col = 0; col < st.key_names_left.size(); ++col)
+            block.getByName(st.key_names_left[col]).column->computeHashInto(
+                0, n, hashes.data(), /*initial=*/col == 0);
 
         /// Pack the left key row-major to the same layout the build side scattered. Single-column keys
         /// use the column's raw data directly (zero-copy fast path).
@@ -283,13 +283,13 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
         else
         {
             packed.resize(n * st.key_width);
-            for (size_t c = 0; c < st.key_widths.size(); ++c)
+            for (size_t col = 0; col < st.key_widths.size(); ++col)
             {
-                const char * src = block.getByName(st.key_names_left[c]).column->getRawData().data();
-                const size_t w   = st.key_widths[c];
-                const size_t off = st.key_offsets[c];
-                for (size_t r = 0; r < n; ++r)
-                    std::memcpy(packed.data() + r * st.key_width + off, src + r * w, w);
+                const char * src = block.getByName(st.key_names_left[col]).column->getRawData().data();
+                const size_t width = st.key_widths[col];
+                const size_t offset = st.key_offsets[col];
+                for (size_t row = 0; row < n; ++row)
+                    std::memcpy(packed.data() + row * st.key_width + offset, src + row * width, width);
             }
             packed_ptr = packed.data();
         }
@@ -327,40 +327,40 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
     Block result(std::move(out_cols));
 
     /// (b) Build payload columns — gathered by BuildRef through the colptr tables.
-    for (size_t c = 0; c < st.columns_to_add.columns(); ++c)
+    for (size_t col = 0; col < st.columns_to_add.columns(); ++col)
     {
-        const std::string & out_name = st.payload_output_names[c];
+        const std::string & out_name = st.payload_output_names[col];
         if (result.has(out_name))
             continue; /// already provided by a left column (AddedColumns rule)
-        const auto & type = st.columns_to_add.getByPosition(c).type;
-        auto col = type->createColumn();
-        col->reserve(out_rows);
+        const auto & type = st.columns_to_add.getByPosition(col).type;
+        auto col_data = type->createColumn();
+        col_data->reserve(out_rows);
         if (out_rows > 0)
         {
-            const auto & by_block = st.colptr.payload[c].by_block;
-            for (size_t m = 0; m < out_rows; ++m)
+            const auto & by_block = st.colptr.payload[col].by_block;
+            for (size_t match = 0; match < out_rows; ++match)
             {
-                const RadixShuffle::BuildRef ref = refs[m];
-                col->insertFrom(*by_block[ref.block_no], ref.row_no - 1); /// row_no is 1-based
+                const RadixShuffle::BuildRef ref = refs[match];
+                col_data->insertFrom(*by_block[ref.block_no], ref.row_no - 1); /// row_no is 1-based
             }
         }
-        result.insert(ColumnWithTypeAndName(std::move(col), type, out_name));
+        result.insert(ColumnWithTypeAndName(std::move(col_data), type, out_name));
     }
 
     /// (c) Required right key columns: an equi-join match has right_key == left_key, so copy from
     /// the corresponding left key column and cast to the right key type (spec / HashJoin parity).
-    for (size_t i = 0; i < st.required_right_keys.columns(); ++i)
+    for (size_t key_col = 0; key_col < st.required_right_keys.columns(); ++key_col)
     {
-        const std::string & out_name = st.required_right_keys_output_names[i];
+        const std::string & out_name = st.required_right_keys_output_names[key_col];
         if (result.has(out_name))
             continue;
-        const auto & right_key = st.required_right_keys.getByPosition(i);
-        const auto & left_src  = block.getByName(st.required_right_keys_sources[i]);
+        const auto & right_key = st.required_right_keys.getByPosition(key_col);
+        const auto & left_src  = block.getByName(st.required_right_keys_sources[key_col]);
 
         auto tmp = left_src.type->createColumn();
         tmp->reserve(out_rows);
-        for (size_t m = 0; m < out_rows; ++m)
-            tmp->insertFrom(*left_src.column, left_rows[m]);
+        for (size_t match = 0; match < out_rows; ++match)
+            tmp->insertFrom(*left_src.column, left_rows[match]);
 
         ColumnWithTypeAndName tmp_col(std::move(tmp), left_src.type, out_name);
         ColumnPtr casted = castColumn(tmp_col, right_key.type);

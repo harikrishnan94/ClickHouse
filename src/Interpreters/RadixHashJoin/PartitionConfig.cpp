@@ -1,5 +1,7 @@
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 
+#include <base/defines.h>
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -29,15 +31,14 @@ PartitionConfig PartitionConfig::make(
         const size_t l2 = l2_bytes != 0 ? l2_bytes : L2_FALLBACK_BYTES;
         const double usable_l2 = L2_HEADROOM * static_cast<double>(l2);
 
-        double n = std::ceil(table_bytes / usable_l2);
-        if (!(n >= 1.0))
-            n = 1.0;
+        const double n = std::max(1.0, std::ceil(table_bytes / usable_l2));
         num_leaves = roundUpToPowerOfTwo(static_cast<size_t>(n));
         num_leaves = std::clamp<size_t>(num_leaves, 1, MAX_LEAVES);
     }
 
     cfg.num_leaves = num_leaves;
-    cfg.total_bits = static_cast<UInt32>(std::countr_zero(num_leaves)); /// num_leaves is a power of two
+    chassert(std::has_single_bit(num_leaves));
+    cfg.total_bits = static_cast<UInt32>(std::countr_zero(num_leaves));
     cfg.shift = HASH_BITS - cfg.total_bits;
 
     /// bits_per_pass = floor(log2(max_partitions_per_pass)), clamped to a sane range.
@@ -56,8 +57,8 @@ PartitionConfig PartitionConfig::make(
     const UInt32 rem = cfg.total_bits % num_passes;
 
     cfg.pass_bits.assign(num_passes, base);
-    for (UInt32 i = 0; i < rem; ++i)
-        cfg.pass_bits[i] += 1;
+    for (UInt32 pass_idx = 0; pass_idx < rem; ++pass_idx)
+        cfg.pass_bits[pass_idx] += 1;
 
     return cfg;
 }

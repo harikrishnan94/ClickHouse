@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <numeric>
 #include <utility>
 
 #include <sys/mman.h>
@@ -178,18 +179,12 @@ void GrowingArena::releaseRange(const void * range_start, size_t bytes) noexcept
 
 size_t GrowingArena::bytesReserved() const
 {
-    size_t total = 0;
-    for (const auto & block : blocks)
-        total += block.size;
-    return total;
+    return std::accumulate(blocks.begin(), blocks.end(), size_t{0}, [](size_t sum, const Block & block) { return sum + block.size; });
 }
 
 size_t GrowingArena::bytesUsed() const
 {
-    size_t total = 0;
-    for (const auto & block : blocks)
-        total += block.used;
-    return total;
+    return std::accumulate(blocks.begin(), blocks.end(), size_t{0}, [](size_t sum, const Block & block) { return sum + block.used; });
 }
 
 }

@@ -43,7 +43,7 @@ ThreadPool makePool(size_t threads)
 }
 
 template <typename T>
-typename ColumnVector<T>::MutablePtr makeColumn(const std::vector<T> & vals)
+ColumnVector<T>::MutablePtr makeColumn(const std::vector<T> & vals)
 {
     auto col = ColumnVector<T>::create();
     auto & data = col->getData();
@@ -128,7 +128,7 @@ TEST(RadixHashLeafHT, InsertAndFindAll)
 {
     const size_t n = 1'000'003;
     const auto keys = randomKeys(n, 0xA11F0);
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192); /// 2048 leaves, single pass
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192); /// 2048 leaves, single pass
     ASSERT_EQ(cfg.pass_bits.size(), 1u);
 
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
@@ -178,7 +178,7 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     for (size_t i = 0; i < n; ++i)
         keys[i] = domain[rng() % distinct];
 
-    auto cfg = PartitionConfig::make(UInt64(100'000'000), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
     addBlocksSerial(store, keys, 23);
     store.finishBuild();
@@ -300,15 +300,15 @@ TEST(RadixHashLeafHT, ExactKeyCompareOnCollision)
     }
     ASSERT_TRUE(found_pair) << "could not synthesise a bucket collision";
 
-    auto hashOf = [](UInt64 v) { return static_cast<UInt32>(v * 1099511628211ull); };
+    auto hash_of = [](UInt64 v) { return static_cast<UInt32>(v * 1099511628211ull); };
 
     /// Insert both keys (block 0, rows 0 and 1 -> 1-based row_no 1 and 2).
-    leafInsert<key_width>(ht, hashOf(key_a), &key_a, BuildRef{0, 1}, block_base.data());
-    leafInsert<key_width>(ht, hashOf(key_b), &key_b, BuildRef{0, 2}, block_base.data());
-    ASSERT_EQ(leafBucket(hashOf(key_a), num_buckets), leafBucket(hashOf(key_b), num_buckets)) << "test needs a real collision";
+    leafInsert<key_width>(ht, hash_of(key_a), &key_a, BuildRef{0, 1}, block_base.data());
+    leafInsert<key_width>(ht, hash_of(key_b), &key_b, BuildRef{0, 2}, block_base.data());
+    ASSERT_EQ(leafBucket(hash_of(key_a), num_buckets), leafBucket(hash_of(key_b), num_buckets)) << "test needs a real collision";
 
-    const BuildRef ra = leafFind<key_width>(ht, hashOf(key_a), &key_a);
-    const BuildRef rb = leafFind<key_width>(ht, hashOf(key_b), &key_b);
+    const BuildRef ra = leafFind<key_width>(ht, hash_of(key_a), &key_a);
+    const BuildRef rb = leafFind<key_width>(ht, hash_of(key_b), &key_b);
     ASSERT_NE(ra.row_no, 0u);
     ASSERT_NE(rb.row_no, 0u);
     EXPECT_EQ(ra.row_no, 1u) << "key_a resolved to the wrong (colliding) row";
@@ -330,7 +330,7 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         /// Build blocks of FixedString(width) keys.
         const size_t num_blocks = 8;
         const size_t per = (n + num_blocks - 1) / num_blocks;
-        auto cfg = PartitionConfig::make(UInt64(5'000'000), l2_bytes, 8192);
+        auto cfg = PartitionConfig::make(static_cast<UInt64>(5'000'000), l2_bytes, 8192);
         BuildStore store(cfg, {0}, {width}, 2);
 
         std::vector<std::vector<UInt8>> all; /// keep raw bytes for the probe block
@@ -399,7 +399,7 @@ TEST(RadixHashLeafHT, CellConservation100M)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
     std::mt19937_64 rng(0xCE11); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
@@ -463,7 +463,7 @@ TEST(RadixHashLeafHT, ThpVsNonThpBuildTime)
     const size_t num_threads = 16;
     const size_t block_rows = 65536;
 
-    auto cfg = PartitionConfig::make(UInt64(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
     std::mt19937_64 rng(0x7777); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)

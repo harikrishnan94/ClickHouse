@@ -44,8 +44,8 @@ void runOnPool(ThreadPool & pool, size_t num_threads, Fn && fn)
     futures.reserve(num_threads - 1);
     for (size_t t = 1; t < num_threads; ++t)
     {
-        const size_t id = t;
-        auto task = std::make_shared<std::packaged_task<void()>>([&fn, id] { fn(id); });
+        const size_t worker_id = t;
+        auto task = std::make_shared<std::packaged_task<void()>>([&fn, worker_id] { fn(worker_id); });
         futures.push_back(task->get_future());
         pool.scheduleOrThrowOnError([pt = std::move(task)] { (*pt)(); });
     }
@@ -84,16 +84,16 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
 
     constexpr size_t stride = leafCellBytes(key_width);
     const UInt64 mask = ht.num_buckets - 1;
-    constexpr UInt64 PD = 8; /// prefetch distance
+    constexpr UInt64 prefetch_distance = 8; /// prefetch distance
 
-    for (UInt64 i = 0; i < rows; ++i)
+    for (UInt64 row = 0; row < rows; ++row)
     {
-        if (i + PD < rows)
+        if (row + prefetch_distance < rows)
         {
-            const UInt64 ppos = leafBucket(hashes[i + PD], ht.num_buckets) & mask;
-            __builtin_prefetch(ht.cells + ppos * stride, /*rw=*/1, /*locality=*/1);
+            const UInt64 prefetch_pos = leafBucket(hashes[row + prefetch_distance], ht.num_buckets) & mask;
+            __builtin_prefetch(ht.cells + prefetch_pos * stride, /*rw=*/1, /*locality=*/1);
         }
-        leafInsert<key_width>(ht, hashes[i], keys + i * key_width, refs[i], block_base);
+        leafInsert<key_width>(ht, hashes[row], keys + row * key_width, refs[row], block_base);
     }
 }
 
@@ -137,29 +137,29 @@ void collectMatchesT(
     std::vector<BuildRef> & out_refs)
 {
     constexpr size_t stride = leafCellBytes(key_width);
-    constexpr size_t PD = 8; /// read-prefetch distance (spec section 5.6, probe: __builtin_prefetch RW=0)
+    constexpr size_t prefetch_distance = 8; /// read-prefetch distance (spec section 5.6, probe: __builtin_prefetch RW=0)
 
-    for (size_t j = 0; j < n; ++j)
+    for (size_t row = 0; row < n; ++row)
     {
-        if (j + PD < n)
+        if (row + prefetch_distance < n)
         {
-            const UInt32 ph = hashes[j + PD];
-            const size_t pleaf = total_bits ? (ph >> leaf_shift) : 0;
-            const LeafHT & pht = leaves[pleaf];
-            if (pht.num_buckets != 0)
+            const UInt32 prefetch_hash = hashes[row + prefetch_distance];
+            const size_t prefetch_leaf = total_bits ? (prefetch_hash >> leaf_shift) : 0;
+            const LeafHT & prefetch_ht = leaves[prefetch_leaf];
+            if (prefetch_ht.num_buckets != 0)
             {
-                const UInt64 ppos = leafBucket(ph, pht.num_buckets) & (pht.num_buckets - 1);
-                __builtin_prefetch(pht.cells + ppos * stride, /*rw=*/0, /*locality=*/1);
+                const UInt64 prefetch_pos = leafBucket(prefetch_hash, prefetch_ht.num_buckets) & (prefetch_ht.num_buckets - 1);
+                __builtin_prefetch(prefetch_ht.cells + prefetch_pos * stride, /*rw=*/0, /*locality=*/1);
             }
         }
 
-        const UInt32 h = hashes[j];
+        const UInt32 h = hashes[row];
         const size_t leaf = total_bits ? (h >> leaf_shift) : 0;
         const LeafHT & ht = leaves[leaf];
-        BuildRef cur = leafFind<key_width>(ht, h, packed_keys + j * key_width);
+        BuildRef cur = leafFind<key_width>(ht, h, packed_keys + row * key_width);
         while (cur.row_no != 0)
         {
-            out_left_rows.push_back(static_cast<UInt32>(j));
+            out_left_rows.push_back(static_cast<UInt32>(row));
             out_refs.push_back(cur);
             cur = ht.next_chain[leafFlat(cur, block_base)];
         }
@@ -207,16 +207,16 @@ LeafHashTables buildLeafHashTables(
     }
 
     /// (2) Parallel fill: work-steal leaves (disjoint per leaf -> next_chain writes are disjoint too).
-    const UInt64 * bb = block_base.data();
+    const UInt64 * block_base_ptr = block_base.data();
     std::atomic<size_t> next_leaf{0};
-    runOnPool(pool, num_threads, [&]([[maybe_unused]] size_t worker_id)
+    runOnPool(pool, num_threads, [&](size_t /*worker_id*/)
     {
         for (size_t leaf = next_leaf.fetch_add(1, std::memory_order_relaxed); leaf < num_leaves;
              leaf = next_leaf.fetch_add(1, std::memory_order_relaxed))
         {
             if (la.leaf_rows[leaf] == 0)
                 continue;
-            fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, bb);
+            fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, block_base_ptr);
         }
     });
 

@@ -8382,11 +8382,13 @@ Maximum number of texts to include in a single HTTP request made by `aiEmbed`. T
 
 // clang-format on
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 DECLARE_SETTINGS_TRAITS_ALLOW_CUSTOM_SETTINGS(SettingsTraits, LIST_OF_SETTINGS, COMMON_SETTINGS_SUPPORTED_TYPES)
 
 /** Settings of query execution.
   * These settings go to users.xml.
   */
+// NOLINTNEXTLINE(misc-multiple-inheritance)
 struct SettingsImpl : public BaseSettings<SettingsTraits>, public IHints<2>
 {
     SettingsImpl() = default;
@@ -8543,7 +8545,9 @@ void SettingsImpl::set(std::string_view name, const Field & value)
     /// this setting will be changed too (and we don't want it).
     /// Resolve aliases so the lookup matches the canonical names stored in the set.
     else if (auto final_name = SettingsTraits::resolveName(name); settings_changed_by_compatibility_setting.contains(final_name))
+    {
         settings_changed_by_compatibility_setting.erase(final_name);
+    }
 
     BaseSettings::set(name, value);
 }

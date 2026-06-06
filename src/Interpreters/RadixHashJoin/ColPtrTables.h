@@ -43,15 +43,15 @@ struct ColPtrTables
         const size_t num_cols = columns_to_add.columns();
         payload.clear();
         payload.reserve(num_cols);
-        for (size_t c = 0; c < num_cols; ++c)
+        for (size_t col = 0; col < num_cols; ++col)
         {
-            const auto & src = columns_to_add.getByPosition(c);
+            const auto & src = columns_to_add.getByPosition(col);
             PayloadColumn pc;
-            pc.output_name = output_names[c];
+            pc.output_name = output_names[col];
             pc.type = src.type;
             pc.by_block.resize(blocks.size(), nullptr);
-            for (size_t b = 0; b < blocks.size(); ++b)
-                pc.by_block[b] = blocks[b].getByName(src.name).column.get();
+            for (size_t block_idx = 0; block_idx < blocks.size(); ++block_idx)
+                pc.by_block[block_idx] = blocks[block_idx].getByName(src.name).column.get();
             payload.push_back(std::move(pc));
         }
     }

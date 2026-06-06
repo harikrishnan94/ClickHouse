@@ -157,10 +157,10 @@ private:
     size_t workerSlot();
     void packKeyChunk(const Block & block, size_t row_begin, size_t rows, char * dst) const;
 
-    /// Initialise a LeafArrays ready for population (worker_counts resized to num_threads,
+    /// Initialise a LeafArrays ready for population (worker_block_counts sized to used_slots,
     /// key/ref/leaf_rows zeroed to num_leaves, arena attached). Setup only — not on the O(N) path.
     /// When `with_leaf_hash`, hash_base is also sized to num_leaves (per-leaf UInt32 hash arrays).
-    LeafArrays makeLeafArrays(size_t num_threads, bool with_leaf_hash) const;
+    LeafArrays makeLeafArrays(bool with_leaf_hash) const;
 
     /// Record the scatter ProfileEvents and trim the output arena tail.
     void finalizeScatter(LeafArrays & out, const Stopwatch & sw, std::atomic<UInt64> & total_bytes, size_t num_passes) const;

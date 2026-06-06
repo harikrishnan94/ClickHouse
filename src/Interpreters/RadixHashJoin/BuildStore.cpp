@@ -14,6 +14,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <span>
 
 namespace ProfileEvents
 {
@@ -66,8 +67,8 @@ void runOnPool(ThreadPool & pool, size_t num_threads, Fn && fn)
 
     for (size_t t = 1; t < num_threads; ++t)
     {
-        const size_t id = t;
-        auto task = std::make_shared<std::packaged_task<void()>>([&fn, id] { fn(id); });
+        const size_t worker_id = t;
+        auto task = std::make_shared<std::packaged_task<void()>>([&fn, worker_id] { fn(worker_id); });
         futures.push_back(task->get_future());
         pool.scheduleOrThrowOnError([pt = std::move(task)] { (*pt)(); });
     }
@@ -160,7 +161,7 @@ struct PartitionArrays
 {
     std::vector<void *> key;
     std::vector<BuildRef *> ref;
-    std::vector<void *> hash; /// populated only when carry_hash == true
+    std::vector<void *> hash; /// populated onum_leavesy when carry_hash == true
     UInt64 alloc_count = 0;
 };
 
@@ -180,25 +181,25 @@ PartitionArrays allocExactPartitions(
     size_t kw,
     bool carry_hash)
 {
-    const size_t np = counts.size();
+    const size_t num_parts = counts.size();
     PartitionArrays out;
-    out.key.assign(np, nullptr);
-    out.ref.assign(np, nullptr);
+    out.key.assign(num_parts, nullptr);
+    out.ref.assign(num_parts, nullptr);
     if (carry_hash)
-        out.hash.assign(np, nullptr);
+        out.hash.assign(num_parts, nullptr);
 
-    for (size_t p = 0; p < np; ++p)
+    for (size_t part = 0; part < num_parts; ++part)
     {
-        if (counts[p] == 0)
+        if (counts[part] == 0)
             continue;
-        const size_t key_bytes  = roundUpTo64(counts[p] * kw);
-        const size_t ref_bytes  = roundUpTo64(counts[p] * sizeof(BuildRef));
-        const size_t hash_bytes = carry_hash ? roundUpTo64(counts[p] * sizeof(UInt32)) : 0;
+        const size_t key_bytes  = roundUpTo64(counts[part] * kw);
+        const size_t ref_bytes  = roundUpTo64(counts[part] * sizeof(BuildRef));
+        const size_t hash_bytes = carry_hash ? roundUpTo64(counts[part] * sizeof(UInt32)) : 0;
         char * base = static_cast<char *>(arena.alloc(key_bytes + ref_bytes + hash_bytes, LINE_BYTES));
-        out.key[p] = base;
-        out.ref[p] = reinterpret_cast<BuildRef *>(base + key_bytes);
+        out.key[part] = base;
+        out.ref[part] = reinterpret_cast<BuildRef *>(base + key_bytes);
         if (carry_hash)
-            out.hash[p] = base + key_bytes + ref_bytes;
+            out.hash[part] = base + key_bytes + ref_bytes;
         ++out.alloc_count; /// one combined alloc per non-empty partition
     }
     return out;
@@ -233,16 +234,16 @@ BuildStore::BuildStore(
     key_offsets.resize(key_widths.size());
     key_packers.resize(key_widths.size());
     size_t acc = 0;
-    for (size_t c = 0; c < key_widths.size(); ++c)
+    for (size_t col = 0; col < key_widths.size(); ++col)
     {
-        key_offsets[c] = acc;
-        key_packers[c] = chooseKeyPacker(key_widths[c]);
-        acc += key_widths[c];
+        key_offsets[col] = acc;
+        key_packers[col] = chooseKeyPacker(key_widths[col]);
+        acc += key_widths[col];
     }
     key_width = acc;
 
     local.reserve(max_threads);
-    for (size_t i = 0; i < max_threads; ++i)
+    for (size_t slot = 0; slot < max_threads; ++slot)
         local.push_back(std::make_unique<LocalBuildState>(cfg.num_leaves, arena_max_block));
 }
 
@@ -283,10 +284,10 @@ void BuildStore::packKeyChunk(const Block & block, size_t row_begin, size_t rows
 {
     /// Row-major pack: row r holds the concatenated key column values at stride `key_width`.
     /// Single-column callers skip this entirely and scatter the column's raw data directly.
-    for (size_t c = 0; c < key_positions.size(); ++c)
+    for (size_t col = 0; col < key_positions.size(); ++col)
     {
-        const char * col = block.getByPosition(key_positions[c]).column->getRawData().data();
-        key_packers[c](col, row_begin, rows, dst, key_width, key_offsets[c], key_widths[c]);
+        const char * column_data = block.getByPosition(key_positions[col]).column->getRawData().data();
+        key_packers[col](column_data, row_begin, rows, dst, key_width, key_offsets[col], key_widths[col]);
     }
 }
 
@@ -309,20 +310,20 @@ void BuildStore::add(const Block & block)
     if (n > 0)
     {
         row_hash = state.hash_arena.allocArray<UInt32>(n);
-        for (size_t c = 0; c < key_positions.size(); ++c)
-            kept.getByPosition(key_positions[c]).column->computeHashInto(0, n, row_hash, /*initial=*/c == 0);
+        for (size_t col = 0; col < key_positions.size(); ++col)
+            kept.getByPosition(key_positions[col]).column->computeHashInto(0, n, row_hash, /*initial=*/col == 0);
     }
 
     /// (3) Accumulate this block's rows into the per-thread replicated histogram.
     /// The histogram persists across ALL of the thread's blocks; replicas are folded into
     /// `global_hist` once in `finishBuild()`. No per-block sum-and-zero needed here.
-    const size_t nl = cfg.num_leaves;
-    const UInt32 safe_shift = cfg.total_bits > 0 ? cfg.shift : 0u; /// guard shift==32 UB when nl==1
-    const UInt32 leaf_mask = static_cast<UInt32>(nl - 1);
-    const size_t r_mask = state.replicas - 1;
-    UInt32 * rh = state.rep_hist.data();
-    for (size_t j = 0; j < n; ++j)
-        ++rh[(j & r_mask) * nl + ((row_hash[j] >> safe_shift) & leaf_mask)];
+    const size_t num_leaves = cfg.num_leaves;
+    const UInt32 safe_shift = cfg.total_bits > 0 ? cfg.shift : 0u; /// guard shift==32 UB when num_leaves==1
+    const UInt32 leaf_mask = static_cast<UInt32>(num_leaves - 1);
+    const size_t replica_mask = state.replicas - 1;
+    UInt32 * rep_hist_data = state.rep_hist.data();
+    for (size_t row = 0; row < n; ++row)
+        ++rep_hist_data[(row & replica_mask) * num_leaves + ((row_hash[row] >> safe_shift) & leaf_mask)];
 
     ProfileEvents::increment(ProfileEvents::RadixHashBuildSelectMicroseconds, sw.elapsedMicroseconds());
 
@@ -336,7 +337,7 @@ void BuildStore::add(const Block & block)
 
 void BuildStore::finishBuild()
 {
-    const size_t nl = cfg.num_leaves;
+    const size_t num_leaves = cfg.num_leaves;
 
     size_t num_blocks = 0;
     for (const auto & up : local)
@@ -368,33 +369,33 @@ void BuildStore::finishBuild()
 
     /// Fold each used slot's replicated histogram into `global_hist`.
     /// The rep_hist accumulated across ALL blocks for that slot (no per-block reset in add()).
-    global_hist.assign(nl, 0);
+    global_hist.assign(num_leaves, 0);
     for (size_t slot : used_slots)
     {
         const auto & state = *local[slot];
-        for (size_t r = 0; r < state.replicas; ++r)
+        for (size_t rep = 0; rep < state.replicas; ++rep)
         {
-            const UInt32 * rh = state.rep_hist.data() + r * nl;
-            for (size_t leaf = 0; leaf < nl; ++leaf)
-                global_hist[leaf] += rh[leaf];
+            const UInt32 * rep_hist = state.rep_hist.data() + rep * num_leaves;
+            for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+                global_hist[leaf] += rep_hist[leaf];
         }
     }
 
-    offset.resize(nl);
+    offset.resize(num_leaves);
     std::exclusive_scan(global_hist.begin(), global_hist.end(), offset.begin(), UInt64{0});
 
     /// Per-block exclusive row-offset prefix sum: block_base[b] = Σ rows of blocks 0..b-1. Gives the
     /// flat next_chain index of a build row (phase P4): flat(ref) = block_base[ref.block_no] + row_no-1.
-    block_base.assign(global_blocks.size() + 1, 0);
-    for (size_t b = 0; b < global_rows_of_block.size(); ++b)
-        block_base[b + 1] = block_base[b] + global_rows_of_block[b];
+    block_base.assign(global_rows_of_block.size() + 1, 0);
+    for (size_t block_idx = 0; block_idx < global_rows_of_block.size(); ++block_idx)
+        block_base[block_idx + 1] = block_base[block_idx] + global_rows_of_block[block_idx];
     total_rows = block_base.empty() ? 0 : block_base.back();
 
     finished = true;
 }
 
 
-LeafArrays BuildStore::makeLeafArrays([[maybe_unused]] size_t /*num_threads_hint*/, bool with_leaf_hash) const
+LeafArrays BuildStore::makeLeafArrays(bool with_leaf_hash) const
 {
     LeafArrays out;
     out.num_leaves = cfg.num_leaves;
@@ -458,12 +459,12 @@ void BuildStore::refineDepthFirst(
     {
         /// Point directly at the pre-allocated final leaf arrays. When leaf hashes are requested,
         /// ws.pout points at the per-leaf hash arrays and the carried in_hashes are scattered too.
-        for (size_t c = 0; c < fanout; ++c)
+        for (size_t child = 0; child < fanout; ++child)
         {
-            const size_t gidx = global_first_leaf + c * leaves_per_child;
-            ws.kout[c] = out.key_base[gidx];
-            ws.rout[c] = out.ref_base[gidx];
-            ws.pout[c] = with_leaf_hash ? out.hash_base[gidx] : nullptr;
+            const size_t gidx = global_first_leaf + child * leaves_per_child;
+            ws.kout[child] = out.key_base[gidx];
+            ws.rout[child] = out.ref_base[gidx];
+            ws.pout[child] = with_leaf_hash ? out.hash_base[gidx] : nullptr;
         }
 
         scatterKeyRefTwoColumn(
@@ -484,22 +485,22 @@ void BuildStore::refineDepthFirst(
     {
         /// Compute per-child row counts from the global leaf-prefix array.
         std::vector<UInt64> child_counts(fanout);
-        for (size_t c = 0; c < fanout; ++c)
+        for (size_t child = 0; child < fanout; ++child)
         {
-            const size_t lo = global_first_leaf + c * leaves_per_child;
+            const size_t lo = global_first_leaf + child * leaves_per_child;
             const size_t hi = lo + leaves_per_child;
-            child_counts[c] = gh_prefix[hi] - gh_prefix[lo];
+            child_counts[child] = gh_prefix[hi] - gh_prefix[lo];
         }
 
         /// Allocate the children of this partition in a RAII GrowingArena.
         /// The arena is freed when this stack frame exits — lowest peak intermediate memory.
         GrowingArena child_arena(arena_max_block);
         auto arrs = allocExactPartitions(child_arena, child_counts, kw, /*carry_hash=*/true);
-        for (size_t c = 0; c < fanout; ++c)
+        for (size_t child = 0; child < fanout; ++child)
         {
-            ws.kout[c] = arrs.key[c];
-            ws.rout[c] = arrs.ref[c];
-            ws.pout[c] = arrs.hash[c];
+            ws.kout[child] = arrs.key[child];
+            ws.rout[child] = arrs.ref[child];
+            ws.pout[child] = arrs.hash[child];
         }
 
         scatterKeyRefTwoColumn(
@@ -516,31 +517,31 @@ void BuildStore::refineDepthFirst(
         /// Depth-first recursion: complete each child's subtree before the next.
         /// After each child returns, release its memory incrementally — so consumed intermediate
         /// data is returned to the OS as the final leaf output is first-touched.
-        for (size_t c = 0; c < fanout; ++c)
+        for (size_t child = 0; child < fanout; ++child)
         {
-            if (child_counts[c] == 0)
+            if (child_counts[child] == 0)
                 continue;
-            const size_t child_first_leaf = global_first_leaf + c * leaves_per_child;
+            const size_t child_first_leaf = global_first_leaf + child * leaves_per_child;
             refineDepthFirst(
                 child_first_leaf,
-                arrs.key[c],
-                arrs.ref[c],
-                static_cast<const UInt32 *>(arrs.hash[c]),
-                child_counts[c],
+                arrs.key[child],
+                arrs.ref[child],
+                static_cast<const UInt32 *>(arrs.hash[child]),
+                child_counts[child],
                 pass_index + 1,
                 new_bits,
                 out,
                 gh_prefix,
                 ws,
                 with_leaf_hash);
-            /// Child c fully consumed — release its contiguous key+ref+hash block from child_arena
+            /// Child fully consumed — release its contiguous key+ref+hash block from child_arena
             /// in one madvise(MADV_DONTNEED) call (single alloc from allocExactPartitions).
-            if (arrs.key[c])
+            if (arrs.key[child])
             {
-                const size_t total = roundUpTo64(child_counts[c] * kw)
-                                   + roundUpTo64(child_counts[c] * sizeof(BuildRef))
-                                   + roundUpTo64(child_counts[c] * sizeof(UInt32));
-                child_arena.releaseRange(arrs.key[c], total);
+                const size_t total = roundUpTo64(child_counts[child] * kw)
+                                   + roundUpTo64(child_counts[child] * sizeof(BuildRef))
+                                   + roundUpTo64(child_counts[child] * sizeof(UInt32));
+                child_arena.releaseRange(arrs.key[child], total);
             }
         }
         /// child_arena mapped memory released below (destructor calls munmap).
@@ -570,14 +571,14 @@ void BuildStore::scatterBlocksIntoPartitions(
     if (num_used == 0)
         return;
 
-    /// At high fanout the per-pass scatter routes through SWWC + NT (only emitted in a multitarget
+    /// At high fanout the per-pass scatter routes through SWWC + NT (onum_leavesy emitted in a multitarget
     /// build); below the threshold, or without NT, it uses the direct incremental cursors. The hash
     /// column adds a third scattered column when carry_hash.
     const bool use_swwc = shouldUseSwwc(carry_hash ? 3 : 2, static_cast<int>(num_parts));
 
-    runOnPool(pool, num_used, [&](size_t w)
+    runOnPool(pool, num_used, [&](size_t worker)
     {
-        const UInt64 * w_off = thr_off.data() + w * num_parts;
+        const UInt64 * worker_offsets = thr_off.data() + worker * num_parts;
 
         /// Direct path: per-partition live write cursors (used iff !use_swwc).
         std::vector<void *> kcur;
@@ -598,14 +599,14 @@ void BuildStore::scatterBlocksIntoPartitions(
             if constexpr (carry_hash)
                 hash_ss.emplace(num_parts);
 
-            for (size_t p = 0; p < num_parts; ++p)
+            for (size_t part = 0; part < num_parts; ++part)
             {
-                if (key_base_arr[p] != nullptr)
+                if (key_base_arr[part] != nullptr)
                 {
-                    key_ss->cursors()[p] = static_cast<char *>(key_base_arr[p]) + w_off[p] * kw;
-                    ref_ss->cursors()[p] = reinterpret_cast<char *>(ref_base_arr[p]) + w_off[p] * sizeof(BuildRef);
+                    key_ss->cursors()[part] = static_cast<char *>(key_base_arr[part]) + worker_offsets[part] * kw;
+                    ref_ss->cursors()[part] = reinterpret_cast<char *>(ref_base_arr[part]) + worker_offsets[part] * sizeof(BuildRef);
                     if constexpr (carry_hash)
-                        hash_ss->cursors()[p] = static_cast<char *>(hash_base_arr[p]) + w_off[p] * sizeof(UInt32);
+                        hash_ss->cursors()[part] = static_cast<char *>(hash_base_arr[part]) + worker_offsets[part] * sizeof(UInt32);
                 }
                 /// else: nullptr stays — empty partition, cursor never advanced
             }
@@ -618,14 +619,14 @@ void BuildStore::scatterBlocksIntoPartitions(
                 hcur.assign(num_parts, nullptr);
 
             /// Seed cursors ONCE from this worker's per-partition starting offsets (no per-block reseeding).
-            for (size_t p = 0; p < num_parts; ++p)
+            for (size_t part = 0; part < num_parts; ++part)
             {
-                if (key_base_arr[p] != nullptr)
+                if (key_base_arr[part] != nullptr)
                 {
-                    kcur[p] = static_cast<char *>(key_base_arr[p]) + w_off[p] * kw;
-                    rcur[p] = ref_base_arr[p] + w_off[p];
+                    kcur[part] = static_cast<char *>(key_base_arr[part]) + worker_offsets[part] * kw;
+                    rcur[part] = ref_base_arr[part] + worker_offsets[part];
                     if constexpr (carry_hash)
-                        hcur[p] = static_cast<char *>(hash_base_arr[p]) + w_off[p] * sizeof(UInt32);
+                        hcur[part] = static_cast<char *>(hash_base_arr[part]) + worker_offsets[part] * sizeof(UInt32);
                 }
                 /// else: nullptr stays — empty partition, cursor never advanced
             }
@@ -640,56 +641,56 @@ void BuildStore::scatterBlocksIntoPartitions(
         UInt64 local_blocks = 0;
 
         /// Each worker scatters its own contiguous block range — fully lock-free, disjoint regions.
-        for (size_t b = thread_block_begin[w]; b < thread_block_end[w]; ++b)
+        for (size_t block_idx = thread_block_begin[worker]; block_idx < thread_block_end[worker]; ++block_idx)
         {
-            const size_t n = global_rows_of_block[b];
+            const size_t n = global_rows_of_block[block_idx];
             if (n == 0)
                 continue;
 
-            const UInt32 * row_hash = global_hash_of_block[b];
+            const UInt32 * row_hash = global_hash_of_block[block_idx];
 
             refs.resize(n);
-            for (size_t j = 0; j < n; ++j)
-                refs[j] = BuildRef{static_cast<UInt32>(b), static_cast<UInt32>(j + 1)}; /// row_no is 1-based; 0 is reserved as the empty sentinel
+            for (size_t row = 0; row < n; ++row)
+                refs[row] = BuildRef{static_cast<UInt32>(block_idx), static_cast<UInt32>(row + 1)}; /// row_no is 1-based; 0 is reserved as the empty sentinel
 
             const char * raw_keys = multi_col
                 ? nullptr
-                : global_blocks[b].getByPosition(key_positions[0]).column->getRawData().data();
+                : global_blocks[block_idx].getByPosition(key_positions[0]).column->getRawData().data();
 
-            for (size_t r0 = 0; r0 < n; r0 += SCATTER_CHUNK_ROWS)
+            for (size_t row_begin = 0; row_begin < n; row_begin += SCATTER_CHUNK_ROWS)
             {
-                const size_t cn = std::min(SCATTER_CHUNK_ROWS, n - r0);
+                const size_t chunk_rows = std::min(SCATTER_CHUNK_ROWS, n - row_begin);
                 const void * keys_ptr = nullptr;
                 if (multi_col)
                 {
-                    packKeyChunk(global_blocks[b], r0, cn, packed.data());
+                    packKeyChunk(global_blocks[block_idx], row_begin, chunk_rows, packed.data());
                     keys_ptr = packed.data();
                 }
                 else
                 {
-                    keys_ptr = raw_keys + r0 * kw;
+                    keys_ptr = raw_keys + row_begin * kw;
                 }
 
                 if (use_swwc)
                 {
                     local_bytes += scatterColumnIntoSwwc(
-                        row_hash + r0, shift, mask, cn, keys_ptr, kw, num_parts, *key_ss);
+                        row_hash + row_begin, shift, mask, chunk_rows, keys_ptr, kw, num_parts, *key_ss);
                     local_bytes += scatterColumnIntoSwwc(
-                        row_hash + r0, shift, mask, cn, refs.data() + r0, sizeof(BuildRef), num_parts, *ref_ss);
+                        row_hash + row_begin, shift, mask, chunk_rows, refs.data() + row_begin, sizeof(BuildRef), num_parts, *ref_ss);
                     if constexpr (carry_hash)
                         local_bytes += scatterColumnIntoSwwc(
-                            row_hash + r0, shift, mask, cn, row_hash + r0, sizeof(UInt32), num_parts, *hash_ss);
+                            row_hash + row_begin, shift, mask, chunk_rows, row_hash + row_begin, sizeof(UInt32), num_parts, *hash_ss);
                 }
                 else
                 {
                     local_bytes += scatterKeyRefInto(
-                        row_hash + r0, shift, mask, cn, keys_ptr, kw,
-                        refs.data() + r0, num_parts, kcur.data(), rcur.data());
+                        row_hash + row_begin, shift, mask, chunk_rows, keys_ptr, kw,
+                        refs.data() + row_begin, num_parts, kcur.data(), rcur.data());
 
                     if constexpr (carry_hash)
                     {
                         local_bytes += scatterColumnInto(
-                            row_hash + r0, shift, mask, cn, row_hash + r0, sizeof(UInt32),
+                            row_hash + row_begin, shift, mask, chunk_rows, row_hash + row_begin, sizeof(UInt32),
                             num_parts, hcur.data());
                     }
                 }
@@ -708,16 +709,16 @@ void BuildStore::scatterBlocksIntoPartitions(
                 scatterColumnDrainSwwc(num_parts, *hash_ss);
         }
 
-        worker_counts[w] += local_blocks;
+        worker_counts[worker] += local_blocks;
         total_bytes.fetch_add(local_bytes, std::memory_order_relaxed);
     });
 }
 
 
-LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
+LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t /*num_threads*/, bool with_leaf_hash)
 {
-    LeafArrays out = makeLeafArrays(num_threads, with_leaf_hash);
-    const size_t nl = cfg.num_leaves;
+    LeafArrays out = makeLeafArrays(with_leaf_hash);
+    const size_t num_leaves = cfg.num_leaves;
     const size_t num_used = used_slots.size();
 
     /// Allocate each leaf's key and ref arrays (and, for P4, the per-leaf hash array) exactly once
@@ -728,28 +729,28 @@ LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads, 
     if (with_leaf_hash)
         out.hash_base = std::move(arrs.hash);
     out.alloc_count = arrs.alloc_count;
-    for (size_t leaf = 0; leaf < nl; ++leaf)
+    for (size_t leaf = 0; leaf < num_leaves; ++leaf)
         out.leaf_rows[leaf] = global_hist[leaf];
 
     const UInt32 shift = cfg.total_bits > 0 ? cfg.shift : 0u;
-    const UInt32 mask = static_cast<UInt32>(nl - 1);
+    const UInt32 mask = static_cast<UInt32>(num_leaves - 1);
 
     /// Build the per-(thread,leaf) starting offsets within each leaf array.
-    /// thr_off[w*nl + leaf] = number of rows contributed by threads 0..w-1 to leaf (= start for w).
-    std::vector<UInt64> thr_off(num_used * nl, 0);
+    /// thr_off[worker*num_leaves + leaf] = number of rows contributed by threads 0..worker-1 to leaf.
+    std::vector<UInt64> thr_off(num_used * num_leaves, 0);
     {
-        std::vector<UInt64> running(nl, 0); /// running[leaf] = cumulative rows assigned so far
-        for (size_t w = 0; w < num_used; ++w)
+        std::vector<UInt64> running(num_leaves, 0); /// running[leaf] = cumulative rows assigned so far
+        for (size_t worker = 0; worker < num_used; ++worker)
         {
-            const auto & state = *local[used_slots[w]];
-            UInt64 * w_start = thr_off.data() + w * nl;
-            for (size_t leaf = 0; leaf < nl; ++leaf)
-                w_start[leaf] = running[leaf]; /// this thread starts at the current cursor
-            for (size_t r = 0; r < state.replicas; ++r)
+            const auto & state = *local[used_slots[worker]];
+            UInt64 * worker_start = thr_off.data() + worker * num_leaves;
+            for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+                worker_start[leaf] = running[leaf]; /// this thread starts at the current cursor
+            for (size_t rep = 0; rep < state.replicas; ++rep)
             {
-                const UInt32 * rh = state.rep_hist.data() + r * nl;
-                for (size_t leaf = 0; leaf < nl; ++leaf)
-                    running[leaf] += rh[leaf];
+                const UInt32 * rep_hist = state.rep_hist.data() + rep * num_leaves;
+                for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+                    running[leaf] += rep_hist[leaf];
             }
         }
     }
@@ -758,12 +759,12 @@ LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads, 
     Stopwatch sw;
     if (with_leaf_hash)
         scatterBlocksIntoPartitions</*carry_hash=*/true>(
-            pool, nl, shift, mask,
+            pool, num_leaves, shift, mask,
             thr_off, out.key_base.data(), out.ref_base.data(), out.hash_base.data(),
             total_bytes, out.worker_block_counts);
     else
         scatterBlocksIntoPartitions</*carry_hash=*/false>(
-            pool, nl, shift, mask,
+            pool, num_leaves, shift, mask,
             thr_off, out.key_base.data(), out.ref_base.data(), /*hash_base_arr=*/nullptr,
             total_bytes, out.worker_block_counts);
 
@@ -774,17 +775,17 @@ LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t num_threads, 
 
 LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
 {
-    const size_t nl = cfg.num_leaves;
+    const size_t num_leaves = cfg.num_leaves;
     const size_t kw = key_width;
     const size_t num_passes = cfg.pass_bits.size();
 
     /// gh_prefix[i+1] = sum(global_hist[0..i]); gh_prefix[hi]-gh_prefix[lo] = rows in leaves [lo,hi).
-    std::vector<UInt64> gh_prefix(nl + 1, 0);
+    std::vector<UInt64> gh_prefix(num_leaves + 1, 0);
     std::inclusive_scan(global_hist.begin(), global_hist.end(), gh_prefix.begin() + 1);
 
     /// Pre-allocate ALL final leaf key/ref arrays (and, for P4, hash arrays) exactly once
     /// (NC gate: O(num_leaves) carves).
-    LeafArrays out = makeLeafArrays(num_threads, with_leaf_hash);
+    LeafArrays out = makeLeafArrays(with_leaf_hash);
     {
         auto arrs = allocExactPartitions(out.arena, global_hist, kw, /*carry_hash=*/with_leaf_hash);
         out.key_base = std::move(arrs.key);
@@ -792,7 +793,7 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
         if (with_leaf_hash)
             out.hash_base = std::move(arrs.hash);
         out.alloc_count = arrs.alloc_count;
-        for (size_t leaf = 0; leaf < nl; ++leaf)
+        for (size_t leaf = 0; leaf < num_leaves; ++leaf)
             out.leaf_rows[leaf] = global_hist[leaf];
     }
 
@@ -806,51 +807,50 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
     const UInt32 shift0 = PartitionConfig::HASH_BITS - pass0_bits;
     const UInt32 mask0 = static_cast<UInt32>(p0 - 1);
 
-    chassert(p0 > 0 && nl % p0 == 0); /// nl is 2^total_bits, p0 is 2^pass0_bits, always divides
-    const size_t leaves_per_p0 = nl / p0; // NOLINT(clang-analyzer-core.DivideZero)
+    chassert(p0 > 0 && num_leaves % p0 == 0); /// num_leaves is 2^total_bits, p0 is 2^pass0_bits, always divides
+    const size_t leaves_per_p0 = num_leaves / p0; // NOLINT(clang-analyzer-core.DivideZero)
 
     const size_t num_used = used_slots.size();
 
     /// Fold each thread's rep_hist to pass-0 granularity and compute per-(thread,partition) offsets.
     /// thr_hist0[w * p0 + part] = rows thread w contributes to pass-0 partition `part`.
     std::vector<UInt64> thr_hist0(num_used * p0, 0);
-    for (size_t w = 0; w < num_used; ++w)
+    for (size_t worker = 0; worker < num_used; ++worker)
     {
-        const auto & state = *local[used_slots[w]];
-        for (size_t r = 0; r < state.replicas; ++r)
+        const auto & state = *local[used_slots[worker]];
+        for (size_t rep = 0; rep < state.replicas; ++rep)
         {
-            const UInt32 * rh = state.rep_hist.data() + r * nl;
+            const UInt32 * rep_hist = state.rep_hist.data() + rep * num_leaves;
             for (size_t part = 0; part < p0; ++part)
             {
                 const size_t lo = part * leaves_per_p0;
                 const size_t hi = lo + leaves_per_p0;
                 UInt64 sum = 0;
                 for (size_t leaf = lo; leaf < hi; ++leaf)
-                    sum += rh[leaf];
-                thr_hist0[w * p0 + part] += sum;
+                    sum += rep_hist[leaf];
+                thr_hist0[worker * p0 + part] += sum;
             }
         }
     }
 
     /// Level-0 partition sizes.
     std::vector<UInt64> level0_counts(p0, 0);
-    for (size_t w = 0; w < num_used; ++w)
+    for (size_t worker = 0; worker < num_used; ++worker)
         for (size_t part = 0; part < p0; ++part)
-            level0_counts[part] += thr_hist0[w * p0 + part];
+            level0_counts[part] += thr_hist0[worker * p0 + part];
 
-    /// thr_off0[w * p0 + part] = starting row index within partition `part`'s SEPARATE allocated
-    /// array for thread w (starts at 0 for w=0; each partition has its own allocation of size
-    /// level0_counts[part], not a flat global array).
+    /// thr_off0[worker * p0 + part] = starting row index within partition `part`'s SEPARATE allocated
+    /// array for that worker (starts at 0 for worker 0; each partition has its own allocation).
     std::vector<UInt64> thr_off0(num_used * p0, 0);
     {
         std::vector<UInt64> running0(p0, 0); /// offset within each partition's own array (starts at 0)
-        for (size_t w = 0; w < num_used; ++w)
+        for (size_t worker = 0; worker < num_used; ++worker)
         {
-            UInt64 * w_start = thr_off0.data() + w * p0;
+            UInt64 * worker_start = thr_off0.data() + worker * p0;
             for (size_t part = 0; part < p0; ++part)
             {
-                w_start[part] = running0[part];
-                running0[part] += thr_hist0[w * p0 + part];
+                worker_start[part] = running0[part];
+                running0[part] += thr_hist0[worker * p0 + part];
             }
         }
     }
@@ -880,26 +880,26 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
     const size_t max_refine_fanout = [&]
     {
         size_t mf = 1;
-        for (size_t i = 1; i < num_passes; ++i)
-            mf = std::max(mf, size_t{1} << cfg.pass_bits[i]);
+        for (size_t pass_idx = 1; pass_idx < num_passes; ++pass_idx)
+            mf = std::max(mf, size_t{1} << cfg.pass_bits[pass_idx]);
         return mf;
     }();
 
     std::atomic<size_t> next_parent{0};
-    runOnPool(pool, num_threads, [&]([[maybe_unused]] size_t /*worker_id*/)
+    runOnPool(pool, num_threads, [&](size_t /*worker_id*/)
     {
         RefineWorkerScratch ws(max_refine_fanout);
 
-        for (size_t p = next_parent.fetch_add(1); p < p0; p = next_parent.fetch_add(1))
+        for (size_t partition = next_parent.fetch_add(1); partition < p0; partition = next_parent.fetch_add(1))
         {
-            if (level0.count[p] == 0)
+            if (level0.count[partition] == 0)
                 continue;
             refineDepthFirst(
-                p * leaves_per_p0,
-                level0.key[p],
-                level0.ref[p],
-                static_cast<const UInt32 *>(level0.hash[p]),
-                level0.count[p],
+                partition * leaves_per_p0,
+                level0.key[partition],
+                level0.ref[partition],
+                static_cast<const UInt32 *>(level0.hash[partition]),
+                level0.count[partition],
                 /*pass_index=*/1,
                 pass0_bits,
                 out,
@@ -907,14 +907,14 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
                 ws,
                 with_leaf_hash);
 
-            /// Partition p is fully consumed — release its contiguous key+ref+hash block
+            /// Partition fully consumed — release its contiguous key+ref+hash block
             /// back to the OS in one madvise(MADV_DONTNEED) call.
-            if (level0.key[p])
+            if (level0.key[partition])
             {
-                const size_t total = roundUpTo64(level0.count[p] * kw)
-                                   + roundUpTo64(level0.count[p] * sizeof(BuildRef))
-                                   + roundUpTo64(level0.count[p] * sizeof(UInt32));
-                level0.arena.releaseRange(level0.key[p], total);
+                const size_t total = roundUpTo64(level0.count[partition] * kw)
+                                   + roundUpTo64(level0.count[partition] * sizeof(BuildRef))
+                                   + roundUpTo64(level0.count[partition] * sizeof(UInt32));
+                level0.arena.releaseRange(level0.key[partition], total);
             }
         }
 
