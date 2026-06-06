@@ -7693,6 +7693,13 @@ The former is used when we know that the right table size is below the threshold
     DECLARE(UInt64, max_partitions_per_pass, 8192, R"(
 For the `radix_hash` join algorithm, the maximum number of partitions (fanout) produced by a single radix scatter pass. The total leaf count is split into the minimum number of passes that respect this cap.
 )", 0) \
+    DECLARE(Bool, radix_hash_scatter_use_thp, false, R"(
+For the `radix_hash` join algorithm, whether to back the per-leaf scatter output arena with transparent
+huge pages (`madvise(MADV_HUGEPAGE)`). When enabled, the per-leaf key/ref/hash arrays that receive the
+scattered build data are allocated from 2 MiB-aligned blocks advised with `MADV_HUGEPAGE`. This can
+reduce TLB pressure during the scatter and subsequent leaf hash table build on large build sides, at the
+cost of additional page table overhead on systems where THP promotion is slow or disabled.
+)", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.
 

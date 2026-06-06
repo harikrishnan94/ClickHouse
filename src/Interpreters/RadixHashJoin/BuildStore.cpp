@@ -209,12 +209,14 @@ BuildStore::BuildStore(
     std::vector<size_t> key_positions_,
     std::vector<size_t> key_widths_,
     size_t max_threads_,
-    size_t arena_max_block_)
+    size_t arena_max_block_,
+    bool scatter_thp_)
     : cfg(std::move(cfg_))
     , key_positions(std::move(key_positions_))
     , key_widths(std::move(key_widths_))
     , max_threads(std::max<size_t>(max_threads_, 1))
     , arena_max_block(arena_max_block_)
+    , scatter_thp(scatter_thp_)
     , instance_id(nextInstanceId())
 {
     chassert(!key_positions.empty() && key_positions.size() == key_widths.size());
@@ -388,7 +390,7 @@ LeafArrays BuildStore::makeLeafArrays([[maybe_unused]] size_t /*num_threads_hint
     LeafArrays out;
     out.num_leaves = cfg.num_leaves;
     out.key_width = key_width;
-    out.arena = GrowingArena(arena_max_block);
+    out.arena = GrowingArena(arena_max_block, scatter_thp);
     out.key_base.assign(cfg.num_leaves, nullptr);
     out.ref_base.assign(cfg.num_leaves, nullptr);
     if (with_leaf_hash)
@@ -844,7 +846,7 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
 
     CascadeLevel level0;
     level0.num_parts = p0;
-    level0.arena = GrowingArena(arena_max_block);
+    level0.arena = GrowingArena(arena_max_block, scatter_thp);
     {
         auto arrs = allocExactPartitions(level0.arena, level0_counts, kw, /*carry_hash=*/true);
         level0.key   = std::move(arrs.key);

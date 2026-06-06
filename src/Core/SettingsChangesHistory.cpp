@@ -43,6 +43,7 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
         {
             {"ai_function_embedding_max_batch_size", 100, 100, "New setting"},
             {"max_partitions_per_pass", 8192, 8192, "New setting for the `radix_hash` join algorithm: maximum partitions (fanout) per radix scatter pass."},
+            {"radix_hash_scatter_use_thp", false, false, "New setting for the `radix_hash` join algorithm: back the per-leaf scatter output arena with transparent huge pages."},
             {"enable_sharding_aggregator", false, false, "New setting to enable sharded `GROUP BY` optimization that distributes rows across threads by hashing the grouping key, so each thread aggregates a disjoint subset of keys without a merge phase; this is efficient for high cardinality keys with evenly distributed data."},
             {"allow_experimental_text_index_lazy_apply", false, false, "New setting to gate experimental lazy posting list apply mode"},
             {"text_index_posting_list_apply_mode", "materialize", "materialize", "New setting for lazy posting list apply mode"},
