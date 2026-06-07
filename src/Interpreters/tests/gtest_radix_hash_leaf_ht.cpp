@@ -322,9 +322,10 @@ TEST(RadixHashLeafHT, ExactKeyCompareOnCollision)
 
     auto hash_of = [](UInt64 v) { return static_cast<UInt32>(v * 1099511628211ull); };
 
-    /// Insert both keys (block 0, 0-based rows 0 and 1).
-    leafInsert<key_width>(ht, hash_of(key_a), &key_a, BuildRef{0, 0}, block_base.data());
-    leafInsert<key_width>(ht, hash_of(key_b), &key_b, BuildRef{0, 1}, block_base.data());
+    /// Insert both keys (block 0, 0-based rows 0 and 1). Both are distinct (no duplicate), so
+    /// leafInsert returns the INVALID_ROW sentinel (no chain needed).
+    leafInsert<key_width>(ht, hash_of(key_a), &key_a, BuildRef{0, 0});
+    leafInsert<key_width>(ht, hash_of(key_b), &key_b, BuildRef{0, 1});
     ASSERT_EQ(leafBucket(hash_of(key_a), num_buckets), leafBucket(hash_of(key_b), num_buckets)) << "test needs a real collision";
 
     const BuildRef ra = leafFind<key_width>(ht, hash_of(key_a), &key_a);
@@ -463,12 +464,21 @@ TEST(RadixHashLeafHT, CellConservation100M)
     const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
 
     /// Conservation: walk every occupied cell's chain across all leaves; total visited == N.
+    /// Cell heads may carry BUILDREF_SINGLETON_BIT — strip it before using as a chain index.
     UInt64 visited = 0;
     for (const LeafHT & ht : hts.leaves)
     {
         for (UInt64 b = 0; b < ht.num_buckets; ++b)
         {
             BuildRef cur = *reinterpret_cast<const BuildRef *>(ht.cells + b * leafCellBytes(sizeof(UInt64)));
+            if (cur.row_no == RadixShuffle::INVALID_ROW)
+                continue;
+            if (cur.block_no & RadixShuffle::BUILDREF_SINGLETON_BIT)
+            {
+                ++visited;
+                continue;
+            }
+            /// Chain of length >= 2.
             while (cur.row_no != RadixShuffle::INVALID_ROW)
             {
                 ++visited;

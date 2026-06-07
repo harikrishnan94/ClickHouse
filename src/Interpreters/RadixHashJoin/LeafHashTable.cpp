@@ -30,6 +30,9 @@ namespace
 
 /// Fill one leaf table by inserting all of its scattered (key, ref, hash) rows. Software-pipelined
 /// write-prefetch of the next row's bucket cell (spec section 5.6, build: __builtin_prefetch RW=1).
+///
+/// When `leafInsert` reports a duplicate, the old head (which may carry `BUILDREF_SINGLETON_BIT` if
+/// this is the k=2 transition) is stripped and threaded through `ht.next_chain`.
 template <size_t key_width>
 void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base)
 {
@@ -43,7 +46,9 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
 
     constexpr size_t stride = leafCellBytes(key_width);
     const UInt64 mask = ht.num_buckets - 1;
-    constexpr UInt64 prefetch_distance = 8; /// prefetch distance
+    /// Prefetch distance 16: without the old next_chain DRAM stall the build loop runs at ~5-10 ns
+    /// per iteration, so distance 8 (~40-80 ns lead) no longer covers DRAM latency (~80-100 ns).
+    constexpr UInt64 prefetch_distance = 16;
 
     for (UInt64 row = 0; row < rows; ++row)
     {
@@ -52,7 +57,14 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
             const UInt64 prefetch_pos = leafBucket(hashes[row + prefetch_distance], ht.num_buckets) & mask;
             __builtin_prefetch(ht.cells + prefetch_pos * stride, /*rw=*/1, /*locality=*/1);
         }
-        leafInsert<key_width>(ht, hashes[row], keys + row * key_width, refs[row], block_base);
+        const BuildRef old_head = leafInsert<key_width>(ht, hashes[row], keys + row * key_width, refs[row]);
+        if (old_head.row_no != RadixShuffle::INVALID_ROW)
+        {
+            /// Duplicate: thread old_head through next_chain.  Strip the singleton bit before using
+            /// it as an index — chain entries must never carry the bit.
+            const BuildRef old_clean{old_head.block_no & ~RadixShuffle::BUILDREF_SINGLETON_BIT, old_head.row_no};
+            ht.next_chain[leafFlat(refs[row], block_base)] = old_clean;
+        }
     }
 }
 
@@ -96,7 +108,10 @@ void collectMatchesT(
     std::vector<BuildRef> & out_refs)
 {
     constexpr size_t stride = leafCellBytes(key_width);
-    constexpr size_t prefetch_distance = 8; /// read-prefetch distance (spec section 5.6, probe: __builtin_prefetch RW=0)
+    /// Prefetch distance 16: the singleton fast path removes the old next_chain DRAM stall (~80 ns),
+    /// so each probe iteration now completes in ~5-10 ns. Distance 8 would give only ~40-80 ns lead
+    /// time — not enough to cover DRAM latency for the cells array. Distance 16 gives ~80-160 ns.
+    constexpr size_t prefetch_distance = 16;
 
     for (size_t row = 0; row < n; ++row)
     {
@@ -116,6 +131,16 @@ void collectMatchesT(
         const size_t leaf = total_bits ? (h >> leaf_shift) : 0;
         const LeafHT & ht = leaves[leaf];
         BuildRef cur = leafFind<key_width>(ht, h, packed_keys + row * key_width);
+        if (cur.row_no == RadixShuffle::INVALID_ROW)
+            continue;
+        if (cur.block_no & RadixShuffle::BUILDREF_SINGLETON_BIT)
+        {
+            /// Singleton head: exactly one build row, no next_chain load needed.
+            out_left_rows.push_back(static_cast<UInt32>(row));
+            out_refs.push_back(BuildRef{cur.block_no & ~RadixShuffle::BUILDREF_SINGLETON_BIT, cur.row_no});
+            continue;
+        }
+        /// Chain of length >= 2: walk next_chain to the INVALID_ROW tail.
         while (cur.row_no != RadixShuffle::INVALID_ROW)
         {
             out_left_rows.push_back(static_cast<UInt32>(row));
@@ -143,6 +168,11 @@ LeafHashTables buildLeafHashTables(
 
     const size_t num_leaves = la.num_leaves;
     out.leaves.assign(num_leaves, LeafHT{});
+
+    /// Fail-close: block_no values (0..numBlocks-1) must never reach the MSB reserved for
+    /// BUILDREF_SINGLETON_BIT. block_base.size()-1 == numBlocks() (see BuildStore::blockBase()).
+    chassert(block_base.size() == 0
+        || (block_base.size() - 1) < static_cast<size_t>(RadixShuffle::BUILDREF_SINGLETON_BIT));
 
     /// next_chain: one BuildRef slot per build row, the INVALID_ROW tail until an insert prepends to it.
     /// It must hold the 0xFF sentinel before the fill (for a unique key the slot is never written).

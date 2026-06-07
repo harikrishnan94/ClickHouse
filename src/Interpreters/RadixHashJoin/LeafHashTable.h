@@ -75,9 +75,18 @@ inline UInt64 leafFlat(RadixShuffle::BuildRef ref, const UInt64 * block_base) no
 /// from the bucket; on an empty slot write the key + head; on a key match prepend `ref` as the new
 /// head and thread the old head through `next_chain`. Width-templated so the key copy/compare are
 /// `__builtin_memcpy_inline` / `__builtin_memcmp` of a compile-time size (no runtime memcpy).
+/// Insert one build row into the leaf HT. Returns the old head `BuildRef` when a duplicate key is
+/// found (caller threads it through `next_chain`), or the `INVALID_ROW` sentinel `BuildRef` for a
+/// first occurrence (the head is written with `BUILDREF_SINGLETON_BIT` set; `next_chain` untouched).
+///
+/// Returning `BuildRef` (8 B) instead of a bool+out-parameter lets the compiler keep the result in
+/// a register and avoids zero-initialising a stack slot on every call.
+///
+/// The returned old head may carry `BUILDREF_SINGLETON_BIT` (k=2 transition); the caller strips it.
+/// Chain entries in `next_chain` must never carry the bit.
 template <size_t key_width>
-inline void leafInsert(
-    LeafHT & ht, UInt32 h, const void * key, RadixShuffle::BuildRef ref, const UInt64 * block_base) noexcept
+inline RadixShuffle::BuildRef leafInsert(
+    LeafHT & ht, UInt32 h, const void * key, RadixShuffle::BuildRef ref) noexcept
 {
     static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
     constexpr size_t stride = leafCellBytes(key_width);
@@ -89,17 +98,18 @@ inline void leafInsert(
         auto * head = reinterpret_cast<RadixShuffle::BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (head->row_no == RadixShuffle::INVALID_ROW)
         {
-            /// First occurrence: store key + head. next_chain[flat(ref)] is already the 0xFF-init tail.
+            /// First occurrence: mark this cell as a singleton (no chain needed yet).
             __builtin_memcpy_inline(cell + sizeof(RadixShuffle::BuildRef), key, key_width);
-            *head = ref;
-            return;
+            *head = RadixShuffle::BuildRef{ref.block_no | RadixShuffle::BUILDREF_SINGLETON_BIT, ref.row_no};
+            return RadixShuffle::BuildRef{RadixShuffle::INVALID_ROW, RadixShuffle::INVALID_ROW};
         }
         if (__builtin_memcmp(cell + sizeof(RadixShuffle::BuildRef), key, key_width) == 0)
         {
-            /// Duplicate key: prepend ref as the new head, old head becomes ref's chain successor.
-            ht.next_chain[leafFlat(ref, block_base)] = *head;
+            /// Duplicate key: return the old head so the caller can thread it through next_chain.
+            const RadixShuffle::BuildRef old = *head;
+            /// New head is chain-length >= 2 -> no singleton bit.
             *head = ref;
-            return;
+            return old;
         }
         pos = (pos + 1) & mask;
     }
