@@ -4,6 +4,7 @@
 #include <Interpreters/IJoin.h>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 
 namespace DB
@@ -62,6 +63,14 @@ public:
 
     JoinResultPtr joinBlock(Block block) override;
 
+    /// `FillingRightJoinSideTransform` runs in parallel for this join (`supportParallelJoin`), so the
+    /// `max_streams` build transforms each call `setTotals` once, concurrently, on this shared join
+    /// object. The base `IJoin::setTotals` does an unguarded `totals = block`, which is a data race on
+    /// the `totals` `Block` (the parallel path is taken only when the right side has no totals, so every
+    /// such call carries an empty block). Serialize the assignment, mirroring `ConcurrentHashJoin` and
+    /// `GraceHashJoin`. `getTotals` stays unlocked — it is read only after the build phase completes.
+    void setTotals(const Block & block) override;
+
     size_t getTotalRowCount() const override;
     size_t getTotalByteCount() const override;
     bool alwaysReturnsEmptySet() const override;
@@ -88,6 +97,9 @@ private:
     size_t max_threads;
     std::optional<UInt64> rhs_size_estimation;
     UInt64 max_partitions_per_pass;
+
+    /// Serializes the concurrent `setTotals` calls from the parallel build transforms.
+    std::mutex totals_mutex;
 
     /// All radix-path state (build store, leaf HTs, colptr tables, output plan). Defined in the
     /// .cpp so this header stays free of the RadixHash internals.

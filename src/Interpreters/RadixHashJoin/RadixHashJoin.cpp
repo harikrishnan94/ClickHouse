@@ -197,6 +197,12 @@ bool RadixHashJoin::addBlockToJoin(const Block & block, size_t /*num_rows*/, boo
     return addBlockToJoin(block, check_limits);
 }
 
+void RadixHashJoin::setTotals(const Block & block)
+{
+    std::lock_guard lock(totals_mutex);
+    IJoin::setTotals(block);
+}
+
 void RadixHashJoin::checkTypesOfKeys(const Block & block) const
 {
     JoinCommon::checkTypesOfKeys(block, state->key_names_left, *right_sample_block, state->key_names_right);
