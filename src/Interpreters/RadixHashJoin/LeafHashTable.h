@@ -3,7 +3,6 @@
 #include <Interpreters/RadixHashJoin/BuildStore.h>
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Common/RadixShuffle/Scatter.h>
-#include <Common/ThreadPool_fwd.h>
 
 #include <base/types.h>
 
@@ -141,16 +140,16 @@ struct LeafHashTables
 /// Build all leaf hash tables and the shared next_chain from a finished `LeafArrays` (which must have
 /// been produced with `with_leaf_hash = true`, so `la.hash_base` is populated) plus the per-block
 /// `block_base` prefix sum. Cell arrays and next_chain are carved from one `GrowingArena` (THP-backed
-/// when `use_thp`); the carve is O(num_leaves) single-threaded (NC gate), the fill is work-stolen
-/// across `num_threads` workers drawn from `pool` (PB gate). `key_width` selects the templated insert
-/// path (a multiple of 4 in [4, 64]).
+/// when `use_thp`); the carve is O(num_leaves) single-threaded on the leader (NC gate), the fill is
+/// work-stolen across leader + helpers via `coord.parallelFor` (PB gate). `key_width` selects the
+/// templated insert path (a multiple of 4 in [4, 64]).
+/// Must be called only by the leader inside a CoopPool::run body.
 LeafHashTables buildLeafHashTables(
     const LeafArrays & la,
     const std::vector<UInt64> & block_base,
     UInt64 num_rows,
     size_t key_width,
-    ThreadPool & pool,
-    size_t num_threads,
+    CoopPool & coord,
     bool use_thp);
 
 /// Probe `n` left rows against the leaf tables, collecting every match as a (left_row, BuildRef) pair

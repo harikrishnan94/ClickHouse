@@ -10,9 +10,7 @@
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 
-#include <Common/CurrentMetrics.h>
 #include <Common/Stopwatch.h>
-#include <Common/ThreadPool.h>
 #include <Common/assert_cast.h>
 
 #include <fmt/format.h>
@@ -21,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <random>
@@ -37,9 +36,15 @@ namespace
 
 constexpr size_t l2_bytes = 2 * 1024 * 1024;
 
-ThreadPool makePool(size_t threads)
+/// Drive a cooperative build with real T-thread parallelism.
+void coopRun(CoopPool & coord, size_t threads, std::function<void()> body)
 {
-    return ThreadPool(CurrentMetrics::end(), CurrentMetrics::end(), CurrentMetrics::end(), threads);
+    std::vector<std::thread> th;
+    th.reserve(threads);
+    for (size_t t = 0; t < threads; ++t)
+        th.emplace_back([&] { coord.run(body); });
+    for (auto & x : th)
+        x.join();
 }
 
 template <typename T>
@@ -134,10 +139,14 @@ TEST(RadixHashLeafHT, InsertAndFindAll)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
     addBlocksSerial(store, keys, 16);
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4, /*with_leaf_hash=*/true);
-
-    LeafHashTables hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), pool, 4, false);
+    CoopPool coord;
+    LeafArrays leaves;
+    LeafHashTables hts;
+    coopRun(coord, 4, [&]
+    {
+        leaves = store.scatterToLeaves(coord, /*with_leaf_hash=*/true);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, false);
+    });
 
     /// Probe with the same keys; every probe row must find at least one match resolving to its key.
     Block probe = makeU64Block(keys);
@@ -182,9 +191,14 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
     addBlocksSerial(store, keys, 23);
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4, true);
-    LeafHashTables hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), pool, 4, false);
+    CoopPool coord;
+    LeafArrays leaves;
+    LeafHashTables hts;
+    coopRun(coord, 4, [&]
+    {
+        leaves = store.scatterToLeaves(coord, true);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, false);
+    });
 
     /// Reference: count of build rows per distinct key value.
     std::unordered_map<UInt64, size_t> ref_count;
@@ -350,9 +364,14 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         }
 
         store.finishBuild();
-        ThreadPool pool = makePool(2);
-        const LeafArrays leaves = store.scatterToLeaves(pool, 2, /*with_leaf_hash=*/true);
-        LeafHashTables hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), width, pool, 2, false);
+        CoopPool coord;
+        LeafArrays leaves;
+        LeafHashTables hts;
+        coopRun(coord, 2, [&]
+        {
+            leaves = store.scatterToLeaves(coord, /*with_leaf_hash=*/true);
+            hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), width, coord, false);
+        });
 
         /// Probe with every build key (reassembled in block order from `all`).
         auto probe_col = ColumnFixedString::create(width);
@@ -426,11 +445,15 @@ TEST(RadixHashLeafHT, CellConservation100M)
         th.join();
     store.finishBuild();
 
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads, true);
-
+    CoopPool coord;
+    LeafArrays leaves;
+    LeafHashTables hts;
     Stopwatch sw;
-    LeafHashTables hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), pool, num_threads, true);
+    coopRun(coord, num_threads, [&]
+    {
+        leaves = store.scatterToLeaves(coord, true);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, true);
+    });
     const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
 
     /// Conservation: walk every occupied cell's chain across all leaves; total visited == N.
@@ -490,15 +513,18 @@ TEST(RadixHashLeafHT, ThpVsNonThpBuildTime)
         th.join();
     store.finishBuild();
 
-    ThreadPool pool = makePool(num_threads);
-
     for (bool use_thp : {false, true})
     {
         /// A fresh scatter per run so each build faults its own leaf arrays + HT cells.
-        const LeafArrays la = store.scatterToLeaves(pool, num_threads, true);
+        CoopPool coord;
+        LeafArrays la;
+        LeafHashTables hts;
         Stopwatch sw;
-        LeafHashTables hts
-            = buildLeafHashTables(la, store.blockBase(), store.totalRows(), sizeof(UInt64), pool, num_threads, use_thp);
+        coopRun(coord, num_threads, [&]
+        {
+            la = store.scatterToLeaves(coord, true);
+            hts = buildLeafHashTables(la, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, use_thp);
+        });
         const double ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
         std::cout << fmt::format(
             "P4 leaf-HT build {}: n={} leaves={} wall={:.1f}ms ns/row={:.3f}\n",

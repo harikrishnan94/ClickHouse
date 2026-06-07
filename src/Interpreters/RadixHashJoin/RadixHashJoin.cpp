@@ -15,23 +15,14 @@
 #include <Columns/IColumn.h>
 #include <DataTypes/IDataType.h>
 
-#include <Common/CurrentMetrics.h>
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
-#include <Common/ThreadPool.h>
 
 #include <atomic>
 #include <cstring>
 #include <numeric>
 
 #include <unistd.h>
-
-namespace CurrentMetrics
-{
-extern const Metric RadixHashJoinPoolThreads;
-extern const Metric RadixHashJoinPoolThreadsActive;
-extern const Metric RadixHashJoinPoolThreadsScheduled;
-}
 
 namespace ProfileEvents
 {
@@ -82,7 +73,12 @@ struct RadixHashJoin::RadixState
 
     std::unique_ptr<RadixHash::BuildStore> build_store;
 
-    /// Filled by runPostBuildPhase.
+    /// Set in onBuildPhaseFinish (after finishBuild); guards the header/planning path in ensureBuilt.
+    std::atomic<bool> build_phase_finished{false};
+    /// Cooperative pool used to run the post-build (scatter + HT build) on the probe threads.
+    RadixHash::CoopPool coord;
+
+    /// Set to true once the leaf HTs are fully built and ready for probing.
     std::atomic<bool> built{false};
     RadixHash::LeafHashTables leaf_hts;
     RadixHash::ColPtrTables colptr;
@@ -209,25 +205,15 @@ void RadixHashJoin::checkTypesOfKeys(const Block & block) const
 void RadixHashJoin::onBuildPhaseFinish()
 {
     state->build_store->finishBuild();
+    state->build_phase_finished.store(true, std::memory_order_release);
 }
 
-bool RadixHashJoin::hasPostBuildPhase() const
+void RadixHashJoin::runPostBuild()
 {
-    return true;
-}
-
-void RadixHashJoin::runPostBuildPhase()
-{
-    ThreadPool pool(
-        CurrentMetrics::RadixHashJoinPoolThreads,
-        CurrentMetrics::RadixHashJoinPoolThreadsActive,
-        CurrentMetrics::RadixHashJoinPoolThreadsScheduled,
-        max_threads);
-
     /// Deferred exact key+ref scatter, additionally carrying the per-row routing hash into the leaves so
     /// the leaf-HT bucket Fibonacci-mixes the exact hash the probe side derives (spec section 5.6).
     RadixHash::LeafArrays leaves = state->build_store->scatterToLeaves(
-        pool, max_threads, /*with_leaf_hash=*/true);
+        state->coord, /*with_leaf_hash=*/true);
 
     state->block_base = state->build_store->blockBase();
     state->total_rows = state->build_store->totalRows();
@@ -235,7 +221,7 @@ void RadixHashJoin::runPostBuildPhase()
     /// Build the per-leaf hash tables + the shared next_chain (THP-backed: the random inserts/lookups
     /// are the most TLB-sensitive structure, spec section 4.4 / open question Q1).
     state->leaf_hts = RadixHash::buildLeafHashTables(
-        leaves, state->block_base, state->total_rows, state->key_width, pool, max_threads, /*use_thp=*/true);
+        leaves, state->block_base, state->total_rows, state->key_width, state->coord, /*use_thp=*/true);
 
     /// Per-column/per-block gather pointers for the build payload (spec section 5.4).
     state->colptr.build(
@@ -249,8 +235,28 @@ void RadixHashJoin::runPostBuildPhase()
     state->built.store(true, std::memory_order_release);
 }
 
+void RadixHashJoin::ensureBuilt()
+{
+    /// Fast path: already built.
+    if (state->built.load(std::memory_order_acquire))
+        return;
+
+    /// Header/planning path: transformHeader calls joinBlock before onBuildPhaseFinish.
+    /// The build barrier has not run yet — return safely so joinBlock emits only the output schema.
+    if (!state->build_phase_finished.load(std::memory_order_acquire))
+        return;
+
+    /// Cooperative post-build: first probe thread is the leader and runs runPostBuild();
+    /// subsequent probe threads act as helpers draining parallelFor work units.
+    state->coord.run([this] { runPostBuild(); });
+}
+
 JoinResultPtr RadixHashJoin::joinBlock(Block block)
 {
+    /// Cooperative post-build: on the first real call after onBuildPhaseFinish, the probe threads
+    /// collectively run the scatter + leaf-HT build before probing.
+    ensureBuilt();
+
     const RadixState & st = *state;
     const size_t n = block.rows();
 

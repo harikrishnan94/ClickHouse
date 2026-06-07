@@ -2,10 +2,6 @@
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
-#include <Common/ThreadPool.h>
-
-#include <atomic>
-#include <future>
 
 namespace ProfileEvents
 {
@@ -27,47 +23,6 @@ using RadixShuffle::BuildRef;
 
 namespace
 {
-
-/// Run `fn(worker_id)` on `num_threads` workers drawn from `pool`. Worker 0 runs inline; workers
-/// 1..T-1 are scheduled; all are joined before returning and the first worker exception is rethrown.
-/// (Same shape as BuildStore::runOnPool — kept local so LeafHashTable has no cross-TU coupling.)
-template <typename Fn>
-void runOnPool(ThreadPool & pool, size_t num_threads, Fn && fn)
-{
-    if (num_threads <= 1)
-    {
-        fn(size_t{0});
-        return;
-    }
-
-    std::vector<std::future<void>> futures;
-    futures.reserve(num_threads - 1);
-    for (size_t t = 1; t < num_threads; ++t)
-    {
-        const size_t worker_id = t;
-        auto task = std::make_shared<std::packaged_task<void()>>([&fn, worker_id] { fn(worker_id); });
-        futures.push_back(task->get_future());
-        pool.scheduleOrThrowOnError([pt = std::move(task)] { (*pt)(); });
-    }
-
-    fn(size_t{0});
-
-    std::exception_ptr first_exc;
-    for (auto & f : futures)
-    {
-        try
-        {
-            f.get();
-        }
-        catch (...)
-        {
-            if (!first_exc)
-                first_exc = std::current_exception();
-        }
-    }
-    if (first_exc)
-        std::rethrow_exception(first_exc);
-}
 
 /// Fill one leaf table by inserting all of its scattered (key, ref, hash) rows. Software-pipelined
 /// write-prefetch of the next row's bucket cell (spec section 5.6, build: __builtin_prefetch RW=1).
@@ -174,8 +129,7 @@ LeafHashTables buildLeafHashTables(
     const std::vector<UInt64> & block_base,
     UInt64 num_rows,
     size_t key_width,
-    ThreadPool & pool,
-    size_t num_threads,
+    CoopPool & coord,
     bool use_thp)
 {
     Stopwatch sw;
@@ -192,8 +146,8 @@ LeafHashTables buildLeafHashTables(
     if (num_rows > 0)
         out.next_chain = out.arena.allocArray<BuildRef>(num_rows);
 
-    /// (1) Single-threaded carve: O(num_leaves) allocations (NC gate). alloc only bumps a cursor and
-    /// returns a pointer — it does NOT touch the pages, so the cells stay zero (empty) until inserted.
+    /// (1) Single-threaded carve on the leader: O(num_leaves) allocations (NC gate). alloc only bumps
+    /// a cursor and returns a pointer — it does NOT touch the pages, so the cells stay zero until inserted.
     for (size_t leaf = 0; leaf < num_leaves; ++leaf)
     {
         out.leaves[leaf].next_chain = out.next_chain;
@@ -208,16 +162,11 @@ LeafHashTables buildLeafHashTables(
 
     /// (2) Parallel fill: work-steal leaves (disjoint per leaf -> next_chain writes are disjoint too).
     const UInt64 * block_base_ptr = block_base.data();
-    std::atomic<size_t> next_leaf{0};
-    runOnPool(pool, num_threads, [&](size_t /*worker_id*/)
+    coord.parallelFor(num_leaves, [&](size_t leaf)
     {
-        for (size_t leaf = next_leaf.fetch_add(1, std::memory_order_relaxed); leaf < num_leaves;
-             leaf = next_leaf.fetch_add(1, std::memory_order_relaxed))
-        {
-            if (la.leaf_rows[leaf] == 0)
-                continue;
-            fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, block_base_ptr);
-        }
+        if (la.leaf_rows[leaf] == 0)
+            return;
+        fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, block_base_ptr);
     });
 
     ProfileEvents::increment(ProfileEvents::RadixHashBuildHTMicroseconds, sw.elapsedMicroseconds());

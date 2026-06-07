@@ -4,14 +4,17 @@
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 #include <Common/RadixShuffle/Scatter.h>
-#include <Common/ThreadPool_fwd.h>
 #include <Common/Stopwatch.h>
 
 #include <base/types.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace DB::RadixHash
@@ -60,6 +63,60 @@ struct LeafArrays
     const RadixShuffle::BuildRef & refAt(size_t leaf, size_t i) const { return ref_base[leaf][i]; }
     UInt32 hashAt(size_t leaf, size_t i) const { return static_cast<const UInt32 *>(hash_base[leaf])[i]; }
 };
+
+/** Cooperative pool for the RadixHashJoin post-build phase.
+  *
+  * N peer threads call run() with the same leader_body lambda.  The first caller becomes the
+  * leader and executes leader_body(); the others act as helpers that opportunistically drain
+  * parallelFor() work units until the session ends.  Correct for any N >= 1 (N=1 is fully
+  * sequential; N>1 is parallel).  No dedicated threads, no sleep.
+  *
+  * Protocol
+  * --------
+  *   every thread    -> run(body)            leader executes body(); helpers steal units.
+  *   leader only     -> parallelFor(total, fn)  distributes fn over [0, total); blocks until
+  *                                              all total units complete.
+  *
+  * Liveness: the leader never blocks mid-work(), so it always runs to completion and sets
+  * session_done even if no helpers show up.  Helpers wait on the condition variable; they
+  * never sleep.  Exceptions from the leader or any unit are propagated to all participants.
+  */
+class CoopPool
+{
+public:
+    CoopPool() = default;
+    CoopPool(const CoopPool &) = delete;
+    CoopPool & operator=(const CoopPool &) = delete;
+
+    /// Every participating thread calls this with the same body.  The first is the leader and
+    /// runs body(); the rest act as helpers.  Late callers (after the session already finished)
+    /// return immediately (rethrowing any leader exception).
+    void run(std::function<void()> body);
+
+    /// Distribute total work units among the leader and any present helpers.  Called only by
+    /// the leader inside body().  Blocks until all total units have completed.  No-op for total == 0.
+    void parallelFor(size_t total, std::function<void(size_t)> fn);
+
+private:
+    struct Job
+    {
+        std::function<void(size_t)> fn;
+        size_t total = 0;
+        std::atomic<size_t> next{0};
+        std::atomic<size_t> done{0};
+        std::exception_ptr exc; /// first unit exception; protected by CoopPool::mu
+    };
+
+    void drainJob(const std::shared_ptr<Job> & job);
+
+    std::mutex mu;
+    std::condition_variable cv;
+    std::shared_ptr<Job> current_job;    /// non-null while parallelFor is active; guarded by mu
+    bool session_done = false;           /// set by leader after body() returns; guarded by mu
+    std::exception_ptr leader_exception; /// leader / unit exception to propagate; guarded by mu
+    std::atomic<bool> leader_taken{false};
+};
+
 
 /** BuildStore — the radix hash join build path, steps 1+2+4 (spec sections 4.2, 4.6), implemented as
   * a standalone, join-independent unit (the leaf-HT build, step 5, is phase P4; the probe is P5).
@@ -112,12 +169,12 @@ public:
     /// Step 2 (single barrier). Must be called once, after all `add`s, before `scatterToLeaves`.
     void finishBuild();
 
-    /// Step 4. Deferred exact key+ref scatter into per-leaf arrays, parallelised on `pool`.
-    /// `num_threads >= 1` (work units are stolen across that many workers drawn from `pool`).
+    /// Step 4. Deferred exact key+ref scatter into per-leaf arrays, parallelised via `coord`.
     /// When `with_leaf_hash` is true (phase P4), the per-row 32-bit routing hash is also scattered into
     /// per-leaf `hash_base` arrays (one `UInt32` per build row, aligned with key/ref), so the leaf-HT
     /// build can Fibonacci-mix the exact same hash the probe side derives (spec section 5.6, 15.9).
-    LeafArrays scatterToLeaves(ThreadPool & pool, size_t num_threads, bool with_leaf_hash = false);
+    /// Must be called only by the leader inside a CoopPool::run body.
+    LeafArrays scatterToLeaves(CoopPool & coord, bool with_leaf_hash = false);
 
     const PartitionConfig & config() const { return cfg; }
     size_t packedKeyWidth() const { return key_width; }
@@ -204,7 +261,7 @@ private:
     /// pass-0 uses carry_hash=true.
     template <bool carry_hash>
     void scatterBlocksIntoPartitions(
-        ThreadPool & pool,
+        CoopPool & coord,
         size_t num_parts,
         UInt32 shift,
         UInt32 mask,
@@ -215,8 +272,8 @@ private:
         std::atomic<UInt64> & total_bytes,
         std::vector<UInt64> & worker_counts);
 
-    LeafArrays scatterSinglePass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash);
-    LeafArrays scatterMultiPass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash);
+    LeafArrays scatterSinglePass(CoopPool & coord, bool with_leaf_hash);
+    LeafArrays scatterMultiPass(CoopPool & coord, bool with_leaf_hash);
 
     PartitionConfig cfg;
     std::vector<size_t> key_positions;

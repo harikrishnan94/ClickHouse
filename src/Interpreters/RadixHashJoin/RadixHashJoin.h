@@ -29,9 +29,11 @@ class TableJoin;
   *
   * Data path:
   *   addBlockToJoin    -> BuildStore::add        (move + select; no scatter, no payload copy)
-  *   onBuildPhaseFinish-> BuildStore::finishBuild (merge histograms, prefix sums)
-  *   runPostBuildPhase -> BuildStore::scatterToLeaves + build per-leaf HTs + next_chain + colptr
-  *   joinBlock         -> probe the leaf HTs (chain traversal for JOIN ALL) and emit matches
+  *   onBuildPhaseFinish-> BuildStore::finishBuild (merge histograms, prefix sums) + sets build_phase_finished
+  *   joinBlock         -> ensureBuilt() runs the post-build cooperatively on the probe threads:
+  *                        first probe thread is the leader; others help via CoopPool::parallelFor.
+  *                        Scatter + leaf-HT build runs on the pipeline executor's own threads.
+  *   joinBlock (probe) -> probe the leaf HTs (chain traversal for JOIN ALL) and emit matches
   */
 class RadixHashJoin : public IJoin
 {
@@ -68,10 +70,18 @@ public:
         const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
 
     void onBuildPhaseFinish() override;
-    bool hasPostBuildPhase() const override;
-    void runPostBuildPhase() override;
 
 private:
+    /// Called cooperatively by all probe threads on their first joinBlock after the build barrier.
+    /// The first thread to arrive is the leader and performs the scatter + HT build via CoopPool;
+    /// subsequent threads help drain work units. Returns immediately when already built or when
+    /// `build_phase_finished` is not yet set (header/planning path).
+    void ensureBuilt();
+
+    /// Full post-build body (scatter + leaf-HT build + colptr + built flag). Executed once by
+    /// the CoopPool leader inside ensureBuilt(); helpers drain the parallel steps via coord.
+    void runPostBuild();
+
     std::shared_ptr<TableJoin> table_join;
     SharedHeader right_sample_block;
 

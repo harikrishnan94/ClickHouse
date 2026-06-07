@@ -9,9 +9,7 @@
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 
-#include <Common/CurrentMetrics.h>
 #include <Common/Stopwatch.h>
-#include <Common/ThreadPool.h>
 
 #include <fmt/format.h>
 
@@ -20,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <random>
 #include <thread>
@@ -33,10 +32,16 @@ namespace
 
 constexpr size_t l2_bytes = 2 * 1024 * 1024;
 
-/// A local pool standing in for the query thread pool that the join passes to scatterToLeaves.
-ThreadPool makePool(size_t threads)
+/// Drive a cooperative build with real T-thread parallelism.  All threads call coord.run(body);
+/// the first becomes the leader (executes body); the rest act as helpers.
+void coopRun(CoopPool & coord, size_t threads, std::function<void()> body)
 {
-    return ThreadPool(CurrentMetrics::end(), CurrentMetrics::end(), CurrentMetrics::end(), threads);
+    std::vector<std::thread> th;
+    th.reserve(threads);
+    for (size_t t = 0; t < threads; ++t)
+        th.emplace_back([&] { coord.run(body); });
+    for (auto & x : th)
+        x.join();
 }
 
 template <typename T>
@@ -281,8 +286,9 @@ TEST(RadixHashBuildScatter, ConservationSinglePassU64)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, /*max_threads=*/1);
     addBlocksSerial<UInt64>(store, keys, /*num_blocks=*/17, /*num_payload=*/3);
     store.finishBuild();
-    ThreadPool pool = makePool(1);
-    const LeafArrays leaves = store.scatterToLeaves(pool, /*num_threads=*/1);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 1, [&] { leaves = store.scatterToLeaves(coord); });
 
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
@@ -302,8 +308,9 @@ TEST(RadixHashBuildScatter, ConservationSinglePassU32)
     BuildStore store(cfg, {0}, {sizeof(UInt32)}, 1);
     addBlocksSerial<UInt32>(store, keys, 11, 2);
     store.finishBuild();
-    ThreadPool pool = makePool(1);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 1);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 1, [&] { leaves = store.scatterToLeaves(coord); });
 
     verifyConservationAndRefs<UInt32>(store, leaves, {0}, {sizeof(UInt32)});
 }
@@ -351,8 +358,9 @@ TEST(RadixHashBuildScatter, ConservationSinglePassSwwc)
         th.join();
 
     store.finishBuild();
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
 
     /// With NT active (x86-64-v3 multitarget) this fanout routes through the SWWC/NT path under test;
     /// correctness must hold on either path, so this only documents intent (no skip on a v2 build).
@@ -413,8 +421,9 @@ TEST(RadixHashBuildScatter, MultiColumnKeyU64x2)
         th.join();
 
     store.finishBuild();
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.key_width, 2 * sizeof(UInt64));
     verifyConservationAndRefs<UInt64>(store, leaves, key_pos, key_w);
@@ -450,8 +459,9 @@ TEST(RadixHashBuildScatter, MultiColumnMixedWidth)
     ASSERT_EQ(added, n);
 
     store.finishBuild();
-    ThreadPool pool = makePool(2);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 2);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 2, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.key_width, sizeof(UInt32) + sizeof(UInt64));
     verifyConservationAndRefs<UInt32>(store, leaves, {0, 1}, {sizeof(UInt32), sizeof(UInt64)});
@@ -471,8 +481,9 @@ TEST(RadixHashBuildScatter, MultiPassMembership)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
     addBlocksSerial<UInt64>(store, keys, 23, 1);
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
 
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
@@ -504,8 +515,9 @@ TEST(RadixHashBuildScatter, MultiPassMultiColumn)
     }
 
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
 
     verifyConservationAndRefs<UInt64>(store, leaves, key_pos, key_w);
 }
@@ -521,8 +533,9 @@ TEST(RadixHashBuildScatter, SingleLeaf)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1);
     addBlocksSerial<UInt64>(store, keys, 7, 2);
     store.finishBuild();
-    ThreadPool pool = makePool(1);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 1);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 1, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.leaf_rows[0], n);
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
@@ -545,8 +558,9 @@ TEST(RadixHashBuildScatter, EmptyAndOddBlocks)
         total += sizes;
     }
     store.finishBuild();
-    ThreadPool pool = makePool(1);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 1);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 1, [&] { leaves = store.scatterToLeaves(coord); });
 
     UInt64 sum = 0;
     for (auto r : leaves.leaf_rows)
@@ -565,8 +579,9 @@ TEST(RadixHashBuildScatter, ChunkedScatterLargeBlock)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1);
     store.add(makeBlock1<UInt64>(keys, 1, 1)); /// single big block
     store.finishBuild();
-    ThreadPool pool = makePool(1);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 1);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 1, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(store.numBlocks(), 1u);
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
@@ -607,8 +622,9 @@ TEST(RadixHashBuildScatter, ParallelBuildMatchesSerial)
         th.join();
 
     store.finishBuild();
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
 
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
@@ -653,8 +669,9 @@ TEST(RadixHashBuildScatter, ZeroCopyBytesAccounting)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
     addBlocksSerial<UInt64>(store, keys, 40, /*num_payload=*/7); /// 7 payload cols, never scattered
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.bytes_scattered, UInt64(n) * (sizeof(UInt64) + sizeof(RadixShuffle::BuildRef)));
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
@@ -673,8 +690,10 @@ TEST(RadixHashBuildScatter, NoAllocatorChurn)
         BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1);
         addBlocksSerial<UInt64>(store, keys, num_blocks, 2);
         store.finishBuild();
-        ThreadPool pool = makePool(1);
-        return store.scatterToLeaves(pool, 1);
+        CoopPool coord;
+        LeafArrays la;
+        coopRun(coord, 1, [&] { la = store.scatterToLeaves(coord); });
+        return la;
     };
 
     const LeafArrays few = run(4);
@@ -721,8 +740,9 @@ TEST(RadixHashBuildScatter, ParallelScatterEngagesWorkers)
         th.join();
 
     store.finishBuild();
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
 
     /// worker_block_counts has one entry per build thread (used slot).
     ASSERT_EQ(leaves.worker_block_counts.size(), num_threads);
@@ -857,8 +877,9 @@ TEST(RadixHashBuildScatter, ConservationThreeColumnU64)
         store.add(makeBlock<UInt64>(keys, 1, b));
     }
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.key_width, 3 * sizeof(UInt64));
     verifyConservationAndRefs<UInt64>(store, leaves, kpos, kw);
@@ -887,8 +908,9 @@ TEST(RadixHashBuildScatter, ConservationFourColumnU64)
         store.add(makeBlock<UInt64>(keys, 0, b));
     }
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.key_width, 4 * sizeof(UInt64));
     verifyConservationAndRefs<UInt64>(store, leaves, kpos, kw);
@@ -916,8 +938,9 @@ TEST(RadixHashBuildScatter, MultiPassThreeColumnU64)
         store.add(makeBlock<UInt64>(keys, 1, b));
     }
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
     verifyConservationAndRefs<UInt64>(store, leaves, kpos, kw);
 }
 
@@ -937,8 +960,9 @@ TEST(RadixHashBuildScatter, ThreePassRecursion)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 8);
     addBlocksSerial<UInt64>(store, keys, 64, 1);
     store.finishBuild();
-    ThreadPool pool = makePool(8);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 8);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 8, [&] { leaves = store.scatterToLeaves(coord); });
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
 
@@ -965,8 +989,9 @@ TEST(RadixHashBuildScatter, ThreePassWideKey)
         store.add(makeBlock<UInt64>(keys, 0, b));
     }
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
     verifyConservationAndRefs<UInt64>(store, leaves, kpos, kw);
 }
 
@@ -1009,9 +1034,10 @@ TEST(RadixHashBuildScatter, ScatterNsPerRowBench)
         th.join();
     store.finishBuild();
 
-    ThreadPool pool = makePool(num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
     Stopwatch sw;
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
     const double wall_ns = static_cast<double>(sw.elapsedNanoseconds());
 
     const double ns_per_row = wall_ns / static_cast<double>(n);
@@ -1112,9 +1138,10 @@ TEST(RadixHashBuildScatter, ScatterTwoPassBench)
         th.join();
     store.finishBuild();
 
-    ThreadPool pool = makePool(num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
     Stopwatch sw;
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
     const double wall_ns = static_cast<double>(sw.elapsedNanoseconds());
 
     const double ns_per_row_per_pass = wall_ns / static_cast<double>(n) / static_cast<double>(cfg.pass_bits.size());
@@ -1167,9 +1194,10 @@ TEST(RadixHashBuildScatter, ScatterWideKeyBench)
         th.join();
     store.finishBuild();
 
-    ThreadPool pool = makePool(num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
     Stopwatch sw;
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
     const double wall_ns = static_cast<double>(sw.elapsedNanoseconds());
 
     std::cout << fmt::format(
@@ -1219,9 +1247,10 @@ TEST(RadixHashBuildScatter, ScatterThreePassBench)
         th.join();
     store.finishBuild();
 
-    ThreadPool pool = makePool(num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
     Stopwatch sw;
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
     const double wall_ns = static_cast<double>(sw.elapsedNanoseconds());
 
     std::cout << fmt::format(
@@ -1250,8 +1279,9 @@ TEST(RadixHashBuildScatter, ConservationLargeLeafCount)
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
     addBlocksSerial<UInt64>(store, keys, 23, 1);
     store.finishBuild();
-    ThreadPool pool = makePool(4);
-    const LeafArrays leaves = store.scatterToLeaves(pool, 4);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, 4, [&] { leaves = store.scatterToLeaves(coord); });
 
     EXPECT_EQ(leaves.num_leaves, cfg.num_leaves);
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
@@ -1304,8 +1334,9 @@ TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
         th.join();
 
     store.finishBuild();
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
 
     /// With NT active (x86-64-v3 multitarget) both passes route through the SWWC/NT path under test;
     /// correctness must hold on either path, so this only documents intent (no skip on a v2 build).
@@ -1391,8 +1422,9 @@ TEST(RadixHashBuildScatter, MemoryConsumptionTest)
     };
 
     const double rss_before = rss();
-    ThreadPool pool = makePool(num_threads);
-    const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+    CoopPool coord;
+    LeafArrays leaves;
+    coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
     const double rss_after = rss();
 
     /// (1) Output arena's used bytes ≈ N × (kw + sizeof(BuildRef)).
@@ -1468,9 +1500,10 @@ TEST(RadixHashBuildScatter, EndToEndBuildSmall)
         store.finishBuild();
         ASSERT_EQ(store.numBlocks(), blocks.size()) << "K=" << widths.size();
 
-        /// (4) scatterToLeaves(pool, T).
-        ThreadPool pool = makePool(num_threads);
-        const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+        /// (4) scatterToLeaves(coord, T).
+        CoopPool coord;
+        LeafArrays leaves;
+        coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
 
         EXPECT_EQ(leaves.num_leaves, cfg.num_leaves);
         EXPECT_EQ(leaves.key_width, total_w) << "K=" << widths.size();
@@ -1539,10 +1572,11 @@ TEST(RadixHashBuildScatter, EndToEndBuildBench)
         store.finishBuild();
         const double finish_ns = static_cast<double>(sw_finish.elapsedNanoseconds());
 
-        /// (4) scatterToLeaves(pool, T) — timed (pool creation is setup, outside the timer).
-        ThreadPool pool = makePool(num_threads);
+        /// (4) scatterToLeaves(coord, T) — timed. CoopPool construction is setup, outside the timer.
+        CoopPool coord;
         Stopwatch sw_scatter;
-        const LeafArrays leaves = store.scatterToLeaves(pool, num_threads);
+        LeafArrays leaves;
+        coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
         const double scatter_ns = static_cast<double>(sw_scatter.elapsedNanoseconds());
 
         const double total_ns = add_ns + finish_ns + scatter_ns;

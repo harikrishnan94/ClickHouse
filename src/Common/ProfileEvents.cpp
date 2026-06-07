@@ -1456,7 +1456,7 @@ The server successfully detected this situation and will download merged part fr
     M(JoinBuildPostProcessingMicroseconds, "Elapsed time of post-processing steps after building the right JOIN side.", ValueType::Microseconds) \
     \
     M(RadixHashBuildSelectMicroseconds, "RadixHashJoin: time spent hashing keys, computing the uint16 leaf id and updating the per-thread histogram in addBlockToJoin (no scatter).", ValueType::Microseconds) \
-    M(RadixHashBuildScatterMicroseconds, "RadixHashJoin: time spent in the deferred SWWC/NT key+ref scatter in runPostBuildPhase.", ValueType::Microseconds) \
+    M(RadixHashBuildScatterMicroseconds, "RadixHashJoin: time spent in the deferred SWWC/NT key+ref scatter (cooperative post-build on probe threads).", ValueType::Microseconds) \
     M(RadixHashBuildHTMicroseconds, "RadixHashJoin: time spent building the 16-byte-cell leaf hash tables.", ValueType::Microseconds) \
     M(RadixHashProbeSelectMicroseconds, "RadixHashJoin: probe Phase 1 selector (hash + leaf id).", ValueType::Microseconds) \
     M(RadixHashProbeScatterMicroseconds, "RadixHashJoin: probe Phase 2 key + LeftRef scatter (variant B).", ValueType::Microseconds) \

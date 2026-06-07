@@ -2,16 +2,17 @@
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
-#include <Common/ThreadPool.h>
 
 #include <Columns/IColumn.h>
 
 #include <algorithm>
 #include <bit>
+#include <condition_variable>
 #include <cstring>
-#include <future>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -49,49 +50,6 @@ using RadixShuffle::scatterColumnIntoSwwc;
 using RadixShuffle::scatterKeyRefInto;
 using RadixShuffle::scatterKeyRefTwoColumn;
 using RadixShuffle::shouldUseSwwc;
-
-/// Run `fn(worker_id)` on `num_threads` workers drawn from the caller's pool. Worker 0 runs inline;
-/// workers 1..T-1 are each wrapped in a packaged_task and scheduled on the pool. All futures are
-/// joined before returning; the first worker exception is rethrown.
-template <typename Fn>
-void runOnPool(ThreadPool & pool, size_t num_threads, Fn && fn)
-{
-    if (num_threads <= 1)
-    {
-        fn(size_t{0});
-        return;
-    }
-
-    std::vector<std::future<void>> futures;
-    futures.reserve(num_threads - 1);
-
-    for (size_t t = 1; t < num_threads; ++t)
-    {
-        const size_t worker_id = t;
-        auto task = std::make_shared<std::packaged_task<void()>>([&fn, worker_id] { fn(worker_id); });
-        futures.push_back(task->get_future());
-        pool.scheduleOrThrowOnError([pt = std::move(task)] { (*pt)(); });
-    }
-
-    fn(size_t{0});
-
-    std::exception_ptr first_exc;
-    for (auto & f : futures)
-    {
-        try
-        {
-            f.get();
-        }
-        catch (...)
-        {
-            if (!first_exc)
-                first_exc = std::current_exception();
-        }
-    }
-
-    if (first_exc)
-        std::rethrow_exception(first_exc);
-}
 
 /// Replicated-histogram replica count: round-robin per row avoids store-to-load-forwarding stalls.
 /// Clamped so replicas * num_leaves * 4 B <= ~L1 (32 KiB). Power of two for a cheap mask.
@@ -207,6 +165,109 @@ PartitionArrays allocExactPartitions(
 
 } /// anonymous namespace
 
+
+// ---- CoopPool implementation ---------------------------------------------------------------
+
+void CoopPool::drainJob(const std::shared_ptr<Job> & job)
+{
+    while (true)
+    {
+        const size_t idx = job->next.fetch_add(1, std::memory_order_relaxed);
+        if (idx >= job->total)
+            break;
+        try
+        {
+            job->fn(idx);
+        }
+        catch (...)
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            if (!job->exc)
+                job->exc = std::current_exception();
+        }
+        /// Whoever increments done to total notifies the leader waiting in parallelFor.
+        if (job->done.fetch_add(1, std::memory_order_acq_rel) + 1 == job->total)
+            cv.notify_all();
+    }
+}
+
+void CoopPool::parallelFor(size_t total, std::function<void(size_t)> fn)
+{
+    if (total == 0)
+        return;
+
+    auto job = std::make_shared<Job>();
+    job->fn = std::move(fn);
+    job->total = total;
+
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        current_job = job;
+    }
+    cv.notify_all(); /// wake helpers
+
+    drainJob(job); /// leader also drains units
+
+    /// Wait until all units have completed.
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return job->done.load(std::memory_order_acquire) >= total; });
+        current_job = nullptr;
+    }
+
+    if (job->exc)
+        std::rethrow_exception(job->exc);
+}
+
+void CoopPool::run(std::function<void()> body)
+{
+    bool expected = false;
+    if (leader_taken.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+    {
+        /// Leader: execute body() (which issues parallelFor calls), then close the session.
+        std::exception_ptr exc;
+        try
+        {
+            body();
+        }
+        catch (...)
+        {
+            exc = std::current_exception();
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            leader_exception = exc;
+            session_done = true;
+        }
+        cv.notify_all();
+
+        if (exc)
+            std::rethrow_exception(exc);
+    }
+    else
+    {
+        /// Helper (also covers late callers after session_done is already set).
+        while (true)
+        {
+            std::shared_ptr<Job> job;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv.wait(lk, [this] { return current_job != nullptr || session_done; });
+                if (session_done)
+                {
+                    if (leader_exception)
+                        std::rethrow_exception(leader_exception);
+                    return;
+                }
+                job = current_job;
+            }
+            drainJob(job);
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------------
 
 BuildStore::LocalBuildState::LocalBuildState(size_t num_leaves_, size_t arena_max_block_)
     : hash_arena(arena_max_block_)
@@ -551,7 +612,7 @@ void BuildStore::refineDepthFirst(
 
 template <bool carry_hash>
 void BuildStore::scatterBlocksIntoPartitions(
-    ThreadPool & pool,
+    CoopPool & coord,
     size_t num_parts,
     UInt32 shift,
     UInt32 mask,
@@ -566,17 +627,16 @@ void BuildStore::scatterBlocksIntoPartitions(
     const bool multi_col = key_positions.size() > 1;
     const size_t num_used = used_slots.size();
 
-    /// Empty build (no accumulated blocks): nothing to scatter. Guard here so the worker body never
-    /// indexes the empty per-slot block-range arrays (runOnPool would still run worker 0 for num_used<=1).
+    /// Empty build (no accumulated blocks): nothing to scatter.
     if (num_used == 0)
         return;
 
-    /// At high fanout the per-pass scatter routes through SWWC + NT (onum_leavesy emitted in a multitarget
+    /// At high fanout the per-pass scatter routes through SWWC + NT (only emitted in a multitarget
     /// build); below the threshold, or without NT, it uses the direct incremental cursors. The hash
     /// column adds a third scattered column when carry_hash.
     const bool use_swwc = shouldUseSwwc(carry_hash ? 3 : 2, static_cast<int>(num_parts));
 
-    runOnPool(pool, num_used, [&](size_t worker)
+    coord.parallelFor(num_used, [&](size_t worker)
     {
         const UInt64 * worker_offsets = thr_off.data() + worker * num_parts;
 
@@ -715,7 +775,7 @@ void BuildStore::scatterBlocksIntoPartitions(
 }
 
 
-LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t /*num_threads*/, bool with_leaf_hash)
+LeafArrays BuildStore::scatterSinglePass(CoopPool & coord, bool with_leaf_hash)
 {
     LeafArrays out = makeLeafArrays(with_leaf_hash);
     const size_t num_leaves = cfg.num_leaves;
@@ -759,12 +819,12 @@ LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t /*num_threads
     Stopwatch sw;
     if (with_leaf_hash)
         scatterBlocksIntoPartitions</*carry_hash=*/true>(
-            pool, num_leaves, shift, mask,
+            coord, num_leaves, shift, mask,
             thr_off, out.key_base.data(), out.ref_base.data(), out.hash_base.data(),
             total_bytes, out.worker_block_counts);
     else
         scatterBlocksIntoPartitions</*carry_hash=*/false>(
-            pool, num_leaves, shift, mask,
+            coord, num_leaves, shift, mask,
             thr_off, out.key_base.data(), out.ref_base.data(), /*hash_base_arr=*/nullptr,
             total_bytes, out.worker_block_counts);
 
@@ -773,7 +833,7 @@ LeafArrays BuildStore::scatterSinglePass(ThreadPool & pool, size_t /*num_threads
 }
 
 
-LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
+LeafArrays BuildStore::scatterMultiPass(CoopPool & coord, bool with_leaf_hash)
 {
     const size_t num_leaves = cfg.num_leaves;
     const size_t kw = key_width;
@@ -867,7 +927,7 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
     }
 
     scatterBlocksIntoPartitions</*carry_hash=*/true>(
-        pool, p0, shift0, mask0,
+        coord, p0, shift0, mask0,
         thr_off0, level0.key.data(), level0.ref.data(), level0.hash.data(),
         total_bytes, out.worker_block_counts);
 
@@ -885,37 +945,34 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
         return mf;
     }();
 
-    std::atomic<size_t> next_parent{0};
-    runOnPool(pool, num_threads, [&](size_t /*worker_id*/)
+    /// Depth-first refinement: one unit per pass-0 partition, each allocates its own scratch.
+    coord.parallelFor(p0, [&](size_t partition)
     {
+        if (level0.count[partition] == 0)
+            return;
+
         RefineWorkerScratch ws(max_refine_fanout);
+        refineDepthFirst(
+            partition * leaves_per_p0,
+            level0.key[partition],
+            level0.ref[partition],
+            static_cast<const UInt32 *>(level0.hash[partition]),
+            level0.count[partition],
+            /*pass_index=*/1,
+            pass0_bits,
+            out,
+            gh_prefix,
+            ws,
+            with_leaf_hash);
 
-        for (size_t partition = next_parent.fetch_add(1); partition < p0; partition = next_parent.fetch_add(1))
+        /// Partition fully consumed — release its contiguous key+ref+hash block
+        /// back to the OS in one madvise(MADV_DONTNEED) call.
+        if (level0.key[partition])
         {
-            if (level0.count[partition] == 0)
-                continue;
-            refineDepthFirst(
-                partition * leaves_per_p0,
-                level0.key[partition],
-                level0.ref[partition],
-                static_cast<const UInt32 *>(level0.hash[partition]),
-                level0.count[partition],
-                /*pass_index=*/1,
-                pass0_bits,
-                out,
-                gh_prefix,
-                ws,
-                with_leaf_hash);
-
-            /// Partition fully consumed — release its contiguous key+ref+hash block
-            /// back to the OS in one madvise(MADV_DONTNEED) call.
-            if (level0.key[partition])
-            {
-                const size_t total = roundUpTo64(level0.count[partition] * kw)
-                                   + roundUpTo64(level0.count[partition] * sizeof(BuildRef))
-                                   + roundUpTo64(level0.count[partition] * sizeof(UInt32));
-                level0.arena.releaseRange(level0.key[partition], total);
-            }
+            const size_t release_bytes = roundUpTo64(level0.count[partition] * kw)
+                                       + roundUpTo64(level0.count[partition] * sizeof(BuildRef))
+                                       + roundUpTo64(level0.count[partition] * sizeof(UInt32));
+            level0.arena.releaseRange(level0.key[partition], release_bytes);
         }
 
         total_bytes.fetch_add(ws.local_bytes, std::memory_order_relaxed);
@@ -926,15 +983,13 @@ LeafArrays BuildStore::scatterMultiPass(ThreadPool & pool, size_t num_threads, b
 }
 
 
-LeafArrays BuildStore::scatterToLeaves(ThreadPool & pool, size_t num_threads, bool with_leaf_hash)
+LeafArrays BuildStore::scatterToLeaves(CoopPool & coord, bool with_leaf_hash)
 {
     chassert(finished);
-    if (num_threads == 0)
-        num_threads = 1;
 
     LeafArrays out = cfg.pass_bits.size() <= 1
-        ? scatterSinglePass(pool, num_threads, with_leaf_hash)
-        : scatterMultiPass(pool, num_threads, with_leaf_hash);
+        ? scatterSinglePass(coord, with_leaf_hash)
+        : scatterMultiPass(coord, with_leaf_hash);
 
     /// For single-pass: trim hash arenas now that scatter is done.
     /// For multi-pass: already trimmed inside scatterMultiPass right after pass-0 completed.
