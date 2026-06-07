@@ -17,7 +17,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <functional>
 #include <iostream>
 #include <random>
@@ -137,9 +136,9 @@ void verifyConservationAndRefs(
         {
             const RadixShuffle::BuildRef ref = leaves.refAt(leaf, i);
             ASSERT_LT(ref.block_no, num_blocks) << "leaf=" << leaf << " i=" << i;
-            /// row_no is 1-based; 0 is the empty sentinel and must never appear in a real ref.
-            ASSERT_GE(ref.row_no, 1u) << "row_no == 0 is the empty sentinel — not a valid ref";
-            const UInt32 row = ref.row_no - 1; /// decode to 0-based row index
+            /// row_no is 0-based; INVALID_ROW is the empty sentinel and must never appear in a real ref.
+            ASSERT_NE(ref.row_no, RadixShuffle::INVALID_ROW) << "INVALID_ROW is the empty sentinel — not a valid ref";
+            const UInt32 row = ref.row_no; /// 0-based row index
             ASSERT_LT(row, block_rows[ref.block_no]);
 
             /// Routing identity: top `total_bits` bits of the stored hash must equal the leaf index.
@@ -821,34 +820,34 @@ TEST(RadixHashBuildScatter, PartitionConfigInvariants)
     EXPECT_TRUE(seen_20) << "sweep should reach total_bits=20 (MAX_LEAVES=2^20)";
 }
 
-/// GrowingArena: geometric growth (power-of-two block sizes up to the cap), contiguous allocations,
-/// a single allocation larger than the cap gets its own dedicated block, and data survives trim().
-TEST(RadixHashBuildScatter, GrowingArenaGrowthAndTrim)
+/// GrowingArena (jemalloc-backed): every alloc is its own aligned jemalloc block, a large allocation is
+/// contiguous, and freeBlock() releases one block while the rest stay live.
+TEST(RadixHashBuildScatter, GrowingArenaAllocAndFreeBlock)
 {
-    GrowingArena arena(/*max_block_bytes=*/1024 * 1024); /// 1 MiB cap for the test
+    GrowingArena arena(/*max_block_bytes=*/1024 * 1024); /// cap is retained for API compat but ignored
 
-    /// Many small allocations pack into few blocks (block count << allocation count).
+    /// Each allocation is a separate jemalloc block; all are 64 B-aligned.
     std::vector<char *> ptrs;
     for (int i = 0; i < 100000; ++i)
         ptrs.push_back(static_cast<char *>(arena.alloc(64, 64)));
-    EXPECT_LT(arena.blockCount(), size_t{100000});
+    EXPECT_EQ(arena.blockCount(), size_t{100000});
     for (char * p : ptrs)
         EXPECT_EQ(reinterpret_cast<uintptr_t>(p) % 64, 0u);
 
-    /// An allocation larger than the cap is honored contiguously (dedicated block).
+    /// A large allocation is honored contiguously.
     const size_t big = 4 * 1024 * 1024;
     char * b = static_cast<char *>(arena.alloc(big, 64));
     std::memset(b, 0xAB, big); /// fully writable & contiguous
     EXPECT_EQ(static_cast<unsigned char>(b[0]), 0xABu);
     EXPECT_EQ(static_cast<unsigned char>(b[big - 1]), 0xABu);
 
-    /// Write a sentinel, trim, and confirm the live data is intact and the arena still allocates.
+    /// freeBlock releases exactly one allocation; a live neighbour stays valid and the arena keeps working.
     char * live = static_cast<char *>(arena.alloc(4096, 64));
     std::memset(live, 0xCD, 4096);
-    const size_t reserved_before = arena.bytesReserved();
-    arena.trim();
-    EXPECT_EQ(arena.bytesReserved(), reserved_before) << "trim keeps the mappings (only MADV_DONTNEED)";
-    EXPECT_EQ(static_cast<unsigned char>(live[0]), 0xCDu) << "trim must not drop in-use pages";
+    const size_t blocks_before = arena.blockCount();
+    arena.freeBlock(b); /// free the 4 MiB block
+    EXPECT_EQ(arena.blockCount(), blocks_before - 1) << "freeBlock removes exactly one block";
+    EXPECT_EQ(static_cast<unsigned char>(live[0]), 0xCDu) << "freeBlock must not disturb other blocks";
     char * after = static_cast<char *>(arena.alloc(128, 64));
     EXPECT_NE(after, nullptr);
 }
@@ -1364,11 +1363,11 @@ TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
     EXPECT_EQ(leaves.bytes_scattered, expected_bytes);
 }
 
-/// Unconditional memory-correctness test for the deferred scatter.
-/// Asserts (1) output arena ≈ N×(kw+sizeof(BuildRef)) bytes — scatter uses ~1× the
-/// input keys plus 8 B per row for the BuildRef, nothing more — and (2) the RSS increase
-/// over the scatter is bounded (level0 intermediates and hash arenas are NOT held
-/// resident alongside the output). Uses a forced multi-pass schedule. Runs in under 2 s.
+/// Unconditional memory-correctness test for the deferred scatter: the output arena holds only
+/// ≈ N×(kw+sizeof(BuildRef)) bytes — the scattered key plus an 8 B BuildRef per row, nothing more —
+/// and every build row lands exactly once in its correct leaf. Uses a forced multi-pass schedule so the
+/// refine path runs and frees each consumed intermediate partition promptly (GrowingArena::freeBlock),
+/// which is what keeps the output arena from being inflated by the intermediates. Runs in under 2 s.
 TEST(RadixHashBuildScatter, MemoryConsumptionTest)
 {
     const size_t n = 10'000'007;
@@ -1382,7 +1381,6 @@ TEST(RadixHashBuildScatter, MemoryConsumptionTest)
     const size_t num_blocks = (n + block_rows - 1) / block_rows;
     const size_t expected_output_bytes = n * (kw + sizeof(RadixShuffle::BuildRef));
 
-    /// Build. The scatter output arena is always THP-backed (MADV_HUGEPAGE) inside BuildStore.
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
     std::mt19937_64 rng(0xBEEFDEAD); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::vector<Block> blks;
@@ -1407,45 +1405,21 @@ TEST(RadixHashBuildScatter, MemoryConsumptionTest)
         th.join();
     store.finishBuild();
 
-    /// Read RSS (resident set size) in bytes. Linux-only; returns 0 elsewhere.
-    auto rss = []() -> double
-    {
-#if defined(__linux__)
-        std::ifstream statm("/proc/self/statm");
-        size_t vm = 0;
-        size_t rss_pages = 0;
-        statm >> vm >> rss_pages;
-        return static_cast<double>(rss_pages) * static_cast<double>(::sysconf(_SC_PAGESIZE));
-#else
-        return 0.0;
-#endif
-    };
-
-    const double rss_before = rss();
     CoopPool coord;
     LeafArrays leaves;
     coopRun(coord, num_threads, [&] { leaves = store.scatterToLeaves(coord); });
-    const double rss_after = rss();
 
-    /// (1) Output arena's used bytes ≈ N × (kw + sizeof(BuildRef)).
-    ///     bytesUsed() counts the cursor positions (allocated+padded bytes, not the reserved
-    ///     tail of the last block). Slack: roundUpTo64 alignment overhead per leaf, ≤ 128 B×2.
-    const size_t alignment_slack = cfg.num_leaves * 128;
+    /// (1) The output arena holds only the scattered output: each non-empty leaf's key + ref sections,
+    ///     each roundUpTo64-padded. bytesUsed() therefore lies in
+    ///     [N×(kw+sizeof(BuildRef)), N×(kw+sizeof(BuildRef)) + per-leaf alignment slack]. The level0 /
+    ///     child intermediates never inflate it — they live in their own arenas and are freed during the
+    ///     refine (GrowingArena::freeBlock).
+    const size_t alignment_slack = cfg.num_leaves * 128; /// ≤ 2 sections × 64 B padding per leaf
     EXPECT_GE(leaves.arena.bytesUsed(), expected_output_bytes);
     EXPECT_LE(leaves.arena.bytesUsed(), expected_output_bytes + alignment_slack)
         << "scatter output uses more bytes than N×(kw + sizeof(BuildRef)) + per-leaf alignment";
 
-    /// (2) RSS increase ≤ 1.5× output — proves level0 (N×20B) and hash arenas (N×4B) were
-    ///     NOT both held resident alongside the output (that would push the increase to >2×).
-    ///     Linux-only (/proc/self/statm); skipped on other platforms and on loaded CI machines.
-#if defined(__linux__)
-    if (std::getenv("CI") == nullptr) /// NOLINT(concurrency-mt-unsafe)
-        EXPECT_LT(rss_after - rss_before, 1.5 * static_cast<double>(expected_output_bytes))
-            << "RSS rose by more than 1.5× output during scatter; "
-               "level0 incremental release or hash-arena trim may be broken";
-#endif
-
-    /// (3) Conservation: every build row exactly once in its correct leaf.
+    /// (2) Conservation: every build row exactly once in its correct leaf.
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
 

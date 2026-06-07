@@ -130,14 +130,18 @@ struct PartitionArrays
 /// All three sections are packed into one contiguous alloc per partition:
 ///   [ key_section | ref_section | hash_section (if carry_hash) ]
 /// Each section is roundUpTo64 bytes; sub-pointers are naturally 64 B-aligned since the base is
-/// LINE_BYTES-aligned and each section size is a multiple of LINE_BYTES. This halves the number
-/// of arena alloc calls (1 instead of 2-3) and allows the incremental release in refine passes to
-/// issue a single madvise(MADV_DONTNEED) over the whole combined block.
+/// LINE_BYTES-aligned and each section size is a multiple of LINE_BYTES. The arrays need no zeroing —
+/// the scatter overwrites every output row.
+///
+/// `coord != nullptr` distributes the per-partition allocations across the build threads (the arena's
+/// jemalloc `alloc` is thread-safe); otherwise the carve runs single-threaded on the caller (used by the
+/// refine intermediates, which already run inside a parallel unit).
 PartitionArrays allocExactPartitions(
     GrowingArena & arena,
     std::span<const UInt64> counts,
     size_t kw,
-    bool carry_hash)
+    bool carry_hash,
+    CoopPool * coord = nullptr)
 {
     const size_t num_parts = counts.size();
     PartitionArrays out;
@@ -146,10 +150,10 @@ PartitionArrays allocExactPartitions(
     if (carry_hash)
         out.hash.assign(num_parts, nullptr);
 
-    for (size_t part = 0; part < num_parts; ++part)
+    auto carve_one = [&](size_t part)
     {
         if (counts[part] == 0)
-            continue;
+            return;
         const size_t key_bytes  = roundUpTo64(counts[part] * kw);
         const size_t ref_bytes  = roundUpTo64(counts[part] * sizeof(BuildRef));
         const size_t hash_bytes = carry_hash ? roundUpTo64(counts[part] * sizeof(UInt32)) : 0;
@@ -158,8 +162,16 @@ PartitionArrays allocExactPartitions(
         out.ref[part] = reinterpret_cast<BuildRef *>(base + key_bytes);
         if (carry_hash)
             out.hash[part] = base + key_bytes + ref_bytes;
-        ++out.alloc_count; /// one combined alloc per non-empty partition
-    }
+    };
+
+    if (coord != nullptr)
+        coord->parallelFor(num_parts, [&](size_t part) { carve_one(part); });
+    else
+        for (size_t part = 0; part < num_parts; ++part)
+            carve_one(part);
+
+    for (size_t part = 0; part < num_parts; ++part)
+        out.alloc_count += (counts[part] != 0); /// one combined alloc per non-empty partition
     return out;
 }
 
@@ -185,9 +197,16 @@ void CoopPool::drainJob(const std::shared_ptr<Job> & job)
             if (!job->exc)
                 job->exc = std::current_exception();
         }
-        /// Whoever increments done to total notifies the leader waiting in parallelFor.
+        /// Whoever increments done to total notifies the leader waiting in parallelFor. The notify must
+        /// be serialized with `mu`: the leader checks the `done >= total` predicate while holding `mu`
+        /// and then blocks in cv.wait — notifying without `mu` here races with that window and can be
+        /// lost (the leader checks done<total, this thread finishes+notifies, then the leader sleeps
+        /// forever). Taking `mu` ensures the notify happens only once the leader is actually blocked.
         if (job->done.fetch_add(1, std::memory_order_acq_rel) + 1 == job->total)
+        {
+            std::lock_guard<std::mutex> lk(mu);
             cv.notify_all();
+        }
     }
 }
 
@@ -361,7 +380,7 @@ void BuildStore::add(const Block & block)
     /// (1) ZERO COPY: COW shared_ptr move — no column data is copied.
     Block kept = block;
     const size_t n = kept.rows();
-    chassert(n <= std::numeric_limits<UInt32>::max()); /// BuildRef.row_no is 32-bit and 1-based (0 is reserved as the empty sentinel)
+    chassert(n <= std::numeric_limits<UInt32>::max()); /// BuildRef.row_no is 32-bit 0-based; INVALID_ROW (0xFFFFFFFF) is reserved as the empty sentinel
 
     Stopwatch sw;
 
@@ -446,7 +465,7 @@ void BuildStore::finishBuild()
     std::exclusive_scan(global_hist.begin(), global_hist.end(), offset.begin(), UInt64{0});
 
     /// Per-block exclusive row-offset prefix sum: block_base[b] = Σ rows of blocks 0..b-1. Gives the
-    /// flat next_chain index of a build row (phase P4): flat(ref) = block_base[ref.block_no] + row_no-1.
+    /// flat next_chain index of a build row (phase P4): flat(ref) = block_base[ref.block_no] + row_no (0-based).
     block_base.assign(global_rows_of_block.size() + 1, 0);
     for (size_t block_idx = 0; block_idx < global_rows_of_block.size(); ++block_idx)
         block_base[block_idx + 1] = block_base[block_idx] + global_rows_of_block[block_idx];
@@ -461,7 +480,7 @@ LeafArrays BuildStore::makeLeafArrays(bool with_leaf_hash) const
     LeafArrays out;
     out.num_leaves = cfg.num_leaves;
     out.key_width = key_width;
-    out.arena = GrowingArena(arena_max_block, /*use_thp=*/true);
+    out.arena = GrowingArena(arena_max_block);
     out.key_base.assign(cfg.num_leaves, nullptr);
     out.ref_base.assign(cfg.num_leaves, nullptr);
     if (with_leaf_hash)
@@ -482,7 +501,6 @@ void BuildStore::finalizeScatter(
     const UInt64 scattered_rows = std::accumulate(global_hist.begin(), global_hist.end(), UInt64{0});
     ProfileEvents::increment(ProfileEvents::RadixHashScatterRows, scattered_rows * num_passes);
     out.bytes_scattered = total_bytes.load();
-    out.arena.trim();
 }
 
 
@@ -575,9 +593,10 @@ void BuildStore::refineDepthFirst(
 
         ws.local_bytes += rows * (kw + sizeof(BuildRef) + sizeof(UInt32));
 
-        /// Depth-first recursion: complete each child's subtree before the next.
-        /// After each child returns, release its memory incrementally — so consumed intermediate
-        /// data is returned to the OS as the final leaf output is first-touched.
+        /// Depth-first recursion: complete each child's subtree before the next. After each child
+        /// returns, free its combined key+ref+hash block immediately (a single allocation from
+        /// allocExactPartitions) — so consumed intermediate memory is released as the refine descends,
+        /// keeping peak memory low.
         for (size_t child = 0; child < fanout; ++child)
         {
             if (child_counts[child] == 0)
@@ -595,17 +614,9 @@ void BuildStore::refineDepthFirst(
                 gh_prefix,
                 ws,
                 with_leaf_hash);
-            /// Child fully consumed — release its contiguous key+ref+hash block from child_arena
-            /// in one madvise(MADV_DONTNEED) call (single alloc from allocExactPartitions).
-            if (arrs.key[child])
-            {
-                const size_t total = roundUpTo64(child_counts[child] * kw)
-                                   + roundUpTo64(child_counts[child] * sizeof(BuildRef))
-                                   + roundUpTo64(child_counts[child] * sizeof(UInt32));
-                child_arena.releaseRange(arrs.key[child], total);
-            }
+            child_arena.freeBlock(arrs.key[child]); /// child fully consumed — return its block now
         }
-        /// child_arena mapped memory released below (destructor calls munmap).
+        /// Any remaining child blocks are freed when child_arena goes out of scope below.
     }
 }
 
@@ -711,7 +722,7 @@ void BuildStore::scatterBlocksIntoPartitions(
 
             refs.resize(n);
             for (size_t row = 0; row < n; ++row)
-                refs[row] = BuildRef{static_cast<UInt32>(block_idx), static_cast<UInt32>(row + 1)}; /// row_no is 1-based; 0 is reserved as the empty sentinel
+                refs[row] = BuildRef{static_cast<UInt32>(block_idx), static_cast<UInt32>(row)}; /// row_no is 0-based; INVALID_ROW (0xFFFFFFFF) is the empty sentinel
 
             const char * raw_keys = multi_col
                 ? nullptr
@@ -783,7 +794,7 @@ LeafArrays BuildStore::scatterSinglePass(CoopPool & coord, bool with_leaf_hash)
 
     /// Allocate each leaf's key and ref arrays (and, for P4, the per-leaf hash array) exactly once
     /// (NC gate: O(num_leaves) carves).
-    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, /*carry_hash=*/with_leaf_hash);
+    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, /*carry_hash=*/with_leaf_hash, &coord);
     out.key_base = std::move(arrs.key);
     out.ref_base = std::move(arrs.ref);
     if (with_leaf_hash)
@@ -847,7 +858,7 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord, bool with_leaf_hash)
     /// (NC gate: O(num_leaves) carves).
     LeafArrays out = makeLeafArrays(with_leaf_hash);
     {
-        auto arrs = allocExactPartitions(out.arena, global_hist, kw, /*carry_hash=*/with_leaf_hash);
+        auto arrs = allocExactPartitions(out.arena, global_hist, kw, /*carry_hash=*/with_leaf_hash, &coord);
         out.key_base = std::move(arrs.key);
         out.ref_base = std::move(arrs.ref);
         if (with_leaf_hash)
@@ -917,9 +928,9 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord, bool with_leaf_hash)
 
     CascadeLevel level0;
     level0.num_parts = p0;
-    level0.arena = GrowingArena(arena_max_block, /*use_thp=*/true);
+    level0.arena = GrowingArena(arena_max_block);
     {
-        auto arrs = allocExactPartitions(level0.arena, level0_counts, kw, /*carry_hash=*/true);
+        auto arrs = allocExactPartitions(level0.arena, level0_counts, kw, /*carry_hash=*/true, &coord);
         level0.key   = std::move(arrs.key);
         level0.ref   = std::move(arrs.ref);
         level0.hash  = std::move(arrs.hash);
@@ -932,9 +943,10 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord, bool with_leaf_hash)
         total_bytes, out.worker_block_counts);
 
     /// Hash arenas are no longer needed after pass-0: each row's hash is now carried inside level0.
+    /// Free them immediately to release ~N×4 B of intermediate memory.
     for (auto & up : local)
         if (up)
-            up->hash_arena.trim();
+            up->hash_arena.clear();
 
     // ---- Depth-first refinement: each worker owns a whole pass-0 subtree to its leaves -------
     const size_t max_refine_fanout = [&]
@@ -965,15 +977,8 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord, bool with_leaf_hash)
             ws,
             with_leaf_hash);
 
-        /// Partition fully consumed — release its contiguous key+ref+hash block
-        /// back to the OS in one madvise(MADV_DONTNEED) call.
-        if (level0.key[partition])
-        {
-            const size_t release_bytes = roundUpTo64(level0.count[partition] * kw)
-                                       + roundUpTo64(level0.count[partition] * sizeof(BuildRef))
-                                       + roundUpTo64(level0.count[partition] * sizeof(UInt32));
-            level0.arena.releaseRange(level0.key[partition], release_bytes);
-        }
+        /// Partition fully consumed — free its combined key+ref+hash block immediately.
+        level0.arena.freeBlock(level0.key[partition]);
 
         total_bytes.fetch_add(ws.local_bytes, std::memory_order_relaxed);
     });
@@ -991,12 +996,12 @@ LeafArrays BuildStore::scatterToLeaves(CoopPool & coord, bool with_leaf_hash)
         ? scatterSinglePass(coord, with_leaf_hash)
         : scatterMultiPass(coord, with_leaf_hash);
 
-    /// For single-pass: trim hash arenas now that scatter is done.
-    /// For multi-pass: already trimmed inside scatterMultiPass right after pass-0 completed.
+    /// For single-pass: free hash arenas now that scatter is done.
+    /// For multi-pass: already freed inside scatterMultiPass right after pass-0 completed.
     if (cfg.pass_bits.size() <= 1)
         for (auto & up : local)
             if (up)
-                up->hash_arena.trim();
+                up->hash_arena.clear();
 
     return out;
 }

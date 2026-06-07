@@ -30,7 +30,7 @@ using PackKeyColumnFn = void (*)(const char *, size_t, size_t, char *, size_t, s
   * length, both carved exactly once from `arena` (a non-THP `GrowingArena`). `key_base[L][i]` and
   * `ref_base[L][i]` belong to the same build row: the `BuildRef{block_no,row_no}` resolves the payload
   * back in the accumulated blocks (the leaf HT built from these arrays is phase P4). `row_no` is
-  * **1-based** (see `BuildRef`); payload resolution uses `row_no - 1` as the 0-based row index.
+  * **0-based** (see `BuildRef`); `INVALID_ROW` (0xFFFFFFFF) is reserved as the empty sentinel.
   * An empty leaf has a `nullptr` base.
   *
   * Move-only (owns the arena).
@@ -134,8 +134,8 @@ private:
   *     of `key + BuildRef` on the **caller-provided** `ThreadPool` (the query pool, plan D5). Each
   *     build thread owns its own contiguous block range and seeds its write cursors once from a
   *     per-`(thread,partition)` offset matrix (one prefix-sum across threads) — fully lock-free.
-  *     Multi-pass builds route through pass-0 partitions carrying the `uint32` row hash, with
-  *     incremental `MADV_DONTNEED` release of consumed intermediate partitions. `num_threads` governs
+  *     Multi-pass builds route through pass-0 partitions carrying the `uint32` row hash, freeing each
+  *     consumed intermediate partition immediately (`GrowingArena::freeBlock`). `num_threads` governs
   *     the depth-first refine work-steal parallelism (P4+).
   *
   * Thread-slot handout: each distinct thread that calls `add` is bound (once) to a `LocalBuildState`
@@ -186,7 +186,7 @@ public:
     size_t totalRows() const { return total_rows; }
 
     /// Exclusive per-block row offset (block_base[b] = Σ rows of blocks 0..b-1), so a build row's flat
-    /// index across all blocks is `block_base[ref.block_no] + ref.row_no - 1` — the 1D mapping used by
+    /// index across all blocks is `block_base[ref.block_no] + ref.row_no` (row_no 0-based) — the mapping used by
     /// the leaf-HT `next_chain` (phase P4, spec section 5.6). Size numBlocks()+1; back() == totalRows().
     const std::vector<UInt64> & blockBase() const { return block_base; }
 

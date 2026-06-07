@@ -60,18 +60,21 @@ namespace DB::RadixShuffle
 /// Build-side reference: which accumulated block, and which row within it (spec section 4.6).
 /// Exactly 8 B.
 ///
-/// `row_no` is **1-based**: build row `r` in block `b` is stored as `BuildRef{b, r + 1}`. This
-/// reserves `row_no == 0` as the leaf-cell **empty sentinel**, so the all-zero cell `BuildRef{0, 0}`
-/// can never be a real entry. The leaf HT cell array is carved from the `mmap(MAP_ANONYMOUS)`-backed
-/// `GrowingArena`, which provides zero-initialised pages on first touch — making every freshly
-/// allocated leaf HT already empty with **no `memset` or init pass** (spec section 5.6).
-/// Payload is resolved at probe time with `row_no - 1` (back to the 0-based row index).
+/// `row_no` is **0-based**: build row `r` in block `b` is stored as `BuildRef{b, r}`, so payload is
+/// resolved directly with `row_no` (no offset). The leaf-cell / chain-tail **empty sentinel** is
+/// `row_no == INVALID_ROW` (`0xFFFFFFFF`): the leaf-HT cells and the shared `next_chain` are `memset`
+/// to `0xFF`, so a freshly carved entry is the all-`0xFF` ref `{INVALID_ROW, INVALID_ROW}` and can never
+/// collide with a real entry (a build block holds at most `2^32 - 1` rows — see the `BuildStore` chassert).
 struct BuildRef
 {
     UInt32 block_no;
-    UInt32 row_no; /// 1-based; 0 == empty sentinel
+    UInt32 row_no; /// 0-based; INVALID_ROW (0xFFFFFFFF) == empty sentinel
 };
 static_assert(sizeof(BuildRef) == 8, "BuildRef must be exactly 8 bytes for the 16 B leaf cell");
+
+/// Reserved `row_no` value marking an empty leaf cell / chain tail (cells and `next_chain` are
+/// `memset` to `0xFF`). Distinct from every valid 0-based row index.
+static constexpr UInt32 INVALID_ROW = 0xFFFFFFFFu;
 
 /// Whether non-temporal (NT) stores are compiled in AND supported by the current CPU. When false there
 /// is no SWWC path at all — `scatterColumn(use_swwc=true)` runs the direct batched scatter (a scalar

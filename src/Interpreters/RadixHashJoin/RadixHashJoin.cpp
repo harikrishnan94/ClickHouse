@@ -218,10 +218,10 @@ void RadixHashJoin::runPostBuild()
     state->block_base = state->build_store->blockBase();
     state->total_rows = state->build_store->totalRows();
 
-    /// Build the per-leaf hash tables + the shared next_chain (THP-backed: the random inserts/lookups
-    /// are the most TLB-sensitive structure, spec section 4.4 / open question Q1).
+    /// Build the per-leaf hash tables + the shared next_chain. The arena is jemalloc-backed (no
+    /// mmap/THP); allocation + zeroing of the cells and next_chain run in parallel across the workers.
     state->leaf_hts = RadixHash::buildLeafHashTables(
-        leaves, state->block_base, state->total_rows, state->key_width, state->coord, /*use_thp=*/true);
+        leaves, state->block_base, state->total_rows, state->key_width, state->coord);
 
     /// Per-column/per-block gather pointers for the build payload (spec section 5.4).
     state->colptr.build(
@@ -347,7 +347,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
             for (size_t match = 0; match < out_rows; ++match)
             {
                 const RadixShuffle::BuildRef ref = refs[match];
-                col_data->insertFrom(*by_block[ref.block_no], ref.row_no - 1); /// row_no is 1-based
+                col_data->insertFrom(*by_block[ref.block_no], ref.row_no); /// row_no is 0-based
             }
         }
         result.insert(ColumnWithTypeAndName(std::move(col_data), type, out_name));

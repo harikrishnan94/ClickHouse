@@ -3,6 +3,10 @@
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 
+#include <algorithm>
+#include <bit>
+#include <cstring>
+
 namespace ProfileEvents
 {
 extern const Event RadixHashBuildHTMicroseconds;
@@ -112,7 +116,7 @@ void collectMatchesT(
         const size_t leaf = total_bits ? (h >> leaf_shift) : 0;
         const LeafHT & ht = leaves[leaf];
         BuildRef cur = leafFind<key_width>(ht, h, packed_keys + row * key_width);
-        while (cur.row_no != 0)
+        while (cur.row_no != RadixShuffle::INVALID_ROW)
         {
             out_left_rows.push_back(static_cast<UInt32>(row));
             out_refs.push_back(cur);
@@ -129,43 +133,56 @@ LeafHashTables buildLeafHashTables(
     const std::vector<UInt64> & block_base,
     UInt64 num_rows,
     size_t key_width,
-    CoopPool & coord,
-    bool use_thp)
+    CoopPool & coord)
 {
     Stopwatch sw;
 
     LeafHashTables out;
     out.num_rows = num_rows;
-    out.arena = GrowingArena(GrowingArena::DEFAULT_MAX_BLOCK, use_thp);
+    out.arena = GrowingArena(GrowingArena::DEFAULT_MAX_BLOCK);
 
     const size_t num_leaves = la.num_leaves;
     out.leaves.assign(num_leaves, LeafHT{});
 
-    /// next_chain: one BuildRef slot per build row, zero-initialised by the anonymous mmap (every slot
-    /// is the {0,0} tail until an insert prepends to it). Shared by all leaves.
+    /// next_chain: one BuildRef slot per build row, the INVALID_ROW tail until an insert prepends to it.
+    /// It must hold the 0xFF sentinel before the fill (for a unique key the slot is never written).
+    /// jemalloc memory is not initialised, so allocate it, then memset to 0xFF in parallel across workers.
     if (num_rows > 0)
+    {
         out.next_chain = out.arena.allocArray<BuildRef>(num_rows);
+        BuildRef * nc = out.next_chain;
+        constexpr UInt64 chunk = 1u << 20; /// 1 Mi refs (~8 MiB) per work unit
+        const size_t units = static_cast<size_t>((num_rows + chunk - 1) / chunk);
+        coord.parallelFor(units, [nc, num_rows](size_t u)
+        {
+            const UInt64 lo = static_cast<UInt64>(u) * chunk;
+            const UInt64 hi = std::min<UInt64>(lo + chunk, num_rows);
+            std::memset(nc + lo, 0xFF, static_cast<size_t>(hi - lo) * sizeof(BuildRef));
+        });
+    }
 
-    /// (1) Single-threaded carve on the leader: O(num_leaves) allocations (NC gate). alloc only bumps
-    /// a cursor and returns a pointer — it does NOT touch the pages, so the cells stay zero until inserted.
+    /// Per-leaf sizing (O(num_leaves) integer math on the leader — no allocation, no page touch).
     for (size_t leaf = 0; leaf < num_leaves; ++leaf)
     {
         out.leaves[leaf].next_chain = out.next_chain;
         const UInt64 rows = la.leaf_rows[leaf];
         if (rows == 0)
             continue;
-        const UInt64 num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~50% load factor
-        out.leaves[leaf].num_buckets = num_buckets;
-        out.leaves[leaf].cells
-            = static_cast<char *>(out.arena.alloc(num_buckets * leafCellBytes(key_width), RadixShuffle::LINE_BYTES));
+        out.leaves[leaf].num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~50% load factor
     }
 
-    /// (2) Parallel fill: work-steal leaves (disjoint per leaf -> next_chain writes are disjoint too).
+    /// Parallel: each worker ALLOCATES its leaf's cell array (thread-safe jemalloc arena), sets it to the
+    /// empty sentinel (`memset` to 0xFF), and fills it. So allocation + init + fill are all spread across
+    /// the build threads — no single-threaded leader carve.
     const UInt64 * block_base_ptr = block_base.data();
     coord.parallelFor(num_leaves, [&](size_t leaf)
     {
         if (la.leaf_rows[leaf] == 0)
             return;
+        const size_t cell_bytes = static_cast<size_t>(out.leaves[leaf].num_buckets) * leafCellBytes(key_width);
+        char * cells = static_cast<char *>(out.arena.alloc(cell_bytes, RadixShuffle::LINE_BYTES));
+        std::memset(cells, 0xFF, cell_bytes);
+        out.leaves[leaf].cells = cells;
         fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, block_base_ptr);
     });
 

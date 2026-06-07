@@ -96,11 +96,11 @@ void addBlocksSerial(BuildStore & store, const std::vector<UInt64> & keys, size_
     }
 }
 
-/// Read the UInt64 key of build row (block_no, row_no - 1) from the accumulated blocks.
+/// Read the UInt64 key of build row (block_no, row_no) from the accumulated blocks (row_no 0-based).
 UInt64 buildKeyAt(const std::vector<Block> & blocks, BuildRef ref)
 {
     const auto & data = assert_cast<const ColumnUInt64 &>(*blocks[ref.block_no].getByPosition(0).column).getData();
-    return data[ref.row_no - 1];
+    return data[ref.row_no];
 }
 
 /// One random FixedString(width) column of `rows` rows.
@@ -145,7 +145,7 @@ TEST(RadixHashLeafHT, InsertAndFindAll)
     coopRun(coord, 4, [&]
     {
         leaves = store.scatterToLeaves(coord, /*with_leaf_hash=*/true);
-        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, false);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
     });
 
     /// Probe with the same keys; every probe row must find at least one match resolving to its key.
@@ -197,7 +197,7 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     coopRun(coord, 4, [&]
     {
         leaves = store.scatterToLeaves(coord, true);
-        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, false);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
     });
 
     /// Reference: count of build rows per distinct key value.
@@ -233,8 +233,8 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
         const UInt64 probe_key = distinct_keys[left_rows[m]];
         const BuildRef ref = refs[m];
         EXPECT_EQ(buildKeyAt(store.blocks(), ref), probe_key) << "chain returned a row with a mismatched key";
-        EXPECT_EQ(seen[ref.block_no][ref.row_no - 1], 0) << "build row returned more than once";
-        seen[ref.block_no][ref.row_no - 1] = 1;
+        EXPECT_EQ(seen[ref.block_no][ref.row_no], 0) << "build row returned more than once";
+        seen[ref.block_no][ref.row_no] = 1;
         ++got_count[probe_key];
     }
 
@@ -247,10 +247,11 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
             EXPECT_EQ(seen[b][r], 1) << "build row (" << b << "," << r << ") never returned";
 }
 
-/// Gate: zero-init (no memset). A freshly carved cell array (mmap anonymous, zero on first touch) is
-/// already a fully-initialised empty table — every cell reads as the empty sentinel (row_no == 0) and
-/// leafFind returns a miss, with no init pass having run.
-TEST(RadixHashLeafHT, ZeroInitNoMemset)
+/// Gate: an explicitly zeroed cell array is a fully-initialised empty table — every cell reads as the
+/// empty sentinel (row_no == 0) and leafFind returns a miss. The jemalloc-backed GrowingArena does NOT
+/// zero its memory; `buildLeafHashTables` memsets each leaf's cells before filling, which this test
+/// reproduces (zeroed cells are the precondition `leafInsert`/`leafFind` assume).
+TEST(RadixHashLeafHT, ZeroedCellsEmptySentinel)
 {
     GrowingArena arena;
     constexpr size_t key_width = 8;
@@ -258,13 +259,15 @@ TEST(RadixHashLeafHT, ZeroInitNoMemset)
     LeafHT ht;
     ht.num_buckets = num_buckets;
     ht.next_chain = nullptr;
-    ht.cells = static_cast<char *>(arena.alloc(num_buckets * leafCellBytes(key_width), RadixShuffle::LINE_BYTES));
+    const size_t cell_bytes = num_buckets * leafCellBytes(key_width);
+    ht.cells = static_cast<char *>(arena.alloc(cell_bytes, RadixShuffle::LINE_BYTES));
+    std::memset(ht.cells, 0xFF, cell_bytes); /// jemalloc arena is not initialised — set the 0xFF empty sentinel like the build path does
 
-    /// No memset / init pass. Every cell must already be the empty sentinel.
+    /// Every cell must now be the empty sentinel.
     for (UInt64 b = 0; b < num_buckets; ++b)
     {
         const auto * ref = reinterpret_cast<const BuildRef *>(ht.cells + b * leafCellBytes(key_width));
-        ASSERT_EQ(ref->row_no, 0u) << "freshly carved cell " << b << " is not the empty sentinel";
+        ASSERT_EQ(ref->row_no, RadixShuffle::INVALID_ROW) << "freshly carved cell " << b << " is not the empty sentinel";
     }
 
     /// Any lookup misses cleanly on the empty table.
@@ -272,7 +275,7 @@ TEST(RadixHashLeafHT, ZeroInitNoMemset)
     {
         const UInt32 h = static_cast<UInt32>(v * 2654435761u);
         const BuildRef r = leafFind<key_width>(ht, h, &v);
-        EXPECT_EQ(r.row_no, 0u) << "found a match in an empty table";
+        EXPECT_EQ(r.row_no, RadixShuffle::INVALID_ROW) << "found a match in an empty table";
     }
 }
 
@@ -287,9 +290,12 @@ TEST(RadixHashLeafHT, ExactKeyCompareOnCollision)
 
     LeafHT ht;
     ht.num_buckets = num_buckets;
-    ht.cells = static_cast<char *>(arena.alloc(num_buckets * leafCellBytes(key_width), RadixShuffle::LINE_BYTES));
-    /// next_chain: 2 build rows (the two keys), zero (tails) by mmap.
+    const size_t cell_bytes = num_buckets * leafCellBytes(key_width);
+    ht.cells = static_cast<char *>(arena.alloc(cell_bytes, RadixShuffle::LINE_BYTES));
+    std::memset(ht.cells, 0xFF, cell_bytes); /// jemalloc arena is not initialised — set the empty sentinel
+    /// next_chain: 2 build rows (the two keys); set the 0xFF tails (jemalloc memory is not initialised).
     ht.next_chain = arena.allocArray<BuildRef>(2);
+    std::memset(ht.next_chain, 0xFF, 2 * sizeof(BuildRef));
     /// block_base for a single block of 2 rows.
     std::vector<UInt64> block_base{0, 2};
 
@@ -316,20 +322,20 @@ TEST(RadixHashLeafHT, ExactKeyCompareOnCollision)
 
     auto hash_of = [](UInt64 v) { return static_cast<UInt32>(v * 1099511628211ull); };
 
-    /// Insert both keys (block 0, rows 0 and 1 -> 1-based row_no 1 and 2).
-    leafInsert<key_width>(ht, hash_of(key_a), &key_a, BuildRef{0, 1}, block_base.data());
-    leafInsert<key_width>(ht, hash_of(key_b), &key_b, BuildRef{0, 2}, block_base.data());
+    /// Insert both keys (block 0, 0-based rows 0 and 1).
+    leafInsert<key_width>(ht, hash_of(key_a), &key_a, BuildRef{0, 0}, block_base.data());
+    leafInsert<key_width>(ht, hash_of(key_b), &key_b, BuildRef{0, 1}, block_base.data());
     ASSERT_EQ(leafBucket(hash_of(key_a), num_buckets), leafBucket(hash_of(key_b), num_buckets)) << "test needs a real collision";
 
     const BuildRef ra = leafFind<key_width>(ht, hash_of(key_a), &key_a);
     const BuildRef rb = leafFind<key_width>(ht, hash_of(key_b), &key_b);
-    ASSERT_NE(ra.row_no, 0u);
-    ASSERT_NE(rb.row_no, 0u);
-    EXPECT_EQ(ra.row_no, 1u) << "key_a resolved to the wrong (colliding) row";
-    EXPECT_EQ(rb.row_no, 2u) << "key_b resolved to the wrong (colliding) row";
-    /// Chains are length 1 (distinct keys): each tail is {0,0}.
-    EXPECT_EQ(ht.next_chain[0].row_no, 0u);
-    EXPECT_EQ(ht.next_chain[1].row_no, 0u);
+    ASSERT_NE(ra.row_no, RadixShuffle::INVALID_ROW);
+    ASSERT_NE(rb.row_no, RadixShuffle::INVALID_ROW);
+    EXPECT_EQ(ra.row_no, 0u) << "key_a resolved to the wrong (colliding) row";
+    EXPECT_EQ(rb.row_no, 1u) << "key_b resolved to the wrong (colliding) row";
+    /// Chains are length 1 (distinct keys): each tail is the INVALID_ROW sentinel.
+    EXPECT_EQ(ht.next_chain[0].row_no, RadixShuffle::INVALID_ROW);
+    EXPECT_EQ(ht.next_chain[1].row_no, RadixShuffle::INVALID_ROW);
 }
 
 /// Gate: all templatized key_width paths (multiples of 4 in [4, 64]). For each width, build a single
@@ -370,7 +376,7 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         coopRun(coord, 2, [&]
         {
             leaves = store.scatterToLeaves(coord, /*with_leaf_hash=*/true);
-            hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), width, coord, false);
+            hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), width, coord);
         });
 
         /// Probe with every build key (reassembled in block order from `all`).
@@ -398,7 +404,7 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
             /// Verify the matched build row's key bytes equal the probe key bytes.
             const char * build_key = static_cast<const char *>(
                 store.blocks()[refs[m].block_no].getByPosition(0).column->getRawData().data())
-                + static_cast<size_t>(refs[m].row_no - 1) * width;
+                + static_cast<size_t>(refs[m].row_no) * width;
             EXPECT_EQ(0, std::memcmp(pk, build_key, width)) << "width=" << width << " key compare mismatch";
             matched[j] = 1;
         }
@@ -452,7 +458,7 @@ TEST(RadixHashLeafHT, CellConservation100M)
     coopRun(coord, num_threads, [&]
     {
         leaves = store.scatterToLeaves(coord, true);
-        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, true);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
     });
     const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
 
@@ -463,7 +469,7 @@ TEST(RadixHashLeafHT, CellConservation100M)
         for (UInt64 b = 0; b < ht.num_buckets; ++b)
         {
             BuildRef cur = *reinterpret_cast<const BuildRef *>(ht.cells + b * leafCellBytes(sizeof(UInt64)));
-            while (cur.row_no != 0)
+            while (cur.row_no != RadixShuffle::INVALID_ROW)
             {
                 ++visited;
                 cur = ht.next_chain[leafFlat(cur, store.blockBase().data())];
@@ -513,7 +519,6 @@ TEST(RadixHashLeafHT, ThpVsNonThpBuildTime)
         th.join();
     store.finishBuild();
 
-    for (bool use_thp : {false, true})
     {
         /// A fresh scatter per run so each build faults its own leaf arrays + HT cells.
         CoopPool coord;
@@ -523,12 +528,12 @@ TEST(RadixHashLeafHT, ThpVsNonThpBuildTime)
         coopRun(coord, num_threads, [&]
         {
             la = store.scatterToLeaves(coord, true);
-            hts = buildLeafHashTables(la, store.blockBase(), store.totalRows(), sizeof(UInt64), coord, use_thp);
+            hts = buildLeafHashTables(la, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
         });
         const double ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
         std::cout << fmt::format(
-            "P4 leaf-HT build {}: n={} leaves={} wall={:.1f}ms ns/row={:.3f}\n",
-            use_thp ? "THP " : "noTHP", n, cfg.num_leaves, ms, ms * 1e6 / static_cast<double>(n));
+            "P4 leaf-HT build jemalloc-parallel: n={} leaves={} wall={:.1f}ms ns/row={:.3f}\n",
+            n, cfg.num_leaves, ms, ms * 1e6 / static_cast<double>(n));
         EXPECT_EQ(hts.leaves.size(), cfg.num_leaves);
     }
 }

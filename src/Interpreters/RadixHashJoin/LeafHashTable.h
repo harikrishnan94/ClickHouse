@@ -22,28 +22,28 @@ namespace DB::RadixHash
   *
   * so a cell is `key_width + 8` bytes. The cell stores the head BuildRef **directly** (not a leaf-local
   * index), so a probe `find` returns a BuildRef that resolves the payload with no extra indirection
-  * (`global_blocks[ref.block_no][ref.row_no - 1]`).
+  * (`global_blocks[ref.block_no][ref.row_no]`, `row_no` 0-based).
   *
-  * **Empty sentinel = the all-zero cell** (`ref.row_no == 0`; `row_no` is 1-based so a real entry is
-  * never 0). The cell array is carved from a `GrowingArena` (`mmap(MAP_ANONYMOUS)`) whose pages are
-  * zero on first touch, so a freshly carved table is already a fully initialised empty table — **no
-  * memset / init pass** (spec section 5.6, invariant 9). The key bytes are read only after a slot is
+  * **Empty sentinel = `ref.row_no == INVALID_ROW` (`0xFFFFFFFF`).** The cell array is carved from a
+  * jemalloc-backed `GrowingArena` (no zero-fill), so `buildLeafHashTables` `memset`s each leaf's cells to
+  * `0xFF` — in parallel, on the worker that owns the leaf — before filling it, leaving every cell as the
+  * all-`0xFF` empty ref (spec section 5.6, invariant 9). The key bytes are read only after a slot is
   * found non-empty.
   *
   * **Many-to-many (JOIN ALL) via `next_chain`.** `next_chain` is a single 1D flat array of `BuildRef`,
   * one slot per build row (shared by every leaf). `next_chain[flat(ref)]` holds the NEXT BuildRef in
-  * that key's chain, or `BuildRef{0,0}` for the tail. `flat(ref) = block_base[ref.block_no] +
-  * (ref.row_no - 1)` — the per-block prefix-summed row offset (`BuildStore::blockBase()`).
+  * that key's chain, or the `INVALID_ROW` sentinel for the tail. `flat(ref) = block_base[ref.block_no] +
+  * ref.row_no` — the per-block prefix-summed row offset (`BuildStore::blockBase()`).
   *   build insert:  if key present -> next_chain[flat(ref)] = old_head; cell.ref = ref;  (prepend)
-  *                  else (first)   -> cell.ref = ref;  next_chain[flat(ref)] stays {0,0} (zero-init)
-  *   probe:         cur = find(h, key); while (cur.row_no) { emit(cur); cur = next_chain[flat(cur)]; }
+  *                  else (first)   -> cell.ref = ref;  next_chain[flat(ref)] stays the 0xFF-init tail
+  *   probe:         cur = find(h, key); while (cur.row_no != INVALID_ROW) { emit(cur); cur = next_chain[flat(cur)]; }
   *
   * **Bucket = Fibonacci-mix of the 32-bit `IColumn::computeHashInto` hash** (the same hash used for
   * leaf routing; spec section 5.6, tree fact D2). The identical function runs on build and probe.
   */
 struct LeafHT
 {
-    char * cells = nullptr; /// cell array; stride = key_width + 8; carved from GrowingArena (zero-init)
+    char * cells = nullptr; /// cell array; stride = key_width + 8; carved from GrowingArena, memset to 0xFF
     UInt64 num_buckets = 0; /// power of two (0 for an empty leaf); mask = num_buckets - 1
     RadixShuffle::BuildRef * next_chain = nullptr; /// shared 1D flat BuildRef array (one slot per build row)
 };
@@ -65,10 +65,10 @@ inline UInt64 leafBucket(UInt32 h, UInt64 num_buckets) noexcept
     return static_cast<UInt64>(mixed >> shift);
 }
 
-/// Flat next_chain slot of a build row: block_base[block_no] + row_no - 1 (row_no is 1-based).
+/// Flat next_chain slot of a build row: block_base[block_no] + row_no (row_no is 0-based).
 inline UInt64 leafFlat(RadixShuffle::BuildRef ref, const UInt64 * block_base) noexcept
 {
-    return block_base[ref.block_no] + (ref.row_no - 1);
+    return block_base[ref.block_no] + ref.row_no;
 }
 
 /// Insert one build row (`key`/`ref`, keyed on its 32-bit hash `h`) into leaf `ht`. Linear probing
@@ -87,9 +87,9 @@ inline void leafInsert(
     {
         char * cell = ht.cells + pos * stride;
         auto * head = reinterpret_cast<RadixShuffle::BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-        if (head->row_no == 0)
+        if (head->row_no == RadixShuffle::INVALID_ROW)
         {
-            /// First occurrence: store key + head. next_chain[flat(ref)] is already {0,0} (zero-init tail).
+            /// First occurrence: store key + head. next_chain[flat(ref)] is already the 0xFF-init tail.
             __builtin_memcpy_inline(cell + sizeof(RadixShuffle::BuildRef), key, key_width);
             *head = ref;
             return;
@@ -105,14 +105,14 @@ inline void leafInsert(
     }
 }
 
-/// Find the head BuildRef for `key` (keyed on its 32-bit hash `h`) in leaf `ht`, or `{0,0}` on miss.
-/// Width-templated (compile-time key compare). The caller walks `next_chain` from the returned head.
+/// Find the head BuildRef for `key` (keyed on its 32-bit hash `h`) in leaf `ht`, or the INVALID_ROW
+/// sentinel on miss. Width-templated (compile-time key compare). The caller walks `next_chain` from it.
 template <size_t key_width>
 inline RadixShuffle::BuildRef leafFind(const LeafHT & ht, UInt32 h, const void * key) noexcept
 {
     static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
     if (ht.num_buckets == 0)
-        return RadixShuffle::BuildRef{0, 0};
+        return RadixShuffle::BuildRef{RadixShuffle::INVALID_ROW, RadixShuffle::INVALID_ROW};
     constexpr size_t stride = leafCellBytes(key_width);
     const UInt64 mask = ht.num_buckets - 1;
     UInt64 pos = leafBucket(h, ht.num_buckets) & mask;
@@ -120,8 +120,8 @@ inline RadixShuffle::BuildRef leafFind(const LeafHT & ht, UInt32 h, const void *
     {
         const char * cell = ht.cells + pos * stride;
         const RadixShuffle::BuildRef head = *reinterpret_cast<const RadixShuffle::BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-        if (head.row_no == 0)
-            return RadixShuffle::BuildRef{0, 0};
+        if (head.row_no == RadixShuffle::INVALID_ROW)
+            return RadixShuffle::BuildRef{RadixShuffle::INVALID_ROW, RadixShuffle::INVALID_ROW};
         if (__builtin_memcmp(cell + sizeof(RadixShuffle::BuildRef), key, key_width) == 0)
             return head;
         pos = (pos + 1) & mask;
@@ -139,18 +139,18 @@ struct LeafHashTables
 
 /// Build all leaf hash tables and the shared next_chain from a finished `LeafArrays` (which must have
 /// been produced with `with_leaf_hash = true`, so `la.hash_base` is populated) plus the per-block
-/// `block_base` prefix sum. Cell arrays and next_chain are carved from one `GrowingArena` (THP-backed
-/// when `use_thp`); the carve is O(num_leaves) single-threaded on the leader (NC gate), the fill is
-/// work-stolen across leader + helpers via `coord.parallelFor` (PB gate). `key_width` selects the
-/// templated insert path (a multiple of 4 in [4, 64]).
+/// `block_base` prefix sum. Cell arrays and next_chain are carved from one jemalloc-backed
+/// `GrowingArena`; every per-leaf cell array is allocated, zeroed (`memset`), and filled by the worker
+/// that owns that leaf (via `coord.parallelFor`), and `next_chain` is zeroed in parallel — so all the
+/// allocation and zeroing is spread across the build threads. `key_width` selects the templated insert
+/// path (a multiple of 4 in [4, 64]).
 /// Must be called only by the leader inside a CoopPool::run body.
 LeafHashTables buildLeafHashTables(
     const LeafArrays & la,
     const std::vector<UInt64> & block_base,
     UInt64 num_rows,
     size_t key_width,
-    CoopPool & coord,
-    bool use_thp);
+    CoopPool & coord);
 
 /// Probe `n` left rows against the leaf tables, collecting every match as a (left_row, BuildRef) pair
 /// in `out_left_rows` / `out_refs` (grouped by left row, chain order). For row j: leaf =

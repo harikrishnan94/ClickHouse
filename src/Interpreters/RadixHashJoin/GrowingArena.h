@@ -1,48 +1,44 @@
 #pragma once
 
 #include <base/types.h>
+#include <Common/Allocator.h>
 
 #include <cstddef>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace DB::RadixHash
 {
 
-/** GrowingArena — a bump arena backed by anonymous `mmap` blocks (spec section 4.4). It backs the
+/** GrowingArena — owns a set of jemalloc allocations and frees them on destruction. It backs the
   * selector `pid` arrays, the deferred-scatter output (per-leaf key/ref/hash arrays packed into one
   * contiguous block per leaf), and the leaf hash tables.
   *
-  * Blocks grow geometrically: the first block is `INITIAL_BLOCK`, each new block doubles up to a
-  * configurable cap `max_block` (default 8 MiB), after which all further blocks are cap-sized. A single
-  * allocation larger than the cap gets its own exact (page-rounded) dedicated block, so **every
-  * allocation is contiguous within one block** (the deferred scatter relies on each per-leaf combined
-  * key+ref+hash block being contiguous).
+  * Backing: every `alloc()` is a single, exact-sized, aligned allocation from the standard ClickHouse
+  * allocator `Allocator<false, false>` — plain jemalloc `malloc`/`posix_memalign`, with **no zero-fill
+  * and no `MADV_POPULATE_WRITE`**, and **no `mmap`/THP anywhere**. There is no one-shot bump block;
+  * jemalloc reuses warm, already-faulted pages across queries (no first-touch fault storm, no per-query
+  * `munmap` page-table teardown).
   *
-  * `trim()` releases the page-aligned unused tail of every block back to the OS with
-  * `madvise(MADV_DONTNEED)` (wholly-unused trailing blocks are released in full); the mappings stay,
-  * so the arena remains usable and any retouched page is re-faulted as zero. Use it after the
-  * transient `pid` arena is consumed, and on the output arena's reserved-but-unused tail.
+  * Because the memory is NOT zeroed, callers that need zeroed memory (the leaf-HT cells and the shared
+  * `next_chain`) `memset` it themselves — and they do so **in parallel across the build workers**.
+  * The scatter output needs no zeroing at all (it is fully overwritten by the scatter).
   *
-  * Pointers returned by `alloc` are stable for the arena's lifetime; all memory is `munmap`-ed on
-  * destruction. One arena is owned per worker (pid) or per result (output), so it needs no locking.
-  *
-  * Transparent huge pages (spec section 4.4): with `use_thp = true` and a detectable huge-page size
-  * not larger than `max_block`, every block is huge-page-rounded and `madvise(MADV_HUGEPAGE)`-ed on
-  * Linux (or `MADV_SUPERPAGE` where supported). Fail-open — on error the block still works on
-  * regular pages.
-  * THP is used for both the scatter output arena and the leaf hash table arena to reduce TLB pressure
-  * during the random-write scatter and random-access HT lookups (benchmarked at 1.7× scatter speedup
-  * at 100M rows). The `pid`/hash arenas use the default (`false`) — they are short-lived or
-  * streaming-access and do not benefit. Each `madvise` success/failure is counted into
-  * `RadixHashHugePagesUsed` / `RadixHashHugePagesFailed`.
+  * `alloc()` is thread-safe: the `malloc` runs lock-free (jemalloc is thread-safe) and only the block
+  * bookkeeping is mutex-guarded, so RadixHashJoin's post-build can allocate the per-leaf / per-partition
+  * arrays from many workers in parallel. `freeBlock()` releases one consumed allocation immediately (used
+  * to free intermediate scatter partitions as the refine consumes them, keeping peak memory low).
+  * Pointers returned by `alloc` are stable until the arena is freed (or the block is `freeBlock`-ed).
   */
 class GrowingArena
 {
 public:
-    static constexpr size_t DEFAULT_MAX_BLOCK = 8 * 1024 * 1024; /// 8 MiB cap (configurable)
-    static constexpr size_t INITIAL_BLOCK = 64 * 1024; /// first block size, doubles up to the cap
+    /// Retained only for source/API compatibility with call sites that pass a cap; the value is ignored
+    /// (each allocation is exact-sized).
+    static constexpr size_t DEFAULT_MAX_BLOCK = 8 * 1024 * 1024;
 
-    explicit GrowingArena(size_t max_block_bytes = DEFAULT_MAX_BLOCK, bool use_thp = false);
+    explicit GrowingArena(size_t max_block_bytes = DEFAULT_MAX_BLOCK);
     ~GrowingArena();
 
     GrowingArena(const GrowingArena &) = delete;
@@ -50,7 +46,8 @@ public:
     GrowingArena(GrowingArena && other) noexcept;
     GrowingArena & operator=(GrowingArena && other) noexcept;
 
-    /// Returns a pointer aligned to `alignment` (a power of two). The allocation is contiguous.
+    /// Returns a pointer aligned to `alignment` (a power of two). The allocation is contiguous and is
+    /// NOT zero-filled. Thread-safe (may be called concurrently from multiple workers on one arena).
     void * alloc(size_t bytes, size_t alignment);
 
     template <typename T>
@@ -59,36 +56,36 @@ public:
         return static_cast<T *>(alloc(n * sizeof(T), alignof(T)));
     }
 
-    /// madvise(MADV_DONTNEED) the page-aligned unused tail of every block (releases trailing blocks /
-    /// over-reserved tails to the OS). The arena stays usable; retouched pages re-fault as zero.
-    void trim() noexcept;
+    /// Free the single allocation whose base pointer is `base` (returned by a previous `alloc`),
+    /// returning it to the allocator immediately. Thread-safe (different blocks may be freed
+    /// concurrently). No-op for `nullptr`.
+    void freeBlock(void * base) noexcept;
 
-    /// Release a previously-allocated range back to the OS using madvise(MADV_DONTNEED). Only the
-    /// page-aligned *interior* of `[range_start, range_start+bytes)` is released (start rounded UP,
-    /// end rounded DOWN to page boundaries) so adjacent live allocations in the same page are never
-    /// disturbed. The arena mapping stays; retouched pages re-fault as zero. Safe to call from
-    /// multiple threads simultaneously as long as their ranges do not overlap.
-    void releaseRange(const void * range_start, size_t bytes) noexcept;
+    /// Free every allocation (the arena stays usable for further allocs).
+    void clear() noexcept { freeAll(); }
 
     size_t blockCount() const { return blocks.size(); }
     size_t bytesReserved() const;
-    size_t bytesUsed() const;
+    size_t bytesUsed() const { return bytesReserved(); }
 
 private:
     struct Block
     {
         char * base = nullptr;
         size_t size = 0;
-        size_t used = 0;
     };
 
     std::vector<Block> blocks;
-    size_t max_block;
-    size_t next_block_size;
-    bool thp = false;
+    /// Guards `blocks` (the malloc itself runs outside it). unique_ptr so the arena stays movable.
+    std::unique_ptr<std::mutex> blocks_mutex;
 
-    void addBlock(size_t min_bytes);
     void freeAll() noexcept;
+
+    /// Non-clearing, non-populating default allocator: plain `malloc`/`posix_memalign`, no zero-fill, no
+    /// `MADV_POPULATE_WRITE`, no `mmap`/THP. The RadixHashJoin build path zeroes — in parallel — only the
+    /// ranges that need it (leaf cells, next_chain); the scatter output is fully overwritten. One stateless
+    /// instance is enough. Frees go through the same allocator.
+    [[no_unique_address]] Allocator<false, false> allocator;
 };
 
 }
