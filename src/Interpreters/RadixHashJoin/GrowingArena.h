@@ -26,8 +26,10 @@ namespace DB::RadixHash
   * Pointers returned by `alloc` are stable for the arena's lifetime; all memory is `munmap`-ed on
   * destruction. One arena is owned per worker (pid) or per result (output), so it needs no locking.
   *
-  * Transparent huge pages (spec section 4.4): with `use_thp = true` every block is `2 MiB`-rounded
-  * and `madvise(MADV_HUGEPAGE)`-ed (fail-open — on error the block still works on `4 KiB` pages).
+  * Transparent huge pages (spec section 4.4): with `use_thp = true` and a detectable huge-page size
+  * not larger than `max_block`, every block is huge-page-rounded and `madvise(MADV_HUGEPAGE)`-ed on
+  * Linux (or `MADV_SUPERPAGE` where supported). Fail-open — on error the block still works on
+  * regular pages.
   * THP is used for both the scatter output arena and the leaf hash table arena to reduce TLB pressure
   * during the random-write scatter and random-access HT lookups (benchmarked at 1.7× scatter speedup
   * at 100M rows). The `pid`/hash arenas use the default (`false`) — they are short-lived or
@@ -39,7 +41,6 @@ class GrowingArena
 public:
     static constexpr size_t DEFAULT_MAX_BLOCK = 8 * 1024 * 1024; /// 8 MiB cap (configurable)
     static constexpr size_t INITIAL_BLOCK = 64 * 1024; /// first block size, doubles up to the cap
-    static constexpr size_t HUGE_PAGE = 2 * 1024 * 1024; /// x86 2 MiB THP unit (block size/alignment when use_thp)
 
     explicit GrowingArena(size_t max_block_bytes = DEFAULT_MAX_BLOCK, bool use_thp = false);
     ~GrowingArena();
