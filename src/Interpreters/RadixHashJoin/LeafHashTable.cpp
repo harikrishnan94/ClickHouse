@@ -3,9 +3,10 @@
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 
-#include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstring>
+#include <mutex>
 
 namespace ProfileEvents
 {
@@ -28,13 +29,49 @@ using RadixShuffle::BuildRef;
 namespace
 {
 
+/// Shared state passed to fillLeafT for lazy next_chain allocation.
+///
+/// On the first duplicate found by any leaf-fill worker, that worker:
+///  1. Allocates `num_rows` BuildRef slots via `nc_once` / `alloc_fn`.
+///  2. Stores the pointer in `nc` (release).
+///  3. All other workers that subsequently find a duplicate acquire `nc`.
+///
+/// The allocation does NOT memset.  Instead, at the k=2 transition (old head is a singleton),
+/// the worker writes the explicit tail sentinel: `nc[flat(old_head)] = INVALID`.  This ensures
+/// every slot that will ever be read by the probe is initialised before reading.
+struct LazyChainState
+{
+    std::once_flag nc_once;
+    std::atomic<BuildRef *> nc{nullptr};
+    std::function<BuildRef *(UInt64)> alloc_fn; /// allocates num_rows BuildRef slots (no zero-fill)
+    UInt64 num_rows = 0;
+
+    BuildRef * acquire()
+    {
+        BuildRef * p = nc.load(std::memory_order_acquire);
+        if (p != nullptr) [[likely]]
+            return p;
+        std::call_once(nc_once, [this]
+        {
+            BuildRef * fresh = alloc_fn(num_rows);
+            nc.store(fresh, std::memory_order_release);
+        });
+        return nc.load(std::memory_order_acquire);
+    }
+};
+
 /// Fill one leaf table by inserting all of its scattered (key, ref, hash) rows. Software-pipelined
 /// write-prefetch of the next row's bucket cell (spec section 5.6, build: __builtin_prefetch RW=1).
 ///
-/// When `leafInsert` reports a duplicate, the old head (which may carry `BUILDREF_SINGLETON_BIT` if
-/// this is the k=2 transition) is stripped and threaded through `ht.next_chain`.
+/// On a duplicate key the old head is returned by `leafInsert` (with `BUILDREF_SINGLETON_BIT` when
+/// this is the k=2 transition).  The worker:
+///   - acquires the shared `next_chain` lazily (first duplicate triggers the alloc via `lcs`).
+///   - strips the singleton bit from the old head before storing it as a chain entry.
+///   - writes the explicit tail sentinel when stripping the singleton bit (k=2: old singleton
+///     becomes the tail; its slot is written `INVALID` so the probe terminates correctly).
 template <size_t key_width>
-void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base)
+void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base,
+    LazyChainState & lcs)
 {
     const UInt64 rows = la.leaf_rows[leaf];
     if (rows == 0)
@@ -60,34 +97,44 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
         const BuildRef old_head = leafInsert<key_width>(ht, hashes[row], keys + row * key_width, refs[row]);
         if (old_head.row_no != RadixShuffle::INVALID_ROW)
         {
-            /// Duplicate: thread old_head through next_chain.  Strip the singleton bit before using
-            /// it as an index — chain entries must never carry the bit.
+            /// Duplicate key found: get (or lazily allocate) next_chain.
+            BuildRef * nc = lcs.acquire();
+            ht.next_chain = nc; /// make the pointer visible to this leaf's probe
+
             const BuildRef old_clean{old_head.block_no & ~RadixShuffle::BUILDREF_SINGLETON_BIT, old_head.row_no};
-            ht.next_chain[leafFlat(refs[row], block_base)] = old_clean;
+            if (old_head.block_no & RadixShuffle::BUILDREF_SINGLETON_BIT)
+            {
+                /// k=2 transition: old singleton becomes the chain tail.  Write the explicit INVALID
+                /// sentinel so the probe terminates correctly (no blanket memset to rely on).
+                nc[leafFlat(old_clean, block_base)] = BuildRef{RadixShuffle::INVALID_ROW, RadixShuffle::INVALID_ROW};
+            }
+            /// Thread new ref → old head (now clean, no singleton bit).
+            nc[leafFlat(refs[row], block_base)] = old_clean;
         }
     }
 }
 
-void fillLeafDispatch(size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base)
+void fillLeafDispatch(size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf,
+    const UInt64 * block_base, LazyChainState & lcs)
 {
     switch (key_width)
     {
-        case 4:  fillLeafT<4>(ht, la, leaf, block_base);  return;
-        case 8:  fillLeafT<8>(ht, la, leaf, block_base);  return;
-        case 12: fillLeafT<12>(ht, la, leaf, block_base); return;
-        case 16: fillLeafT<16>(ht, la, leaf, block_base); return;
-        case 20: fillLeafT<20>(ht, la, leaf, block_base); return;
-        case 24: fillLeafT<24>(ht, la, leaf, block_base); return;
-        case 28: fillLeafT<28>(ht, la, leaf, block_base); return;
-        case 32: fillLeafT<32>(ht, la, leaf, block_base); return;
-        case 36: fillLeafT<36>(ht, la, leaf, block_base); return;
-        case 40: fillLeafT<40>(ht, la, leaf, block_base); return;
-        case 44: fillLeafT<44>(ht, la, leaf, block_base); return;
-        case 48: fillLeafT<48>(ht, la, leaf, block_base); return;
-        case 52: fillLeafT<52>(ht, la, leaf, block_base); return;
-        case 56: fillLeafT<56>(ht, la, leaf, block_base); return;
-        case 60: fillLeafT<60>(ht, la, leaf, block_base); return;
-        case 64: fillLeafT<64>(ht, la, leaf, block_base); return;
+        case 4:  fillLeafT<4>(ht, la, leaf, block_base, lcs);  return;
+        case 8:  fillLeafT<8>(ht, la, leaf, block_base, lcs);  return;
+        case 12: fillLeafT<12>(ht, la, leaf, block_base, lcs); return;
+        case 16: fillLeafT<16>(ht, la, leaf, block_base, lcs); return;
+        case 20: fillLeafT<20>(ht, la, leaf, block_base, lcs); return;
+        case 24: fillLeafT<24>(ht, la, leaf, block_base, lcs); return;
+        case 28: fillLeafT<28>(ht, la, leaf, block_base, lcs); return;
+        case 32: fillLeafT<32>(ht, la, leaf, block_base, lcs); return;
+        case 36: fillLeafT<36>(ht, la, leaf, block_base, lcs); return;
+        case 40: fillLeafT<40>(ht, la, leaf, block_base, lcs); return;
+        case 44: fillLeafT<44>(ht, la, leaf, block_base, lcs); return;
+        case 48: fillLeafT<48>(ht, la, leaf, block_base, lcs); return;
+        case 52: fillLeafT<52>(ht, la, leaf, block_base, lcs); return;
+        case 56: fillLeafT<56>(ht, la, leaf, block_base, lcs); return;
+        case 60: fillLeafT<60>(ht, la, leaf, block_base, lcs); return;
+        case 64: fillLeafT<64>(ht, la, leaf, block_base, lcs); return;
         default:
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR, "RadixHashJoin leaf HT: unsupported key width {} (multiple of 4 in [4,64])", key_width);
@@ -141,6 +188,7 @@ void collectMatchesT(
             continue;
         }
         /// Chain of length >= 2: walk next_chain to the INVALID_ROW tail.
+        chassert(ht.next_chain != nullptr);
         while (cur.row_no != RadixShuffle::INVALID_ROW)
         {
             out_left_rows.push_back(static_cast<UInt32>(row));
@@ -174,35 +222,31 @@ LeafHashTables buildLeafHashTables(
     chassert(block_base.size() == 0
         || (block_base.size() - 1) < static_cast<size_t>(RadixShuffle::BUILDREF_SINGLETON_BIT));
 
-    /// next_chain: one BuildRef slot per build row, the INVALID_ROW tail until an insert prepends to it.
-    /// It must hold the 0xFF sentinel before the fill (for a unique key the slot is never written).
-    /// jemalloc memory is not initialised, so allocate it, then memset to 0xFF in parallel across workers.
-    if (num_rows > 0)
-    {
-        out.next_chain = out.arena.allocArray<BuildRef>(num_rows);
-        BuildRef * nc = out.next_chain;
-        constexpr UInt64 chunk = 1u << 20; /// 1 Mi refs (~8 MiB) per work unit
-        const size_t units = static_cast<size_t>((num_rows + chunk - 1) / chunk);
-        coord.parallelFor(units, [nc, num_rows](size_t u)
-        {
-            const UInt64 lo = static_cast<UInt64>(u) * chunk;
-            const UInt64 hi = std::min<UInt64>(lo + chunk, num_rows);
-            std::memset(nc + lo, 0xFF, static_cast<size_t>(hi - lo) * sizeof(BuildRef));
-        });
-    }
-
     /// Per-leaf sizing (O(num_leaves) integer math on the leader — no allocation, no page touch).
     for (size_t leaf = 0; leaf < num_leaves; ++leaf)
     {
-        out.leaves[leaf].next_chain = out.next_chain;
+        /// next_chain starts nullptr; fillLeafT populates it lazily on the first duplicate.
         const UInt64 rows = la.leaf_rows[leaf];
         if (rows == 0)
             continue;
         out.leaves[leaf].num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~50% load factor
     }
 
-    /// Parallel: each worker ALLOCATES its leaf's cell array (thread-safe jemalloc arena), sets it to the
-    /// empty sentinel (`memset` to 0xFF), and fills it. So allocation + init + fill are all spread across
+    /// Lazy next_chain: allocated on the first duplicate encountered by any fill worker (no blanket
+    /// memset). For all-unique builds next_chain is never allocated (mirrors HashJoin::all_values_unique).
+    /// For duplicate builds the detecting worker allocates (no zero-fill) and writes explicit tail
+    /// sentinels only at the k=2 transition — every slot the probe can read is written before being
+    /// read, so the blanket memset is not needed.
+    LazyChainState lcs;
+    lcs.num_rows = num_rows;
+    GrowingArena * arena_ptr = &out.arena;
+    lcs.alloc_fn = [arena_ptr](UInt64 n) -> BuildRef *
+    {
+        return arena_ptr->allocArray<BuildRef>(n);
+    };
+
+    /// Parallel: each worker ALLOCATES its leaf's cell array (thread-safe jemalloc arena), sets it to
+    /// the empty sentinel (`memset` to 0xFF), and fills it. Allocation + init + fill are spread across
     /// the build threads — no single-threaded leader carve.
     const UInt64 * block_base_ptr = block_base.data();
     coord.parallelFor(num_leaves, [&](size_t leaf)
@@ -213,8 +257,17 @@ LeafHashTables buildLeafHashTables(
         char * cells = static_cast<char *>(out.arena.alloc(cell_bytes, RadixShuffle::LINE_BYTES));
         std::memset(cells, 0xFF, cell_bytes);
         out.leaves[leaf].cells = cells;
-        fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, block_base_ptr);
+        fillLeafDispatch(key_width, out.leaves[leaf], la, leaf, block_base_ptr, lcs);
     });
+
+    /// Publish the final next_chain pointer: workers that found duplicates already set their own
+    /// leaf's next_chain pointer during the fill. Set it for the remaining leaves and the table.
+    out.next_chain = lcs.nc.load(std::memory_order_acquire);
+    for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+    {
+        if (out.leaves[leaf].next_chain == nullptr && out.next_chain != nullptr)
+            out.leaves[leaf].next_chain = out.next_chain;
+    }
 
     ProfileEvents::increment(ProfileEvents::RadixHashBuildHTMicroseconds, sw.elapsedMicroseconds());
     return out;

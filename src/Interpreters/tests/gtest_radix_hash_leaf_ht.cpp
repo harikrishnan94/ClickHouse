@@ -464,7 +464,7 @@ TEST(RadixHashLeafHT, CellConservation100M)
     const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
 
     /// Conservation: walk every occupied cell's chain across all leaves; total visited == N.
-    /// Cell heads may carry BUILDREF_SINGLETON_BIT — strip it before using as a chain index.
+    /// Cell heads may carry BUILDREF_SINGLETON_BIT; next_chain may be nullptr for all-unique builds.
     UInt64 visited = 0;
     for (const LeafHT & ht : hts.leaves)
     {
@@ -475,10 +475,11 @@ TEST(RadixHashLeafHT, CellConservation100M)
                 continue;
             if (cur.block_no & RadixShuffle::BUILDREF_SINGLETON_BIT)
             {
+                /// Singleton: exactly one build row (all-unique path; next_chain may be nullptr).
                 ++visited;
                 continue;
             }
-            /// Chain of length >= 2.
+            /// Chain of length >= 2; next_chain is guaranteed non-null for duplicate builds.
             while (cur.row_no != RadixShuffle::INVALID_ROW)
             {
                 ++visited;
