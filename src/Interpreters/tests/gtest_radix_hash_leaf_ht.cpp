@@ -422,6 +422,135 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
     }
 }
 
+/// Gate: the FULL build-then-probe round-trip through a forced MULTI-PASS scatter. Every functional gate
+/// above (`InsertAndFindAll`, `DuplicateKeysManyToMany`, `AllKeyWidthPaths`) uses
+/// `max_partitions_per_pass=8192` -> a single pass, so the multi-pass refine cascade
+/// (`BuildStore::scatterMultiPass`/`refineDepthFirst`, which recomputes `routeHash` from the scattered
+/// packed key at every pass) was never exercised on the leaf-HT build + probe path. Force {6,5} (two
+/// passes) with a small per-pass cap, build every key, then probe every key -> all found, exact key.
+TEST(RadixHashLeafHT, MultiPassInsertAndFindAll)
+{
+    const size_t n = 1'000'003;
+    const auto keys = randomKeys(n, 0xA11F0);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64); /// 2048 leaves -> {6,5}
+    ASSERT_EQ(cfg.pass_bits.size(), 2u) << "config must force a multi-pass scatter or this test is vacuous";
+    ASSERT_EQ(cfg.pass_bits[0], 6u);
+    ASSERT_EQ(cfg.pass_bits[1], 5u);
+
+    BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
+    addBlocksSerial(store, keys, 16);
+    store.finishBuild();
+    CoopPool coord;
+    LeafArrays leaves;
+    LeafHashTables hts;
+    coopRun(coord, 4, [&]
+    {
+        leaves = store.scatterToLeaves(coord);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
+    });
+
+    /// Probe with the same keys; every probe row must find at least one match resolving to its key.
+    Block probe = makeU64Block(keys);
+    const std::vector<UInt32> hashes = computeHashes(probe, n);
+    const void * packed = probe.getByPosition(0).column->getRawData().data();
+
+    std::vector<UInt32> left_rows;
+    std::vector<BuildRef> refs;
+    collectMatches(
+        sizeof(UInt64), hts.next_chain != nullptr,
+        hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
+        hashes.data(), packed, n, left_rows, refs);
+
+    std::vector<char> matched(n, 0);
+    for (size_t m = 0; m < left_rows.size(); ++m)
+    {
+        const UInt32 j = left_rows[m];
+        EXPECT_EQ(buildKeyAt(store.blocks(), refs[m]), keys[j]) << "matched build row has a different key";
+        matched[j] = 1;
+    }
+    for (size_t j = 0; j < n; ++j)
+        EXPECT_EQ(matched[j], 1) << "probe key " << j << " not found";
+}
+
+/// Gate: many-to-many JOIN ALL via `next_chain` through a forced MULTI-PASS scatter. Heavy duplicate keys
+/// are routed through pass-0 partitions and refined in pass-1; probing each DISTINCT key once must still
+/// return every build row exactly once (cell conservation through the chains AND the refine cascade), and
+/// the per-key fan-out must equal the build multiset for that key.
+TEST(RadixHashLeafHT, MultiPassDuplicateKeysManyToMany)
+{
+    const size_t n = 500'009;
+    /// Few distinct key values -> long chains (many-to-many).
+    std::mt19937_64 rng(0xD0D0); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+    const size_t distinct = 1000;
+    std::vector<UInt64> domain(distinct);
+    for (auto & d : domain)
+        d = rng();
+    std::vector<UInt64> keys(n);
+    for (size_t i = 0; i < n; ++i)
+        keys[i] = domain[rng() % distinct];
+
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, /*max_partitions_per_pass=*/64);
+    ASSERT_EQ(cfg.pass_bits.size(), 2u) << "config must force a multi-pass scatter or this test is vacuous";
+    BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
+    addBlocksSerial(store, keys, 23);
+    store.finishBuild();
+    CoopPool coord;
+    LeafArrays leaves;
+    LeafHashTables hts;
+    coopRun(coord, 4, [&]
+    {
+        leaves = store.scatterToLeaves(coord);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
+    });
+
+    /// Reference: count of build rows per distinct key value.
+    std::unordered_map<UInt64, size_t> ref_count;
+    for (auto k : keys)
+        ++ref_count[k];
+
+    /// Probe with each distinct key once.
+    std::vector<UInt64> distinct_keys;
+    distinct_keys.reserve(ref_count.size());
+    for (const auto & [k, _] : ref_count)
+        distinct_keys.push_back(k);
+    const size_t dn = distinct_keys.size();
+
+    Block probe = makeU64Block(distinct_keys);
+    const std::vector<UInt32> hashes = computeHashes(probe, dn);
+    const void * packed = probe.getByPosition(0).column->getRawData().data();
+
+    std::vector<UInt32> left_rows;
+    std::vector<BuildRef> refs;
+    collectMatches(
+        sizeof(UInt64), hts.next_chain != nullptr,
+        hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
+        hashes.data(), packed, dn, left_rows, refs);
+
+    /// Each build row matched exactly once (cell conservation through the chains).
+    std::vector<std::vector<char>> seen(store.numBlocks());
+    for (size_t b = 0; b < store.numBlocks(); ++b)
+        seen[b].assign(store.blocks()[b].rows(), 0);
+
+    std::unordered_map<UInt64, size_t> got_count;
+    for (size_t m = 0; m < left_rows.size(); ++m)
+    {
+        const UInt64 probe_key = distinct_keys[left_rows[m]];
+        const BuildRef ref = refs[m];
+        EXPECT_EQ(buildKeyAt(store.blocks(), ref), probe_key) << "chain returned a row with a mismatched key";
+        EXPECT_EQ(seen[ref.block_no][ref.row_no], 0) << "build row returned more than once";
+        seen[ref.block_no][ref.row_no] = 1;
+        ++got_count[probe_key];
+    }
+
+    EXPECT_EQ(left_rows.size(), n) << "every build row must be returned exactly once across the chains";
+    for (const auto & [k, c] : ref_count)
+        EXPECT_EQ(got_count[k], c) << "many-to-many fan-out count mismatch for a key";
+
+    for (size_t b = 0; b < store.numBlocks(); ++b)
+        for (size_t r = 0; r < seen[b].size(); ++r)
+            EXPECT_EQ(seen[b][r], 1) << "build row (" << b << "," << r << ") never returned";
+}
+
 /// Opt-in cell-conservation at 100M rows (set RHJ_P4_BENCH=1). Builds the full leaf-HT set at scale and
 /// asserts Σ over leaves of inserted distinct-key cells + chain length == N (every build row reachable).
 TEST(RadixHashLeafHT, CellConservation100M)
