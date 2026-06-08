@@ -307,10 +307,12 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
         }
         ProfileEvents::increment(ProfileEvents::RadixHashProbeSelectMicroseconds, sw_sel.elapsedMicroseconds());
 
-        /// Phase A — direct leaf-HT lookup + next_chain chain traversal (JOIN ALL).
+        /// Phase A — direct leaf-HT lookup. When all build keys are unique (next_chain == nullptr),
+        /// collectMatches uses a simplified no-chain inner loop; otherwise it walks next_chain.
         Stopwatch sw_lookup;
         RadixHash::collectMatches(
-            st.key_width, st.leaf_hts.leaves.data(), st.cfg.shift, st.cfg.total_bits,
+            st.key_width, st.leaf_hts.next_chain != nullptr,
+            st.leaf_hts.leaves.data(), st.cfg.shift, st.cfg.total_bits,
             st.block_base.data(), hashes.data(), packed_ptr, n, left_rows, refs);
         ProfileEvents::increment(ProfileEvents::RadixHashProbeLookupMicroseconds, sw_lookup.elapsedMicroseconds());
 

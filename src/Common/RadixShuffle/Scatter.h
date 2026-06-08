@@ -76,14 +76,6 @@ static_assert(sizeof(BuildRef) == 8, "BuildRef must be exactly 8 bytes for the 1
 /// `memset` to `0xFF`). Distinct from every valid 0-based row index.
 static constexpr UInt32 INVALID_ROW = 0xFFFFFFFFu;
 
-/// MSB of `block_no` in a head `BuildRef` stored in a leaf cell: when set the key has exactly one
-/// build row (no chain). The probe path checks this bit first and skips the `next_chain` load,
-/// saving one guaranteed LLC/DRAM miss per probe row for the common unique-key case.
-/// `block_no` is stripped of this bit before it is used as an index (payload gather, `leafFlat`).
-/// Chain entries in `next_chain` never carry the bit — it lives only in the leaf-cell head.
-/// Invariant: the build side asserts `num_blocks < BUILDREF_SINGLETON_BIT` (fail-close).
-static constexpr UInt32 BUILDREF_SINGLETON_BIT = 0x80000000u;
-
 /// Whether non-temporal (NT) stores are compiled in AND supported by the current CPU. When false there
 /// is no SWWC path at all — `scatterColumn(use_swwc=true)` runs the direct batched scatter (a scalar
 /// write-combine would only add a staging copy with no cache-bypass benefit, so it is not offered). NT

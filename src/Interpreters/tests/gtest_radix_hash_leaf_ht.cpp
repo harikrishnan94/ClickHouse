@@ -21,7 +21,6 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
-#include <map>
 #include <random>
 #include <thread>
 #include <unordered_map>
@@ -156,7 +155,8 @@ TEST(RadixHashLeafHT, InsertAndFindAll)
     std::vector<UInt32> left_rows;
     std::vector<BuildRef> refs;
     collectMatches(
-        sizeof(UInt64), hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
+        sizeof(UInt64), hts.next_chain != nullptr,
+        hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
         hashes.data(), packed, n, left_rows, refs);
 
     /// Every probe row must match (100% match, keys present in build).
@@ -219,7 +219,8 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     std::vector<UInt32> left_rows;
     std::vector<BuildRef> refs;
     collectMatches(
-        sizeof(UInt64), hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
+        sizeof(UInt64), hts.next_chain != nullptr,
+        hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
         hashes.data(), packed, dn, left_rows, refs);
 
     /// Each build row matched exactly once (cell conservation through the chains).
@@ -394,7 +395,8 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         std::vector<UInt32> left_rows;
         std::vector<BuildRef> refs;
         collectMatches(
-            width, hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
+            width, hts.next_chain != nullptr,
+            hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
             hashes.data(), packed, total, left_rows, refs);
 
         std::vector<char> matched(total, 0);
@@ -464,25 +466,18 @@ TEST(RadixHashLeafHT, CellConservation100M)
     const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
 
     /// Conservation: walk every occupied cell's chain across all leaves; total visited == N.
-    /// Cell heads may carry BUILDREF_SINGLETON_BIT; next_chain may be nullptr for all-unique builds.
+    /// next_chain may be nullptr for all-unique builds (hts.next_chain == nullptr ↔ all-unique).
     UInt64 visited = 0;
     for (const LeafHT & ht : hts.leaves)
     {
         for (UInt64 b = 0; b < ht.num_buckets; ++b)
         {
             BuildRef cur = *reinterpret_cast<const BuildRef *>(ht.cells + b * leafCellBytes(sizeof(UInt64)));
-            if (cur.row_no == RadixShuffle::INVALID_ROW)
-                continue;
-            if (cur.block_no & RadixShuffle::BUILDREF_SINGLETON_BIT)
-            {
-                /// Singleton: exactly one build row (all-unique path; next_chain may be nullptr).
-                ++visited;
-                continue;
-            }
-            /// Chain of length >= 2; next_chain is guaranteed non-null for duplicate builds.
             while (cur.row_no != RadixShuffle::INVALID_ROW)
             {
                 ++visited;
+                if (hts.next_chain == nullptr)
+                    break; /// all-unique: every occupied cell is a length-1 chain, no next_chain
                 cur = ht.next_chain[leafFlat(cur, store.blockBase().data())];
             }
         }

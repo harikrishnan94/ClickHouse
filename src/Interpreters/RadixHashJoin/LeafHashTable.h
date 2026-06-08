@@ -71,19 +71,13 @@ inline UInt64 leafFlat(RadixShuffle::BuildRef ref, const UInt64 * block_base) no
     return block_base[ref.block_no] + ref.row_no;
 }
 
-/// Insert one build row (`key`/`ref`, keyed on its 32-bit hash `h`) into leaf `ht`. Linear probing
-/// from the bucket; on an empty slot write the key + head; on a key match prepend `ref` as the new
-/// head and thread the old head through `next_chain`. Width-templated so the key copy/compare are
-/// `__builtin_memcpy_inline` / `__builtin_memcmp` of a compile-time size (no runtime memcpy).
-/// Insert one build row into the leaf HT. Returns the old head `BuildRef` when a duplicate key is
-/// found (caller threads it through `next_chain`), or the `INVALID_ROW` sentinel `BuildRef` for a
-/// first occurrence (the head is written with `BUILDREF_SINGLETON_BIT` set; `next_chain` untouched).
+/// Insert one build row (`key`/`ref`, keyed on its 32-bit hash `h`) into leaf `ht`. Returns the old
+/// head `BuildRef` when a duplicate key is found (caller threads it through `next_chain`), or the
+/// `INVALID_ROW` sentinel `BuildRef` for a first occurrence (`next_chain` not touched).
 ///
 /// Returning `BuildRef` (8 B) instead of a bool+out-parameter lets the compiler keep the result in
-/// a register and avoids zero-initialising a stack slot on every call.
-///
-/// The returned old head may carry `BUILDREF_SINGLETON_BIT` (k=2 transition); the caller strips it.
-/// Chain entries in `next_chain` must never carry the bit.
+/// a register and avoids zero-initialising a stack slot on every call.  Width-templated so the key
+/// copy/compare are `__builtin_memcpy_inline` / `__builtin_memcmp` of a compile-time size.
 template <size_t key_width>
 inline RadixShuffle::BuildRef leafInsert(
     LeafHT & ht, UInt32 h, const void * key, RadixShuffle::BuildRef ref) noexcept
@@ -98,16 +92,15 @@ inline RadixShuffle::BuildRef leafInsert(
         auto * head = reinterpret_cast<RadixShuffle::BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (head->row_no == RadixShuffle::INVALID_ROW)
         {
-            /// First occurrence: mark this cell as a singleton (no chain needed yet).
+            /// First occurrence: store key and head directly.
             __builtin_memcpy_inline(cell + sizeof(RadixShuffle::BuildRef), key, key_width);
-            *head = RadixShuffle::BuildRef{ref.block_no | RadixShuffle::BUILDREF_SINGLETON_BIT, ref.row_no};
+            *head = ref;
             return RadixShuffle::BuildRef{RadixShuffle::INVALID_ROW, RadixShuffle::INVALID_ROW};
         }
         if (__builtin_memcmp(cell + sizeof(RadixShuffle::BuildRef), key, key_width) == 0)
         {
             /// Duplicate key: return the old head so the caller can thread it through next_chain.
             const RadixShuffle::BuildRef old = *head;
-            /// New head is chain-length >= 2 -> no singleton bit.
             *head = ref;
             return old;
         }
@@ -165,9 +158,15 @@ LeafHashTables buildLeafHashTables(
 /// Probe `n` left rows against the leaf tables, collecting every match as a (left_row, BuildRef) pair
 /// in `out_left_rows` / `out_refs` (grouped by left row, chain order). For row j: leaf =
 /// total_bits ? (hashes[j] >> leaf_shift) : 0; head = find(hashes[j], packed_keys + j*key_width);
-/// then walk next_chain to the tail. Dispatched on `key_width` to the templated `leafFind`.
+/// then, when `has_duplicates` is true, walk next_chain to the tail.
+///
+/// `has_duplicates` — whether the build contained any duplicate keys (i.e. `next_chain != nullptr`
+/// in `LeafHashTables`). When false, `collectMatches` uses a simplified inner loop that emits
+/// exactly one ref per hit with no `next_chain` access at all, saving the LLC/DRAM miss per row.
+/// Dispatched on both `key_width` and `has_duplicates` to the templated `collectMatchesT`.
 void collectMatches(
     size_t key_width,
+    bool has_duplicates,
     const LeafHT * leaves,
     UInt32 leaf_shift,
     UInt32 total_bits,
