@@ -143,7 +143,7 @@ TEST(RadixHashLeafHT, InsertAndFindAll)
     LeafHashTables hts;
     coopRun(coord, 4, [&]
     {
-        leaves = store.scatterToLeaves(coord, /*with_leaf_hash=*/true);
+        leaves = store.scatterToLeaves(coord);
         hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
     });
 
@@ -196,7 +196,7 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     LeafHashTables hts;
     coopRun(coord, 4, [&]
     {
-        leaves = store.scatterToLeaves(coord, true);
+        leaves = store.scatterToLeaves(coord);
         hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
     });
 
@@ -377,7 +377,7 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         LeafHashTables hts;
         coopRun(coord, 2, [&]
         {
-            leaves = store.scatterToLeaves(coord, /*with_leaf_hash=*/true);
+            leaves = store.scatterToLeaves(coord);
             hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), width, coord);
         });
 
@@ -460,7 +460,7 @@ TEST(RadixHashLeafHT, CellConservation100M)
     Stopwatch sw;
     coopRun(coord, num_threads, [&]
     {
-        leaves = store.scatterToLeaves(coord, true);
+        leaves = store.scatterToLeaves(coord);
         hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
     });
     const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
@@ -533,7 +533,7 @@ TEST(RadixHashLeafHT, ThpVsNonThpBuildTime)
         Stopwatch sw;
         coopRun(coord, num_threads, [&]
         {
-            la = store.scatterToLeaves(coord, true);
+            la = store.scatterToLeaves(coord);
             hts = buildLeafHashTables(la, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
         });
         const double ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;

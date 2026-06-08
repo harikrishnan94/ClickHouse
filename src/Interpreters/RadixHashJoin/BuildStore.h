@@ -42,11 +42,6 @@ struct LeafArrays
 
     std::vector<void *> key_base; /// num_leaves; nullptr for an empty leaf
     std::vector<RadixShuffle::BuildRef *> ref_base; /// num_leaves
-    /// Per-leaf 32-bit row-hash arrays, populated only when `scatterToLeaves(..., with_leaf_hash=true)`
-    /// (phase P4): `hash_base[L][i]` is the `IColumn::computeHashInto` hash of the build row whose key
-    /// is `key_base[L][i]` — the leaf-HT bucket (spec section 5.6) Fibonacci-mixes exactly this value so
-    /// the bucket is identical on build and probe. Empty (size 0) when leaf hashes were not requested.
-    std::vector<void *> hash_base; /// num_leaves when with_leaf_hash, else empty; UInt32* per leaf
     std::vector<UInt64> leaf_rows; /// num_leaves; == global_hist[L]
 
     /// Gate statistics (spec section 9.3/9.4).
@@ -61,7 +56,6 @@ struct LeafArrays
         return static_cast<const char *>(key_base[leaf]) + i * key_width;
     }
     const RadixShuffle::BuildRef & refAt(size_t leaf, size_t i) const { return ref_base[leaf][i]; }
-    UInt32 hashAt(size_t leaf, size_t i) const { return static_cast<const UInt32 *>(hash_base[leaf])[i]; }
 };
 
 /** Cooperative pool for the RadixHashJoin post-build phase.
@@ -123,9 +117,11 @@ private:
   *
   *   - `add` (per build worker, lock-free): COW-move the right block into this worker's store, hash the
   *     join key (one chained `IColumn::computeHashInto` over the — possibly several — fixed-width key
-  *     columns) directly into a `uint32` arena span, and accumulate the row counts into the per-thread
-  *     replicated histogram (which persists across ALL of the thread's blocks). No scatter, no payload
-  *     copy, no per-block histogram (spec invariants 1, 2).
+  *     columns) into a small REUSED per-worker scratch buffer, and accumulate the routed row counts into
+  *     the per-thread replicated histogram (which persists across ALL of the thread's blocks). The hash
+  *     is NOT stored per row — it is recomputed from the key columns in the scatter (see below), trading
+  *     a second hash pass for ~N*4 B of saved memory. No scatter, no payload copy, no per-block histogram
+  *     (spec invariants 1, 2).
   *   - `finishBuild` (single barrier): move-concat the per-worker stores (assigning final `block_no`s),
   *     fold each thread's replicated histogram into `global_hist`, and compute its exclusive prefix sum
   *     `offset`. Records the per-slot contiguous block ranges used by the scatter.
@@ -169,12 +165,13 @@ public:
     /// Step 2 (single barrier). Must be called once, after all `add`s, before `scatterToLeaves`.
     void finishBuild();
 
-    /// Step 4. Deferred exact key+ref scatter into per-leaf arrays, parallelised via `coord`.
-    /// When `with_leaf_hash` is true (phase P4), the per-row 32-bit routing hash is also scattered into
-    /// per-leaf `hash_base` arrays (one `UInt32` per build row, aligned with key/ref), so the leaf-HT
-    /// build can Fibonacci-mix the exact same hash the probe side derives (spec section 5.6, 15.9).
+    /// Step 4. Deferred exact key+ref scatter into per-leaf arrays, parallelised via `coord`. The 32-bit
+    /// routing hash is recomputed from the key columns per chunk inside the scatter (into a small reused
+    /// buffer) — it is no longer stored per row by `add`. The leaf bucket is recomputed from the key in
+    /// the leaf-HT build (`bucketHash`), so no per-row hash is scattered to the leaves on a single pass.
+    /// Multi-pass still carries the routing hash through the cascade so refine passes can route by it.
     /// Must be called only by the leader inside a CoopPool::run body.
-    LeafArrays scatterToLeaves(CoopPool & coord, bool with_leaf_hash = false);
+    LeafArrays scatterToLeaves(CoopPool & coord);
 
     const PartitionConfig & config() const { return cfg; }
     size_t packedKeyWidth() const { return key_width; }
@@ -191,16 +188,14 @@ public:
     const std::vector<UInt64> & blockBase() const { return block_base; }
 
 private:
-    /// Per-build-worker state (one slot per concurrent `add` thread). Move-only; owned via unique_ptr
-    /// so the hash arena pointers stored in `hash_of_block` stay stable.
+    /// Per-build-worker state (one slot per concurrent `add` thread). Move-only; owned via unique_ptr.
     struct LocalBuildState
     {
         /// `num_leaves` is used to size the replicated histogram (see BuildStore.cpp: chooseReplicas).
-        LocalBuildState(size_t num_leaves, size_t arena_max_block_);
+        explicit LocalBuildState(size_t num_leaves);
 
         std::vector<Block> blocks;
-        GrowingArena hash_arena;                       /// per-row 32-bit hashes for each added block
-        std::vector<const UInt32 *> hash_of_block;     /// one arena span per block, n entries each
+        std::vector<UInt32> hash_scratch;              /// reused per-block 32-bit hash buffer for the histogram (not stored)
         std::vector<UInt32> rows_of_block;
 
         /// Replicated histogram: `replicas` copies of the `num_leaves` counters, round-robined per
@@ -216,8 +211,7 @@ private:
 
     /// Initialise a LeafArrays ready for population (worker_block_counts sized to used_slots,
     /// key/ref/leaf_rows zeroed to num_leaves, arena attached). Setup only — not on the O(N) path.
-    /// When `with_leaf_hash`, hash_base is also sized to num_leaves (per-leaf UInt32 hash arrays).
-    LeafArrays makeLeafArrays(bool with_leaf_hash) const;
+    LeafArrays makeLeafArrays() const;
 
     /// Record the scatter ProfileEvents and trim the output arena tail.
     void finalizeScatter(LeafArrays & out, const Stopwatch & sw, std::atomic<UInt64> & total_bytes, size_t num_passes) const;
@@ -236,10 +230,11 @@ private:
 
     /// Depth-first recursive refinement of one pass-0 partition all the way to its final leaves.
     /// `global_first_leaf` is the leaf index of the first leaf in this partition's subtree. At the last
-    /// pass the scattered key+ref land in the pre-allocated `out.key_base/ref_base[leaf]` directly;
+    /// pass the scattered key+ref land in the pre-allocated `out.key_base/ref_base[leaf]` directly (key+ref
+    /// only — the leaf bucket is recomputed from the key, so no hash is scattered to the leaves);
     /// intermediate passes allocate a per-call RAII `GrowingArena` (freed on return -> lowest peak
-    /// intermediate memory), scatter key+ref+hash into children, then recurse depth-first.
-    /// `with_leaf_hash`: at the last pass, also scatter the carried row hashes into `out.hash_base`.
+    /// intermediate memory), scatter key+ref+hash into children (the carried routing hash lets the next
+    /// pass route), then recurse depth-first.
     void refineDepthFirst(
         size_t global_first_leaf,
         const void * in_keys,
@@ -250,15 +245,15 @@ private:
         UInt32 bits_consumed,
         LeafArrays & out,
         const std::vector<UInt64> & gh_prefix,
-        RefineWorkerScratch & ws,
-        bool with_leaf_hash);
+        RefineWorkerScratch & ws);
 
-    /// Worker kernel: scatter key + BuildRef (and, iff carry_hash, the uint32 row hash) for all build
+    /// Worker kernel: scatter key + BuildRef (and, iff carry_hash, the uint32 routing hash) for all build
     /// blocks into `num_parts` partitions using static per-thread ownership. Each build thread (slot)
     /// scatters its own contiguous block range into disjoint per-partition sub-regions, seeding its
     /// write cursors once from `thr_off[worker_id * num_parts + part]` (no per-block cursor reseeding).
-    /// Single-pass calls this with carry_hash=false (hash scatter compiled out entirely); multi-pass
-    /// pass-0 uses carry_hash=true.
+    /// The routing hash is recomputed per chunk from the key columns into a small reused buffer (not read
+    /// from a stored per-row array). Single-pass calls this with carry_hash=false (hash scatter compiled
+    /// out entirely); multi-pass pass-0 uses carry_hash=true so refine passes can route by the hash.
     template <bool carry_hash>
     void scatterBlocksIntoPartitions(
         CoopPool & coord,
@@ -272,8 +267,8 @@ private:
         std::atomic<UInt64> & total_bytes,
         std::vector<UInt64> & worker_counts);
 
-    LeafArrays scatterSinglePass(CoopPool & coord, bool with_leaf_hash);
-    LeafArrays scatterMultiPass(CoopPool & coord, bool with_leaf_hash);
+    LeafArrays scatterSinglePass(CoopPool & coord);
+    LeafArrays scatterMultiPass(CoopPool & coord);
 
     PartitionConfig cfg;
     std::vector<size_t> key_positions;
@@ -294,7 +289,6 @@ private:
     /// Filled by finishBuild().
     bool finished = false;
     std::vector<Block> global_blocks;
-    std::vector<const UInt32 *> global_hash_of_block;  /// per-block row-hash arrays (in block_no order)
     std::vector<UInt32> global_rows_of_block;
     std::vector<UInt64> global_hist; /// num_leaves
     std::vector<UInt64> offset; /// num_leaves, exclusive prefix sum of global_hist

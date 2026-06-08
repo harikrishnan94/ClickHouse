@@ -59,8 +59,10 @@ struct LazyChainState
     }
 };
 
-/// Fill one leaf table by inserting all of its scattered (key, ref, hash) rows. Software-pipelined
-/// write-prefetch of the next row's bucket cell (spec section 5.6, build: __builtin_prefetch RW=1).
+/// Fill one leaf table by inserting all of its scattered (key, ref) rows. The within-leaf bucket is
+/// `bucketHash` of the key, recomputed here from `la.key_base[leaf]` directly (the routing hash is no
+/// longer consulted at fill). Software-pipelined write-prefetch of the next row's bucket cell (spec
+/// section 5.6, build: __builtin_prefetch RW=1).
 ///
 /// On a duplicate key `leafInsert` returns the old head. The worker acquires `next_chain` lazily
 /// (first duplicate triggers `lcs.acquire()` which allocates and 0xFF-initialises the full array so
@@ -75,7 +77,6 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
 
     const auto * keys = static_cast<const char *>(la.key_base[leaf]);
     const BuildRef * refs = la.ref_base[leaf];
-    const auto * hashes = static_cast<const UInt32 *>(la.hash_base[leaf]);
 
     constexpr size_t stride = leafCellBytes(key_width);
     const UInt64 num_buckets = ht.num_buckets;
@@ -97,7 +98,7 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
     auto compute_buckets = [&](UInt64 base, size_t count)
     {
         for (size_t i = 0; i < count; ++i) /// tight, auto-vectorizable
-            pf_pos[i] = leafBucket(hashes[base + i], num_buckets) & mask;
+            pf_pos[i] = leafBucket(bucketHash<key_width>(keys + (base + i) * key_width), num_buckets) & mask;
     };
     auto prefetch_burst = [&](size_t count)
     {
@@ -106,7 +107,7 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
     };
     auto insert_row = [&](UInt64 r)
     {
-        const BuildRef old_head = leafInsert<key_width>(ht, hashes[r], keys + r * key_width, refs[r]);
+        const BuildRef old_head = leafInsert<key_width>(ht, bucketHash<key_width>(keys + r * key_width), keys + r * key_width, refs[r]);
         if (old_head.row_no != RadixShuffle::INVALID_ROW)
         {
             /// Duplicate key: lazily acquire (or reuse already-acquired) next_chain, then thread.
@@ -191,20 +192,22 @@ void collectMatchesT(
     {
         if (row + prefetch_distance < n)
         {
-            const UInt32 prefetch_hash = hashes[row + prefetch_distance];
-            const size_t prefetch_leaf = total_bits ? (prefetch_hash >> leaf_shift) : 0;
+            /// Leaf from the CRC32C routing hash (top bits); bucket from the independent key hash.
+            const size_t prefetch_leaf = total_bits ? (hashes[row + prefetch_distance] >> leaf_shift) : 0;
             const LeafHT & prefetch_ht = leaves[prefetch_leaf];
             if (prefetch_ht.num_buckets != 0)
             {
-                const UInt64 prefetch_pos = leafBucket(prefetch_hash, prefetch_ht.num_buckets) & (prefetch_ht.num_buckets - 1);
+                const UInt32 prefetch_bucket_hash = bucketHash<key_width>(packed_keys + (row + prefetch_distance) * key_width);
+                const UInt64 prefetch_pos = leafBucket(prefetch_bucket_hash, prefetch_ht.num_buckets) & (prefetch_ht.num_buckets - 1);
                 __builtin_prefetch(prefetch_ht.cells + prefetch_pos * stride, /*rw=*/0, /*locality=*/1);
             }
         }
 
-        const UInt32 h = hashes[row];
-        const size_t leaf = total_bits ? (h >> leaf_shift) : 0;
+        /// Leaf from the CRC32C routing hash (top bits); bucket from the independent key hash.
+        const size_t leaf = total_bits ? (hashes[row] >> leaf_shift) : 0;
         const LeafHT & ht = leaves[leaf];
-        BuildRef cur = leafFind<key_width>(ht, h, packed_keys + row * key_width);
+        const UInt32 bucket_hash = bucketHash<key_width>(packed_keys + row * key_width);
+        BuildRef cur = leafFind<key_width>(ht, bucket_hash, packed_keys + row * key_width);
         if (cur.row_no == RadixShuffle::INVALID_ROW)
             continue;
 

@@ -216,10 +216,10 @@ void RadixHashJoin::onBuildPhaseFinish()
 
 void RadixHashJoin::runPostBuild()
 {
-    /// Deferred exact key+ref scatter, additionally carrying the per-row routing hash into the leaves so
-    /// the leaf-HT bucket Fibonacci-mixes the exact hash the probe side derives (spec section 5.6).
-    RadixHash::LeafArrays leaves = state->build_store->scatterToLeaves(
-        state->coord, /*with_leaf_hash=*/true);
+    /// Deferred exact key+ref scatter. The routing hash is recomputed from the key columns inside the
+    /// scatter (not stored per row); the leaf-HT bucket is recomputed from the key (`bucketHash`), so no
+    /// per-row hash is scattered to the leaves.
+    RadixHash::LeafArrays leaves = state->build_store->scatterToLeaves(state->coord);
 
     state->block_base = state->build_store->blockBase();
     state->total_rows = state->build_store->totalRows();
