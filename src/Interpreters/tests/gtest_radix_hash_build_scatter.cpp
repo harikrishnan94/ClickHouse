@@ -8,7 +8,7 @@
 #include <Interpreters/RadixHashJoin/BuildStore.h>
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
-#include <Interpreters/RadixHashJoin/RouteHash.h>
+#include <Interpreters/RadixHashJoin/RapidHash.h>
 
 #include <Common/Stopwatch.h>
 
@@ -81,9 +81,9 @@ Block makeBlock1(const std::vector<Key> & keys, size_t num_payload, UInt64 paylo
     return makeBlock<Key>(std::vector<std::vector<Key>>{keys}, num_payload, payload_seed);
 }
 
-/// Raw 32-bit route hash for each row: the byte `routeHash` of the PACKED key (the key columns
-/// concatenated at their packed offsets), mirroring the build/probe routing exactly. The leaf id for a
-/// given row is `hash >> cfg.shift` (top `total_bits` bits of the hash).
+/// Raw 32-bit route hash for each row: the TOP 32 bits of the PACKED key's 64-bit RapidHash (the key
+/// columns concatenated at their packed offsets), mirroring the build/probe routing exactly. The leaf id
+/// for a given row is `hash >> cfg.shift` (top `total_bits` bits of the routing hash).
 std::vector<UInt32> referenceHashes(
     const Block & block, const std::vector<size_t> & key_positions, const std::vector<size_t> & key_widths, size_t n)
 {
@@ -103,7 +103,7 @@ std::vector<UInt32> referenceHashes(
             const char * col = block.getByPosition(key_positions[c]).column->getRawData().data();
             std::memcpy(packed.data() + key_offsets[c], col + r * key_widths[c], key_widths[c]);
         }
-        hash[r] = routeHash(packed.data(), kw);
+        hash[r] = static_cast<UInt32>(rapidHashKey(packed.data(), kw) >> 32);
     }
     return hash;
 }

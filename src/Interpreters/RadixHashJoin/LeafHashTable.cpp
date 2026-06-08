@@ -1,4 +1,5 @@
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
+#include <Interpreters/RadixHashJoin/RapidHash.h>
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
@@ -59,9 +60,9 @@ struct LazyChainState
     }
 };
 
-/// Fill one leaf table by inserting all of its scattered (key, ref) rows. The within-leaf bucket is
-/// `bucketHash` of the key, recomputed here from `la.key_base[leaf]` directly (the routing hash is no
-/// longer consulted at fill). Software-pipelined write-prefetch of the next row's bucket cell (spec
+/// Fill one leaf table by inserting all of its scattered (key, ref) rows. The within-leaf bucket is the
+/// low 32 bits of the key's 64-bit RapidHash, recomputed here from `la.key_base[leaf]` directly (no hash
+/// is stored on the leaves). Software-pipelined write-prefetch of the next row's bucket cell (spec
 /// section 5.6, build: __builtin_prefetch RW=1).
 ///
 /// On a duplicate key `leafInsert` returns the old head. The worker acquires `next_chain` lazily
@@ -98,7 +99,7 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
     auto compute_buckets = [&](UInt64 base, size_t count)
     {
         for (size_t i = 0; i < count; ++i) /// tight, auto-vectorizable
-            pf_pos[i] = leafBucket(bucketHash<key_width>(keys + (base + i) * key_width), num_buckets) & mask;
+            pf_pos[i] = leafBucket(static_cast<UInt32>(rapidhash::hash<key_width>(keys + (base + i) * key_width)), num_buckets) & mask;
     };
     auto prefetch_burst = [&](size_t count)
     {
@@ -107,7 +108,8 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
     };
     auto insert_row = [&](UInt64 r)
     {
-        const BuildRef old_head = leafInsert<key_width>(ht, bucketHash<key_width>(keys + r * key_width), keys + r * key_width, refs[r]);
+        const BuildRef old_head = leafInsert<key_width>(
+            ht, static_cast<UInt32>(rapidhash::hash<key_width>(keys + r * key_width)), keys + r * key_width, refs[r]);
         if (old_head.row_no != RadixShuffle::INVALID_ROW)
         {
             /// Duplicate key: lazily acquire (or reuse already-acquired) next_chain, then thread.
@@ -177,7 +179,7 @@ void collectMatchesT(
     UInt32 leaf_shift,
     UInt32 total_bits,
     const UInt64 * block_base,
-    const UInt32 * hashes,
+    const UInt64 * hashes,
     const char * packed_keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,
@@ -192,22 +194,22 @@ void collectMatchesT(
     {
         if (row + prefetch_distance < n)
         {
-            /// Leaf from the CRC32C routing hash (top bits); bucket from the independent key hash.
-            const size_t prefetch_leaf = total_bits ? (hashes[row + prefetch_distance] >> leaf_shift) : 0;
+            /// Single 64-bit RapidHash: leaf from the top routing bits, bucket from the low 32 bits.
+            const UInt64 h = hashes[row + prefetch_distance];
+            const size_t prefetch_leaf = total_bits ? ((h >> 32) >> leaf_shift) : 0;
             const LeafHT & prefetch_ht = leaves[prefetch_leaf];
             if (prefetch_ht.num_buckets != 0)
             {
-                const UInt32 prefetch_bucket_hash = bucketHash<key_width>(packed_keys + (row + prefetch_distance) * key_width);
-                const UInt64 prefetch_pos = leafBucket(prefetch_bucket_hash, prefetch_ht.num_buckets) & (prefetch_ht.num_buckets - 1);
+                const UInt64 prefetch_pos = leafBucket(static_cast<UInt32>(h), prefetch_ht.num_buckets) & (prefetch_ht.num_buckets - 1);
                 __builtin_prefetch(prefetch_ht.cells + prefetch_pos * stride, /*rw=*/0, /*locality=*/1);
             }
         }
 
-        /// Leaf from the CRC32C routing hash (top bits); bucket from the independent key hash.
-        const size_t leaf = total_bits ? (hashes[row] >> leaf_shift) : 0;
+        /// Single 64-bit RapidHash: leaf from the top routing bits, bucket from the low 32 bits.
+        const UInt64 h = hashes[row];
+        const size_t leaf = total_bits ? ((h >> 32) >> leaf_shift) : 0;
         const LeafHT & ht = leaves[leaf];
-        const UInt32 bucket_hash = bucketHash<key_width>(packed_keys + row * key_width);
-        BuildRef cur = leafFind<key_width>(ht, bucket_hash, packed_keys + row * key_width);
+        BuildRef cur = leafFind<key_width>(ht, static_cast<UInt32>(h), packed_keys + row * key_width);
         if (cur.row_no == RadixShuffle::INVALID_ROW)
             continue;
 
@@ -309,7 +311,7 @@ void collectMatches(
     UInt32 leaf_shift,
     UInt32 total_bits,
     const UInt64 * block_base,
-    const UInt32 * hashes,
+    const UInt64 * hashes,
     const void * packed_keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,

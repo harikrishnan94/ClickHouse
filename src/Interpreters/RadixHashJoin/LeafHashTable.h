@@ -5,7 +5,6 @@
 #include <Common/RadixShuffle/Scatter.h>
 
 #include <base/types.h>
-#include <base/unaligned.h>
 
 #include <cstddef>
 #include <vector>
@@ -38,11 +37,11 @@ namespace DB::RadixHash
   *                  else (first)   -> cell.ref = ref;  next_chain[flat(ref)] stays the 0xFF-init tail
   *   probe:         cur = find(h, key); while (cur.row_no != INVALID_ROW) { emit(cur); cur = next_chain[flat(cur)]; }
   *
-  * **Bucket = `bucketHash` of the packed key** — a cheap, non-linear, CRC-independent hash with
-  * well-mixed low bits, computed from the key bytes directly (NOT the CRC32C routing hash). Leaf routing
-  * still uses the CRC32C `computeHashInto` top bits; the bucket uses a separate full-32-bit-entropy hash
-  * so the within-leaf bucket no longer shares bits with the leaf id (this lifts the ~2^31-row saturation
-  * the single shared hash imposed). The identical `bucketHash` runs on build (fill) and probe.
+  * **Bucket = low 32 bits of the key's 64-bit RapidHash** — the same single hash whose TOP bits route
+  * the leaf. A well-mixed 64-bit hash has effectively independent halves, so the within-leaf bucket (low
+  * bits) shares no bits with the leaf id (top bits) and there is no `total_bits + log2(num_buckets) <= 32`
+  * saturation. The identical RapidHash runs on build (fill) and probe, so the bucket is the same on both
+  * sides. The bucket is recomputed from the key here (the leaves carry key + ref only, no stored hash).
   */
 struct LeafHT
 {
@@ -58,48 +57,9 @@ constexpr size_t leafCellBytes(size_t key_width) noexcept
     return sizeof(RadixShuffle::BuildRef) + key_width;
 }
 
-/// Independent within-leaf bucket hash of the packed key (`key_width` a multiple of 4 in [4, 64]).
-///
-/// A cheap Murmur-style multiply-fold over the key, NON-LINEAR and CRC32C-independent, with the
-/// avalanche finalizer guaranteeing well-mixed LOW bits — which is exactly what `leafBucket` consumes
-/// (`h & mask`). Leaf routing keeps using the CRC32C `computeHashInto` top bits; the bucket consumes
-/// this disjoint full-32-bit-entropy hash instead of low CRC bits, so the bucket no longer shares any
-/// hash bits with the leaf id. That removes the `total_bits + log2(num_buckets) <= 32` constraint the
-/// single shared hash imposed (saturation at ~2^31 rows), because the bucket now has the full 32 bits of
-/// within-leaf entropy regardless of how many top bits the leaf routing consumed. CRC32C is linear, so a
-/// reseeded CRC cannot give an independent hash; this multiply-fold can. The identical function runs on
-/// build (fill) and probe, so the bucket is the same on both sides. Width-templated so the fold fully
-/// unrolls (no loop, no tail branch at runtime) for the compile-time key width.
-template <size_t key_width>
-inline UInt32 bucketHash(const char * key) noexcept
-{
-    static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
-    UInt64 acc = 0x9E3779B97F4A7C15ULL;
-    size_t i = 0;
-    for (; i + 8 <= key_width; i += 8)
-    {
-        UInt64 w = unalignedLoad<UInt64>(key + i);
-        w *= 0xFF51AFD7ED558CCDULL;
-        w ^= w >> 33;
-        acc ^= w;
-        acc *= 0xC4CEB9FE1A85EC53ULL;
-    }
-    if constexpr (key_width % 8 != 0)
-    {
-        /// 4-byte tail (key_width is a multiple of 4, so the only remainder is a single 4-byte word).
-        UInt64 w = unalignedLoad<UInt32>(key + i);
-        w *= 0xFF51AFD7ED558CCDULL;
-        w ^= w >> 33;
-        acc ^= w;
-        acc *= 0xC4CEB9FE1A85EC53ULL;
-    }
-    acc ^= acc >> 33;
-    return static_cast<UInt32>(acc); /// low 32, fully mixed
-}
-
-/// Bucket index in [0, num_buckets) (spec section 5.6). `h` is the `bucketHash` of the key (full 32-bit
-/// entropy, well-mixed low bits), so the bucket is indexed directly with its low bits. `num_buckets` is
-/// a non-zero power of two, so this is a single AND.
+/// Bucket index in [0, num_buckets) (spec section 5.6). `h` is the low 32 bits of the key's 64-bit
+/// RapidHash (well-mixed, full-entropy low bits, disjoint from the top routing bits), so the bucket is
+/// indexed directly with these bits. `num_buckets` is a non-zero power of two, so this is a single AND.
 inline UInt64 leafBucket(UInt32 h, UInt64 num_buckets) noexcept
 {
     return static_cast<UInt64>(h) & (num_buckets - 1);
@@ -181,8 +141,8 @@ struct LeafHashTables
 };
 
 /// Build all leaf hash tables and the shared next_chain from a finished `LeafArrays` plus the per-block
-/// `block_base` prefix sum. The within-leaf bucket is `bucketHash` of each key, recomputed from
-/// `la.key_base` directly (no per-row hash is read). Cell arrays and next_chain are carved from one jemalloc-backed
+/// `block_base` prefix sum. The within-leaf bucket is the low 32 bits of each key's RapidHash, recomputed
+/// from `la.key_base` directly (no per-row hash is read). Cell arrays and next_chain are carved from one jemalloc-backed
 /// `GrowingArena`; every per-leaf cell array is allocated, zeroed (`memset`), and filled by the worker
 /// that owns that leaf (via `coord.parallelFor`), and `next_chain` is zeroed in parallel — so all the
 /// allocation and zeroing is spread across the build threads. `key_width` selects the templated insert
@@ -196,11 +156,12 @@ LeafHashTables buildLeafHashTables(
     CoopPool & coord);
 
 /// Probe `n` left rows against the leaf tables, collecting every match as a (left_row, BuildRef) pair
-/// in `out_left_rows` / `out_refs` (grouped by left row, chain order). For row j: leaf =
-/// total_bits ? (hashes[j] >> leaf_shift) : 0 (the CRC32C routing hash); the bucket within that leaf is
-/// `bucketHash(packed_keys + j*key_width)` (the independent key hash), so head = find(bucketHash(key),
-/// key); then, when `has_duplicates` is true, walk next_chain to the tail. `hashes` carries ONLY the
-/// routing hash now (the bucket is recomputed from the key on both build and probe).
+/// in `out_left_rows` / `out_refs` (grouped by left row, chain order). `hashes[j]` is the FULL 64-bit
+/// RapidHash of probe row j (computed once by the selector). For row j: leaf =
+/// total_bits ? ((hashes[j] >> 32) >> leaf_shift) : 0 (the top routing bits); the bucket within that leaf
+/// is the low 32 bits `static_cast<UInt32>(hashes[j])`, so head = find(low32, key); then, when
+/// `has_duplicates` is true, walk next_chain to the tail. The probe does NOT hash inside the loop — both
+/// halves come from the single precomputed 64-bit hash.
 ///
 /// `has_duplicates` — whether the build contained any duplicate keys (i.e. `next_chain != nullptr`
 /// in `LeafHashTables`). When false, `collectMatches` uses a simplified inner loop that emits
@@ -213,7 +174,7 @@ void collectMatches(
     UInt32 leaf_shift,
     UInt32 total_bits,
     const UInt64 * block_base,
-    const UInt32 * hashes,
+    const UInt64 * hashes,
     const void * packed_keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,

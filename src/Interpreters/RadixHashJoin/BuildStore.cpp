@@ -1,5 +1,5 @@
 #include <Interpreters/RadixHashJoin/BuildStore.h>
-#include <Interpreters/RadixHashJoin/RouteHash.h>
+#include <Interpreters/RadixHashJoin/RapidHash.h>
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
@@ -102,7 +102,7 @@ PackKeyColumnFn chooseKeyPacker(size_t width)
 
 /// Intermediate cascade level for the multi-pass scatter (key + BuildRef, one dense array per partition).
 /// Keys are void* so they match LeafArrays and the scatter worker; cast to typed pointers at the call
-/// sites. No carried hash column — every refine pass recomputes `routeHash` from the packed key.
+/// sites. No carried hash column — every refine pass recomputes the RapidHash from the packed key.
 struct CascadeLevel
 {
     size_t num_parts = 0;
@@ -374,7 +374,8 @@ void BuildStore::add(const Block & block)
 
     Stopwatch sw;
 
-    /// (2) Compute the byte `routeHash` of each PACKED key into a small REUSED scratch buffer. A single
+    /// (2) Compute the routing hash of each PACKED key into a small REUSED scratch buffer — the TOP 32
+    /// bits of the 64-bit RapidHash (`rapidHashKey >> 32`), which the histogram below routes by. A single
     /// key column's raw data already IS the packed key (no copy); multiple columns are packed a chunk at
     /// a time into `pack_scratch` first. The hash is consumed by the histogram below and then discarded —
     /// it is NOT stored per row. The scatter recomputes it the same way just before routing (see
@@ -389,7 +390,7 @@ void BuildStore::add(const Block & block)
         {
             const char * raw = kept.getByPosition(key_positions[0]).column->getRawData().data();
             for (size_t row = 0; row < n; ++row)
-                row_hash[row] = routeHash(raw + row * kw, kw);
+                row_hash[row] = static_cast<UInt32>(rapidHashKey(raw + row * kw, kw) >> 32);
         }
         else
         {
@@ -400,7 +401,7 @@ void BuildStore::add(const Block & block)
                 const size_t chunk_rows = std::min(SCATTER_CHUNK_ROWS, n - row_begin);
                 packKeyChunk(kept, row_begin, chunk_rows, packed);
                 for (size_t i = 0; i < chunk_rows; ++i)
-                    row_hash[row_begin + i] = routeHash(packed + i * kw, kw);
+                    row_hash[row_begin + i] = static_cast<UInt32>(rapidHashKey(packed + i * kw, kw) >> 32);
             }
         }
     }
@@ -538,19 +539,19 @@ void BuildStore::refineDepthFirst(
     const bool is_last = (pass_index + 1 == cfg.pass_bits.size());
     const size_t kw = key_width;
 
-    /// Recompute the `routeHash` of every row from the scattered packed key (this pass has only `in_keys`,
-    /// never the typed columns). The same function ran at the histogram and pass-0, so this pass's
-    /// bit-window selects the identical child partition. Buffer is reused across the recursion (it is
-    /// consumed by the scatter below before any child overwrites it).
+    /// Recompute the routing hash (top 32 bits of the RapidHash) of every row from the scattered packed
+    /// key (this pass has only `in_keys`, never the typed columns). The same function ran at the histogram
+    /// and pass-0, so this pass's bit-window selects the identical child partition. Buffer is reused across
+    /// the recursion (it is consumed by the scatter below before any child overwrites it).
     const char * keys = static_cast<const char *>(in_keys);
     ws.route.resize(rows);
     for (UInt64 row = 0; row < rows; ++row)
-        ws.route[row] = routeHash(keys + row * kw, kw);
+        ws.route[row] = static_cast<UInt32>(rapidHashKey(keys + row * kw, kw) >> 32);
 
     if (is_last)
     {
         /// Point directly at the pre-allocated final leaf arrays and scatter key+ref only — the leaf-HT
-        /// build recomputes the bucket from the key (`bucketHash`), so no hash is scattered to a leaf.
+        /// build recomputes the bucket from the key (RapidHash low bits), so no hash is scattered to a leaf.
         for (size_t child = 0; child < fanout; ++child)
         {
             const size_t gidx = global_first_leaf + child * leaves_per_child;
@@ -691,8 +692,9 @@ void BuildStore::scatterBlocksIntoPartitions(
         std::vector<char> packed;
         if (multi_col)
             packed.resize(SCATTER_CHUNK_ROWS * kw);
-        /// Reused per-chunk route-hash buffer: the 32-bit `routeHash` is recomputed here from the packed
-        /// key (it is no longer stored per row by `add`), then used to route this chunk's key + ref.
+        /// Reused per-chunk route-hash buffer: the routing hash (top 32 bits of the RapidHash) is
+        /// recomputed here from the packed key (it is no longer stored per row by `add`), then used to
+        /// route this chunk's key + ref.
         std::vector<UInt32> route_buf(SCATTER_CHUNK_ROWS);
 
         UInt64 local_bytes = 0;
@@ -727,10 +729,11 @@ void BuildStore::scatterBlocksIntoPartitions(
                     keys_ptr = raw_keys + row_begin * kw;
                 }
 
-                /// Recompute this chunk's `routeHash` from the packed key (the same function and bytes
-                /// `add` used for the histogram), indexed chunk-locally [0, chunk_rows).
+                /// Recompute this chunk's routing hash (top 32 bits of the RapidHash) from the packed key
+                /// (the same function and bytes `add` used for the histogram), indexed chunk-locally
+                /// [0, chunk_rows).
                 for (size_t i = 0; i < chunk_rows; ++i)
-                    route_buf[i] = routeHash(keys_ptr + i * kw, kw);
+                    route_buf[i] = static_cast<UInt32>(rapidHashKey(keys_ptr + i * kw, kw) >> 32);
 
                 if (use_swwc)
                 {
@@ -771,7 +774,7 @@ LeafArrays BuildStore::scatterSinglePass(CoopPool & coord)
     const size_t num_used = used_slots.size();
 
     /// Allocate each leaf's key and ref arrays exactly once (NC gate: O(num_leaves) carves). No per-leaf
-    /// hash array — the leaf-HT build recomputes the bucket from the key (`bucketHash`).
+    /// hash array — the leaf-HT build recomputes the bucket from the key (RapidHash low bits).
     auto arrs = allocExactPartitions(out.arena, global_hist, key_width, &coord);
     out.key_base = std::move(arrs.key);
     out.ref_base = std::move(arrs.ref);
@@ -825,7 +828,7 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
     std::inclusive_scan(global_hist.begin(), global_hist.end(), gh_prefix.begin() + 1);
 
     /// Pre-allocate ALL final leaf key/ref arrays exactly once (NC gate: O(num_leaves) carves). No
-    /// per-leaf hash array — the leaf-HT build recomputes the bucket from the key (`bucketHash`).
+    /// per-leaf hash array — the leaf-HT build recomputes the bucket from the key (RapidHash low bits).
     LeafArrays out = makeLeafArrays();
     {
         auto arrs = allocExactPartitions(out.arena, global_hist, kw, &coord);
@@ -904,7 +907,7 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
         level0.count = std::move(level0_counts);
     }
 
-    /// Pass 0 recomputes the `routeHash` from the packed key (per chunk) to route into level0; the refine
+    /// Pass 0 recomputes the routing hash from the packed key (per chunk) to route into level0; the refine
     /// passes below recompute it again from the scattered packed key (nothing is carried).
     scatterBlocksIntoPartitions(
         coord, p0, shift0, mask0,

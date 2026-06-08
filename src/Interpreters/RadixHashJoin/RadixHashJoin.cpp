@@ -4,7 +4,7 @@
 #include <Interpreters/RadixHashJoin/ColPtrTables.h>
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
-#include <Interpreters/RadixHashJoin/RouteHash.h>
+#include <Interpreters/RadixHashJoin/RapidHash.h>
 
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/JoinUtils.h>
@@ -217,9 +217,9 @@ void RadixHashJoin::onBuildPhaseFinish()
 
 void RadixHashJoin::runPostBuild()
 {
-    /// Deferred exact key+ref scatter. The routing hash is recomputed from the key columns inside the
-    /// scatter (not stored per row); the leaf-HT bucket is recomputed from the key (`bucketHash`), so no
-    /// per-row hash is scattered to the leaves.
+    /// Deferred exact key+ref scatter. The routing hash (top bits of the RapidHash) is recomputed from the
+    /// key columns inside the scatter (not stored per row); the leaf-HT bucket is recomputed from the key
+    /// (RapidHash low bits), so no per-row hash is scattered to the leaves.
     RadixHash::LeafArrays leaves = state->build_store->scatterToLeaves(state->coord);
 
     state->block_base = state->build_store->blockBase();
@@ -279,9 +279,9 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
     if (can_probe)
     {
         /// Phase 1 — selector: pack the left key row-major to the same layout the build side scattered,
-        /// then compute the byte `routeHash` of each packed key (the identical function and bytes the
-        /// build used, so a key routes to the same leaf on both sides). Single-column keys use the
-        /// column's raw data directly as the packed key (zero-copy fast path).
+        /// then compute the 64-bit RapidHash of each packed key ONCE (the identical function and bytes the
+        /// build used, so a key routes to the same leaf and bucket on both sides). Single-column keys use
+        /// the column's raw data directly as the packed key (zero-copy fast path).
         Stopwatch sw_sel;
         const void * packed_ptr = nullptr;
         std::vector<char> packed;
@@ -303,12 +303,27 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
             packed_ptr = packed.data();
         }
 
-        std::vector<UInt32> hashes(n);
+        /// One 64-bit RapidHash per key, computed ONCE here: `collectMatches` derives the leaf from the
+        /// top routing bits and the bucket from the low 32 bits, so the probe never re-hashes. The key
+        /// width is dispatched once outside the row loop so the hot loop runs the fully-unrolled
+        /// `rapidhash::hash<W>`.
+        std::vector<UInt64> hashes(n);
         {
             const char * keys = static_cast<const char *>(packed_ptr);
-            const size_t kw = st.key_width;
-            for (size_t row = 0; row < n; ++row)
-                hashes[row] = RadixHash::routeHash(keys + row * kw, kw);
+            switch (st.key_width)
+            {
+#define RHJ_PROBE_HASH(W) \
+                case W: for (size_t row = 0; row < n; ++row) hashes[row] = rapidhash::hash<W>(keys + row * (W)); break;
+                RHJ_PROBE_HASH(4)  RHJ_PROBE_HASH(8)  RHJ_PROBE_HASH(12) RHJ_PROBE_HASH(16)
+                RHJ_PROBE_HASH(20) RHJ_PROBE_HASH(24) RHJ_PROBE_HASH(28) RHJ_PROBE_HASH(32)
+                RHJ_PROBE_HASH(36) RHJ_PROBE_HASH(40) RHJ_PROBE_HASH(44) RHJ_PROBE_HASH(48)
+                RHJ_PROBE_HASH(52) RHJ_PROBE_HASH(56) RHJ_PROBE_HASH(60) RHJ_PROBE_HASH(64)
+#undef RHJ_PROBE_HASH
+                default:
+                    throw Exception(
+                        ErrorCodes::LOGICAL_ERROR,
+                        "RadixHashJoin: unsupported key width {} (multiple of 4 in [4, 64])", st.key_width);
+            }
         }
         ProfileEvents::increment(ProfileEvents::RadixHashProbeSelectMicroseconds, sw_sel.elapsedMicroseconds());
 

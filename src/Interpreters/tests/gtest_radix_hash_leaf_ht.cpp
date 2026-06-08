@@ -9,7 +9,7 @@
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
-#include <Interpreters/RadixHashJoin/RouteHash.h>
+#include <Interpreters/RadixHashJoin/RapidHash.h>
 
 #include <Common/Stopwatch.h>
 #include <Common/assert_cast.h>
@@ -65,14 +65,15 @@ Block makeU64Block(const std::vector<UInt64> & keys)
     return Block(std::move(cols));
 }
 
-/// Route hashes for a single UInt64 key column: the byte `routeHash` of each 8-byte packed key, the same
-/// function the build side routes by, so probe and build agree on the leaf.
-std::vector<UInt32> computeHashes(const Block & block, size_t n)
+/// Full 64-bit RapidHash for a single UInt64 key column, computed once per row exactly like the probe
+/// selector: `collectMatches` derives the leaf from the top routing bits and the bucket from the low 32
+/// bits, so probe and build agree on both the leaf and the bucket.
+std::vector<UInt64> computeHashes(const Block & block, size_t n)
 {
     const char * raw = block.getByPosition(0).column->getRawData().data();
-    std::vector<UInt32> hash(n);
+    std::vector<UInt64> hash(n);
     for (size_t i = 0; i < n; ++i)
-        hash[i] = routeHash(raw + i * sizeof(UInt64), sizeof(UInt64));
+        hash[i] = rapidHashKey(raw + i * sizeof(UInt64), sizeof(UInt64));
     return hash;
 }
 
@@ -154,7 +155,7 @@ TEST(RadixHashLeafHT, InsertAndFindAll)
 
     /// Probe with the same keys; every probe row must find at least one match resolving to its key.
     Block probe = makeU64Block(keys);
-    const std::vector<UInt32> hashes = computeHashes(probe, n);
+    const std::vector<UInt64> hashes = computeHashes(probe, n);
     const void * packed = probe.getByPosition(0).column->getRawData().data();
 
     std::vector<UInt32> left_rows;
@@ -218,7 +219,7 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     const size_t dn = distinct_keys.size();
 
     Block probe = makeU64Block(distinct_keys);
-    const std::vector<UInt32> hashes = computeHashes(probe, dn);
+    const std::vector<UInt64> hashes = computeHashes(probe, dn);
     const void * packed = probe.getByPosition(0).column->getRawData().data();
 
     std::vector<UInt32> left_rows;
@@ -394,9 +395,9 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         ASSERT_EQ(total, store.totalRows());
 
         const void * packed = probe_col->getRawData().data();
-        std::vector<UInt32> hashes(total);
+        std::vector<UInt64> hashes(total);
         for (size_t i = 0; i < total; ++i)
-            hashes[i] = routeHash(static_cast<const char *>(packed) + i * width, width);
+            hashes[i] = rapidHashKey(static_cast<const char *>(packed) + i * width, width);
 
         std::vector<UInt32> left_rows;
         std::vector<BuildRef> refs;
@@ -425,7 +426,7 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
 /// Gate: the FULL build-then-probe round-trip through a forced MULTI-PASS scatter. Every functional gate
 /// above (`InsertAndFindAll`, `DuplicateKeysManyToMany`, `AllKeyWidthPaths`) uses
 /// `max_partitions_per_pass=8192` -> a single pass, so the multi-pass refine cascade
-/// (`BuildStore::scatterMultiPass`/`refineDepthFirst`, which recomputes `routeHash` from the scattered
+/// (`BuildStore::scatterMultiPass`/`refineDepthFirst`, which recomputes the routing hash from the scattered
 /// packed key at every pass) was never exercised on the leaf-HT build + probe path. Force {6,5} (two
 /// passes) with a small per-pass cap, build every key, then probe every key -> all found, exact key.
 TEST(RadixHashLeafHT, MultiPassInsertAndFindAll)
@@ -451,7 +452,7 @@ TEST(RadixHashLeafHT, MultiPassInsertAndFindAll)
 
     /// Probe with the same keys; every probe row must find at least one match resolving to its key.
     Block probe = makeU64Block(keys);
-    const std::vector<UInt32> hashes = computeHashes(probe, n);
+    const std::vector<UInt64> hashes = computeHashes(probe, n);
     const void * packed = probe.getByPosition(0).column->getRawData().data();
 
     std::vector<UInt32> left_rows;
@@ -516,7 +517,7 @@ TEST(RadixHashLeafHT, MultiPassDuplicateKeysManyToMany)
     const size_t dn = distinct_keys.size();
 
     Block probe = makeU64Block(distinct_keys);
-    const std::vector<UInt32> hashes = computeHashes(probe, dn);
+    const std::vector<UInt64> hashes = computeHashes(probe, dn);
     const void * packed = probe.getByPosition(0).column->getRawData().data();
 
     std::vector<UInt32> left_rows;
