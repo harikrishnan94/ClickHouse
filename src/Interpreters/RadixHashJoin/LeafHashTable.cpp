@@ -3,6 +3,7 @@
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstring>
@@ -77,27 +78,64 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
     const auto * hashes = static_cast<const UInt32 *>(la.hash_base[leaf]);
 
     constexpr size_t stride = leafCellBytes(key_width);
-    const UInt64 mask = ht.num_buckets - 1;
-    /// Prefetch distance 16: without the next_chain DRAM stall the build loop runs at ~5-10 ns per
-    /// iteration, so distance 8 (~40-80 ns lead) no longer covers DRAM latency (~80-100 ns).
-    constexpr UInt64 prefetch_distance = 16;
+    const UInt64 num_buckets = ht.num_buckets;
+    const UInt64 mask = num_buckets - 1;
 
-    for (UInt64 row = 0; row < rows; ++row)
+    /// Software-pipelined GROUP prefetch (machine-generic). Each step (1) computes the home buckets of
+    /// the NEXT group of rows in a tight, auto-vectorizable loop, (2) issues that group's home-cell L1
+    /// (locality 3) prefetches back-to-back, then (3) inserts the CURRENT group — whose cells were
+    /// prefetched a full group earlier. The back-to-back burst exposes group-wide memory-level
+    /// parallelism and gives each insert a full group of prefetch lead, so the random home-cell load
+    /// hits L1. The win comes from this structure rather than a hardware-tuned scalar prefetch distance:
+    /// `group` over-provisions the memory parallelism (a core only services up to its line-fill-buffer
+    /// count, ~10-16, and drops the rest — so smaller cores degrade gracefully), and `group * cell-size`
+    /// (≈ 1 KiB here) stays well within L1 on any machine. Always prefetches at least as far as, and to a
+    /// closer cache level than, the previous distance-16 / L2 plan, so it cannot regress below it.
+    constexpr size_t group = 64;
+    UInt64 pf_pos[group];
+
+    auto compute_buckets = [&](UInt64 base, size_t count)
     {
-        if (row + prefetch_distance < rows)
-        {
-            const UInt64 prefetch_pos = leafBucket(hashes[row + prefetch_distance], ht.num_buckets) & mask;
-            __builtin_prefetch(ht.cells + prefetch_pos * stride, /*rw=*/1, /*locality=*/1);
-        }
-        const BuildRef old_head = leafInsert<key_width>(ht, hashes[row], keys + row * key_width, refs[row]);
+        for (size_t i = 0; i < count; ++i) /// tight, auto-vectorizable
+            pf_pos[i] = leafBucket(hashes[base + i], num_buckets) & mask;
+    };
+    auto prefetch_burst = [&](size_t count)
+    {
+        for (size_t i = 0; i < count; ++i)
+            __builtin_prefetch(ht.cells + pf_pos[i] * stride, /*rw=*/1, /*locality=*/3);
+    };
+    auto insert_row = [&](UInt64 r)
+    {
+        const BuildRef old_head = leafInsert<key_width>(ht, hashes[r], keys + r * key_width, refs[r]);
         if (old_head.row_no != RadixShuffle::INVALID_ROW)
         {
             /// Duplicate key: lazily acquire (or reuse already-acquired) next_chain, then thread.
             BuildRef * nc = lcs.acquire();
             ht.next_chain = nc; /// make the pointer visible to this leaf's probe path
-            nc[leafFlat(refs[row], block_base)] = old_head;
+            nc[leafFlat(refs[r], block_base)] = old_head;
         }
+    };
+
+    /// Prime: prefetch the first group's home cells.
+    {
+        const size_t prime = static_cast<size_t>(std::min<UInt64>(group, rows));
+        compute_buckets(0, prime);
+        prefetch_burst(prime);
     }
+
+    UInt64 row = 0;
+    for (; row + group <= rows; row += group)
+    {
+        const UInt64 next = row + group;
+        const size_t to_prefetch = next < rows ? static_cast<size_t>(std::min<UInt64>(group, rows - next)) : 0;
+        compute_buckets(next, to_prefetch);
+        prefetch_burst(to_prefetch);
+        for (size_t i = 0; i < group; ++i)
+            insert_row(row + i);
+    }
+    /// Tail (already prefetched by the previous iteration's burst).
+    for (; row < rows; ++row)
+        insert_row(row);
 }
 
 void fillLeafDispatch(size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf,

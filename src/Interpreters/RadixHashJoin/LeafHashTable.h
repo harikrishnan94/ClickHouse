@@ -6,7 +6,6 @@
 
 #include <base/types.h>
 
-#include <bit>
 #include <cstddef>
 #include <vector>
 
@@ -55,14 +54,19 @@ constexpr size_t leafCellBytes(size_t key_width) noexcept
     return sizeof(RadixShuffle::BuildRef) + key_width;
 }
 
-/// Bucket index in [0, num_buckets): Fibonacci-mix the 32-bit hash, take the top log2(num_buckets)
-/// bits (spec section 5.6). `num_buckets` is a non-zero power of two. The multiply is a 32-bit IMUL.
+/// Bucket index in [0, num_buckets) (spec section 5.6) — the low log2(num_buckets) hash bits.
+///
+/// No entropy-spreading is needed here. The scatter already routed the row to its leaf using the TOP
+/// `total_bits` hash bits (`leaf_id = hash >> (32 - total_bits)`), so within a leaf those high bits are
+/// constant and the distinguishing entropy lives in the LOW bits. We index the bucket directly with the
+/// low bits, which are uniform (CRC32C `weakHashValue32`, good in every output bit) and disjoint from
+/// the leaf bits whenever `total_bits + log2(num_buckets) <= 32` — true for any build up to ~2^31 rows
+/// (and a 32-bit hash is itself saturating beyond that). The Fibonacci mix only existed to decorrelate
+/// the bucket from the leaf id; consuming a disjoint (low) bit range gives that decorrelation for free.
+/// `num_buckets` is a non-zero power of two, so this is a single AND.
 inline UInt64 leafBucket(UInt32 h, UInt64 num_buckets) noexcept
 {
-    const UInt32 mixed = h * 0x9E3779B9u; /// 2^32 * (golden ratio); spreads entropy into the high bits
-    const unsigned log2_buckets = std::countr_zero(num_buckets);
-    const unsigned shift = log2_buckets >= 32 ? 0u : 32u - log2_buckets;
-    return static_cast<UInt64>(mixed >> shift);
+    return static_cast<UInt64>(h) & (num_buckets - 1);
 }
 
 /// Flat next_chain slot of a build row: block_base[block_no] + row_no (row_no is 0-based).
