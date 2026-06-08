@@ -9,6 +9,7 @@
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
+#include <Interpreters/RadixHashJoin/RouteHash.h>
 
 #include <Common/Stopwatch.h>
 #include <Common/assert_cast.h>
@@ -64,10 +65,14 @@ Block makeU64Block(const std::vector<UInt64> & keys)
     return Block(std::move(cols));
 }
 
+/// Route hashes for a single UInt64 key column: the byte `routeHash` of each 8-byte packed key, the same
+/// function the build side routes by, so probe and build agree on the leaf.
 std::vector<UInt32> computeHashes(const Block & block, size_t n)
 {
-    std::vector<UInt32> hash(n, 0);
-    block.getByPosition(0).column->computeHashInto(0, n, hash.data(), /*initial=*/true);
+    const char * raw = block.getByPosition(0).column->getRawData().data();
+    std::vector<UInt32> hash(n);
+    for (size_t i = 0; i < n; ++i)
+        hash[i] = routeHash(raw + i * sizeof(UInt64), sizeof(UInt64));
     return hash;
 }
 
@@ -388,9 +393,10 @@ TEST(RadixHashLeafHT, AllKeyWidthPaths)
         const size_t total = probe_col->size();
         ASSERT_EQ(total, store.totalRows());
 
-        std::vector<UInt32> hashes(total, 0);
-        probe_col->computeHashInto(0, total, hashes.data(), true);
         const void * packed = probe_col->getRawData().data();
+        std::vector<UInt32> hashes(total);
+        for (size_t i = 0; i < total; ++i)
+            hashes[i] = routeHash(static_cast<const char *>(packed) + i * width, width);
 
         std::vector<UInt32> left_rows;
         std::vector<BuildRef> refs;

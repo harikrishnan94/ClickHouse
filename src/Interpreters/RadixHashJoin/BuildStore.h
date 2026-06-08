@@ -115,13 +115,13 @@ private:
 /** BuildStore — the radix hash join build path, steps 1+2+4 (spec sections 4.2, 4.6), implemented as
   * a standalone, join-independent unit (the leaf-HT build, step 5, is phase P4; the probe is P5).
   *
-  *   - `add` (per build worker, lock-free): COW-move the right block into this worker's store, hash the
-  *     join key (one chained `IColumn::computeHashInto` over the — possibly several — fixed-width key
-  *     columns) into a small REUSED per-worker scratch buffer, and accumulate the routed row counts into
-  *     the per-thread replicated histogram (which persists across ALL of the thread's blocks). The hash
-  *     is NOT stored per row — it is recomputed from the key columns in the scatter (see below), trading
-  *     a second hash pass for ~N*4 B of saved memory. No scatter, no payload copy, no per-block histogram
-  *     (spec invariants 1, 2).
+  *   - `add` (per build worker, lock-free): COW-move the right block into this worker's store, compute
+  *     the byte `routeHash` of each PACKED key (single-column: the column's raw data already IS the
+  *     packed key; multi-column: pack a chunk first) into a small REUSED per-worker scratch buffer, and
+  *     accumulate the routed row counts into the per-thread replicated histogram (which persists across
+  *     ALL of the thread's blocks). The hash is NOT stored per row — it is recomputed from the packed key
+  *     in the scatter (see below), trading a second hash pass for ~N*4 B of saved memory. No scatter, no
+  *     payload copy, no per-block histogram (spec invariants 1, 2).
   *   - `finishBuild` (single barrier): move-concat the per-worker stores (assigning final `block_no`s),
   *     fold each thread's replicated histogram into `global_hist`, and compute its exclusive prefix sum
   *     `offset`. Records the per-slot contiguous block ranges used by the scatter.
@@ -130,9 +130,10 @@ private:
   *     of `key + BuildRef` on the **caller-provided** `ThreadPool` (the query pool, plan D5). Each
   *     build thread owns its own contiguous block range and seeds its write cursors once from a
   *     per-`(thread,partition)` offset matrix (one prefix-sum across threads) — fully lock-free.
-  *     Multi-pass builds route through pass-0 partitions carrying the `uint32` row hash, freeing each
-  *     consumed intermediate partition immediately (`GrowingArena::freeBlock`). `num_threads` governs
-  *     the depth-first refine work-steal parallelism (P4+).
+  *     Multi-pass builds route through pass-0 partitions and recompute the `routeHash` from the scattered
+  *     packed key at every refine pass (nothing is carried), freeing each consumed intermediate partition
+  *     immediately (`GrowingArena::freeBlock`). `num_threads` governs the depth-first refine work-steal
+  *     parallelism (P4+).
   *
   * Thread-slot handout: each distinct thread that calls `add` is bound (once) to a `LocalBuildState`
   * slot via a thread-local cache keyed on a unique instance id + an atomic counter; more than
@@ -166,10 +167,10 @@ public:
     void finishBuild();
 
     /// Step 4. Deferred exact key+ref scatter into per-leaf arrays, parallelised via `coord`. The 32-bit
-    /// routing hash is recomputed from the key columns per chunk inside the scatter (into a small reused
+    /// `routeHash` is recomputed from the packed key per chunk inside the scatter (into a small reused
     /// buffer) — it is no longer stored per row by `add`. The leaf bucket is recomputed from the key in
-    /// the leaf-HT build (`bucketHash`), so no per-row hash is scattered to the leaves on a single pass.
-    /// Multi-pass still carries the routing hash through the cascade so refine passes can route by it.
+    /// the leaf-HT build (`bucketHash`), so no per-row hash is scattered to the leaves. Multi-pass refine
+    /// passes likewise recompute `routeHash` from the scattered packed key (no carried hash column).
     /// Must be called only by the leader inside a CoopPool::run body.
     LeafArrays scatterToLeaves(CoopPool & coord);
 
@@ -195,7 +196,8 @@ private:
         explicit LocalBuildState(size_t num_leaves);
 
         std::vector<Block> blocks;
-        std::vector<UInt32> hash_scratch;              /// reused per-block 32-bit hash buffer for the histogram (not stored)
+        std::vector<UInt32> hash_scratch;              /// reused per-block routeHash buffer for the histogram (not stored)
+        std::vector<char> pack_scratch;                /// reused multi-column packed-key chunk buffer for the histogram routeHash
         std::vector<UInt32> rows_of_block;
 
         /// Replicated histogram: `replicas` copies of the `num_leaves` counters, round-robined per
@@ -224,22 +226,22 @@ private:
         RadixShuffle::ScatterScratch scratch;
         std::vector<void *> kout;
         std::vector<RadixShuffle::BuildRef *> rout;
-        std::vector<void *> pout;
+        std::vector<UInt32> route; /// reused per-call routeHash buffer recomputed from the packed key
         UInt64 local_bytes = 0;
     };
 
     /// Depth-first recursive refinement of one pass-0 partition all the way to its final leaves.
-    /// `global_first_leaf` is the leaf index of the first leaf in this partition's subtree. At the last
-    /// pass the scattered key+ref land in the pre-allocated `out.key_base/ref_base[leaf]` directly (key+ref
-    /// only — the leaf bucket is recomputed from the key, so no hash is scattered to the leaves);
-    /// intermediate passes allocate a per-call RAII `GrowingArena` (freed on return -> lowest peak
-    /// intermediate memory), scatter key+ref+hash into children (the carried routing hash lets the next
-    /// pass route), then recurse depth-first.
+    /// `global_first_leaf` is the leaf index of the first leaf in this partition's subtree. Every pass
+    /// recomputes the `routeHash` of each row from the scattered packed key `in_keys` (nothing is carried)
+    /// and routes this pass's bit-window by it. At the last pass the scattered key+ref land in the
+    /// pre-allocated `out.key_base/ref_base[leaf]` directly (key+ref only — the leaf bucket is recomputed
+    /// from the key, so no hash is scattered to the leaves); intermediate passes allocate a per-call RAII
+    /// `GrowingArena` (freed on return -> lowest peak intermediate memory), scatter key+ref into children,
+    /// then recurse depth-first.
     void refineDepthFirst(
         size_t global_first_leaf,
         const void * in_keys,
         const RadixShuffle::BuildRef * in_refs,
-        const UInt32 * in_hashes,
         UInt64 rows,
         size_t pass_index,
         UInt32 bits_consumed,
@@ -247,14 +249,13 @@ private:
         const std::vector<UInt64> & gh_prefix,
         RefineWorkerScratch & ws);
 
-    /// Worker kernel: scatter key + BuildRef (and, iff carry_hash, the uint32 routing hash) for all build
-    /// blocks into `num_parts` partitions using static per-thread ownership. Each build thread (slot)
-    /// scatters its own contiguous block range into disjoint per-partition sub-regions, seeding its
-    /// write cursors once from `thr_off[worker_id * num_parts + part]` (no per-block cursor reseeding).
-    /// The routing hash is recomputed per chunk from the key columns into a small reused buffer (not read
-    /// from a stored per-row array). Single-pass calls this with carry_hash=false (hash scatter compiled
-    /// out entirely); multi-pass pass-0 uses carry_hash=true so refine passes can route by the hash.
-    template <bool carry_hash>
+    /// Worker kernel: scatter key + BuildRef for all build blocks into `num_parts` partitions using static
+    /// per-thread ownership. Each build thread (slot) scatters its own contiguous block range into disjoint
+    /// per-partition sub-regions, seeding its write cursors once from `thr_off[worker_id * num_parts + part]`
+    /// (no per-block cursor reseeding). The `routeHash` is recomputed per chunk from the packed key into a
+    /// small reused buffer (not read from a stored per-row array). Used identically for the single-pass
+    /// leaf scatter and the multi-pass pass-0 scatter (refine passes recompute `routeHash` themselves, so
+    /// no hash column is ever scattered).
     void scatterBlocksIntoPartitions(
         CoopPool & coord,
         size_t num_parts,
@@ -263,7 +264,6 @@ private:
         const std::vector<UInt64> & thr_off, /// flat [used_slots x num_parts]: per-thread start offsets within each partition output
         void * const * key_base_arr,
         RadixShuffle::BuildRef * const * ref_base_arr,
-        void * const * hash_base_arr,
         std::atomic<UInt64> & total_bytes,
         std::vector<UInt64> & worker_counts);
 

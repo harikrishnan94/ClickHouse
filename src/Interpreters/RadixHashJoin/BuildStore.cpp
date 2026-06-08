@@ -1,4 +1,5 @@
 #include <Interpreters/RadixHashJoin/BuildStore.h>
+#include <Interpreters/RadixHashJoin/RouteHash.h>
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
@@ -43,9 +44,7 @@ using RadixShuffle::BuildRef;
 using RadixShuffle::LINE_BYTES;
 using RadixShuffle::roundUpTo64;
 using RadixShuffle::ScatterScratch;
-using RadixShuffle::scatterColumn;
 using RadixShuffle::scatterColumnDrainSwwc;
-using RadixShuffle::scatterColumnInto;
 using RadixShuffle::scatterColumnIntoSwwc;
 using RadixShuffle::scatterKeyRefInto;
 using RadixShuffle::scatterKeyRefTwoColumn;
@@ -101,16 +100,15 @@ PackKeyColumnFn chooseKeyPacker(size_t width)
     }
 }
 
-/// Intermediate cascade level for the multi-pass scatter (key + BuildRef + carried uint32 row hash,
-/// one dense array per partition). Keys and hashes are void* so they match LeafArrays and the
-/// unified template worker; cast to typed pointers at the call sites.
+/// Intermediate cascade level for the multi-pass scatter (key + BuildRef, one dense array per partition).
+/// Keys are void* so they match LeafArrays and the scatter worker; cast to typed pointers at the call
+/// sites. No carried hash column — every refine pass recomputes `routeHash` from the packed key.
 struct CascadeLevel
 {
     size_t num_parts = 0;
     GrowingArena arena;
     std::vector<void *> key;
     std::vector<BuildRef *> ref;
-    std::vector<void *> hash; /// UInt32* stored as void* (cast when reading in refine pass)
     std::vector<UInt64> count;
 };
 
@@ -119,16 +117,15 @@ struct PartitionArrays
 {
     std::vector<void *> key;
     std::vector<BuildRef *> ref;
-    std::vector<void *> hash; /// populated onum_leavesy when carry_hash == true
     UInt64 alloc_count = 0;
 };
 
-/// Allocate exactly-sized, 64 B-aligned key/ref/(hash) arrays for every non-empty partition from
-/// `arena`. This is the single place that does per-leaf/per-partition allocation (O(num_parts) carves),
-/// used by scatterSinglePass (leaves), level0, and every refine level.
+/// Allocate exactly-sized, 64 B-aligned key/ref arrays for every non-empty partition from `arena`. This
+/// is the single place that does per-leaf/per-partition allocation (O(num_parts) carves), used by
+/// scatterSinglePass (leaves), level0, and every refine level.
 ///
-/// All three sections are packed into one contiguous alloc per partition:
-///   [ key_section | ref_section | hash_section (if carry_hash) ]
+/// Both sections are packed into one contiguous alloc per partition:
+///   [ key_section | ref_section ]
 /// Each section is roundUpTo64 bytes; sub-pointers are naturally 64 B-aligned since the base is
 /// LINE_BYTES-aligned and each section size is a multiple of LINE_BYTES. The arrays need no zeroing —
 /// the scatter overwrites every output row.
@@ -140,28 +137,22 @@ PartitionArrays allocExactPartitions(
     GrowingArena & arena,
     std::span<const UInt64> counts,
     size_t kw,
-    bool carry_hash,
     CoopPool * coord = nullptr)
 {
     const size_t num_parts = counts.size();
     PartitionArrays out;
     out.key.assign(num_parts, nullptr);
     out.ref.assign(num_parts, nullptr);
-    if (carry_hash)
-        out.hash.assign(num_parts, nullptr);
 
     auto carve_one = [&](size_t part)
     {
         if (counts[part] == 0)
             return;
-        const size_t key_bytes  = roundUpTo64(counts[part] * kw);
-        const size_t ref_bytes  = roundUpTo64(counts[part] * sizeof(BuildRef));
-        const size_t hash_bytes = carry_hash ? roundUpTo64(counts[part] * sizeof(UInt32)) : 0;
-        char * base = static_cast<char *>(arena.alloc(key_bytes + ref_bytes + hash_bytes, LINE_BYTES));
+        const size_t key_bytes = roundUpTo64(counts[part] * kw);
+        const size_t ref_bytes = roundUpTo64(counts[part] * sizeof(BuildRef));
+        char * base = static_cast<char *>(arena.alloc(key_bytes + ref_bytes, LINE_BYTES));
         out.key[part] = base;
         out.ref[part] = reinterpret_cast<BuildRef *>(base + key_bytes);
-        if (carry_hash)
-            out.hash[part] = base + key_bytes + ref_bytes;
     };
 
     if (coord != nullptr)
@@ -383,17 +374,35 @@ void BuildStore::add(const Block & block)
 
     Stopwatch sw;
 
-    /// (2) Hash all key columns into a small REUSED scratch buffer (one chained `computeHashInto`).
-    /// The hash is consumed by the histogram below and then discarded — it is NOT stored per row.
-    /// The scatter recomputes it from the same key columns just before routing (see
+    /// (2) Compute the byte `routeHash` of each PACKED key into a small REUSED scratch buffer. A single
+    /// key column's raw data already IS the packed key (no copy); multiple columns are packed a chunk at
+    /// a time into `pack_scratch` first. The hash is consumed by the histogram below and then discarded —
+    /// it is NOT stored per row. The scatter recomputes it the same way just before routing (see
     /// `scatterBlocksIntoPartitions`), trading a second hash pass for ~N*4 B of saved build memory.
     UInt32 * row_hash = nullptr;
     if (n > 0)
     {
+        const size_t kw = key_width;
         state.hash_scratch.resize(n);
         row_hash = state.hash_scratch.data();
-        for (size_t col = 0; col < key_positions.size(); ++col)
-            kept.getByPosition(key_positions[col]).column->computeHashInto(0, n, row_hash, /*initial=*/col == 0);
+        if (key_positions.size() == 1)
+        {
+            const char * raw = kept.getByPosition(key_positions[0]).column->getRawData().data();
+            for (size_t row = 0; row < n; ++row)
+                row_hash[row] = routeHash(raw + row * kw, kw);
+        }
+        else
+        {
+            state.pack_scratch.resize(SCATTER_CHUNK_ROWS * kw);
+            char * packed = state.pack_scratch.data();
+            for (size_t row_begin = 0; row_begin < n; row_begin += SCATTER_CHUNK_ROWS)
+            {
+                const size_t chunk_rows = std::min(SCATTER_CHUNK_ROWS, n - row_begin);
+                packKeyChunk(kept, row_begin, chunk_rows, packed);
+                for (size_t i = 0; i < chunk_rows; ++i)
+                    row_hash[row_begin + i] = routeHash(packed + i * kw, kw);
+            }
+        }
     }
 
     /// (3) Accumulate this block's rows into the per-thread replicated histogram.
@@ -502,7 +511,7 @@ void BuildStore::finalizeScatter(
 
 
 BuildStore::RefineWorkerScratch::RefineWorkerScratch(size_t max_fanout)
-    : scratch(max_fanout), kout(max_fanout), rout(max_fanout), pout(max_fanout)
+    : scratch(max_fanout), kout(max_fanout), rout(max_fanout)
 {
 }
 
@@ -510,7 +519,6 @@ void BuildStore::refineDepthFirst(
     size_t global_first_leaf,
     const void * in_keys,
     const BuildRef * in_refs,
-    const UInt32 * in_hashes,
     UInt64 rows,
     size_t pass_index,
     UInt32 bits_consumed,
@@ -524,11 +532,20 @@ void BuildStore::refineDepthFirst(
     /// leaf_fanout_shift: log2 of the number of final leaves per child partition at this level.
     const UInt32 leaf_fanout_shift = cfg.total_bits - new_bits;
     const size_t leaves_per_child = size_t{1} << leaf_fanout_shift;
-    /// routing_shift: right-shift to apply to the 32-bit row hash to select this pass's bit-window.
+    /// routing_shift: right-shift to apply to the 32-bit route hash to select this pass's bit-window.
     const UInt32 routing_shift = PartitionConfig::HASH_BITS - new_bits;
     const UInt32 mask = static_cast<UInt32>(fanout - 1);
     const bool is_last = (pass_index + 1 == cfg.pass_bits.size());
     const size_t kw = key_width;
+
+    /// Recompute the `routeHash` of every row from the scattered packed key (this pass has only `in_keys`,
+    /// never the typed columns). The same function ran at the histogram and pass-0, so this pass's
+    /// bit-window selects the identical child partition. Buffer is reused across the recursion (it is
+    /// consumed by the scatter below before any child overwrites it).
+    const char * keys = static_cast<const char *>(in_keys);
+    ws.route.resize(rows);
+    for (UInt64 row = 0; row < rows; ++row)
+        ws.route[row] = routeHash(keys + row * kw, kw);
 
     if (is_last)
     {
@@ -542,7 +559,7 @@ void BuildStore::refineDepthFirst(
         }
 
         scatterKeyRefTwoColumn(
-            in_hashes, routing_shift, mask, rows, in_keys, kw, in_refs, fanout,
+            ws.route.data(), routing_shift, mask, rows, in_keys, kw, in_refs, fanout,
             ws.kout.data(), ws.rout.data(), ws.scratch, shouldUseSwwc(2, static_cast<int>(fanout)));
 
         ws.local_bytes += rows * (kw + sizeof(BuildRef));
@@ -561,27 +578,21 @@ void BuildStore::refineDepthFirst(
         /// Allocate the children of this partition in a RAII GrowingArena.
         /// The arena is freed when this stack frame exits — lowest peak intermediate memory.
         GrowingArena child_arena(arena_max_block);
-        auto arrs = allocExactPartitions(child_arena, child_counts, kw, /*carry_hash=*/true);
+        auto arrs = allocExactPartitions(child_arena, child_counts, kw);
         for (size_t child = 0; child < fanout; ++child)
         {
             ws.kout[child] = arrs.key[child];
             ws.rout[child] = arrs.ref[child];
-            ws.pout[child] = arrs.hash[child];
         }
 
         scatterKeyRefTwoColumn(
-            in_hashes, routing_shift, mask, rows, in_keys, kw, in_refs, fanout,
+            ws.route.data(), routing_shift, mask, rows, in_keys, kw, in_refs, fanout,
             ws.kout.data(), ws.rout.data(), ws.scratch, shouldUseSwwc(2, static_cast<int>(fanout)));
 
-        /// Scatter the row hashes themselves so each child partition carries them for the next pass.
-        scatterColumn(
-            in_hashes, routing_shift, mask, rows, in_hashes, sizeof(UInt32),
-            fanout, ws.pout.data(), ws.scratch, shouldUseSwwc(1, static_cast<int>(fanout)));
-
-        ws.local_bytes += rows * (kw + sizeof(BuildRef) + sizeof(UInt32));
+        ws.local_bytes += rows * (kw + sizeof(BuildRef));
 
         /// Depth-first recursion: complete each child's subtree before the next. After each child
-        /// returns, free its combined key+ref+hash block immediately (a single allocation from
+        /// returns, free its combined key+ref block immediately (a single allocation from
         /// allocExactPartitions) — so consumed intermediate memory is released as the refine descends,
         /// keeping peak memory low.
         for (size_t child = 0; child < fanout; ++child)
@@ -593,7 +604,6 @@ void BuildStore::refineDepthFirst(
                 child_first_leaf,
                 arrs.key[child],
                 arrs.ref[child],
-                static_cast<const UInt32 *>(arrs.hash[child]),
                 child_counts[child],
                 pass_index + 1,
                 new_bits,
@@ -607,7 +617,6 @@ void BuildStore::refineDepthFirst(
 }
 
 
-template <bool carry_hash>
 void BuildStore::scatterBlocksIntoPartitions(
     CoopPool & coord,
     size_t num_parts,
@@ -616,7 +625,6 @@ void BuildStore::scatterBlocksIntoPartitions(
     const std::vector<UInt64> & thr_off,
     void * const * key_base_arr,
     BuildRef * const * ref_base_arr,
-    void * const * hash_base_arr,
     std::atomic<UInt64> & total_bytes,
     std::vector<UInt64> & worker_counts)
 {
@@ -629,9 +637,9 @@ void BuildStore::scatterBlocksIntoPartitions(
         return;
 
     /// At high fanout the per-pass scatter routes through SWWC + NT (only emitted in a multitarget
-    /// build); below the threshold, or without NT, it uses the direct incremental cursors. The hash
-    /// column adds a third scattered column when carry_hash.
-    const bool use_swwc = shouldUseSwwc(carry_hash ? 3 : 2, static_cast<int>(num_parts));
+    /// build); below the threshold, or without NT, it uses the direct incremental cursors. Two scattered
+    /// columns now (key + ref) — refine passes recompute the route hash, so it is never scattered.
+    const bool use_swwc = shouldUseSwwc(2, static_cast<int>(num_parts));
 
     coord.parallelFor(num_used, [&](size_t worker)
     {
@@ -640,12 +648,10 @@ void BuildStore::scatterBlocksIntoPartitions(
         /// Direct path: per-partition live write cursors (used iff !use_swwc).
         std::vector<void *> kcur;
         std::vector<BuildRef *> rcur;
-        std::vector<void *> hcur;
 
         /// SWWC path: per-worker persistent scratch (own cursors + NT staging) per scattered column.
         std::optional<ScatterScratch> key_ss;
         std::optional<ScatterScratch> ref_ss;
-        std::optional<ScatterScratch> hash_ss;
 
         if (use_swwc)
         {
@@ -653,8 +659,6 @@ void BuildStore::scatterBlocksIntoPartitions(
             /// ONCE from this worker's per-(thread,partition) starting offsets (no per-block reseeding).
             key_ss.emplace(num_parts);
             ref_ss.emplace(num_parts);
-            if constexpr (carry_hash)
-                hash_ss.emplace(num_parts);
 
             for (size_t part = 0; part < num_parts; ++part)
             {
@@ -662,8 +666,6 @@ void BuildStore::scatterBlocksIntoPartitions(
                 {
                     key_ss->cursors()[part] = static_cast<char *>(key_base_arr[part]) + worker_offsets[part] * kw;
                     ref_ss->cursors()[part] = reinterpret_cast<char *>(ref_base_arr[part]) + worker_offsets[part] * sizeof(BuildRef);
-                    if constexpr (carry_hash)
-                        hash_ss->cursors()[part] = static_cast<char *>(hash_base_arr[part]) + worker_offsets[part] * sizeof(UInt32);
                 }
                 /// else: nullptr stays — empty partition, cursor never advanced
             }
@@ -672,8 +674,6 @@ void BuildStore::scatterBlocksIntoPartitions(
         {
             kcur.assign(num_parts, nullptr);
             rcur.assign(num_parts, nullptr);
-            if constexpr (carry_hash)
-                hcur.assign(num_parts, nullptr);
 
             /// Seed cursors ONCE from this worker's per-partition starting offsets (no per-block reseeding).
             for (size_t part = 0; part < num_parts; ++part)
@@ -682,8 +682,6 @@ void BuildStore::scatterBlocksIntoPartitions(
                 {
                     kcur[part] = static_cast<char *>(key_base_arr[part]) + worker_offsets[part] * kw;
                     rcur[part] = ref_base_arr[part] + worker_offsets[part];
-                    if constexpr (carry_hash)
-                        hcur[part] = static_cast<char *>(hash_base_arr[part]) + worker_offsets[part] * sizeof(UInt32);
                 }
                 /// else: nullptr stays — empty partition, cursor never advanced
             }
@@ -693,9 +691,8 @@ void BuildStore::scatterBlocksIntoPartitions(
         std::vector<char> packed;
         if (multi_col)
             packed.resize(SCATTER_CHUNK_ROWS * kw);
-        /// Reused per-chunk routing-hash buffer: the 32-bit hash is recomputed here from the key columns
-        /// (it is no longer stored per row by `add`), then used to route this chunk — and, when
-        /// carry_hash, scattered alongside so refine passes can route by it.
+        /// Reused per-chunk route-hash buffer: the 32-bit `routeHash` is recomputed here from the packed
+        /// key (it is no longer stored per row by `add`), then used to route this chunk's key + ref.
         std::vector<UInt32> route_buf(SCATTER_CHUNK_ROWS);
 
         UInt64 local_bytes = 0;
@@ -719,7 +716,7 @@ void BuildStore::scatterBlocksIntoPartitions(
             for (size_t row_begin = 0; row_begin < n; row_begin += SCATTER_CHUNK_ROWS)
             {
                 const size_t chunk_rows = std::min(SCATTER_CHUNK_ROWS, n - row_begin);
-                const void * keys_ptr = nullptr;
+                const char * keys_ptr = nullptr;
                 if (multi_col)
                 {
                     packKeyChunk(global_blocks[block_idx], row_begin, chunk_rows, packed.data());
@@ -730,12 +727,10 @@ void BuildStore::scatterBlocksIntoPartitions(
                     keys_ptr = raw_keys + row_begin * kw;
                 }
 
-                /// Recompute this chunk's routing hash from the key columns (same chained `computeHashInto`
-                /// `add` used). `computeHashInto` writes [0, chunk_rows) of route_buf for rows
-                /// [row_begin, row_begin + chunk_rows), so route_buf is indexed chunk-locally below.
-                for (size_t col = 0; col < key_positions.size(); ++col)
-                    global_blocks[block_idx].getByPosition(key_positions[col]).column->computeHashInto(
-                        row_begin, row_begin + chunk_rows, route_buf.data(), /*initial=*/col == 0);
+                /// Recompute this chunk's `routeHash` from the packed key (the same function and bytes
+                /// `add` used for the histogram), indexed chunk-locally [0, chunk_rows).
+                for (size_t i = 0; i < chunk_rows; ++i)
+                    route_buf[i] = routeHash(keys_ptr + i * kw, kw);
 
                 if (use_swwc)
                 {
@@ -743,22 +738,12 @@ void BuildStore::scatterBlocksIntoPartitions(
                         route_buf.data(), shift, mask, chunk_rows, keys_ptr, kw, num_parts, *key_ss);
                     local_bytes += scatterColumnIntoSwwc(
                         route_buf.data(), shift, mask, chunk_rows, refs.data() + row_begin, sizeof(BuildRef), num_parts, *ref_ss);
-                    if constexpr (carry_hash)
-                        local_bytes += scatterColumnIntoSwwc(
-                            route_buf.data(), shift, mask, chunk_rows, route_buf.data(), sizeof(UInt32), num_parts, *hash_ss);
                 }
                 else
                 {
                     local_bytes += scatterKeyRefInto(
                         route_buf.data(), shift, mask, chunk_rows, keys_ptr, kw,
                         refs.data() + row_begin, num_parts, kcur.data(), rcur.data());
-
-                    if constexpr (carry_hash)
-                    {
-                        local_bytes += scatterColumnInto(
-                            route_buf.data(), shift, mask, chunk_rows, route_buf.data(), sizeof(UInt32),
-                            num_parts, hcur.data());
-                    }
                 }
             }
 
@@ -771,8 +756,6 @@ void BuildStore::scatterBlocksIntoPartitions(
         {
             scatterColumnDrainSwwc(num_parts, *key_ss);
             scatterColumnDrainSwwc(num_parts, *ref_ss);
-            if constexpr (carry_hash)
-                scatterColumnDrainSwwc(num_parts, *hash_ss);
         }
 
         worker_counts[worker] += local_blocks;
@@ -789,7 +772,7 @@ LeafArrays BuildStore::scatterSinglePass(CoopPool & coord)
 
     /// Allocate each leaf's key and ref arrays exactly once (NC gate: O(num_leaves) carves). No per-leaf
     /// hash array — the leaf-HT build recomputes the bucket from the key (`bucketHash`).
-    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, /*carry_hash=*/false, &coord);
+    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, &coord);
     out.key_base = std::move(arrs.key);
     out.ref_base = std::move(arrs.ref);
     out.alloc_count = arrs.alloc_count;
@@ -821,9 +804,9 @@ LeafArrays BuildStore::scatterSinglePass(CoopPool & coord)
 
     std::atomic<UInt64> total_bytes{0};
     Stopwatch sw;
-    scatterBlocksIntoPartitions</*carry_hash=*/false>(
+    scatterBlocksIntoPartitions(
         coord, num_leaves, shift, mask,
-        thr_off, out.key_base.data(), out.ref_base.data(), /*hash_base_arr=*/nullptr,
+        thr_off, out.key_base.data(), out.ref_base.data(),
         total_bytes, out.worker_block_counts);
 
     finalizeScatter(out, sw, total_bytes, /*num_passes=*/1);
@@ -845,7 +828,7 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
     /// per-leaf hash array — the leaf-HT build recomputes the bucket from the key (`bucketHash`).
     LeafArrays out = makeLeafArrays();
     {
-        auto arrs = allocExactPartitions(out.arena, global_hist, kw, /*carry_hash=*/false, &coord);
+        auto arrs = allocExactPartitions(out.arena, global_hist, kw, &coord);
         out.key_base = std::move(arrs.key);
         out.ref_base = std::move(arrs.ref);
         out.alloc_count = arrs.alloc_count;
@@ -856,7 +839,7 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
     std::atomic<UInt64> total_bytes{0};
     Stopwatch sw;
 
-    // ---- Pass 0: blocks -> pass-0 partitions (carry_hash) -----------------------------------
+    // ---- Pass 0: blocks -> pass-0 partitions -----------------------------------------------
     const UInt32 pass0_bits = cfg.pass_bits[0];
     const size_t p0 = size_t{1} << pass0_bits;
     /// shift0 selects the top `pass0_bits` of the 32-bit hash: shift0 = HASH_BITS - pass0_bits.
@@ -915,18 +898,17 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
     level0.num_parts = p0;
     level0.arena = GrowingArena(arena_max_block);
     {
-        auto arrs = allocExactPartitions(level0.arena, level0_counts, kw, /*carry_hash=*/true, &coord);
+        auto arrs = allocExactPartitions(level0.arena, level0_counts, kw, &coord);
         level0.key   = std::move(arrs.key);
         level0.ref   = std::move(arrs.ref);
-        level0.hash  = std::move(arrs.hash);
         level0.count = std::move(level0_counts);
     }
 
-    /// Pass 0 recomputes the routing hash from the key columns (per chunk) and carries it into level0 so
-    /// the refine passes below can route by it without the original columns.
-    scatterBlocksIntoPartitions</*carry_hash=*/true>(
+    /// Pass 0 recomputes the `routeHash` from the packed key (per chunk) to route into level0; the refine
+    /// passes below recompute it again from the scattered packed key (nothing is carried).
+    scatterBlocksIntoPartitions(
         coord, p0, shift0, mask0,
-        thr_off0, level0.key.data(), level0.ref.data(), level0.hash.data(),
+        thr_off0, level0.key.data(), level0.ref.data(),
         total_bytes, out.worker_block_counts);
 
     // ---- Depth-first refinement: each worker owns a whole pass-0 subtree to its leaves -------
@@ -949,7 +931,6 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
             partition * leaves_per_p0,
             level0.key[partition],
             level0.ref[partition],
-            static_cast<const UInt32 *>(level0.hash[partition]),
             level0.count[partition],
             /*pass_index=*/1,
             pass0_bits,
@@ -957,7 +938,7 @@ LeafArrays BuildStore::scatterMultiPass(CoopPool & coord)
             gh_prefix,
             ws);
 
-        /// Partition fully consumed — free its combined key+ref+hash block immediately.
+        /// Partition fully consumed — free its combined key+ref block immediately.
         level0.arena.freeBlock(level0.key[partition]);
 
         total_bytes.fetch_add(ws.local_bytes, std::memory_order_relaxed);

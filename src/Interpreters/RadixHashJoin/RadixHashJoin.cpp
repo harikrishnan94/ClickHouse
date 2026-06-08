@@ -4,6 +4,7 @@
 #include <Interpreters/RadixHashJoin/ColPtrTables.h>
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
+#include <Interpreters/RadixHashJoin/RouteHash.h>
 
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/JoinUtils.h>
@@ -277,15 +278,11 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
     const bool can_probe = st.built.load(std::memory_order_acquire) && n > 0;
     if (can_probe)
     {
-        /// Phase 1 — selector: one chained 32-bit computeHashInto over the left key columns.
+        /// Phase 1 — selector: pack the left key row-major to the same layout the build side scattered,
+        /// then compute the byte `routeHash` of each packed key (the identical function and bytes the
+        /// build used, so a key routes to the same leaf on both sides). Single-column keys use the
+        /// column's raw data directly as the packed key (zero-copy fast path).
         Stopwatch sw_sel;
-        std::vector<UInt32> hashes(n, 0);
-        for (size_t col = 0; col < st.key_names_left.size(); ++col)
-            block.getByName(st.key_names_left[col]).column->computeHashInto(
-                0, n, hashes.data(), /*initial=*/col == 0);
-
-        /// Pack the left key row-major to the same layout the build side scattered. Single-column keys
-        /// use the column's raw data directly (zero-copy fast path).
         const void * packed_ptr = nullptr;
         std::vector<char> packed;
         if (st.key_widths.size() == 1)
@@ -304,6 +301,14 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
                     std::memcpy(packed.data() + row * st.key_width + offset, src + row * width, width);
             }
             packed_ptr = packed.data();
+        }
+
+        std::vector<UInt32> hashes(n);
+        {
+            const char * keys = static_cast<const char *>(packed_ptr);
+            const size_t kw = st.key_width;
+            for (size_t row = 0; row < n; ++row)
+                hashes[row] = RadixHash::routeHash(keys + row * kw, kw);
         }
         ProfileEvents::increment(ProfileEvents::RadixHashProbeSelectMicroseconds, sw_sel.elapsedMicroseconds());
 

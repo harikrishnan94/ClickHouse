@@ -8,6 +8,7 @@
 #include <Interpreters/RadixHashJoin/BuildStore.h>
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
+#include <Interpreters/RadixHashJoin/RouteHash.h>
 
 #include <Common/Stopwatch.h>
 
@@ -80,13 +81,30 @@ Block makeBlock1(const std::vector<Key> & keys, size_t num_payload, UInt64 paylo
     return makeBlock<Key>(std::vector<std::vector<Key>>{keys}, num_payload, payload_seed);
 }
 
-/// Raw 32-bit hash for a chained hash over `key_positions`, over rows [0, n).
-/// The leaf id for a given row is `hash >> cfg.shift` (top `total_bits` bits of the hash).
-std::vector<UInt32> referenceHashes(const Block & block, const std::vector<size_t> & key_positions, size_t n)
+/// Raw 32-bit route hash for each row: the byte `routeHash` of the PACKED key (the key columns
+/// concatenated at their packed offsets), mirroring the build/probe routing exactly. The leaf id for a
+/// given row is `hash >> cfg.shift` (top `total_bits` bits of the hash).
+std::vector<UInt32> referenceHashes(
+    const Block & block, const std::vector<size_t> & key_positions, const std::vector<size_t> & key_widths, size_t n)
 {
+    std::vector<size_t> key_offsets(key_widths.size(), 0);
+    for (size_t c = 1; c < key_widths.size(); ++c)
+        key_offsets[c] = key_offsets[c - 1] + key_widths[c - 1];
+    size_t kw = 0;
+    for (size_t w : key_widths)
+        kw += w;
+
     std::vector<UInt32> hash(n, 0);
-    for (size_t c = 0; c < key_positions.size(); ++c)
-        block.getByPosition(key_positions[c]).column->computeHashInto(0, n, hash.data(), /*initial=*/c == 0);
+    std::vector<char> packed(kw);
+    for (size_t r = 0; r < n; ++r)
+    {
+        for (size_t c = 0; c < key_positions.size(); ++c)
+        {
+            const char * col = block.getByPosition(key_positions[c]).column->getRawData().data();
+            std::memcpy(packed.data() + key_offsets[c], col + r * key_widths[c], key_widths[c]);
+        }
+        hash[r] = routeHash(packed.data(), kw);
+    }
     return hash;
 }
 
@@ -115,7 +133,7 @@ void verifyConservationAndRefs(
     for (size_t b = 0; b < num_blocks; ++b)
     {
         block_rows[b] = blocks[b].rows();
-        ref_hash[b] = referenceHashes(blocks[b], key_positions, block_rows[b]);
+        ref_hash[b] = referenceHashes(blocks[b], key_positions, key_widths, block_rows[b]);
     }
 
     UInt64 total = 0;
@@ -487,7 +505,8 @@ TEST(RadixHashBuildScatter, MultiPassMembership)
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
 
-/// Multi-pass with a multi-column key (two UInt64 columns) -> {6,5} two-pass, carried pid + packed key.
+/// Multi-pass with a multi-column key (two UInt64 columns) -> {6,5} two-pass; each refine pass
+/// recomputes the route hash from the scattered packed key (no carried hash column).
 TEST(RadixHashBuildScatter, MultiPassMultiColumn)
 {
     const size_t n = 600'013;
@@ -1286,18 +1305,17 @@ TEST(RadixHashBuildScatter, ConservationLargeLeafCount)
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 }
 
-/// Multi-pass PASS-0 scatter through the incremental SWWC/NT path with `carry_hash=true`: multi-threaded
-/// add() populates several build slots, so the pass-0 scatter runs with multiple workers writing into
-/// the SHARED per-partition arrays at generally-unaligned per-(thread,partition) starts — exercising the
-/// head-peel + line-flush + residual-drain for the key, the 8 B ref, AND the width-4 hash column. This
-/// closes the gap left by `ConservationSinglePassSwwc` (single-pass, no hash column) and
+/// Multi-pass PASS-0 scatter through the incremental SWWC/NT path: multi-threaded add() populates
+/// several build slots, so the pass-0 scatter runs with multiple workers writing into the SHARED
+/// per-partition arrays at generally-unaligned per-(thread,partition) starts — exercising the head-peel
+/// + line-flush + residual-drain for the key and the 8 B ref. This closes the gap left by
 /// `ConservationLargeLeafCount` (serial add -> every worker starts at an aligned offset). Reuses the
 /// `{9,9}` (fanout 512/512, 2^18 leaves) config so both passes route through SWWC (>= 256).
 TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
 {
     const size_t l2_small = 256 * 1024;
     auto cfg = PartitionConfig::make(static_cast<UInt64>(1'000'000'000), l2_small, 8192);
-    ASSERT_EQ(cfg.pass_bits.size(), 2u) << "need a multi-pass schedule (carry_hash=true pass-0)";
+    ASSERT_EQ(cfg.pass_bits.size(), 2u) << "need a multi-pass schedule";
     ASSERT_GE(size_t{1} << cfg.pass_bits[0], 256u) << "pass-0 fanout must be >= 256 to route through SWWC";
     ASSERT_GE(size_t{1} << cfg.pass_bits[1], 256u) << "refine fanout must be >= 256 to route through SWWC";
 
@@ -1341,7 +1359,7 @@ TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
     /// correctness must hold on either path, so this only documents intent (no skip on a v2 build).
     if (RadixShuffle::ntStoresAvailable())
     {
-        EXPECT_TRUE(RadixShuffle::shouldUseSwwc(3, static_cast<int>(size_t{1} << cfg.pass_bits[0])));
+        EXPECT_TRUE(RadixShuffle::shouldUseSwwc(2, static_cast<int>(size_t{1} << cfg.pass_bits[0])));
         EXPECT_TRUE(RadixShuffle::shouldUseSwwc(2, static_cast<int>(size_t{1} << cfg.pass_bits[1])));
     }
 
@@ -1354,12 +1372,10 @@ TEST(RadixHashBuildScatter, ConservationMultiPassSwwc)
     EXPECT_EQ(leaves.num_leaves, cfg.num_leaves);
     verifyConservationAndRefs<UInt64>(store, leaves, {0}, {sizeof(UInt64)});
 
-    /// Path-independent byte accounting across both passes: pass-0 scatters key + ref + hash, the
-    /// (last) refine pass scatters key + ref.
+    /// Path-independent byte accounting across both passes: pass-0 and the (last) refine pass each
+    /// scatter key + ref only (the route hash is recomputed, never scattered).
     const UInt64 kw = sizeof(UInt64);
-    const UInt64 expected_bytes
-        = static_cast<UInt64>(n) * (kw + sizeof(RadixShuffle::BuildRef) + sizeof(UInt32))
-        + static_cast<UInt64>(n) * (kw + sizeof(RadixShuffle::BuildRef));
+    const UInt64 expected_bytes = 2 * static_cast<UInt64>(n) * (kw + sizeof(RadixShuffle::BuildRef));
     EXPECT_EQ(leaves.bytes_scattered, expected_bytes);
 }
 
