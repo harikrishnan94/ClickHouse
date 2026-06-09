@@ -15,14 +15,17 @@
 
 #include <Core/Block.h>
 #include <Columns/ColumnsNumber.h>
+#include <Columns/ColumnVector.h>
 #include <Columns/IColumn.h>
 #include <DataTypes/IDataType.h>
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 #include <Common/Stopwatch.h>
+#include <Common/assert_cast.h>
 
 #include <atomic>
+#include <mutex>
 #include <numeric>
 
 #include <unistd.h>
@@ -55,6 +58,404 @@ size_t detectL2Bytes()
         return static_cast<size_t>(ret);
 #endif
     return 0;
+}
+
+/// Precomputed (once) output schema of the probe. One entry per output column, grouped by gather kind.
+struct LeftOut
+{
+    String name;        /// the left column, gathered straight from the probe block by name
+    DataTypePtr type;
+};
+struct PayOut
+{
+    size_t payload_idx; /// index into PayloadColumns::columns
+    DataTypePtr type;
+    String name;
+};
+struct ReqOut
+{
+    String left_source; /// the left key column the value is copied from (equi-join)
+    DataTypePtr left_type;
+    DataTypePtr right_type;
+    String name;
+};
+struct OutputPlan
+{
+    std::vector<LeftOut> left;
+    std::vector<PayOut> payload;
+    std::vector<ReqOut> required;
+};
+
+/// A contiguous range of matched rows that all resolve to the SAME build block, so the block's
+/// payload can be gathered in one bulk call. `begin`/`end` index the sorted match arrays.
+struct BlockRun
+{
+    UInt32 block_no;
+    UInt64 begin;
+    UInt64 end;
+};
+
+/** Per-probe-thread reusable scratch. `joinBlock` runs concurrently across streams, so this is pooled
+  * (not thread_local) and acquired per call via ScratchHandle. Every buffer is reused across blocks —
+  * capacity only ever grows — so the steady-state probe does no per-block heap allocation.
+  */
+struct ProbeScratch
+{
+    /// Tiled select + lookup.
+    std::vector<char> packed;                   /// multi-column packed-key tile
+    std::vector<UInt64> hashes;                 /// per-tile 64-bit key hashes
+    std::vector<UInt32> tile_left;              /// per-tile matched probe rows (tile-local)
+    std::vector<RadixJoin::BuildRef> tile_refs; /// per-tile matched refs
+    std::vector<const char *> kcol_src;         /// raw data of each left key column
+
+    /// Matches in probe order (one (left_row, ref) per match).
+    std::vector<UInt32> left_rows;
+    std::vector<RadixJoin::BuildRef> refs;
+
+    /// Counting sort of the matches by build block (only when `grouped`).
+    bool grouped = false;                       /// true -> use the sorted arrays + runs; false -> probe order
+    std::vector<UInt64> block_start;            /// size num_blocks + 1: per-block start offset
+    std::vector<UInt64> cursor;                 /// running write position per block
+    std::vector<UInt32> sorted_left_rows;       /// matches reordered by build block
+    std::vector<UInt32> sorted_row_no;          /// the matched build row within its block
+    std::vector<BlockRun> runs;                 /// non-empty per-block runs over the sorted arrays
+
+    /// Reused index columns for the bulk IColumn::index gathers (data reassigned, capacity reused).
+    ColumnUInt32::MutablePtr left_index;
+    ColumnUInt32::MutablePtr payload_index;
+};
+
+/// RAII borrow of a ProbeScratch from a shared pool: pop one (or make a fresh one) on construction,
+/// return it on destruction. The pool grows to at most the probe concurrency.
+class ScratchHandle
+{
+public:
+    ScratchHandle(std::mutex & mutex_, std::vector<std::unique_ptr<ProbeScratch>> & pool_)
+        : mutex(mutex_), pool(pool_)
+    {
+        std::lock_guard lock(mutex);
+        if (!pool.empty())
+        {
+            ptr = std::move(pool.back());
+            pool.pop_back();
+        }
+        if (!ptr)
+            ptr = std::make_unique<ProbeScratch>();
+    }
+
+    ~ScratchHandle()
+    {
+        std::lock_guard lock(mutex);
+        pool.push_back(std::move(ptr));
+    }
+
+    ScratchHandle(const ScratchHandle &) = delete;
+    ScratchHandle & operator=(const ScratchHandle &) = delete;
+
+    ProbeScratch & operator*() noexcept { return *ptr; }
+    ProbeScratch * operator->() noexcept { return ptr.get(); }
+
+private:
+    std::mutex & mutex;
+    std::vector<std::unique_ptr<ProbeScratch>> & pool;
+    std::unique_ptr<ProbeScratch> ptr;
+};
+
+/// Read-only probe inputs, bundled so the phase functions need no access to the private State type.
+struct ProbeContext
+{
+    const Names & key_names_left;
+    const std::vector<size_t> & key_widths;
+    const std::vector<size_t> & key_offsets;
+    const std::vector<RadixJoin::ColumnPackFn> & key_packers;
+    size_t key_width;
+    const RadixJoin::LeafTables & leaf_tables;
+    UInt32 leaf_shift;
+    UInt32 total_bits;
+    const std::vector<UInt64> & block_base;
+};
+
+/// Precompute the output schema once: left columns (filtered by the analyzer rules), then payload
+/// columns whose output name is not already provided by a left column, then required right-key columns
+/// not already present. Mirrors the dedup order the result block must have.
+void buildOutputPlan(
+    bool remove_left_columns,
+    const NameSet & left_output_names,
+    const Block & block,
+    const Block & columns_to_add,
+    const std::vector<std::string> & payload_output_names,
+    const Block & required_right_keys,
+    const std::vector<std::string> & required_right_keys_output_names,
+    const std::vector<std::string> & required_right_keys_sources,
+    OutputPlan & plan)
+{
+    NameSet emitted;
+    for (const auto & col : block)
+    {
+        if (remove_left_columns && !left_output_names.contains(col.name))
+            continue;
+        plan.left.push_back({col.name, col.type});
+        emitted.insert(col.name);
+    }
+    for (size_t col = 0; col < columns_to_add.columns(); ++col)
+    {
+        const std::string & out_name = payload_output_names[col];
+        if (emitted.contains(out_name))
+            continue;
+        plan.payload.push_back({col, columns_to_add.getByPosition(col).type, out_name});
+        emitted.insert(out_name);
+    }
+    for (size_t key_col = 0; key_col < required_right_keys.columns(); ++key_col)
+    {
+        const std::string & out_name = required_right_keys_output_names[key_col];
+        if (emitted.contains(out_name))
+            continue;
+        const auto & right_key = required_right_keys.getByPosition(key_col);
+        const auto & left_src = block.getByName(required_right_keys_sources[key_col]);
+        plan.required.push_back({required_right_keys_sources[key_col], left_src.type, right_key.type, out_name});
+        emitted.insert(out_name);
+    }
+}
+
+/// Counting-sort the probe-order matches by build block (stable within a block) into the sorted match
+/// arrays + per-block runs, so each block's payload is gathered with one bulk call.
+void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
+{
+    const size_t out_rows = s.refs.size();
+    const size_t num_blocks = ctx.block_base.size() - 1;
+
+    s.block_start.assign(num_blocks + 1, 0);
+    for (const RadixJoin::BuildRef ref : s.refs)
+        ++s.block_start[ref.block_no + 1];
+    for (size_t b = 1; b <= num_blocks; ++b)
+        s.block_start[b] += s.block_start[b - 1];
+
+    s.cursor.assign(s.block_start.begin(), s.block_start.end());
+    s.sorted_left_rows.resize(out_rows);
+    s.sorted_row_no.resize(out_rows);
+    for (size_t m = 0; m < out_rows; ++m)
+    {
+        const RadixJoin::BuildRef ref = s.refs[m];
+        const UInt64 pos = s.cursor[ref.block_no]++;
+        s.sorted_left_rows[pos] = s.left_rows[m];
+        s.sorted_row_no[pos] = ref.row_no;
+    }
+
+    s.runs.clear();
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const UInt64 begin = s.block_start[b];
+        const UInt64 end = s.block_start[b + 1];
+        if (end > begin)
+            s.runs.push_back({static_cast<UInt32>(b), begin, end});
+    }
+}
+
+/// Phase 1 — Probe. Tile the pack + 64-bit hash + leaf-table lookup so the scratch stays L1-resident,
+/// collect (left_row, ref) per match, then group them by build block for the bulk gathers.
+void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeScratch & s)
+{
+    s.left_rows.clear();
+    s.refs.clear();
+    s.left_rows.reserve(n);
+    s.refs.reserve(n);
+
+    constexpr size_t tile_rows = RadixJoin::BuildSide::SCATTER_CHUNK_ROWS; /// 1024
+
+    const bool single_col = ctx.key_widths.size() == 1;
+    const char * single_raw = nullptr;
+    if (single_col)
+    {
+        single_raw = block.getByName(ctx.key_names_left[0]).column->getRawData().data();
+    }
+    else
+    {
+        s.packed.resize(tile_rows * ctx.key_width);
+        s.kcol_src.clear();
+        s.kcol_src.reserve(ctx.key_widths.size());
+        for (const auto & name : ctx.key_names_left)
+            s.kcol_src.push_back(block.getByName(name).column->getRawData().data());
+    }
+    s.hashes.resize(tile_rows);
+
+    const bool has_chain = ctx.leaf_tables.next_chain != nullptr;
+
+    UInt64 sel_us = 0;
+    UInt64 lookup_us = 0;
+
+    for (size_t tile_start = 0; tile_start < n; tile_start += tile_rows)
+    {
+        const size_t tn = std::min(tile_rows, n - tile_start);
+
+        /// Phase 1a — pack (multi-column) + the full 64-bit hash of each packed key into the reused
+        /// scratch. Single-column keys point straight at the column's raw data (zero copy).
+        Stopwatch sw_sel;
+        const char * keys = nullptr;
+        if (single_col)
+        {
+            keys = single_raw + tile_start * ctx.key_width;
+        }
+        else
+        {
+            char * dst = s.packed.data();
+            for (size_t c = 0; c < ctx.key_widths.size(); ++c)
+                ctx.key_packers[c](s.kcol_src[c], tile_start, tn, dst, ctx.key_width, ctx.key_offsets[c], ctx.key_widths[c]);
+            keys = dst;
+        }
+        UInt64 * hashes = s.hashes.data();
+        switch (ctx.key_width)
+        {
+#define RHJ_PROBE_HASH(W) \
+    case W: for (size_t i = 0; i < tn; ++i) hashes[i] = RadixJoin::hashPackedKey<W>(keys + i * (W)); break;
+            RHJ_PROBE_HASH(4)  RHJ_PROBE_HASH(8)  RHJ_PROBE_HASH(12) RHJ_PROBE_HASH(16)
+            RHJ_PROBE_HASH(20) RHJ_PROBE_HASH(24) RHJ_PROBE_HASH(28) RHJ_PROBE_HASH(32)
+            RHJ_PROBE_HASH(36) RHJ_PROBE_HASH(40) RHJ_PROBE_HASH(44) RHJ_PROBE_HASH(48)
+            RHJ_PROBE_HASH(52) RHJ_PROBE_HASH(56) RHJ_PROBE_HASH(60) RHJ_PROBE_HASH(64)
+#undef RHJ_PROBE_HASH
+            default:
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
+        }
+        sel_us += sw_sel.elapsedMicroseconds();
+
+        /// Phase 1b — direct leaf-table lookup into the reused tile buffers, then append to the global
+        /// match buffers with the tile offset applied to the probe-row index.
+        Stopwatch sw_lookup;
+        s.tile_left.clear();
+        s.tile_refs.clear();
+        RadixJoin::collectMatches(
+            ctx.key_width, has_chain, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
+            ctx.block_base.data(), hashes, keys, tn, s.tile_left, s.tile_refs);
+        const auto tile_base = static_cast<UInt32>(tile_start);
+        for (UInt32 r : s.tile_left)
+            s.left_rows.push_back(tile_base + r);
+        s.refs.insert(s.refs.end(), s.tile_refs.begin(), s.tile_refs.end());
+        lookup_us += sw_lookup.elapsedMicroseconds();
+    }
+
+    /// Hybrid gather decision. With a duplicate-free build the matches are ~1:1 and scattered, so a
+    /// direct typed gather in probe order (no sort, no temp) wins. With duplicates the probe rows fan
+    /// out and grouping by build block (counting sort) gives the gather base-pointer locality.
+    s.grouped = has_chain;
+    if (s.grouped)
+        sortMatchesByBlock(ctx, s);
+
+    ProfileEvents::increment(ProfileEvents::RadixHashProbeSelectMicroseconds, sel_us);
+    ProfileEvents::increment(ProfileEvents::RadixHashProbeLookupMicroseconds, lookup_us);
+    ProfileEvents::increment(ProfileEvents::RadixHashProbeRows, n);
+    ProfileEvents::increment(ProfileEvents::RadixHashOutputRows, s.left_rows.size());
+}
+
+/// Phase 2 — Gather Left. Left columns and required right-key columns are both gathered from the probe
+/// block in bulk via the type-specialised IColumn::index (one call per column, no per-row dispatch).
+void gatherLeft(const OutputPlan & plan, const Block & block, ProbeScratch & s, ColumnsWithTypeAndName & out)
+{
+    if (!s.left_index)
+        s.left_index = ColumnUInt32::create();
+    /// Probe order when gathering directly, build-block-grouped order when the matches were sorted.
+    const std::vector<UInt32> & left_src = s.grouped ? s.sorted_left_rows : s.left_rows;
+    s.left_index->getData().assign(left_src.begin(), left_src.end());
+    const IColumn & index = *s.left_index;
+
+    for (const auto & lo : plan.left)
+        out.emplace_back(block.getByName(lo.name).column->index(index, 0), lo.type, lo.name);
+
+    for (const auto & ro : plan.required)
+    {
+        /// Equi-join: right_key == left_key. Gather the left source in bulk, then cast to the right key
+        /// type — skipping the cast when the types already match (the common case).
+        ColumnPtr gathered = block.getByName(ro.left_source).column->index(index, 0);
+        if (ro.left_type->equals(*ro.right_type))
+        {
+            out.emplace_back(gathered, ro.right_type, ro.name);
+        }
+        else
+        {
+            ColumnWithTypeAndName tmp_col(gathered, ro.left_type, ro.name);
+            out.emplace_back(castColumn(tmp_col, ro.right_type), ro.right_type, ro.name);
+        }
+    }
+}
+
+/// Direct typed gather of one fixed-width numeric payload column in probe order: the build value of
+/// each match is copied straight into the output data array. The column type is dispatched ONCE (the
+/// loop body is a plain typed load/store, no per-row virtual call) and there is a single copy with no
+/// temp allocation. `by_block[block_no]` is the build column holding the matched row.
+template <typename T>
+void gatherNumericDirect(IColumn & out_col, const std::vector<const IColumn *> & by_block, const RadixJoin::BuildRef * refs, size_t out_rows)
+{
+    auto & dst = assert_cast<ColumnVector<T> &>(out_col).getData();
+    dst.resize(out_rows);
+    for (size_t i = 0; i < out_rows; ++i)
+    {
+        const RadixJoin::BuildRef ref = refs[i];
+        dst[i] = assert_cast<const ColumnVector<T> *>(by_block[ref.block_no])->getData()[ref.row_no];
+    }
+}
+
+/// Gather one payload column directly in probe order (the duplicate-free / sparse path). Fixed-width
+/// numeric columns take the typed no-dispatch path above; anything else (String, Nullable, Decimal,
+/// wide ints, ...) falls back to per-row insertFrom.
+void gatherPayloadDirect(
+    const PayOut & po, const RadixJoin::PayloadColumns & payload, const RadixJoin::BuildRef * refs, size_t out_rows, ColumnsWithTypeAndName & out)
+{
+    auto col = po.type->createColumn();
+    if (out_rows == 0)
+    {
+        out.emplace_back(std::move(col), po.type, po.name);
+        return;
+    }
+    const auto & by_block = payload.columns[po.payload_idx].by_block;
+    switch (col->getDataType())
+    {
+#define RHJ_GATHER_NUMERIC(TYPE_INDEX, T) \
+    case TypeIndex::TYPE_INDEX: gatherNumericDirect<T>(*col, by_block, refs, out_rows); break;
+        RHJ_GATHER_NUMERIC(UInt8, UInt8)   RHJ_GATHER_NUMERIC(UInt16, UInt16)
+        RHJ_GATHER_NUMERIC(UInt32, UInt32) RHJ_GATHER_NUMERIC(UInt64, UInt64)
+        RHJ_GATHER_NUMERIC(Int8, Int8)     RHJ_GATHER_NUMERIC(Int16, Int16)
+        RHJ_GATHER_NUMERIC(Int32, Int32)   RHJ_GATHER_NUMERIC(Int64, Int64)
+        RHJ_GATHER_NUMERIC(Float32, Float32) RHJ_GATHER_NUMERIC(Float64, Float64)
+#undef RHJ_GATHER_NUMERIC
+        default:
+            col->reserve(out_rows);
+            for (size_t i = 0; i < out_rows; ++i)
+                col->insertFrom(*by_block[refs[i].block_no], refs[i].row_no);
+    }
+    out.emplace_back(std::move(col), po.type, po.name);
+}
+
+/// Phase 3 — Gather Right. Build payload lives per build block (not co-located with the leaf cell).
+/// Two paths, chosen in probeBlock: the duplicate-free direct typed gather (probe order), or, when the
+/// build had duplicates, gathering one build block at a time over the sorted runs (one IColumn::index +
+/// one insertRangeFrom per block). Neither path does per-row virtual dispatch on a numeric payload.
+void gatherRight(const OutputPlan & plan, const RadixJoin::PayloadColumns & payload, ProbeScratch & s, ColumnsWithTypeAndName & out)
+{
+    if (!s.grouped)
+    {
+        const size_t out_rows = s.refs.size();
+        for (const auto & po : plan.payload)
+            gatherPayloadDirect(po, payload, s.refs.data(), out_rows, out);
+        return;
+    }
+
+    const size_t out_rows = s.sorted_row_no.size();
+    if (!s.payload_index)
+        s.payload_index = ColumnUInt32::create();
+
+    for (const auto & po : plan.payload)
+    {
+        auto col = po.type->createColumn();
+        col->reserve(out_rows);
+        /// `payload` is only populated after the build; an empty `runs` (header path / no matches) must
+        /// not touch it. Fetch the per-block pointers inside the loop so the empty case is a clean no-op.
+        for (const auto & run : s.runs)
+        {
+            const auto & by_block = payload.columns[po.payload_idx].by_block;
+            s.payload_index->getData().assign(s.sorted_row_no.begin() + run.begin, s.sorted_row_no.begin() + run.end);
+            ColumnPtr gathered = by_block[run.block_no]->index(*s.payload_index, 0);
+            col->insertRangeFrom(*gathered, 0, run.end - run.begin);
+        }
+        out.emplace_back(std::move(col), po.type, po.name);
+    }
 }
 
 }
@@ -92,6 +493,14 @@ struct RadixHashJoin::State
     std::vector<std::string> required_right_keys_output_names;  /// renamed output names
     bool remove_left_columns = false;
     NameSet left_output_names;
+
+    /// Probe-side schema, precomputed once on the first joinBlock call (the header path).
+    std::once_flag plan_once;
+    OutputPlan out_plan;
+
+    /// Pool of per-thread probe scratch (joinBlock runs concurrently across streams).
+    std::mutex scratch_mutex;
+    std::vector<std::unique_ptr<ProbeScratch>> scratch_pool;
 };
 
 RadixHashJoin::RadixHashJoin(
@@ -246,215 +655,54 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
 {
     ensureBuilt();
 
-    const State & st = *state;
+    State & st = *state;
     const size_t n = block.rows();
 
     /// Materialise the probe block so the key columns expose contiguous raw data and the emitted left
     /// columns are full (matching the materialised header JoiningTransform produces).
     block = materializeBlock(block);
 
+    /// Precompute the output schema once (the first call is the header path, before any probe).
+    std::call_once(st.plan_once, [&]
+    {
+        buildOutputPlan(
+            st.remove_left_columns, st.left_output_names, block, st.columns_to_add, st.payload_output_names,
+            st.required_right_keys, st.required_right_keys_output_names, st.required_right_keys_sources, st.out_plan);
+    });
+
     const bool can_probe = st.built.load(std::memory_order_acquire) && n > 0;
 
-    /// Output plan (also produces the schema for an empty/header block). Order: left columns; then
-    /// payload columns whose output name is not already provided by a left column; then required
-    /// right-key columns not already present.
-    struct LeftOut
-    {
-        const IColumn * src;
-        DataTypePtr type;
-        String name;
-    };
-    struct PayOut
-    {
-        size_t payload_idx;
-        DataTypePtr type;
-        String name;
-    };
-    struct ReqOut
-    {
-        const IColumn * left_src;
-        DataTypePtr left_type;
-        DataTypePtr right_type;
-        String name;
-    };
-    std::vector<LeftOut> left_out;
-    std::vector<PayOut> pay_out;
-    std::vector<ReqOut> req_out;
-    NameSet emitted;
-
-    for (const auto & col : block)
-    {
-        if (st.remove_left_columns && !st.left_output_names.contains(col.name))
-            continue;
-        left_out.push_back({col.column.get(), col.type, col.name});
-        emitted.insert(col.name);
-    }
-    for (size_t col = 0; col < st.columns_to_add.columns(); ++col)
-    {
-        const std::string & out_name = st.payload_output_names[col];
-        if (emitted.contains(out_name))
-            continue;
-        pay_out.push_back({col, st.columns_to_add.getByPosition(col).type, out_name});
-        emitted.insert(out_name);
-    }
-    for (size_t key_col = 0; key_col < st.required_right_keys.columns(); ++key_col)
-    {
-        const std::string & out_name = st.required_right_keys_output_names[key_col];
-        if (emitted.contains(out_name))
-            continue;
-        const auto & right_key = st.required_right_keys.getByPosition(key_col);
-        const auto & left_src = block.getByName(st.required_right_keys_sources[key_col]);
-        req_out.push_back({left_src.column.get(), left_src.type, right_key.type, out_name});
-        emitted.insert(out_name);
-    }
-
-    /// Match buffers (global probe-row index + matched ref, chain order), reserved to the 1:1 lower
-    /// bound so the lookup does not regrow them.
-    std::vector<UInt32> left_rows;
-    std::vector<RadixJoin::BuildRef> refs;
-    left_rows.reserve(n);
-    refs.reserve(n);
-    UInt64 sel_us = 0;
-    UInt64 lookup_us = 0;
+    ScratchHandle scratch(st.scratch_mutex, st.scratch_pool);
 
     if (can_probe)
     {
-        /// Tile the selector + lookup so the packed-key and hash scratch stay L1-resident and the hashes
-        /// never round-trip to DRAM between selector and lookup. Scratch is thread-local (the probe is
-        /// per-stream, single-threaded per instance) and reused across tiles and joinBlock calls. The
-        /// emit/gather is done once after the loop in bulk.
-        constexpr size_t tile_rows = RadixJoin::BuildSide::SCATTER_CHUNK_ROWS; /// 1024
-        thread_local std::vector<char> packed_scratch;
-        thread_local std::vector<UInt64> hash_scratch;
-        thread_local std::vector<UInt32> tile_left;
-        thread_local std::vector<RadixJoin::BuildRef> tile_refs;
-
-        const bool single_col = st.key_widths.size() == 1;
-        const char * single_raw = nullptr;
-        std::vector<const char *> kcol_src;
-        if (single_col)
-        {
-            single_raw = block.getByName(st.key_names_left[0]).column->getRawData().data();
-        }
-        else
-        {
-            packed_scratch.resize(tile_rows * st.key_width);
-            kcol_src.reserve(st.key_widths.size());
-            for (const auto & name : st.key_names_left)
-                kcol_src.push_back(block.getByName(name).column->getRawData().data());
-        }
-        hash_scratch.resize(tile_rows);
-
-        const bool has_chain = st.leaf_tables.next_chain != nullptr;
-
-        for (size_t tile_start = 0; tile_start < n; tile_start += tile_rows)
-        {
-            const size_t tn = std::min(tile_rows, n - tile_start);
-
-            /// Phase 1 — pack (multi-column) + the full 64-bit hash of each packed key, once, into the
-            /// reused scratch (the same bytes/function the build used). Single-column keys point straight
-            /// at the column's raw data (zero copy).
-            Stopwatch sw_sel;
-            const char * keys = nullptr;
-            if (single_col)
-            {
-                keys = single_raw + tile_start * st.key_width;
-            }
-            else
-            {
-                char * dst = packed_scratch.data();
-                for (size_t c = 0; c < st.key_widths.size(); ++c)
-                    st.key_packers[c](kcol_src[c], tile_start, tn, dst, st.key_width, st.key_offsets[c], st.key_widths[c]);
-                keys = dst;
-            }
-            UInt64 * hashes = hash_scratch.data();
-            switch (st.key_width)
-            {
-#define RHJ_PROBE_HASH(W) \
-    case W: for (size_t i = 0; i < tn; ++i) hashes[i] = RadixJoin::hashPackedKey<W>(keys + i * (W)); break;
-                RHJ_PROBE_HASH(4)  RHJ_PROBE_HASH(8)  RHJ_PROBE_HASH(12) RHJ_PROBE_HASH(16)
-                RHJ_PROBE_HASH(20) RHJ_PROBE_HASH(24) RHJ_PROBE_HASH(28) RHJ_PROBE_HASH(32)
-                RHJ_PROBE_HASH(36) RHJ_PROBE_HASH(40) RHJ_PROBE_HASH(44) RHJ_PROBE_HASH(48)
-                RHJ_PROBE_HASH(52) RHJ_PROBE_HASH(56) RHJ_PROBE_HASH(60) RHJ_PROBE_HASH(64)
-#undef RHJ_PROBE_HASH
-                default:
-                    throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", st.key_width);
-            }
-            sel_us += sw_sel.elapsedMicroseconds();
-
-            /// Phase 2 — direct leaf-table lookup into the reused tile buffers, then append to the global
-            /// buffers with the tile offset applied to the probe-row index.
-            Stopwatch sw_lookup;
-            tile_left.clear();
-            tile_refs.clear();
-            RadixJoin::collectMatches(
-                st.key_width, has_chain, st.leaf_tables.leaves.data(), st.plan.leaf_shift, st.plan.total_bits,
-                st.block_base.data(), hashes, keys, tn, tile_left, tile_refs);
-            const auto tile_base = static_cast<UInt32>(tile_start);
-            for (UInt32 r : tile_left)
-                left_rows.push_back(tile_base + r);
-            refs.insert(refs.end(), tile_refs.begin(), tile_refs.end());
-            lookup_us += sw_lookup.elapsedMicroseconds();
-        }
-
-        ProfileEvents::increment(ProfileEvents::RadixHashProbeSelectMicroseconds, sel_us);
-        ProfileEvents::increment(ProfileEvents::RadixHashProbeLookupMicroseconds, lookup_us);
-        ProfileEvents::increment(ProfileEvents::RadixHashProbeRows, n);
-        ProfileEvents::increment(ProfileEvents::RadixHashOutputRows, left_rows.size());
+        const ProbeContext ctx{
+            st.key_names_left, st.key_widths, st.key_offsets, st.key_packers, st.key_width,
+            st.leaf_tables, st.plan.leaf_shift, st.plan.total_bits, st.block_base};
+        probeBlock(ctx, block, n, *scratch);
+    }
+    else
+    {
+        /// Header / empty-probe path: emit the schema only (no matches). The direct (non-grouped) path
+        /// reads `left_rows` / `refs`, so clear those too.
+        scratch->grouped = false;
+        scratch->left_rows.clear();
+        scratch->refs.clear();
+        scratch->sorted_left_rows.clear();
+        scratch->sorted_row_no.clear();
+        scratch->runs.clear();
     }
 
-    /// Phase 3 — emit. Left and required-key columns are gathered in BULK via the type-specialised
-    /// IColumn::index (one specialised call per column) instead of per-row virtual insertFrom. The build
-    /// payload is gathered per matched ref (random across build blocks; the only per-row path).
+    ColumnsWithTypeAndName out;
+    out.reserve(st.out_plan.left.size() + st.out_plan.required.size() + st.out_plan.payload.size());
+
     Stopwatch sw_gather;
-    const size_t out_rows = left_rows.size();
-
-    auto index_col = ColumnUInt32::create();
-    index_col->getData().insert(left_rows.begin(), left_rows.end());
-
-    ColumnsWithTypeAndName out_cols;
-    out_cols.reserve(left_out.size());
-    for (const auto & lo : left_out)
-        out_cols.emplace_back(lo.src->index(*index_col, 0), lo.type, lo.name);
-    Block result(std::move(out_cols));
-
-    for (const auto & po : pay_out)
-    {
-        auto col_data = po.type->createColumn();
-        col_data->reserve(out_rows);
-        if (out_rows > 0)
-        {
-            const auto & by_block = st.payload.columns[po.payload_idx].by_block;
-            for (size_t m = 0; m < out_rows; ++m)
-            {
-                const RadixJoin::BuildRef ref = refs[m];
-                col_data->insertFrom(*by_block[ref.block_no], ref.row_no);
-            }
-        }
-        result.insert(ColumnWithTypeAndName(std::move(col_data), po.type, po.name));
-    }
-
-    for (const auto & ro : req_out)
-    {
-        /// Equi-join: right_key == left_key. Gather the left source in bulk, then cast to the right key
-        /// type — skipping the cast when the types already match (the common case).
-        ColumnPtr gathered = ro.left_src->index(*index_col, 0);
-        if (ro.left_type->equals(*ro.right_type))
-        {
-            result.insert(ColumnWithTypeAndName(gathered, ro.right_type, ro.name));
-        }
-        else
-        {
-            ColumnWithTypeAndName tmp_col(gathered, ro.left_type, ro.name);
-            ColumnPtr casted = castColumn(tmp_col, ro.right_type);
-            result.insert(ColumnWithTypeAndName(casted, ro.right_type, ro.name));
-        }
-    }
-
+    gatherLeft(st.out_plan, block, *scratch, out);
+    gatherRight(st.out_plan, st.payload, *scratch, out);
     if (can_probe)
         ProfileEvents::increment(ProfileEvents::RadixHashProbeGatherMicroseconds, sw_gather.elapsedMicroseconds());
 
-    return IJoinResult::createFromBlock(std::move(result));
+    return IJoinResult::createFromBlock(Block(std::move(out)));
 }
 
 size_t RadixHashJoin::getTotalRowCount() const
