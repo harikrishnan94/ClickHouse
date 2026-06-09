@@ -53,16 +53,16 @@ inline UInt64 hashPackedKey(const void * key) noexcept
     static_assert(width >= 4 && width % 4 == 0 && width <= 64, "packed key width must be a multiple of 4 in [4, 64]");
     const char * p = static_cast<const char *>(key);
 
-    UInt64 acc;
+    UInt64 acc = 0;
     if constexpr (width == 4)
     {
-        UInt32 v;
+        UInt32 v = 0;
         __builtin_memcpy_inline(&v, p, 4);
         acc = mulFold(static_cast<UInt64>(v) ^ KEY_HASH_C1, KEY_HASH_C2);
     }
     else if constexpr (width == 8)
     {
-        UInt64 v;
+        UInt64 v = 0;
         __builtin_memcpy_inline(&v, p, 8);
         acc = mulFold(v ^ KEY_HASH_C1, KEY_HASH_C2);
     }
@@ -73,13 +73,13 @@ inline UInt64 hashPackedKey(const void * key) noexcept
         size_t i = 0;
         for (; i + 8 <= width; i += 8)
         {
-            UInt64 v;
+            UInt64 v = 0;
             __builtin_memcpy_inline(&v, p + i, 8);
             acc = mulFold(acc ^ v, KEY_HASH_C1);
         }
         if constexpr (width % 8 != 0)
         {
-            UInt32 v;
+            UInt32 v = 0;
             __builtin_memcpy_inline(&v, p + i, 4);
             acc = mulFold(acc ^ static_cast<UInt64>(v), KEY_HASH_C2);
         }
