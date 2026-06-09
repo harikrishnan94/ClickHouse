@@ -2,6 +2,7 @@
 
 #include <Core/Block.h>
 #include <Interpreters/RadixHashJoin/GrowingArena.h>
+#include <Interpreters/RadixHashJoin/KeyPacking.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 #include <Common/RadixShuffle/Scatter.h>
 #include <Common/Stopwatch.h>
@@ -19,8 +20,6 @@
 
 namespace DB::RadixHash
 {
-
-using PackKeyColumnFn = void (*)(const char *, size_t, size_t, char *, size_t, size_t, size_t);
 
 /** Per-leaf dense output of the deferred build scatter (spec section 4.6 step 4), plus the gate
   * statistics the P3 performance gates assert on.

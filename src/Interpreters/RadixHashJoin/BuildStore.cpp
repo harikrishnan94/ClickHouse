@@ -64,41 +64,8 @@ UInt64 nextInstanceId()
     return counter.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
-/// Key packing kernels. Common widths are compile-time (direct typed stores); any other multiple of 4
-/// uses 4-byte lanes. The width dispatch is hoisted to construction time (BuildStore::key_packers).
-template <size_t width>
-void packKeyColumnT(const char * src, size_t row_begin, size_t rows, char * dst, size_t stride, size_t dst_offset, size_t)
-{
-    static_assert(width >= 4 && width % 4 == 0);
-    for (size_t r = 0; r < rows; ++r)
-        __builtin_memcpy_inline(dst + r * stride + dst_offset, src + (row_begin + r) * width, width);
-}
-
-void packKeyColumnGeneric(
-    const char * src, size_t row_begin, size_t rows, char * dst, size_t stride, size_t dst_offset, size_t width)
-{
-    chassert(width >= 4 && width % 4 == 0);
-    for (size_t r = 0; r < rows; ++r)
-    {
-        const char * s = src + (row_begin + r) * width;
-        char * d = dst + r * stride + dst_offset;
-        for (size_t b = 0; b < width; b += 4)
-            __builtin_memcpy_inline(d + b, s + b, 4);
-    }
-}
-
-PackKeyColumnFn chooseKeyPacker(size_t width)
-{
-    switch (width)
-    {
-        case 4:  return &packKeyColumnT<4>;
-        case 8:  return &packKeyColumnT<8>;
-        case 16: return &packKeyColumnT<16>;
-        case 32: return &packKeyColumnT<32>;
-        case 64: return &packKeyColumnT<64>;
-        default: return &packKeyColumnGeneric;
-    }
-}
+/// Key packing kernels (`packKeyColumnT` / `packKeyColumnGeneric` / `chooseKeyPacker`) are shared with the
+/// probe selector and live in `KeyPacking.h` (included via `BuildStore.h`).
 
 /// Intermediate cascade level for the multi-pass scatter (key + BuildRef, one dense array per partition).
 /// Keys are void* so they match LeafArrays and the scatter worker; cast to typed pointers at the call

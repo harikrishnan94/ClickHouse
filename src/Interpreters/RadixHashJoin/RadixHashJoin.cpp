@@ -2,6 +2,7 @@
 
 #include <Interpreters/RadixHashJoin/BuildStore.h>
 #include <Interpreters/RadixHashJoin/ColPtrTables.h>
+#include <Interpreters/RadixHashJoin/KeyPacking.h>
 #include <Interpreters/RadixHashJoin/LeafHashTable.h>
 #include <Interpreters/RadixHashJoin/PartitionConfig.h>
 #include <Interpreters/RadixHashJoin/RapidHash.h>
@@ -70,6 +71,7 @@ struct RadixHashJoin::RadixState
     std::vector<size_t> key_positions; /// positions of the key columns in the right block (== right_sample order)
     std::vector<size_t> key_widths;    /// byte width of each key column
     std::vector<size_t> key_offsets;   /// prefix sums of key_widths (byte offset of each col in a packed key)
+    std::vector<RadixHash::PackKeyColumnFn> key_packers; /// per-column width-specialized packer (shared with BuildStore)
     size_t key_width = 0;              /// packed key width (Σ key_widths), a multiple of 4 in [4, 64]
 
     std::unique_ptr<RadixHash::BuildStore> build_store;
@@ -146,6 +148,12 @@ RadixHashJoin::RadixHashJoin(
 
     state->key_offsets.resize(state->key_widths.size());
     std::exclusive_scan(state->key_widths.begin(), state->key_widths.end(), state->key_offsets.begin(), size_t{0});
+
+    /// One width-specialized packer per key column (same table the build side uses, KeyPacking.h), so the
+    /// probe packs composite keys row-major to the identical layout with no runtime-width memcpy.
+    state->key_packers.reserve(state->key_widths.size());
+    for (size_t w : state->key_widths)
+        state->key_packers.push_back(RadixHash::chooseKeyPacker(w));
 
     state->cfg = RadixHash::PartitionConfig::make(rhs_size_estimation, detectL2Bytes(), max_partitions_per_pass);
     state->build_store = std::make_unique<RadixHash::BuildStore>(
@@ -371,13 +379,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
             {
                 char * dst = packed_scratch.data();
                 for (size_t c = 0; c < st.key_widths.size(); ++c)
-                {
-                    const char * src = kcol_src[c];
-                    const size_t width = st.key_widths[c];
-                    const size_t off = st.key_offsets[c];
-                    for (size_t i = 0; i < tn; ++i)
-                        std::memcpy(dst + i * st.key_width + off, src + (tile_start + i) * width, width);
-                }
+                    st.key_packers[c](kcol_src[c], tile_start, tn, dst, st.key_width, st.key_offsets[c], st.key_widths[c]);
                 keys = dst;
             }
             UInt64 * hashes = hashes_scratch.data();
