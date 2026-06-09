@@ -16,15 +16,15 @@
 
 #include <fmt/format.h>
 
-#include <atomic>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
-#include <iostream>
 #include <random>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace DB;
@@ -248,6 +248,101 @@ TEST(RadixHashLeafHT, DuplicateKeysManyToMany)
     EXPECT_EQ(left_rows.size(), n) << "every build row must be returned exactly once across the chains";
     for (const auto & [k, c] : ref_count)
         EXPECT_EQ(got_count[k], c) << "many-to-many fan-out count mismatch for a key";
+
+    for (size_t b = 0; b < store.numBlocks(); ++b)
+        for (size_t r = 0; r < seen[b].size(); ++r)
+            EXPECT_EQ(seen[b][r], 1) << "build row (" << b << "," << r << ") never returned";
+}
+
+/// Gate: the singleton-marker fast path AND the chain-walk path exercised in the SAME build. Many unique
+/// (singleton) keys plus a few heavily-duplicated keys -> `has_chain == true`, but most distinct keys are
+/// singletons that the probe must emit WITHOUT touching next_chain. Probing each distinct key once must
+/// return every build row exactly once (singleton keys return their single row via the marker fast path,
+/// duplicated keys return their whole chain), and every returned ref must be flag-free.
+TEST(RadixHashLeafHT, SingletonAndChainMix)
+{
+    std::mt19937_64 rng(0x51A9); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+    const size_t n_singleton = 200'000;
+    const size_t n_dupkeys = 5;
+    const size_t per_dup = 1000;
+
+    std::vector<UInt64> keys;
+    keys.reserve(n_singleton + n_dupkeys * per_dup);
+    std::unordered_map<UInt64, size_t> ref_count;
+    std::unordered_set<UInt64> used;
+
+    while (used.size() < n_singleton)
+    {
+        const UInt64 v = rng();
+        if (used.insert(v).second)
+        {
+            keys.push_back(v);
+            ref_count[v] = 1;
+        }
+    }
+    for (size_t d = 0; d < n_dupkeys; ++d)
+    {
+        UInt64 v = rng();
+        while (!used.insert(v).second)
+            v = rng();
+        for (size_t i = 0; i < per_dup; ++i)
+            keys.push_back(v);
+        ref_count[v] = per_dup;
+    }
+    std::shuffle(keys.begin(), keys.end(), rng); /// scatter singletons + duplicates across build blocks
+    const size_t n = keys.size();
+
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(100'000'000), l2_bytes, 8192);
+    BuildStore store(cfg, {0}, {sizeof(UInt64)}, 4);
+    addBlocksSerial(store, keys, 16);
+    store.finishBuild();
+    CoopPool coord;
+    LeafArrays leaves;
+    LeafHashTables hts;
+    coopRun(coord, 4, [&]
+    {
+        leaves = store.scatterToLeaves(coord);
+        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
+    });
+
+    ASSERT_NE(hts.next_chain, nullptr) << "build has duplicates, so next_chain (the has_chain path) must exist";
+
+    std::vector<UInt64> distinct_keys;
+    distinct_keys.reserve(ref_count.size());
+    for (const auto & [k, _] : ref_count)
+        distinct_keys.push_back(k);
+    const size_t dn = distinct_keys.size();
+
+    Block probe = makeU64Block(distinct_keys);
+    const std::vector<UInt64> hashes = computeHashes(probe, dn);
+    const void * packed = probe.getByPosition(0).column->getRawData().data();
+
+    std::vector<UInt32> left_rows;
+    std::vector<BuildRef> refs;
+    collectMatches(
+        sizeof(UInt64), hts.next_chain != nullptr,
+        hts.leaves.data(), cfg.shift, cfg.total_bits, store.blockBase().data(),
+        hashes.data(), packed, dn, left_rows, refs);
+
+    std::vector<std::vector<char>> seen(store.numBlocks());
+    for (size_t b = 0; b < store.numBlocks(); ++b)
+        seen[b].assign(store.blocks()[b].rows(), 0);
+
+    std::unordered_map<UInt64, size_t> got_count;
+    for (size_t m = 0; m < left_rows.size(); ++m)
+    {
+        const UInt64 probe_key = distinct_keys[left_rows[m]];
+        const BuildRef ref = refs[m];
+        EXPECT_EQ(ref.block_no & RadixShuffle::SINGLETON_FLAG, 0u) << "probe returned a ref still carrying the singleton marker";
+        EXPECT_EQ(buildKeyAt(store.blocks(), ref), probe_key) << "returned a row with a mismatched key";
+        EXPECT_EQ(seen[ref.block_no][ref.row_no], 0) << "build row returned more than once";
+        seen[ref.block_no][ref.row_no] = 1;
+        ++got_count[probe_key];
+    }
+
+    EXPECT_EQ(left_rows.size(), n) << "every build row must be returned exactly once";
+    for (const auto & [k, c] : ref_count)
+        EXPECT_EQ(got_count[k], c) << "per-key fan-out mismatch (singleton fast path vs chain walk)";
 
     for (size_t b = 0; b < store.numBlocks(); ++b)
         for (size_t r = 0; r < seen[b].size(); ++r)
@@ -552,130 +647,5 @@ TEST(RadixHashLeafHT, MultiPassDuplicateKeysManyToMany)
             EXPECT_EQ(seen[b][r], 1) << "build row (" << b << "," << r << ") never returned";
 }
 
-/// Opt-in cell-conservation at 100M rows (set RHJ_P4_BENCH=1). Builds the full leaf-HT set at scale and
-/// asserts Σ over leaves of inserted distinct-key cells + chain length == N (every build row reachable).
-TEST(RadixHashLeafHT, CellConservation100M)
-{
-    if (std::getenv("RHJ_P4_BENCH") == nullptr) /// NOLINT(concurrency-mt-unsafe)
-        GTEST_SKIP() << "set RHJ_P4_BENCH=1 to run the 100M-scale cell-conservation test";
-
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
-
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
-    BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
-
-    std::mt19937_64 rng(0xCE11); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeU64Block(keys));
-    }
-    std::atomic<size_t> next{0};
-    std::vector<std::thread> threads;
-    for (size_t t = 0; t < num_threads; ++t)
-        threads.emplace_back([&]
-        {
-            for (size_t b = next.fetch_add(1); b < blocks.size(); b = next.fetch_add(1))
-                store.add(blocks[b]);
-        });
-    for (auto & th : threads)
-        th.join();
-    store.finishBuild();
-
-    CoopPool coord;
-    LeafArrays leaves;
-    LeafHashTables hts;
-    Stopwatch sw;
-    coopRun(coord, num_threads, [&]
-    {
-        leaves = store.scatterToLeaves(coord);
-        hts = buildLeafHashTables(leaves, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
-    });
-    const double ht_ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
-
-    /// Conservation: walk every occupied cell's chain across all leaves; total visited == N.
-    /// next_chain may be nullptr for all-unique builds (hts.next_chain == nullptr ↔ all-unique).
-    UInt64 visited = 0;
-    for (const LeafHT & ht : hts.leaves)
-    {
-        for (UInt64 b = 0; b < ht.num_buckets; ++b)
-        {
-            BuildRef cur = *reinterpret_cast<const BuildRef *>(ht.cells + b * leafCellBytes(sizeof(UInt64)));
-            while (cur.row_no != RadixShuffle::INVALID_ROW)
-            {
-                ++visited;
-                if (hts.next_chain == nullptr)
-                    break; /// all-unique: every occupied cell is a length-1 chain, no next_chain
-                cur = ht.next_chain[leafFlat(cur, store.blockBase().data())];
-            }
-        }
-    }
-    std::cout << fmt::format(
-        "P4 cell conservation: n={} leaves={} ht_build={:.1f}ms visited={}\n", n, cfg.num_leaves, ht_ms, visited);
-    EXPECT_EQ(visited, UInt64(n)) << "every build row must be reachable exactly once via the chains";
-}
-
-/// Open question Q1 (set RHJ_P4_BENCH=1): leaf-HT build time with THP vs without, at 100M rows. The
-/// random inserts are fault/TLB-bound, so the THP arena is expected to help materially.
-TEST(RadixHashLeafHT, ThpVsNonThpBuildTime)
-{
-    if (std::getenv("RHJ_P4_BENCH") == nullptr) /// NOLINT(concurrency-mt-unsafe)
-        GTEST_SKIP() << "set RHJ_P4_BENCH=1 to run the THP vs non-THP leaf-HT build benchmark";
-
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
-
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
-    BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
-
-    std::mt19937_64 rng(0x7777); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeU64Block(keys));
-    }
-    std::atomic<size_t> next{0};
-    std::vector<std::thread> threads;
-    for (size_t t = 0; t < num_threads; ++t)
-        threads.emplace_back([&]
-        {
-            for (size_t b = next.fetch_add(1); b < blocks.size(); b = next.fetch_add(1))
-                store.add(blocks[b]);
-        });
-    for (auto & th : threads)
-        th.join();
-    store.finishBuild();
-
-    {
-        /// A fresh scatter per run so each build faults its own leaf arrays + HT cells.
-        CoopPool coord;
-        LeafArrays la;
-        LeafHashTables hts;
-        Stopwatch sw;
-        coopRun(coord, num_threads, [&]
-        {
-            la = store.scatterToLeaves(coord);
-            hts = buildLeafHashTables(la, store.blockBase(), store.totalRows(), sizeof(UInt64), coord);
-        });
-        const double ms = static_cast<double>(sw.elapsedNanoseconds()) / 1e6;
-        std::cout << fmt::format(
-            "P4 leaf-HT build jemalloc-parallel: n={} leaves={} wall={:.1f}ms ns/row={:.3f}\n",
-            n, cfg.num_leaves, ms, ms * 1e6 / static_cast<double>(n));
-        EXPECT_EQ(hts.leaves.size(), cfg.num_leaves);
-    }
-}
+/// Benchmarks (cell conservation, leaf-HT build time, probe/build micro-bench) live in the standalone
+/// `bench_radix_hash_join` executable (`src/Interpreters/tests/bench_radix_hash_join.cpp`), not here.
