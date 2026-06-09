@@ -75,17 +75,17 @@ void checkBuildAndProbe(
     if (build_threads <= 1)
     {
         for (const auto & b : build_blocks)
-            build_side.add(b);
+            build_side.add(b, 0);
     }
     else
     {
         std::atomic<size_t> next{0};
         std::vector<std::thread> ts;
         for (size_t t = 0; t < build_threads; ++t)
-            ts.emplace_back([&]
+            ts.emplace_back([&, lane = t]
             {
                 for (size_t i = next.fetch_add(1); i < build_blocks.size(); i = next.fetch_add(1))
-                    build_side.add(build_blocks[i]);
+                    build_side.add(build_blocks[i], lane);
             });
         for (auto & t : ts)
             t.join();

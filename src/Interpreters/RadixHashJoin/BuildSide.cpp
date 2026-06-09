@@ -36,14 +36,6 @@ namespace DB::RadixJoin
 namespace
 {
 
-/// Distinct BuildSide instances must not share thread-local worker-slot cache entries even if they
-/// reuse a heap address, so each instance gets a unique non-zero id.
-UInt64 nextInstanceId()
-{
-    static std::atomic<UInt64> counter{0};
-    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
-}
-
 /// Replicate the histogram enough to break store-to-load-forwarding stalls on consecutive increments,
 /// but only while all replicas still fit a small L1 budget (else a single histogram is used and the
 /// count pass is naturally L2-bound, as in any radix partitioner).
@@ -153,7 +145,6 @@ BuildSide::BuildSide(PartitionPlan plan_, std::vector<size_t> key_positions_, st
     , key_positions(std::move(key_positions_))
     , key_widths(std::move(key_widths_))
     , max_threads(std::max<size_t>(max_threads_, 1))
-    , instance_id(nextInstanceId())
 {
     chassert(!key_positions.empty() && key_positions.size() == key_widths.size());
 
@@ -175,34 +166,6 @@ BuildSide::BuildSide(PartitionPlan plan_, std::vector<size_t> key_positions_, st
 
 BuildSide::~BuildSide() = default;
 
-size_t BuildSide::workerSlot()
-{
-    /// Keyed on the unique instance id (not raw `this`) so a pooled thread cannot hit a stale slot from
-    /// an earlier BuildSide at the same address. One cache entry suits the join (one live BuildSide per
-    /// query); a thread alternating between two live instances re-fetches a slot each switch.
-    struct SlotCache
-    {
-        UInt64 owner_id = 0;
-        size_t slot = 0;
-    };
-    thread_local SlotCache cache;
-
-    if (cache.owner_id == instance_id)
-        return cache.slot;
-
-    const size_t s = next_slot.fetch_add(1, std::memory_order_relaxed);
-    if (s >= max_threads)
-        throw Exception(
-            ErrorCodes::LOGICAL_ERROR,
-            "RadixHashJoin BuildSide: more distinct build threads ({}) than max_threads ({})",
-            s + 1,
-            max_threads);
-
-    cache.owner_id = instance_id;
-    cache.slot = s;
-    return s;
-}
-
 void BuildSide::packKeyChunk(const Block & block, size_t row_begin, size_t rows, char * dst) const
 {
     for (size_t col = 0; col < key_positions.size(); ++col)
@@ -212,10 +175,15 @@ void BuildSide::packKeyChunk(const Block & block, size_t row_begin, size_t rows,
     }
 }
 
-void BuildSide::add(const Block & block)
+void BuildSide::add(const Block & block, size_t lane)
 {
-    const size_t slot = workerSlot();
-    LocalState & state = *local[slot];
+    if (lane >= local.size())
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "RadixHashJoin BuildSide: build lane {} exceeds max_threads {}",
+            lane,
+            local.size());
+    LocalState & state = *local[lane];
 
     /// (1) Zero copy: a COW shared_ptr move, no column data copied.
     Block kept = block;

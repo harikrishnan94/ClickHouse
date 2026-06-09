@@ -139,6 +139,7 @@ public:
     /** Add block of data from right hand of JOIN to the map.
       * Returns false, if some limit was exceeded and you should not insert more data.
       */
+    using IJoin::addBlockToJoin;
     bool addBlockToJoin(const Block & source_block_, bool check_limits) override;
     bool addBlockToJoin(const Block & source_block_, size_t num_rows, bool check_limits) override;
 

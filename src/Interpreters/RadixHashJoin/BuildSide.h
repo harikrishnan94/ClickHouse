@@ -47,9 +47,9 @@ struct LeafArrays
 /** The build side: accumulate right blocks (zero copy), count rows per leaf, then scatter the key +
   * BuildRef of every row into the per-leaf arrays. Three phases:
   *
-  *   add(block)         per build worker, lock-free. COW-move the block into this worker's store, and
+  *   add(block, lane)   per build lane, lock-free. COW-move the block into this lane's store, and
   *                      route each row by recomputing its packed-key hash (the route word = the high
-  *                      32 bits) into a per-worker replicated histogram. The hash is NOT stored per
+  *                      32 bits) into a per-lane replicated histogram. The hash is NOT stored per
   *                      row — it is recomputed in the scatter and again in the leaf-HT build. This
   *                      trades a little compute for ~N*4 bytes of saved build memory and is why the
   *                      build copies no payload at all.
@@ -63,9 +63,10 @@ struct LeafArrays
   *                      CoopPool. One pass when the leaf count fits the per-pass fanout cap, otherwise
   *                      a depth-first multi-pass radix that frees each intermediate as it is consumed.
   *
-  * Worker slots: each distinct thread that calls `add` is bound once to a LocalState slot via a
-  * thread-local cache keyed on a unique instance id. More than `max_threads` distinct build threads is
-  * a fail-close error, never silent corruption.
+  * Build lanes: each call to `add` carries a stable 0-based build-lane index (from the pipeline's
+  * per-lane FillingRightJoinSideTransform) that selects this lane's LocalState slot directly — no
+  * thread-local cache, no atomic counter. A lane index >= `max_threads` is a fail-close error, never
+  * silent corruption.
   */
 class BuildSide
 {
@@ -79,7 +80,7 @@ public:
     BuildSide(const BuildSide &) = delete;
     BuildSide & operator=(const BuildSide &) = delete;
 
-    void add(const Block & block);          /// phase 1 (per worker, lock-free)
+    void add(const Block & block, size_t lane); /// phase 1 (per build lane, lock-free)
     void finishBuild();                     /// phase 2 (single barrier)
     LeafArrays scatterToLeaves(CoopPool & coord); /// phase 3 (leader inside CoopPool::run)
 
@@ -111,7 +112,6 @@ private:
         std::vector<UInt32> rep_hist;
     };
 
-    size_t workerSlot();
     void packKeyChunk(const Block & block, size_t row_begin, size_t rows, char * dst) const;
 
     LeafArrays makeLeafArrays() const;
@@ -152,10 +152,8 @@ private:
     std::vector<ColumnPackFn> key_packers;  /// one width-specialized packer per key column
     size_t key_width = 0;
     size_t max_threads = 1;
-    UInt64 instance_id = 0;
 
     std::vector<std::unique_ptr<LocalState>> local;
-    std::atomic<size_t> next_slot{0};
 
     bool finished = false;
     std::vector<Block> all_blocks;
