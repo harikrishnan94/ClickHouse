@@ -23,6 +23,16 @@ namespace DB::RadixHash
   * index), so a probe `find` returns a BuildRef that resolves the payload with no extra indirection
   * (`global_blocks[ref.block_no][ref.row_no]`, `row_no` 0-based).
   *
+  * **Singleton marker (probe fast path).** The HEAD BuildRef steals the MSB of `block_no`
+  * (`RadixShuffle::SINGLETON_FLAG`) to mean "this key has exactly one build row". A first insert sets it;
+  * the first duplicate for that key clears it (the key becomes multi-row). On probe a flagged head is
+  * emitted directly with NO `next_chain` access — saving the chain load (a likely LLC/DRAM miss) for the
+  * common single-row keys even in a build that also contains duplicate keys. The marker lives ONLY on
+  * cell heads: `leafFind` returns the head verbatim (possibly flagged) and the probe clears it before
+  * emitting, so every `BuildRef` outside the cells (`next_chain` entries, probe output) is flag-free and
+  * `block_no` resolves directly. Real `block_no`s use the low 31 bits (`BuildStore` caps the build at
+  * `BLOCK_NO_MASK` blocks).
+  *
   * **Empty sentinel = `ref.row_no == INVALID_ROW` (`0xFFFFFFFF`).** The cell array is carved from a
   * jemalloc-backed `GrowingArena` (no zero-fill), so `buildLeafHashTables` `memset`s each leaf's cells to
   * `0xFF` — in parallel, on the worker that owns the leaf — before filling it, leaving every cell as the
@@ -33,9 +43,9 @@ namespace DB::RadixHash
   * one slot per build row (shared by every leaf). `next_chain[flat(ref)]` holds the NEXT BuildRef in
   * that key's chain, or the `INVALID_ROW` sentinel for the tail. `flat(ref) = block_base[ref.block_no] +
   * ref.row_no` — the per-block prefix-summed row offset (`BuildStore::blockBase()`).
-  *   build insert:  if key present -> next_chain[flat(ref)] = old_head; cell.ref = ref;  (prepend)
-  *                  else (first)   -> cell.ref = ref;  next_chain[flat(ref)] stays the 0xFF-init tail
-  *   probe:         cur = find(h, key); while (cur.row_no != INVALID_ROW) { emit(cur); cur = next_chain[flat(cur)]; }
+  *   build insert:  if key present -> next_chain[flat(ref)] = clear(old_head); cell.ref = ref;  (prepend, head loses the singleton marker)
+  *                  else (first)   -> cell.ref = mark(ref);  next_chain[flat(ref)] stays the 0xFF-init tail (singleton)
+  *   probe:         cur = find(h, key); if singleton(cur) emit(clear(cur)); else while (cur.row_no != INVALID_ROW) { emit(cur); cur = next_chain[flat(cur)]; }
   *
   * **Bucket = low 32 bits of the key's 64-bit RapidHash** — the same single hash whose TOP bits route
   * the leaf. A well-mixed 64-bit hash has effectively independent halves, so the within-leaf bucket (low
@@ -65,10 +75,31 @@ inline UInt64 leafBucket(UInt32 h, UInt64 num_buckets) noexcept
     return static_cast<UInt64>(h) & (num_buckets - 1);
 }
 
-/// Flat next_chain slot of a build row: block_base[block_no] + row_no (row_no is 0-based).
+/// Flat next_chain slot of a build row: block_base[block_no] + row_no (row_no is 0-based). Always
+/// called on flag-free refs (next_chain entries / chain heads cleared of the singleton marker), so no
+/// masking is needed here.
 inline UInt64 leafFlat(RadixShuffle::BuildRef ref, const UInt64 * block_base) noexcept
 {
     return block_base[ref.block_no] + ref.row_no;
+}
+
+/// Singleton-marker helpers (spec section 5.6, probe fast path). The marker is the MSB of a CELL-HEAD
+/// `BuildRef`'s `block_no`: set == "this key has exactly one build row" (probe emits it without touching
+/// `next_chain`). It lives only on cell heads; `leafClearSingleton` strips it before the ref is threaded
+/// into `next_chain` or returned to the caller, so every ref outside the cells stays flag-free.
+inline RadixShuffle::BuildRef leafMarkSingleton(RadixShuffle::BuildRef ref) noexcept
+{
+    ref.block_no |= RadixShuffle::SINGLETON_FLAG;
+    return ref;
+}
+inline RadixShuffle::BuildRef leafClearSingleton(RadixShuffle::BuildRef ref) noexcept
+{
+    ref.block_no &= RadixShuffle::BLOCK_NO_MASK;
+    return ref;
+}
+inline bool leafIsSingleton(RadixShuffle::BuildRef ref) noexcept
+{
+    return (ref.block_no & RadixShuffle::SINGLETON_FLAG) != 0;
 }
 
 /// Insert one build row (`key`/`ref`, keyed on its 32-bit hash `h`) into leaf `ht`. Returns the old
@@ -92,15 +123,19 @@ inline RadixShuffle::BuildRef leafInsert(
         auto * head = reinterpret_cast<RadixShuffle::BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (head->row_no == RadixShuffle::INVALID_ROW)
         {
-            /// First occurrence: store key and head directly.
+            /// First occurrence: store key and head directly, marked as a singleton (one build row so far)
+            /// so the probe can emit it without a next_chain load. The marker is cleared if a duplicate
+            /// later overwrites this head.
             __builtin_memcpy_inline(cell + sizeof(RadixShuffle::BuildRef), key, key_width);
-            *head = ref;
+            *head = leafMarkSingleton(ref);
             return RadixShuffle::BuildRef{RadixShuffle::INVALID_ROW, RadixShuffle::INVALID_ROW};
         }
         if (__builtin_memcmp(cell + sizeof(RadixShuffle::BuildRef), key, key_width) == 0)
         {
-            /// Duplicate key: return the old head so the caller can thread it through next_chain.
-            const RadixShuffle::BuildRef old = *head;
+            /// Duplicate key: the new head is flag-free (the key is now multi-row), and the old head is
+            /// returned cleared of the singleton marker so the caller threads a flag-free ref into
+            /// next_chain. Probe must walk the chain for this key from now on.
+            const RadixShuffle::BuildRef old = leafClearSingleton(*head);
             *head = ref;
             return old;
         }
@@ -109,7 +144,9 @@ inline RadixShuffle::BuildRef leafInsert(
 }
 
 /// Find the head BuildRef for `key` (keyed on its 32-bit hash `h`) in leaf `ht`, or the INVALID_ROW
-/// sentinel on miss. Width-templated (compile-time key compare). The caller walks `next_chain` from it.
+/// sentinel on miss. Width-templated (compile-time key compare). The returned head may carry the
+/// singleton marker (MSB of `block_no`); the caller checks it and either emits the cleared head directly
+/// or walks `next_chain` from it. The miss check is on `row_no`, so the marker never affects it.
 template <size_t key_width>
 inline RadixShuffle::BuildRef leafFind(const LeafHT & ht, UInt32 h, const void * key) noexcept
 {
@@ -165,8 +202,11 @@ LeafHashTables buildLeafHashTables(
 ///
 /// `has_duplicates` — whether the build contained any duplicate keys (i.e. `next_chain != nullptr`
 /// in `LeafHashTables`). When false, `collectMatches` uses a simplified inner loop that emits
-/// exactly one ref per hit with no `next_chain` access at all, saving the LLC/DRAM miss per row.
-/// Dispatched on both `key_width` and `has_duplicates` to the templated `collectMatchesT`.
+/// exactly one (marker-cleared) ref per hit with no `next_chain` access at all. When true, each hit
+/// still skips `next_chain` if its head carries the singleton marker (single-row key), walking the
+/// chain only for genuinely multi-row keys — so the LLC/DRAM `next_chain` miss is paid only per
+/// duplicated key, not per single-row key. Dispatched on both `key_width` and `has_duplicates` to the
+/// templated `collectMatchesT`.
 void collectMatches(
     size_t key_width,
     bool has_duplicates,

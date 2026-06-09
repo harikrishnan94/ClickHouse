@@ -76,6 +76,16 @@ static_assert(sizeof(BuildRef) == 8, "BuildRef must be exactly 8 bytes for the 1
 /// `memset` to `0xFF`). Distinct from every valid 0-based row index.
 static constexpr UInt32 INVALID_ROW = 0xFFFFFFFFu;
 
+/// Leaf-HT singleton marker (spec section 5.6, probe fast path). The leaf hash table steals the MOST
+/// SIGNIFICANT BIT of a CELL-HEAD `BuildRef`'s `block_no` to mark "this key has exactly one build row".
+/// When set, the probe emits the match directly and skips the `next_chain` load (a likely LLC/DRAM miss).
+/// The marker lives ONLY on cell heads inside the leaf tables; `next_chain` entries, scatter output, and
+/// every `BuildRef` returned by the probe (`collectMatches`) are always flag-free, so payload resolution
+/// (`global_blocks[block_no][row_no]`) and `leafFlat` are unaffected. Real `block_no`s therefore use the
+/// low 31 bits (`BuildStore` caps the build at `BLOCK_NO_MASK` blocks — unreachable in practice).
+static constexpr UInt32 SINGLETON_FLAG = 0x80000000u; /// MSB of block_no: cell head with a single-row key
+static constexpr UInt32 BLOCK_NO_MASK = 0x7FFFFFFFu;  /// low 31 bits: the real block_no
+
 /// Whether non-temporal (NT) stores are compiled in AND supported by the current CPU. When false there
 /// is no SWWC path at all — `scatterColumn(use_swwc=true)` runs the direct batched scatter (a scalar
 /// write-combine would only add a staging copy with no cache-bypass benefit, so it is not offered). NT

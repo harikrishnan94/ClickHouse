@@ -434,7 +434,7 @@ void BuildStore::finishBuild()
     for (const auto & up : local)
         if (up)
             num_blocks += up->blocks.size();
-    chassert(num_blocks <= std::numeric_limits<UInt32>::max()); /// BuildRef.block_no is 32-bit
+    chassert(num_blocks <= RadixShuffle::BLOCK_NO_MASK); /// block_no uses the low 31 bits; MSB reserved for the leaf-HT singleton marker
 
     global_blocks.reserve(num_blocks);
     global_rows_of_block.reserve(num_blocks);

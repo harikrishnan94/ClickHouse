@@ -65,9 +65,13 @@ struct LazyChainState
 /// is stored on the leaves). Software-pipelined write-prefetch of the next row's bucket cell (spec
 /// section 5.6, build: __builtin_prefetch RW=1).
 ///
-/// On a duplicate key `leafInsert` returns the old head. The worker acquires `next_chain` lazily
-/// (first duplicate triggers `lcs.acquire()` which allocates and 0xFF-initialises the full array so
-/// every chain tail is automatically INVALID_ROW), then threads: nc[flat(new_ref)] = old_head.
+/// On a duplicate key `leafInsert` clears the new head's singleton marker and returns the (flag-free)
+/// old head. `next_chain` is acquired lazily and BRANCH-LESSLY: `nc` / `have_chain` are kept local and
+/// the inserts are dispatched per group, so once next_chain exists the per-row duplicate handler is a
+/// single store `nc[flat(new_ref)] = old_head` — no atomic, no per-row null-check, no `ht.next_chain`
+/// store. Only the one group containing this leaf's first duplicate runs the slow handler, which does the
+/// one-time `lcs.acquire()` (allocates + 0xFF-inits the full array, so every chain tail is INVALID_ROW)
+/// and publishes `ht.next_chain`.
 template <size_t key_width>
 void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base,
     LazyChainState & lcs)
@@ -106,15 +110,31 @@ void fillLeafT(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * b
         for (size_t i = 0; i < count; ++i)
             __builtin_prefetch(ht.cells + pf_pos[i] * stride, /*rw=*/1, /*locality=*/3);
     };
+    /// Branch-less lazy next_chain acquire: keep `nc` / `have_chain` local so the per-row duplicate
+    /// handler does NOT touch the atomic `lcs` or the shared `ht.next_chain` once next_chain exists. The
+    /// hot (first-occurrence) path is byte-identical to the original single-lambda loop; only the cold
+    /// duplicate block changes — the one-time acquire is guarded by `have_chain`, so the per-row cost of
+    /// a duplicate is the single store `nc[flat] = old_head` (no atomic, no publish) after the first one.
+    BuildRef * nc = lcs.nc.load(std::memory_order_acquire); /// non-null if another leaf already allocated
+    bool have_chain = nc != nullptr;
+    if (have_chain)
+        ht.next_chain = nc; /// publish for this leaf's probe path (harmless even if this leaf is all-unique)
+
     auto insert_row = [&](UInt64 r)
     {
         const BuildRef old_head = leafInsert<key_width>(
             ht, static_cast<UInt32>(rapidhash::hash<key_width>(keys + r * key_width)), keys + r * key_width, refs[r]);
         if (old_head.row_no != RadixShuffle::INVALID_ROW)
         {
-            /// Duplicate key: lazily acquire (or reuse already-acquired) next_chain, then thread.
-            BuildRef * nc = lcs.acquire();
-            ht.next_chain = nc; /// make the pointer visible to this leaf's probe path
+            /// Duplicate key. Acquire + publish next_chain exactly once (the first duplicate anywhere
+            /// triggers `lcs.acquire()`, which allocates + 0xFF-inits the full array); every later
+            /// duplicate is just the threading store below — no atomic on the steady-state path.
+            if (!have_chain)
+            {
+                nc = lcs.acquire();
+                ht.next_chain = nc;
+                have_chain = true;
+            }
             nc[leafFlat(refs[r], block_base)] = old_head;
         }
     };
@@ -170,8 +190,10 @@ void fillLeafDispatch(size_t key_width, LeafHT & ht, const LeafArrays & la, size
 
 /// Collect every (left_row, BuildRef) match for `n` probe rows against the leaf tables.
 ///
-/// `has_chain` — compile-time flag: false for all-unique builds (no `next_chain` access at all,
-/// one emit per hit), true for builds with duplicates (standard chain walk via `next_chain`).
+/// `has_chain` — compile-time flag: false for all-unique builds (no `next_chain` access at all, one
+/// marker-cleared emit per hit), true for builds with duplicates. In the `has_chain` case each hit still
+/// takes the singleton fast path (emit + skip `next_chain`) when its head carries the singleton marker,
+/// walking the chain only for genuinely multi-row keys.
 /// Dispatched from `collectMatches` which picks the right instantiation based on `has_duplicates`.
 template <size_t key_width, bool has_chain>
 void collectMatchesT(
@@ -215,13 +237,21 @@ void collectMatchesT(
 
         if constexpr (!has_chain)
         {
-            /// All-unique build: exactly one build row per key, no next_chain access needed.
+            /// All-unique build: every head is a singleton. Emit the marker-cleared ref, no next_chain.
             out_left_rows.push_back(static_cast<UInt32>(row));
-            out_refs.push_back(cur);
+            out_refs.push_back(leafClearSingleton(cur));
+        }
+        else if (leafIsSingleton(cur))
+        {
+            /// Single-row key in a build that also has duplicates: emit directly and SKIP the next_chain
+            /// load (the fast path this marker exists for — saves a likely LLC/DRAM miss per single-row key).
+            out_left_rows.push_back(static_cast<UInt32>(row));
+            out_refs.push_back(leafClearSingleton(cur));
         }
         else
         {
-            /// Chain walk: follow next_chain from the head to the INVALID_ROW tail.
+            /// Multi-row key: the head and every next_chain entry are flag-free, so walk from the head to
+            /// the INVALID_ROW tail with no masking in the loop.
             chassert(ht.next_chain != nullptr);
             while (cur.row_no != RadixShuffle::INVALID_ROW)
             {
