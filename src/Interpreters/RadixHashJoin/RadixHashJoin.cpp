@@ -274,6 +274,11 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
 
     std::vector<UInt32> left_rows; /// output row -> probe-block row index
     std::vector<RadixShuffle::BuildRef> refs; /// output row -> matched build ref
+    /// Inner join: at least one match slot per probe row in the common unique-build / high-match case
+    /// (exactly `n` at 1:1). Reserve the lower bound so `collectMatches` does not re-grow these hot
+    /// buffers ~log2(n) times (the scatter exact-sizes its outputs from the histogram for the same reason).
+    left_rows.reserve(n);
+    refs.reserve(n);
 
     const bool can_probe = st.built.load(std::memory_order_acquire) && n > 0;
     if (can_probe)
