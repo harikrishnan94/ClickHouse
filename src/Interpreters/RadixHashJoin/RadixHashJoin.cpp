@@ -95,9 +95,10 @@ struct BlockRun
     UInt64 end;
 };
 
-/** Per-probe-thread reusable scratch. `joinBlock` runs concurrently across streams, so this is pooled
-  * (not thread_local) and acquired per call via ScratchHandle. Every buffer is reused across blocks —
-  * capacity only ever grows — so the steady-state probe does no per-block heap allocation.
+/** Per-probe-lane reusable scratch. `joinBlock` runs concurrently across streams, so each probe lane
+  * owns its own slot (selected by the plumbed lane index — no locking, no thread_local). Every buffer
+  * is reused across blocks — capacity only ever grows — so the steady-state probe does no per-block
+  * heap allocation.
   */
 struct ProbeScratch
 {
@@ -123,42 +124,6 @@ struct ProbeScratch
     /// Reused index columns for the bulk IColumn::index gathers (data reassigned, capacity reused).
     ColumnUInt32::MutablePtr left_index;
     ColumnUInt32::MutablePtr payload_index;
-};
-
-/// RAII borrow of a ProbeScratch from a shared pool: pop one (or make a fresh one) on construction,
-/// return it on destruction. The pool grows to at most the probe concurrency.
-class ScratchHandle
-{
-public:
-    ScratchHandle(std::mutex & mutex_, std::vector<std::unique_ptr<ProbeScratch>> & pool_)
-        : mutex(mutex_), pool(pool_)
-    {
-        std::lock_guard lock(mutex);
-        if (!pool.empty())
-        {
-            ptr = std::move(pool.back());
-            pool.pop_back();
-        }
-        if (!ptr)
-            ptr = std::make_unique<ProbeScratch>();
-    }
-
-    ~ScratchHandle()
-    {
-        std::lock_guard lock(mutex);
-        pool.push_back(std::move(ptr));
-    }
-
-    ScratchHandle(const ScratchHandle &) = delete;
-    ScratchHandle & operator=(const ScratchHandle &) = delete;
-
-    ProbeScratch & operator*() noexcept { return *ptr; }
-    ProbeScratch * operator->() noexcept { return ptr.get(); }
-
-private:
-    std::mutex & mutex;
-    std::vector<std::unique_ptr<ProbeScratch>> & pool;
-    std::unique_ptr<ProbeScratch> ptr;
 };
 
 /// Read-only probe inputs, bundled so the phase functions need no access to the private State type.
@@ -498,9 +463,10 @@ struct RadixHashJoin::State
     std::once_flag plan_once;
     OutputPlan out_plan;
 
-    /// Pool of per-thread probe scratch (joinBlock runs concurrently across streams).
-    std::mutex scratch_mutex;
-    std::vector<std::unique_ptr<ProbeScratch>> scratch_pool;
+    /// Per-lane probe scratch (joinBlock runs concurrently across streams). Sized to max_threads in the
+    /// constructor; each lane owns its slot exclusively, so the probe path needs no locking. Slots are
+    /// created lazily on first use by their owning lane.
+    std::vector<std::unique_ptr<ProbeScratch>> lane_scratch;
 };
 
 RadixHashJoin::RadixHashJoin(
@@ -554,6 +520,10 @@ RadixHashJoin::RadixHashJoin(
     state->plan = RadixJoin::PartitionPlan::choose(rhs_size_estimation, detectL2Bytes(), max_partitions_per_pass);
     state->build_side = std::make_unique<RadixJoin::BuildSide>(state->plan, state->key_positions, state->key_widths, max_threads);
 
+    /// One probe-scratch slot per probe lane (the pipeline replicates the probe across at most max_threads
+    /// lanes); each lane owns its slot, so the probe path is lock-free. Slots are filled lazily on use.
+    state->lane_scratch.resize(max_threads);
+
     /// Output plan: split right keys vs payload, the required right keys (copied from the left), and the
     /// left columns that survive into the result (the analyzer column rules).
     JoinCommon::splitAdditionalColumns(state->key_names_right, *right_sample_block, state->right_table_keys, state->columns_to_add);
@@ -579,7 +549,17 @@ const TableJoin & RadixHashJoin::getTableJoin() const
     return *table_join;
 }
 
-bool RadixHashJoin::addBlockToJoin(const Block & block, bool /*check_limits*/)
+bool RadixHashJoin::addBlockToJoin(const Block & block, bool check_limits)
+{
+    return addBlockToJoin(block, block.rows(), check_limits, 0);
+}
+
+bool RadixHashJoin::addBlockToJoin(const Block & block, size_t num_rows, bool check_limits)
+{
+    return addBlockToJoin(block, num_rows, check_limits, 0);
+}
+
+bool RadixHashJoin::addBlockToJoin(const Block & block, size_t /*num_rows*/, bool /*check_limits*/, size_t build_lane)
 {
     /// Normalise to the right sample structure (by name, in order) so key columns sit at the build-side
     /// key positions and every payload column is gatherable by name later. Materialise so the key
@@ -590,13 +570,8 @@ bool RadixHashJoin::addBlockToJoin(const Block & block, bool /*check_limits*/)
         cols.push_back(block.getByName(sample_col.name));
     Block normalized = materializeBlock(Block(std::move(cols)));
 
-    state->build_side->add(normalized);
+    state->build_side->add(normalized, build_lane);
     return true;
-}
-
-bool RadixHashJoin::addBlockToJoin(const Block & block, size_t /*num_rows*/, bool check_limits)
-{
-    return addBlockToJoin(block, check_limits);
 }
 
 void RadixHashJoin::setTotals(const Block & block)
@@ -653,6 +628,11 @@ void RadixHashJoin::ensureBuilt()
 
 JoinResultPtr RadixHashJoin::joinBlock(Block block)
 {
+    return joinBlock(std::move(block), 0);
+}
+
+JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
+{
     ensureBuilt();
 
     State & st = *state;
@@ -672,33 +652,40 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
 
     const bool can_probe = st.built.load(std::memory_order_acquire) && n > 0;
 
-    ScratchHandle scratch(st.scratch_mutex, st.scratch_pool);
+    /// Each probe lane owns its scratch slot (filled lazily on first use), so no locking is needed.
+    if (lane >= st.lane_scratch.size())
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: probe lane {} exceeds max_threads {}", lane, st.lane_scratch.size());
+    auto & slot = st.lane_scratch[lane];
+    if (!slot)
+        slot = std::make_unique<ProbeScratch>();
+    ProbeScratch & s = *slot;
 
     if (can_probe)
     {
         const ProbeContext ctx{
             st.key_names_left, st.key_widths, st.key_offsets, st.key_packers, st.key_width,
             st.leaf_tables, st.plan.leaf_shift, st.plan.total_bits, st.block_base};
-        probeBlock(ctx, block, n, *scratch);
+        probeBlock(ctx, block, n, s);
     }
     else
     {
         /// Header / empty-probe path: emit the schema only (no matches). The direct (non-grouped) path
         /// reads `left_rows` / `refs`, so clear those too.
-        scratch->grouped = false;
-        scratch->left_rows.clear();
-        scratch->refs.clear();
-        scratch->sorted_left_rows.clear();
-        scratch->sorted_row_no.clear();
-        scratch->runs.clear();
+        s.grouped = false;
+        s.left_rows.clear();
+        s.refs.clear();
+        s.sorted_left_rows.clear();
+        s.sorted_row_no.clear();
+        s.runs.clear();
     }
 
     ColumnsWithTypeAndName out;
     out.reserve(st.out_plan.left.size() + st.out_plan.required.size() + st.out_plan.payload.size());
 
     Stopwatch sw_gather;
-    gatherLeft(st.out_plan, block, *scratch, out);
-    gatherRight(st.out_plan, st.payload, *scratch, out);
+    gatherLeft(st.out_plan, block, s, out);
+    gatherRight(st.out_plan, st.payload, s, out);
     if (can_probe)
         ProfileEvents::increment(ProfileEvents::RadixHashProbeGatherMicroseconds, sw_gather.elapsedMicroseconds());
 

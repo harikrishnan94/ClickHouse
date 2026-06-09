@@ -55,9 +55,11 @@ public:
 
     bool addBlockToJoin(const Block & block, bool check_limits) override;
     bool addBlockToJoin(const Block & block, size_t num_rows, bool check_limits) override;
+    bool addBlockToJoin(const Block & block, size_t num_rows, bool check_limits, size_t build_lane) override;
 
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;
+    JoinResultPtr joinBlock(Block block, size_t lane) override;
 
     /// The parallel build transforms each call setTotals concurrently on this shared object; serialize
     /// the assignment (the base does an unguarded `totals = block`). getTotals stays unlocked (read

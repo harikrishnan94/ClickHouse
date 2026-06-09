@@ -33,6 +33,8 @@ public:
     std::string getName() const override { return "DirectKeyValueJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
 
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     bool addBlockToJoin(const Block &, bool) override;
     void checkTypesOfKeys(const Block &) const override;
 

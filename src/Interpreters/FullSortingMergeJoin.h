@@ -48,6 +48,9 @@ public:
 
     int getNullDirection() const { return null_direction; }
 
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
+
     bool addBlockToJoin(const Block & /* block */, bool /* check_limits */) override
     {
         throw Exception(ErrorCodes::LOGICAL_ERROR, "FullSortingMergeJoin::addBlockToJoin should not be called");
