@@ -15,29 +15,21 @@ namespace
 
 using namespace RHJBench;
 
-/// 100M-row single-pass scatter, single UInt64 key: wall ns/row/pass for the deferred build scatter.
-void scatterNsPerRow()
+/// Single-pass build scatter, single UInt64 key: wall ns/row/pass for the deferred build scatter.
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (8192) --l2-bytes.
+void scatterNsPerRow(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
-    std::mt19937_64 rng(0xBE0C); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeBlock1<UInt64>(keys, 0, b + 1));
-    }
-
+    std::vector<Block> blocks = makeRandomU64Blocks(n, block_rows, 0xBE0C);
     std::atomic<size_t> next{0};
     std::vector<std::thread> threads;
     for (size_t t = 0; t < num_threads; ++t)
@@ -65,28 +57,22 @@ void scatterNsPerRow()
     checkEq(leaves.leaf_rows.size(), cfg.num_leaves, "leaf count mismatch");
 }
 
-/// 100M-row work-stolen `add()` (build-select) path: wall ns/row.
-void addNsPerRow()
+/// Work-stolen `add()` (build-select) path: wall ns/row.
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (8192) --l2-bytes.
+void addNsPerRow(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
-    std::mt19937_64 rng(0xBE0C); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeBlock1<UInt64>(keys, 0, b + 1));
-    }
+    std::vector<Block> blocks = makeRandomU64Blocks(n, block_rows, 0xBE0C);
+    const size_t num_blocks = blocks.size();
 
     std::atomic<size_t> next{0};
     Stopwatch sw;
@@ -110,30 +96,23 @@ void addNsPerRow()
     checkEq(store.numBlocks(), num_blocks, "block count mismatch");
 }
 
-/// Forced two-pass {6,5} scatter (cap=64), 100M rows, single UInt64 key.
-void scatterTwoPass()
+/// Two-pass scatter (default cap=64 -> {6,5}), single UInt64 key.
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (64) --l2-bytes.
+void scatterTwoPass(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 64);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, /*max_partitions_per_pass=*/64);
-    checkEq(cfg.pass_bits.size(), 2u, "config must force a two-pass scatter");
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
+    if (cfg.pass_bits.size() != 2)
+        fmt::print(stderr, "note: realized {} pass(es), not the default 2 (custom --rows/--max-parts)\n", cfg.pass_bits.size());
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
-    std::mt19937_64 rng(0xBE1D); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeBlock1<UInt64>(keys, 0, b + 1));
-    }
-
+    std::vector<Block> blocks = makeRandomU64Blocks(n, block_rows, 0xBE1D);
     std::atomic<size_t> next{0};
     std::vector<std::thread> threads;
     for (size_t t = 0; t < num_threads; ++t)
@@ -160,15 +139,20 @@ void scatterTwoPass()
     checkEq(leaves.leaf_rows.size(), cfg.num_leaves, "leaf count mismatch");
 }
 
-/// Wide composite-key (4x UInt64 = 32 B packed), 100M rows, single-pass.
-void scatterWideKey()
+/// Wide composite-key (4x UInt64 = 32 B packed), single-pass.
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (8192) --l2-bytes.
+void scatterWideKey(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
-    checkEq(cfg.pass_bits.size(), 1u, "config must be single-pass");
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
+    if (cfg.pass_bits.size() != 1)
+        fmt::print(stderr, "note: realized {} pass(es), not the default 1 (custom --rows/--max-parts)\n", cfg.pass_bits.size());
     const std::vector<size_t> kpos{0, 1, 2, 3};
     const std::vector<size_t> kw_arr{8, 8, 8, 8};
     BuildStore store(cfg, kpos, kw_arr, num_threads);
@@ -213,30 +197,23 @@ void scatterWideKey()
     checkEq(leaves.leaf_rows.size(), cfg.num_leaves, "leaf count mismatch");
 }
 
-/// Forced 3-pass {4,4,3} depth-first scatter (cap=16), 100M rows, single UInt64 key.
-void scatterThreePass()
+/// Three-pass depth-first scatter (default cap=16 -> {4,4,3}), single UInt64 key.
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (16) --l2-bytes.
+void scatterThreePass(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 16);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, /*max_partitions_per_pass=*/16);
-    checkEq(cfg.pass_bits.size(), 3u, "config must force a three-pass scatter");
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
+    if (cfg.pass_bits.size() != 3)
+        fmt::print(stderr, "note: realized {} pass(es), not the default 3 (custom --rows/--max-parts)\n", cfg.pass_bits.size());
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
-    std::mt19937_64 rng(0xF3E7); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeBlock1<UInt64>(keys, 0, b + 1));
-    }
-
+    std::vector<Block> blocks = makeRandomU64Blocks(n, block_rows, 0xF3E7);
     std::atomic<size_t> next{0};
     std::vector<std::thread> threads;
     for (size_t t = 0; t < num_threads; ++t)
@@ -263,16 +240,21 @@ void scatterThreePass()
     checkEq(leaves.leaf_rows.size(), cfg.num_leaves, "leaf count mismatch");
 }
 
-/// End-to-end build: for each of four mixed-width key configs (K = 1,2,4,8; packed 8/16/32/64) at 100M
-/// rows on 16 threads, time work-stolen add(), finishBuild() and scatterToLeaves() separately.
-void endToEndBuild()
+/// End-to-end build: for each of four mixed-width key configs (K = 1,2,4,8; packed 8/16/32/64), time
+/// work-stolen add(), finishBuild() and scatterToLeaves() separately.
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (8192) --l2-bytes.
+void endToEndBuild(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192); /// 2048 leaves, 1 pass {11}
-    checkEq(cfg.pass_bits.size(), 1u, "config must be single-pass");
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts); /// default: 2048 leaves, 1 pass {11}
+    if (cfg.pass_bits.size() != 1)
+        fmt::print(stderr, "note: realized {} pass(es), not the default 1 (custom --rows/--max-parts)\n", cfg.pass_bits.size());
 
     const std::vector<std::vector<size_t>> configs = {
         {8},
@@ -345,12 +327,12 @@ namespace RHJBench
 std::span<const Bench> scatterBenches()
 {
     static const std::vector<Bench> benches = {
-        {"scatter", "100M single-pass build scatter ns/row/pass", noArgs(scatterNsPerRow)},
-        {"add", "100M work-stolen add() (build-select) ns/row", noArgs(addNsPerRow)},
-        {"scatter_two_pass", "forced two-pass {6,5} scatter, 100M rows", noArgs(scatterTwoPass)},
-        {"scatter_wide_key", "wide composite key (4x8B=32B) single-pass scatter", noArgs(scatterWideKey)},
-        {"scatter_three_pass", "forced three-pass {4,4,3} scatter, 100M rows", noArgs(scatterThreePass)},
-        {"end_to_end", "end-to-end build (add/finish/scatter) over mixed-width keys", noArgs(endToEndBuild)},
+        {"scatter", "single-pass build scatter ns/row/pass (default 100M rows)", scatterNsPerRow},
+        {"add", "work-stolen add() (build-select) ns/row (default 100M rows)", addNsPerRow},
+        {"scatter_two_pass", "two-pass {6,5} scatter (default --max-parts=64)", scatterTwoPass},
+        {"scatter_wide_key", "wide composite key (4x8B=32B) single-pass scatter", scatterWideKey},
+        {"scatter_three_pass", "three-pass {4,4,3} scatter (default --max-parts=16)", scatterThreePass},
+        {"end_to_end", "end-to-end build (add/finish/scatter) over mixed-width keys", endToEndBuild},
     };
     return benches;
 }

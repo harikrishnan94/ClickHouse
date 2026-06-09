@@ -8,7 +8,6 @@
 #include <Interpreters/tests/bench_radix_hash_common.h>
 
 #include <atomic>
-#include <random>
 #include <span>
 #include <thread>
 #include <unordered_set>
@@ -19,29 +18,22 @@ namespace
 
 using namespace RHJBench;
 
-/// Cell-conservation at 100M rows: build the full leaf-HT set and walk every occupied cell's chain
-/// (honoring the singleton marker) — total visited must equal N (every build row reachable exactly once).
-void cellConservation100M()
+/// Cell-conservation: build the full leaf-HT set and walk every occupied cell's chain (honoring the
+/// singleton marker) — total visited must equal N (every build row reachable exactly once).
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (8192) --l2-bytes.
+void cellConservation100M(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
-    std::mt19937_64 rng(0xCE11); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeU64Block(keys));
-    }
+    std::vector<Block> blocks = makeRandomU64Blocks(n, block_rows, 0xCE11);
     std::atomic<size_t> next{0};
     std::vector<std::thread> threads;
     for (size_t t = 0; t < num_threads; ++t)
@@ -93,29 +85,22 @@ void cellConservation100M()
     checkEq(visited, UInt64(n), "every build row must be reachable exactly once via the chains");
 }
 
-/// Leaf-HT build wall time at 100M rows (random inserts are fault/TLB-bound; the jemalloc-backed arena
-/// faults its own leaf arrays + HT cells per run).
-void leafHtBuildTime()
+/// Leaf-HT build wall time (random inserts are fault/TLB-bound; the jemalloc-backed arena faults its own
+/// leaf arrays + HT cells per run).
+/// Flags: --rows (100M) --threads (16) --block-rows (65536) --max-parts (8192) --l2-bytes.
+void leafHtBuildTime(std::span<char * const> args)
 {
-    const size_t n = 100'000'000;
-    const size_t num_threads = 16;
-    const size_t block_rows = 65536;
+    const Flags flags(args);
+    const size_t n = flags.size("rows", 100'000'000);
+    const size_t num_threads = flags.size("threads", 16);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
     BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads);
 
-    std::mt19937_64 rng(0x7777); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
-    const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    std::vector<Block> blocks;
-    blocks.reserve(num_blocks);
-    for (size_t b = 0; b < num_blocks; ++b)
-    {
-        const size_t rows = std::min(block_rows, n - b * block_rows);
-        std::vector<UInt64> keys(rows);
-        for (size_t i = 0; i < rows; ++i)
-            keys[i] = rng();
-        blocks.push_back(makeU64Block(keys));
-    }
+    std::vector<Block> blocks = makeRandomU64Blocks(n, block_rows, 0x7777);
     std::atomic<size_t> next{0};
     std::vector<std::thread> threads;
     for (size_t t = 0; t < num_threads; ++t)
@@ -148,14 +133,20 @@ void leafHtBuildTime()
 /// (`collectMatches`) in isolation and single-threaded, so `perf stat` + `taskset -c <one core>` attribute
 /// counters cleanly to one kernel; the measured region is wrapped by a `Stopwatch` so ns/row is exact.
 ///
-/// Positional args: <workload=U|M|D> <phase=build|probe> <rows> <iters>, e.g. `probe M probe 30000000 10`.
-/// All optional; defaults are M / probe / 30M / (3 build, 10 probe).
+/// Flags (all optional): --workload=U|M|D (M) --phase=build|probe (probe) --rows (30M)
+/// --iters (3 build / 10 probe) --threads (1, single-thread for clean per-kernel counters)
+/// --block-rows (65536) --max-parts (8192) --l2-bytes.
 void probeBench(std::span<char * const> args)
 {
-    const std::string_view workload = argOr(args, 0, "M");
-    const std::string_view phase = argOr(args, 1, "probe");
-    const size_t n = argSize(args, 2, 30'000'000);
-    const size_t iters = argSize(args, 3, phase == "build" ? 3 : 10);
+    const Flags flags(args);
+    const std::string_view workload = flags.str("workload", "M");
+    const std::string_view phase = flags.str("phase", "probe");
+    const size_t n = flags.size("rows", 30'000'000);
+    const size_t iters = flags.size("iters", phase == "build" ? 3 : 10);
+    const size_t num_threads = flags.size("threads", 1);
+    const size_t block_rows = flags.size("block-rows", 65536);
+    const size_t max_parts = flags.size("max-parts", 8192);
+    const size_t l2 = flags.size("l2-bytes", l2_bytes);
 
     const std::vector<UInt64> keys = makeWorkloadKeys(workload, n, 0xB1A5ED);
 
@@ -171,10 +162,9 @@ void probeBench(std::span<char * const> args)
     }
     const size_t pn = probe_keys.size();
 
-    const size_t block_rows = 65536;
     const size_t num_blocks = (n + block_rows - 1) / block_rows;
-    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2_bytes, 8192);
-    BuildStore store(cfg, {0}, {sizeof(UInt64)}, 1); /// single-threaded build for clean per-kernel counters
+    auto cfg = PartitionConfig::make(static_cast<UInt64>(n), l2, max_parts);
+    BuildStore store(cfg, {0}, {sizeof(UInt64)}, num_threads); /// default --threads=1 for clean per-kernel counters
     addBlocksSerial(store, keys, num_blocks);
     store.finishBuild();
 
@@ -243,9 +233,9 @@ void probeBench(std::span<char * const> args)
 const std::vector<Bench> & leafBenches()
 {
     static const std::vector<Bench> benches = {
-        {"cell_conservation_100m", "leaf-HT build at 100M rows + chain conservation check", noArgs(cellConservation100M)},
-        {"leaf_ht_build_time", "leaf-HT build wall time / ns-per-row at 100M rows", noArgs(leafHtBuildTime)},
-        {"probe", "probe/build micro-bench: args [workload=U|M|D] [phase=build|probe] [rows] [iters]", probeBench},
+        {"cell_conservation_100m", "leaf-HT build + chain conservation check (default 100M rows)", cellConservation100M},
+        {"leaf_ht_build_time", "leaf-HT build wall time / ns-per-row (default 100M rows)", leafHtBuildTime},
+        {"probe", "probe/build micro-bench (flags: --workload --phase --rows --iters)", probeBench},
     };
     return benches;
 }

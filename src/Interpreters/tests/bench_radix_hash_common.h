@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +34,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace RHJBench
@@ -64,7 +66,7 @@ inline void checkEq(const A & a, const B & b, std::string_view what, const std::
         failCheck(fmt::format("{}: {} != {}", what, a, b), loc);
 }
 
-/// One selectable benchmark. `run` receives the positional CLI args that follow the bench name (so each
+/// One selectable benchmark. `run` receives the named CLI flags that follow the bench name (so each
 /// bench is configured on the command line, not via environment variables). It throws on failure (via
 /// `check`).
 struct Bench
@@ -74,23 +76,47 @@ struct Bench
     std::function<void(std::span<char * const>)> run;
 };
 
-/// Wrap a parameter-less bench function as a `Bench::run` that ignores any CLI args.
-inline std::function<void(std::span<char * const>)> noArgs(void (*fn)())
+/// Tiny order-independent named-flag parser: accepts `--key=value`, `-key=value` or `--key value`.
+/// Values are views into argv (NUL-terminated), so `strtoull` on `.data()` is safe.
+class Flags
 {
-    return [fn](std::span<char * const>) { fn(); };
-}
+public:
+    explicit Flags(std::span<char * const> args)
+    {
+        for (size_t i = 0; i < args.size(); ++i)
+        {
+            std::string_view tok = args[i];
+            tok.remove_prefix(std::min(tok.find_first_not_of('-'), tok.size())); /// strip leading dashes
+            if (tok.empty())
+                continue;
+            if (const auto eq = tok.find('='); eq != std::string_view::npos)
+                kv.emplace(tok.substr(0, eq), tok.substr(eq + 1));
+            else if (i + 1 < args.size())
+                kv.emplace(tok, std::string_view(args[++i])); /// `--key value` form
+            else
+                kv.emplace(tok, std::string_view{});
+        }
+    }
 
-/// Positional CLI arg `i` as a string view, or `dflt` if absent.
-inline std::string_view argOr(std::span<char * const> args, size_t i, std::string_view dflt)
-{
-    return i < args.size() ? std::string_view(args[i]) : dflt;
-}
+    std::string_view str(std::string_view key, std::string_view dflt) const
+    {
+        const auto it = kv.find(key);
+        return it == kv.end() ? dflt : it->second;
+    }
 
-/// Positional CLI arg `i` parsed as size_t, or `dflt` if absent.
-inline size_t argSize(std::span<char * const> args, size_t i, size_t dflt)
-{
-    return i < args.size() ? static_cast<size_t>(std::strtoull(args[i], nullptr, 10)) : dflt;
-}
+    size_t size(std::string_view key, size_t dflt) const
+    {
+        const auto it = kv.find(key);
+        if (it == kv.end() || it->second.empty())
+            return dflt;
+        size_t out = dflt; /// left unchanged by from_chars on parse failure
+        std::from_chars(it->second.data(), it->second.data() + it->second.size(), out);
+        return out;
+    }
+
+private:
+    std::unordered_map<std::string_view, std::string_view> kv;
+};
 
 /// Implemented in bench_radix_hash_scatter.cpp; concatenated into the registry by `main`.
 std::span<const Bench> scatterBenches();
@@ -101,9 +127,12 @@ inline int runBenchMain(std::span<char * const> args, std::span<const Bench> ben
 {
     const auto print_list = [&]
     {
-        fmt::print("usage: {} <bench> [args...]   (or --list)\n\nbenches:\n", args.empty() ? "bench_radix_hash_join" : args[0]);
+        fmt::print("usage: {} <bench> [flags...]   (or --list)\n\nbenches:\n", args.empty() ? "bench_radix_hash_join" : args[0]);
         for (const auto & b : benches)
             fmt::print("  {:<26} {}\n", b.name, b.help);
+        fmt::print(
+            "\ncommon flags (all optional, with defaults): --rows --threads --block-rows --max-parts --l2-bytes\n"
+            "probe also: --workload=U|M|D --phase=build|probe --iters\n");
     };
 
     if (args.size() < 2)
@@ -166,6 +195,25 @@ inline Block makeU64Block(const std::vector<UInt64> & keys)
     ColumnsWithTypeAndName cols;
     cols.emplace_back(makeColumn<UInt64>(keys), std::make_shared<DataTypeUInt64>(), "k0");
     return Block(std::move(cols));
+}
+
+/// `ceil(n / block_rows)` build blocks of random UInt64 keys (single "k0" column). Shared by the
+/// build/scatter and leaf-HT benches; setup only, never timed.
+inline std::vector<Block> makeRandomU64Blocks(size_t n, size_t block_rows, uint64_t seed)
+{
+    std::mt19937_64 rng(seed); /// NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+    const size_t num_blocks = (n + block_rows - 1) / block_rows;
+    std::vector<Block> blocks;
+    blocks.reserve(num_blocks);
+    for (size_t b = 0; b < num_blocks; ++b)
+    {
+        const size_t rows = std::min(block_rows, n - b * block_rows);
+        std::vector<UInt64> keys(rows);
+        for (auto & k : keys)
+            k = rng();
+        blocks.push_back(makeU64Block(keys));
+    }
+    return blocks;
 }
 
 /// A block of `keys.size()` fixed-width key columns ("k0"..) plus `num_payload` UInt64 payload columns.
