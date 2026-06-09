@@ -34,6 +34,7 @@
 #include <Dictionaries/IDictionary.h>
 #include <Interpreters/ArrayJoinAction.h>
 #include <Interpreters/ConcurrentHashJoin.h>
+#include <Interpreters/RadixHashJoin/RadixHashJoin.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DirectJoin.h>
 #include <Interpreters/FullSortingMergeJoin.h>
@@ -68,6 +69,7 @@ namespace Setting
     extern const SettingsBool allow_general_join_planning;
     extern const SettingsJoinAlgorithm join_algorithm;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 max_partitions_per_pass;
     extern const SettingsSeconds lock_acquire_timeout;
     extern const SettingsNonZeroUInt64 grace_hash_join_initial_buckets;
     extern const SettingsNonZeroUInt64 grace_hash_join_max_buckets;
@@ -1162,6 +1164,80 @@ QueryTreeNodePtr getJoinExpressionFromNode(const JoinNode & join_node)
     return join_expression;
 }
 
+/// The applicability gate for `radix_hash`: a v1 RadixHashJoin requires a single-disjunct inner ALL
+/// equi-join with no special storage, over one or more fixed-width, non-nullable, non-LowCardinality
+/// key columns whose packed width (the sum of the column widths) is a multiple of 4 in [4, 64] — the
+/// scatter granularity (4 bytes) and the leaf-cell template bound. Any other shape (composite key
+/// wider than 64 bytes, nullable, low-cardinality, non-fixed-width, or a packed width that is not a
+/// multiple of 4 such as a lone `UInt8`/`UInt16`/`Date`/`Enum8`/`Enum16`) falls back to `parallel_hash`.
+static bool radixHashJoinApplicable(
+    const std::shared_ptr<TableJoin> & table_join,
+    const SharedHeader & right_table_expression_header)
+{
+    if (!table_join->oneDisjunct())
+        return false;
+    if (table_join->kind() != JoinKind::Inner)
+        return false;
+    /// v1 is ALL inner only; ANY/SEMI/ANTI/ASOF keep their own semantics and would not be bit-identical
+    /// to `hash` under the parallel passthrough.
+    if (table_join->strictness() != JoinStrictness::All)
+        return false;
+    if (table_join->isSpecialStorage())
+        return false;
+
+    const auto & key_names_right = table_join->getOnlyClause().key_names_right;
+    if (key_names_right.empty())
+        return false;
+
+    size_t packed_key_width = 0;
+    for (const auto & key_name : key_names_right)
+    {
+        const auto * key_column = right_table_expression_header->findByName(key_name);
+        if (!key_column)
+            return false;
+
+        const auto & type = key_column->type;
+        if (type->isNullable() || type->lowCardinality())
+            return false;
+        if (!type->haveMaximumSizeOfValue())
+            return false;
+
+        const size_t width = type->getMaximumSizeOfValueInMemory();
+        if (width == 0)
+            return false;
+        packed_key_width += width;
+    }
+
+    return packed_key_width % 4 == 0 && packed_key_width >= 4 && packed_key_width <= 64;
+}
+
+/// Fallback when `radix_hash` is requested but its key gate does not hold: prefer `parallel_hash`
+/// (ConcurrentHashJoin) when the join shape allows it, otherwise plain `HashJoin`.
+static std::shared_ptr<IJoin> createRadixHashJoinFallback(
+    const std::shared_ptr<TableJoin> & table_join,
+    SharedHeader & right_table_expression_header,
+    const JoinAlgorithmParams & params)
+{
+    const auto kind = table_join->kind();
+    const bool parallel_ok = table_join->oneDisjunct()
+        && !table_join->isSpecialStorage()
+        && table_join->strictness() != JoinStrictness::Asof
+        && (kind == JoinKind::Left || kind == JoinKind::Inner || kind == JoinKind::Right || kind == JoinKind::Full);
+
+    if (parallel_ok)
+    {
+        StatsCollectingParams stats_collecting_params{
+            params.hash_table_key_hash,
+            params.collect_hash_table_stats_during_joins,
+            params.max_entries_for_hash_table_stats,
+            params.max_size_to_preallocate_for_joins};
+        return std::make_shared<ConcurrentHashJoin>(
+            table_join, params.max_threads, right_table_expression_header, stats_collecting_params);
+    }
+
+    return std::make_shared<HashJoin>(table_join, right_table_expression_header, params.join_any_take_last_row);
+}
+
 static std::shared_ptr<IJoin> tryCreateJoin(
     JoinAlgorithm algorithm,
     std::shared_ptr<TableJoin> & table_join,
@@ -1185,6 +1261,20 @@ static std::shared_ptr<IJoin> tryCreateJoin(
     {
         if (MergeJoin::isSupported(table_join))
             return std::make_shared<MergeJoin>(table_join, right_table_expression_header);
+    }
+
+    if (algorithm == JoinAlgorithm::RADIX_HASH)
+    {
+        if (radixHashJoinApplicable(table_join, right_table_expression_header))
+            return std::make_shared<RadixHashJoin>(
+                table_join,
+                right_table_expression_header,
+                params.max_threads,
+                params.rhs_size_estimation,
+                params.max_partitions_per_pass);
+
+        /// Key gate failed: fall back cleanly to parallel_hash.
+        return createRadixHashJoinFallback(table_join, right_table_expression_header, params);
     }
 
     if (algorithm == JoinAlgorithm::HASH ||
@@ -1333,6 +1423,7 @@ JoinAlgorithmParams::JoinAlgorithmParams(const Context & context)
     max_entries_for_hash_table_stats = context.getServerSettings()[ServerSetting::max_entries_for_hash_table_stats];
     hash_table_key_hash = 0;
     parallel_hash_join_threshold = settings[Setting::parallel_hash_join_threshold];
+    max_partitions_per_pass = settings[Setting::max_partitions_per_pass];
 
     grace_hash_join_initial_buckets = settings[Setting::grace_hash_join_initial_buckets];
     grace_hash_join_max_buckets = settings[Setting::grace_hash_join_max_buckets];
@@ -1362,6 +1453,7 @@ JoinAlgorithmParams::JoinAlgorithmParams(
     max_entries_for_hash_table_stats = max_entries_for_hash_table_stats_;
     hash_table_key_hash = hash_table_key_hash_;
     parallel_hash_join_threshold = join_settings.parallel_hash_join_threshold;
+    max_partitions_per_pass = join_settings.max_partitions_per_pass;
 
     grace_hash_join_initial_buckets = join_settings.grace_hash_join_initial_buckets;
     grace_hash_join_max_buckets = join_settings.grace_hash_join_max_buckets;
