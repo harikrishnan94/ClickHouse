@@ -345,12 +345,12 @@ namespace RHJBench
 std::span<const Bench> scatterBenches()
 {
     static const std::vector<Bench> benches = {
-        {"scatter", "100M single-pass build scatter ns/row/pass", scatterNsPerRow},
-        {"add", "100M work-stolen add() (build-select) ns/row", addNsPerRow},
-        {"scatter_two_pass", "forced two-pass {6,5} scatter, 100M rows", scatterTwoPass},
-        {"scatter_wide_key", "wide composite key (4x8B=32B) single-pass scatter", scatterWideKey},
-        {"scatter_three_pass", "forced three-pass {4,4,3} scatter, 100M rows", scatterThreePass},
-        {"end_to_end", "end-to-end build (add/finish/scatter) over mixed-width keys", endToEndBuild},
+        {"scatter", "100M single-pass build scatter ns/row/pass", noArgs(scatterNsPerRow)},
+        {"add", "100M work-stolen add() (build-select) ns/row", noArgs(addNsPerRow)},
+        {"scatter_two_pass", "forced two-pass {6,5} scatter, 100M rows", noArgs(scatterTwoPass)},
+        {"scatter_wide_key", "wide composite key (4x8B=32B) single-pass scatter", noArgs(scatterWideKey)},
+        {"scatter_three_pass", "forced three-pass {4,4,3} scatter, 100M rows", noArgs(scatterThreePass)},
+        {"end_to_end", "end-to-end build (add/finish/scatter) over mixed-width keys", noArgs(endToEndBuild)},
     };
     return benches;
 }

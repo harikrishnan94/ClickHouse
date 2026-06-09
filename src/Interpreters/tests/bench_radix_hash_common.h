@@ -31,7 +31,6 @@
 #include <source_location>
 #include <span>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -65,23 +64,44 @@ inline void checkEq(const A & a, const B & b, std::string_view what, const std::
         failCheck(fmt::format("{}: {} != {}", what, a, b), loc);
 }
 
-/// One selectable benchmark. `run` throws on failure (via `check`).
+/// One selectable benchmark. `run` receives the positional CLI args that follow the bench name (so each
+/// bench is configured on the command line, not via environment variables). It throws on failure (via
+/// `check`).
 struct Bench
 {
     std::string_view name;
     std::string_view help;
-    std::function<void()> run;
+    std::function<void(std::span<char * const>)> run;
 };
+
+/// Wrap a parameter-less bench function as a `Bench::run` that ignores any CLI args.
+inline std::function<void(std::span<char * const>)> noArgs(void (*fn)())
+{
+    return [fn](std::span<char * const>) { fn(); };
+}
+
+/// Positional CLI arg `i` as a string view, or `dflt` if absent.
+inline std::string_view argOr(std::span<char * const> args, size_t i, std::string_view dflt)
+{
+    return i < args.size() ? std::string_view(args[i]) : dflt;
+}
+
+/// Positional CLI arg `i` parsed as size_t, or `dflt` if absent.
+inline size_t argSize(std::span<char * const> args, size_t i, size_t dflt)
+{
+    return i < args.size() ? static_cast<size_t>(std::strtoull(args[i], nullptr, 10)) : dflt;
+}
 
 /// Implemented in bench_radix_hash_scatter.cpp; concatenated into the registry by `main`.
 std::span<const Bench> scatterBenches();
 
-/// Dispatch `argv[1]` against `benches`; no arg / `--list` prints the registry. Returns the process code.
+/// Dispatch `argv[1]` against `benches`, forwarding `argv[2..]` to the bench; no arg / `--list` prints the
+/// registry. Returns the process code.
 inline int runBenchMain(std::span<char * const> args, std::span<const Bench> benches)
 {
     const auto print_list = [&]
     {
-        fmt::print("usage: {} <bench> [--list]\n\nbenches:\n", args.empty() ? "bench_radix_hash_join" : args[0]);
+        fmt::print("usage: {} <bench> [args...]   (or --list)\n\nbenches:\n", args.empty() ? "bench_radix_hash_join" : args[0]);
         for (const auto & b : benches)
             fmt::print("  {:<26} {}\n", b.name, b.help);
     };
@@ -108,7 +128,7 @@ inline int runBenchMain(std::span<char * const> args, std::span<const Bench> ben
 
     try
     {
-        it->run();
+        it->run(args.subspan(2)); /// positional args after the bench name
     }
     catch (const std::exception & e)
     {
@@ -116,20 +136,6 @@ inline int runBenchMain(std::span<char * const> args, std::span<const Bench> ben
         return 1;
     }
     return 0;
-}
-
-/// Optional string env var with a default.
-inline std::string envStr(const char * key, std::string_view dflt)
-{
-    const char * v = std::getenv(key); /// NOLINT(concurrency-mt-unsafe)
-    return v ? std::string(v) : std::string(dflt);
-}
-
-/// Optional size_t env var with a default.
-inline size_t envSize(const char * key, size_t dflt)
-{
-    const char * v = std::getenv(key); /// NOLINT(concurrency-mt-unsafe)
-    return v ? static_cast<size_t>(std::strtoull(v, nullptr, 10)) : dflt;
 }
 
 /// Drive a cooperative build with real T-thread parallelism: every thread calls `coord.run(body)`; the

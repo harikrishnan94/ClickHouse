@@ -148,14 +148,14 @@ void leafHtBuildTime()
 /// (`collectMatches`) in isolation and single-threaded, so `perf stat` + `taskset -c <one core>` attribute
 /// counters cleanly to one kernel; the measured region is wrapped by a `Stopwatch` so ns/row is exact.
 ///
-/// Env: RHJ_PERF_WORKLOAD=U|M|D (default M), RHJ_PERF_PHASE=build|probe (default probe),
-///      RHJ_PERF_ROWS=<n> (default 30M), RHJ_PERF_ITERS=<k> (default 3 build / 10 probe).
-void probeBench()
+/// Positional args: <workload=U|M|D> <phase=build|probe> <rows> <iters>, e.g. `probe M probe 30000000 10`.
+/// All optional; defaults are M / probe / 30M / (3 build, 10 probe).
+void probeBench(std::span<char * const> args)
 {
-    const std::string workload = envStr("RHJ_PERF_WORKLOAD", "M");
-    const std::string phase = envStr("RHJ_PERF_PHASE", "probe");
-    const size_t n = envSize("RHJ_PERF_ROWS", 30'000'000);
-    const size_t iters = envSize("RHJ_PERF_ITERS", phase == "build" ? 3 : 10);
+    const std::string_view workload = argOr(args, 0, "M");
+    const std::string_view phase = argOr(args, 1, "probe");
+    const size_t n = argSize(args, 2, 30'000'000);
+    const size_t iters = argSize(args, 3, phase == "build" ? 3 : 10);
 
     const std::vector<UInt64> keys = makeWorkloadKeys(workload, n, 0xB1A5ED);
 
@@ -243,9 +243,9 @@ void probeBench()
 const std::vector<Bench> & leafBenches()
 {
     static const std::vector<Bench> benches = {
-        {"cell_conservation_100m", "leaf-HT build at 100M rows + chain conservation check", cellConservation100M},
-        {"leaf_ht_build_time", "leaf-HT build wall time / ns-per-row at 100M rows", leafHtBuildTime},
-        {"probe", "singleton-marker probe/build micro-bench (env RHJ_PERF_*)", probeBench},
+        {"cell_conservation_100m", "leaf-HT build at 100M rows + chain conservation check", noArgs(cellConservation100M)},
+        {"leaf_ht_build_time", "leaf-HT build wall time / ns-per-row at 100M rows", noArgs(leafHtBuildTime)},
+        {"probe", "probe/build micro-bench: args [workload=U|M|D] [phase=build|probe] [rows] [iters]", probeBench},
     };
     return benches;
 }
