@@ -1,0 +1,281 @@
+#include <Interpreters/RadixHashJoin/Arena.h>
+#include <Interpreters/RadixHashJoin/BuildSide.h>
+#include <Interpreters/RadixHashJoin/CoopPool.h>
+#include <Interpreters/RadixHashJoin/KeyRefScatter.h>
+#include <Interpreters/RadixHashJoin/LeafTable.h>
+#include <Interpreters/RadixHashJoin/PackedKeyHash.h>
+#include <Interpreters/RadixHashJoin/PartitionPlan.h>
+
+#include <Columns/ColumnsNumber.h>
+#include <Core/Block.h>
+#include <DataTypes/DataTypesNumber.h>
+#include <Common/typeid_cast.h>
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <map>
+#include <random>
+#include <thread>
+#include <vector>
+
+using namespace DB;
+using namespace DB::RadixJoin;
+
+namespace
+{
+
+Block makeU64Block(const std::vector<UInt64> & values, const std::string & name)
+{
+    auto col = ColumnUInt64::create();
+    col->getData().assign(values.begin(), values.end());
+    Block block;
+    block.insert(ColumnWithTypeAndName(std::move(col), std::make_shared<DataTypeUInt64>(), name));
+    return block;
+}
+
+/// Run a CoopPool body across `threads` participants (1 == fully sequential).
+void runCoop(CoopPool & pool, size_t threads, const std::function<void()> & body)
+{
+    if (threads <= 1)
+    {
+        pool.run(body);
+        return;
+    }
+    std::vector<std::thread> ts;
+    ts.reserve(threads);
+    for (size_t t = 0; t < threads; ++t)
+        ts.emplace_back([&] { pool.run(body); });
+    for (auto & t : ts)
+        t.join();
+}
+
+/// Build the leaf tables from a single-column UInt64 build side, probe every probe key, and assert the
+/// (probe_row -> matched build flat-rows) result equals the brute-force reference.
+void checkBuildAndProbe(
+    const std::vector<UInt64> & build_keys,
+    const std::vector<UInt64> & probe_keys,
+    PartitionPlan plan,
+    size_t build_threads,
+    size_t post_build_threads)
+{
+    constexpr size_t key_width = 8;
+
+    BuildSide build_side(plan, {0}, {key_width}, std::max<size_t>(build_threads, 1));
+
+    /// Feed the build keys as several blocks (exercise multi-block accumulation), from `build_threads`
+    /// concurrent adders if requested.
+    const size_t block_rows = 257; /// deliberately not a power of two
+    std::vector<Block> build_blocks;
+    for (size_t begin = 0; begin < build_keys.size(); begin += block_rows)
+    {
+        const size_t end = std::min(begin + block_rows, build_keys.size());
+        build_blocks.push_back(makeU64Block({build_keys.begin() + begin, build_keys.begin() + end}, "k0"));
+    }
+    if (build_threads <= 1)
+    {
+        for (const auto & b : build_blocks)
+            build_side.add(b);
+    }
+    else
+    {
+        std::atomic<size_t> next{0};
+        std::vector<std::thread> ts;
+        for (size_t t = 0; t < build_threads; ++t)
+            ts.emplace_back([&]
+            {
+                for (size_t i = next.fetch_add(1); i < build_blocks.size(); i = next.fetch_add(1))
+                    build_side.add(build_blocks[i]);
+            });
+        for (auto & t : ts)
+            t.join();
+    }
+
+    build_side.finishBuild();
+    ASSERT_EQ(build_side.totalRows(), build_keys.size());
+
+    CoopPool coord;
+    LeafTables tables;
+    std::vector<UInt64> block_base;
+    runCoop(coord, post_build_threads, [&]
+    {
+        LeafArrays leaves = build_side.scatterToLeaves(coord);
+        /// No-churn: one output allocation per non-empty leaf, never per (block x leaf).
+        UInt64 non_empty = 0;
+        for (UInt64 r : leaves.leaf_rows)
+            non_empty += (r != 0);
+        EXPECT_EQ(leaves.alloc_count, non_empty);
+
+        block_base = build_side.blockBase();
+        tables = buildLeafTables(leaves, block_base, build_side.totalRows(), key_width, coord);
+    });
+
+    /// The build key stored at a matched BuildRef, read back from the (possibly reordered, under
+    /// parallel add) accumulated blocks. The flat-row order need not match the original vector — only
+    /// the matched KEY VALUES and per-probe-row match COUNTS are part of the join contract.
+    const auto & blocks = build_side.blocks();
+    auto buildKeyAt = [&](BuildRef ref) -> UInt64
+    {
+        const auto & col = typeid_cast<const ColumnUInt64 &>(*blocks[ref.block_no].getByPosition(0).column);
+        return col.getData()[ref.row_no];
+    };
+
+    /// Expected per-key build-row count (every build row with that key value).
+    std::map<UInt64, size_t> expected_count;
+    for (UInt64 k : build_keys)
+        ++expected_count[k];
+
+    std::vector<UInt64> hashes(probe_keys.size());
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+        hashes[i] = hashPackedKey<key_width>(&probe_keys[i]);
+
+    const bool has_dups = tables.next_chain != nullptr;
+    std::vector<UInt32> out_rows;
+    std::vector<BuildRef> out_refs;
+    collectMatches(
+        key_width, has_dups, tables.leaves.data(), plan.leaf_shift, plan.total_bits, block_base.data(),
+        hashes.data(), probe_keys.data(), probe_keys.size(), out_rows, out_refs);
+
+    /// Every emitted match must resolve to a build row whose key equals the probe key, and the number
+    /// of matches per probe row must equal the count of build rows with that key.
+    std::map<UInt32, size_t> got_count;
+    for (size_t m = 0; m < out_rows.size(); ++m)
+    {
+        ASSERT_EQ(buildKeyAt(out_refs[m]), probe_keys[out_rows[m]]) << "match " << m;
+        ++got_count[out_rows[m]];
+    }
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+    {
+        auto it = expected_count.find(probe_keys[i]);
+        const size_t expected = it == expected_count.end() ? 0 : it->second;
+        const size_t actual = got_count.count(static_cast<UInt32>(i)) ? got_count[static_cast<UInt32>(i)] : 0;
+        ASSERT_EQ(actual, expected) << "probe row " << i << " key " << probe_keys[i];
+    }
+}
+
+}
+
+TEST(RadixHashJoin, PackedKeyHashDeterministicAndIndependentHalves)
+{
+    /// Same bytes -> same hash; both 32-bit halves vary across keys (a single hash drives leaf + bucket).
+    std::map<UInt32, int> high_counts;
+    std::map<UInt32, int> low_counts;
+    for (UInt64 v = 0; v < 100000; ++v)
+    {
+        const UInt64 h1 = hashPackedKey<8>(&v);
+        const UInt64 h2 = hashPackedKey(&v, 8);
+        ASSERT_EQ(h1, h2);
+        ++high_counts[routeBits(h1)];
+        ++low_counts[bucketBits(h1)];
+    }
+    /// Sequential integers must not collapse the high or low words into a few buckets.
+    EXPECT_GT(high_counts.size(), 99000u);
+    EXPECT_GT(low_counts.size(), 99000u);
+}
+
+TEST(RadixHashJoin, PartitionPlanSizingAndPasses)
+{
+    /// Unknown estimate -> default leaves.
+    auto p0 = PartitionPlan::choose(std::nullopt, 2 << 20, 8192);
+    EXPECT_EQ(p0.num_leaves, PartitionPlan::DEFAULT_LEAVES);
+
+    /// 100M rows, 2 MiB L2 -> 2048 leaves, single pass at the default 8192 cap.
+    auto p1 = PartitionPlan::choose(100'000'000, 2u << 20, 8192);
+    EXPECT_EQ(p1.num_leaves, 2048u);
+    EXPECT_EQ(p1.total_bits, 11u);
+    EXPECT_EQ(p1.pass_bits.size(), 1u);
+
+    /// A small per-pass cap forces multiple, evenly-spread passes.
+    auto p2 = PartitionPlan::choose(100'000'000, 2u << 20, 4); /// bits_per_pass = 2 -> ceil(11/2)=6 passes
+    UInt32 sum = 0;
+    for (UInt32 b : p2.pass_bits)
+        sum += b;
+    EXPECT_EQ(sum, p2.total_bits);
+    EXPECT_LE(*std::max_element(p2.pass_bits.begin(), p2.pass_bits.end())
+                  - *std::min_element(p2.pass_bits.begin(), p2.pass_bits.end()),
+              1u);
+}
+
+TEST(RadixHashJoin, ScatterColumnRoundTripDirect)
+{
+    /// A direct (small fanout) scatter must place every element into the partition its route selects,
+    /// in arrival order, and the per-partition counts must match the histogram.
+    constexpr size_t partitions = 16;
+    constexpr UInt32 shift = 0;
+    constexpr UInt32 mask = partitions - 1;
+    const size_t n = 5000;
+
+    std::vector<UInt32> route(n);
+    std::vector<UInt64> src(n);
+    std::vector<size_t> counts(partitions, 0);
+    std::mt19937 rng(123);
+    for (size_t i = 0; i < n; ++i)
+    {
+        route[i] = static_cast<UInt32>(rng());
+        src[i] = i;
+        ++counts[route[i] & mask];
+    }
+
+    RadixJoin::Arena arena;
+    std::vector<UInt64 *> bases(partitions);
+    std::vector<void *> cursors(partitions);
+    for (size_t p = 0; p < partitions; ++p)
+    {
+        bases[p] = arena.allocateArray<UInt64>(std::max<size_t>(counts[p], 1));
+        cursors[p] = bases[p];
+    }
+    appendColumnDirect(route.data(), shift, mask, n, src.data(), sizeof(UInt64), cursors.data());
+
+    /// Reconstruct: each partition holds exactly its routed source values in arrival order.
+    std::vector<std::vector<UInt64>> expected(partitions);
+    for (size_t i = 0; i < n; ++i)
+        expected[route[i] & mask].push_back(src[i]);
+    for (size_t p = 0; p < partitions; ++p)
+    {
+        const size_t written = static_cast<UInt64 *>(cursors[p]) - bases[p];
+        ASSERT_EQ(written, counts[p]);
+        std::vector<UInt64> got(bases[p], bases[p] + written);
+        ASSERT_EQ(got, expected[p]);
+    }
+}
+
+TEST(RadixHashJoin, BuildProbeUniqueKeys)
+{
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    for (UInt64 i = 0; i < 5000; ++i)
+        build_keys.push_back(i * 2654435761ULL);
+    for (UInt64 i = 0; i < 4000; ++i)
+        probe_keys.push_back((i + 1000) * 2654435761ULL); /// 3000 hits, 1000 misses
+    checkBuildAndProbe(build_keys, probe_keys, PartitionPlan::choose(5000, 2u << 20, 8192), 1, 1);
+}
+
+TEST(RadixHashJoin, BuildProbeManyToManyParallel)
+{
+    /// Heavy duplicates on both sides -> exercises the chain and the singleton fast path.
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    std::mt19937 rng(7);
+    for (size_t i = 0; i < 20000; ++i)
+        build_keys.push_back(rng() % 500); /// ~40 build rows per key
+    for (size_t i = 0; i < 8000; ++i)
+        probe_keys.push_back(rng() % 700); /// some keys never in build
+    checkBuildAndProbe(build_keys, probe_keys, PartitionPlan::choose(20000, 2u << 20, 8192), 4, 4);
+}
+
+TEST(RadixHashJoin, BuildProbeForcedMultiPass)
+{
+    /// Force several scatter passes with a tiny per-pass cap; results must be identical to single-pass.
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    std::mt19937 rng(99);
+    for (size_t i = 0; i < 30000; ++i)
+        build_keys.push_back(rng());
+    for (size_t i = 0; i < 30000; ++i)
+        probe_keys.push_back(i % 2 == 0 ? build_keys[i % build_keys.size()] : rng());
+    /// A tiny L2 forces many leaves; the per-pass cap of 4 (2 bits) then forces several passes. The
+    /// result must be identical to a single-pass run.
+    auto plan = PartitionPlan::choose(30000, 8u << 10, 4);
+    ASSERT_GT(plan.pass_bits.size(), 1u);
+    checkBuildAndProbe(build_keys, probe_keys, plan, 4, 4);
+}
