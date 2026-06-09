@@ -1526,6 +1526,21 @@ The server successfully detected this situation and will download merged part fr
     \
     M(JoinBuildPostProcessingMicroseconds, "Elapsed time of post-processing steps after building the right JOIN side.", ValueType::Microseconds) \
     \
+    M(RadixHashBuildSelectMicroseconds, "RadixHashJoin: time hashing keys, computing the leaf id and updating the per-thread histogram in addBlockToJoin (no scatter).", ValueType::Microseconds) \
+    M(RadixHashBuildScatterMicroseconds, "RadixHashJoin: time in the deferred key+ref scatter (cooperative post-build on the probe threads).", ValueType::Microseconds) \
+    M(RadixHashBuildHTMicroseconds, "RadixHashJoin: time building the per-leaf hash tables.", ValueType::Microseconds) \
+    M(RadixHashProbeSelectMicroseconds, "RadixHashJoin: probe selector (pack key + hash + leaf id).", ValueType::Microseconds) \
+    M(RadixHashProbeScatterMicroseconds, "RadixHashJoin: probe-side key scatter (only the optional batched probe variant).", ValueType::Microseconds) \
+    M(RadixHashProbeLookupMicroseconds, "RadixHashJoin: per-leaf hash-table lookup and ref collection.", ValueType::Microseconds) \
+    M(RadixHashProbeGatherMicroseconds, "RadixHashJoin: build/left payload gather and output materialisation.", ValueType::Microseconds) \
+    M(RadixHashScatterRows, "RadixHashJoin: number of rows scattered, counted per pass.", ValueType::Number) \
+    M(RadixHashNTStoreBytes, "RadixHashJoin: bytes written via non-temporal stores during the scatter.", ValueType::Bytes) \
+    M(RadixHashBuildBlocksMoved, "RadixHashJoin: number of build blocks accumulated by move (not copy).", ValueType::Number) \
+    M(RadixHashHugePagesUsed, "RadixHashJoin: arena slabs backed by transparent huge pages.", ValueType::Number) \
+    M(RadixHashHugePagesFailed, "RadixHashJoin: arena slabs where huge-page backing failed (fail-open).", ValueType::Number) \
+    M(RadixHashProbeRows, "RadixHashJoin: number of left (probe) rows processed by joinBlock.", ValueType::Number) \
+    M(RadixHashOutputRows, "RadixHashJoin: number of joined output rows emitted by joinBlock.", ValueType::Number) \
+    \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIAPICalls, "Number of HTTP requests dispatched to AI providers.", ValueType::Number) \
