@@ -3,8 +3,6 @@
 #include <Interpreters/RadixHashJoin/PackedKeyHash.h>
 
 #include <Common/Exception.h>
-#include <Common/ProfileEvents.h>
-#include <Common/Stopwatch.h>
 
 #include <algorithm>
 #include <atomic>
@@ -12,11 +10,6 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
-
-namespace ProfileEvents
-{
-extern const Event RadixHashBuildHTMicroseconds;
-}
 
 namespace DB
 {
@@ -222,8 +215,6 @@ LeafTables buildLeafTables(
     size_t key_width,
     CoopPool & coord)
 {
-    Stopwatch sw;
-
     LeafTables out;
     out.num_rows = num_rows;
     const size_t num_leaves = leaf_arrays.num_leaves;
@@ -269,7 +260,6 @@ LeafTables buildLeafTables(
             if (out.leaves[leaf].next_chain == nullptr)
                 out.leaves[leaf].next_chain = out.next_chain;
 
-    ProfileEvents::increment(ProfileEvents::RadixHashBuildHTMicroseconds, sw.elapsedMicroseconds());
     return out;
 }
 

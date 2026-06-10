@@ -16,6 +16,7 @@
 #include <Parsers/IAST_fwd.h>
 #include <Storages/SelectQueryInfo.h>
 #include <Common/CurrentThread.h>
+#include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 #include <Common/ThreadPool.h>
@@ -58,6 +59,8 @@ using namespace DB;
 namespace ProfileEvents
 {
 extern const Event HashJoinPreallocatedElementsInHashTables;
+extern const Event ConcurrentHashJoinBuildMicroseconds;
+extern const Event ConcurrentHashJoinProbeMicroseconds;
 }
 
 namespace CurrentMetrics
@@ -278,6 +281,8 @@ ConcurrentHashJoin::~ConcurrentHashJoin()
 
 bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_limits)
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
+
     /// We materialize columns here to avoid materializing them multiple times on different threads
     /// (inside different `hash_join`-s) because the block will be shared.
     Block right_block = hash_joins[0]->data->materializeColumnsFromRightBlock(right_block_);
@@ -388,6 +393,8 @@ public:
 
     JoinResultBlock next() override
     {
+        ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
+
         if (!current_result)
         {
             /// Skip empty dispatched blocks to avoid running the full join machinery for nothing,
@@ -418,6 +425,8 @@ public:
 
 JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
 {
+    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
+
     ScatteredBlocks dispatched_blocks;
 
     hash_joins[0]->data->materializeColumnsFromLeftBlock(block);
@@ -734,6 +743,8 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
+
     if (hash_joins[0]->data->twoLevelMapIsUsed())
     {
         // At this point, the build phase is finished. We need to build a shared common hash map to be used in the probe phase.
