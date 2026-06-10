@@ -114,7 +114,7 @@ void checkBuildAndProbe(
     /// parallel add) accumulated blocks. The flat-row order need not match the original vector — only
     /// the matched KEY VALUES and per-probe-row match COUNTS are part of the join contract.
     const auto & blocks = build_side.blocks();
-    auto buildKeyAt = [&](BuildRef ref) -> UInt64
+    auto build_key_at = [&](BuildRef ref) -> UInt64
     {
         const auto & col = typeid_cast<const ColumnUInt64 &>(*blocks[ref.block_no].getByPosition(0).column);
         return col.getData()[ref.row_no];
@@ -141,16 +141,50 @@ void checkBuildAndProbe(
     std::map<UInt32, size_t> got_count;
     for (size_t m = 0; m < out_rows.size(); ++m)
     {
-        ASSERT_EQ(buildKeyAt(out_refs[m]), probe_keys[out_rows[m]]) << "match " << m;
+        ASSERT_EQ(build_key_at(out_refs[m]), probe_keys[out_rows[m]]) << "match " << m;
         ++got_count[out_rows[m]];
     }
     for (size_t i = 0; i < probe_keys.size(); ++i)
     {
         auto it = expected_count.find(probe_keys[i]);
         const size_t expected = it == expected_count.end() ? 0 : it->second;
-        const size_t actual = got_count.count(static_cast<UInt32>(i)) ? got_count[static_cast<UInt32>(i)] : 0;
+        const size_t actual = got_count.contains(static_cast<UInt32>(i)) ? got_count[static_cast<UInt32>(i)] : 0;
         ASSERT_EQ(actual, expected) << "probe row " << i << " key " << probe_keys[i];
     }
+
+    /// The leaf-partitioned (zero-copy) probe must emit exactly the same matches as the flat probe. Build
+    /// the counting-sort permutation of probe rows by leaf from the same hashes, run collectMatchesScattered,
+    /// and assert identical per-probe-row match counts (and that every match still resolves to the probe key).
+    const size_t num_leaves = tables.leaves.size();
+    std::vector<UInt16> pleaf(probe_keys.size());
+    std::vector<UInt32> leaf_start(num_leaves + 1, 0);
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+    {
+        const UInt32 leaf = plan.total_bits ? (routeBits(hashes[i]) >> plan.leaf_shift) : 0u;
+        pleaf[i] = static_cast<UInt16>(leaf);
+        ++leaf_start[leaf + 1];
+    }
+    for (size_t l = 1; l <= num_leaves; ++l)
+        leaf_start[l] += leaf_start[l - 1];
+    std::vector<UInt32> leaf_cursor(leaf_start.begin(), leaf_start.end());
+    std::vector<UInt32> perm(probe_keys.size());
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+        perm[leaf_cursor[pleaf[i]]++] = static_cast<UInt32>(i);
+
+    std::vector<UInt32> sc_rows;
+    std::vector<BuildRef> sc_refs;
+    collectMatchesScattered(
+        key_width, has_dups, tables.leaves.data(), block_base.data(),
+        hashes.data(), probe_keys.data(), perm.data(), leaf_start.data(), num_leaves, sc_rows, sc_refs);
+
+    std::map<UInt32, size_t> sc_count;
+    for (size_t m = 0; m < sc_rows.size(); ++m)
+    {
+        ASSERT_EQ(build_key_at(sc_refs[m]), probe_keys[sc_rows[m]]) << "scattered match " << m;
+        ++sc_count[sc_rows[m]];
+    }
+    ASSERT_EQ(sc_rows.size(), out_rows.size());
+    ASSERT_EQ(sc_count, got_count);
 }
 
 }
