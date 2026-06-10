@@ -34,6 +34,9 @@ namespace ProfileEvents
 {
 extern const Event RadixHashJoinBuildMicroseconds;
 extern const Event RadixHashJoinProbeMicroseconds;
+extern const Event RadixHashJoinProbePermMicroseconds;
+extern const Event RadixHashJoinProbeCollectMatchesMicroseconds;
+extern const Event RadixHashJoinProbePackHashRouteMicroseconds;
 }
 
 namespace DB
@@ -99,14 +102,23 @@ struct BlockRun
   */
 struct ProbeScratch
 {
-    /// Tiled select + lookup.
-    std::vector<char> packed;                   /// multi-column packed-key tile
-    std::vector<UInt64> hashes;                 /// per-tile 64-bit key hashes
-    std::vector<UInt32> tile_left;              /// per-tile matched probe rows (tile-local)
-    std::vector<RadixJoin::BuildRef> tile_refs; /// per-tile matched refs
+    /// Batch-wide pack + hash. Capacity is reused across batches and only ever grows, so the steady
+    /// state does no per-batch heap allocation.
+    std::vector<char> packed;                   /// multi-column packed keys for the whole batch
+    std::vector<UInt64> hashes;                 /// per-batch 64-bit key hashes
     std::vector<const char *> kcol_src;         /// raw data of each left key column
 
-    /// Matches in probe order (one (left_row, ref) per match).
+    /// Zero-copy leaf partitioning of the batch rows (only 4-byte row ids move, never keys/hashes).
+    /// `pleaf[i]` is row i's leaf; `leaf_start` holds the num_leaves+1 exclusive run offsets into `perm`
+    /// after the counting sort; `leaf_cursor` is the running per-leaf write position during the scatter;
+    /// `perm` holds the row ids grouped by leaf. Only sized on the scatter path.
+    std::vector<UInt16> pleaf;
+    std::vector<UInt32> perm;
+    std::vector<UInt32> leaf_start;
+    std::vector<UInt32> leaf_cursor;
+
+    /// Matches (one (left_row, ref) per match): probe order on the flat path, leaf-grouped (stable
+    /// within a leaf) on the scatter path.
     std::vector<UInt32> left_rows;
     std::vector<RadixJoin::BuildRef> refs;
 
@@ -135,7 +147,16 @@ struct ProbeContext
     UInt32 leaf_shift;
     UInt32 total_bits;
     const std::vector<UInt64> & block_base;
+    size_t num_leaves;
 };
+
+/// Block-scope leaf partitioning is done in batches of this many rows so the pack/hash/route scratch
+/// stays bounded even when the user raises `max_block_size` (the common case is one batch per block).
+constexpr size_t PROBE_BATCH_ROWS = 65536;
+/// Engage the zero-copy leaf scatter only when a batch carries at least this many rows per leaf on
+/// average — below it the counting sort + permutation overhead is not amortised and the flat probe
+/// (which keeps the input sequential) wins.
+constexpr size_t MIN_SCATTER_ROWS_PER_LEAF = 8;
 
 /// Precompute the output schema once: left columns (filtered by the analyzer rules), then payload
 /// columns whose output name is not already provided by a left column, then required right-key columns
@@ -213,16 +234,77 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
     }
 }
 
-/// Phase 1 — Probe. Tile the pack + 64-bit hash + leaf-table lookup so the scratch stays L1-resident,
-/// collect (left_row, ref) per match, then group them by build block for the bulk gathers.
+/// Hash a contiguous run of `count` packed keys (each `W` bytes) into `hashes`. On the scatter path
+/// (`scatter == true`) also route each row to its leaf (`pleaf[i] = top total_bits of the route word`)
+/// and bump the per-leaf histogram (`hist[leaf + 1]`, laid out for the exclusive scan). Width-templated
+/// so the hash is the unrolled compile-time kernel and the route is a shift with no runtime branch.
+template <size_t key_width, bool scatter>
+void hashRouteRun(const char * keys, size_t count, UInt64 * hashes, UInt16 * pleaf, UInt32 * hist, UInt32 leaf_shift)
+{
+    for (size_t i = 0; i < count; ++i)
+    {
+        const UInt64 h = RadixJoin::hashPackedKey<key_width>(keys + i * key_width);
+        hashes[i] = h;
+        if constexpr (scatter)
+        {
+            const UInt16 leaf = static_cast<UInt16>(RadixJoin::routeBits(h) >> leaf_shift);
+            pleaf[i] = leaf;
+            ++hist[static_cast<size_t>(leaf) + 1];
+        }
+    }
+}
+
+/// Produce the batch's packed keys (multi-column only), 64-bit hashes, and — on the scatter path — the
+/// per-row leaf ids and leaf histogram. Single-column keys are hashed straight off the column's raw
+/// data (zero copy, no packing, no tiling). Multi-column keys are packed in `SCATTER_CHUNK_ROWS` tiles
+/// and each tile is hashed immediately while its packed bytes are still L1-hot.
+template <size_t key_width, bool scatter>
+void packHashRouteBatch(
+    const ProbeContext & ctx,
+    bool single_col,
+    const char * single_keys,
+    const std::vector<const char *> & kcol_src,
+    size_t batch_start,
+    size_t bn,
+    char * packed,
+    UInt64 * hashes,
+    UInt16 * pleaf,
+    UInt32 * hist)
+{
+    ProfileEventTimeIncrement<Microseconds> probe_pack_hash_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+    if (single_col)
+    {
+        hashRouteRun<key_width, scatter>(single_keys, bn, hashes, pleaf, hist, ctx.leaf_shift);
+        return;
+    }
+
+    constexpr size_t tile = RadixJoin::BuildSide::SCATTER_CHUNK_ROWS; /// 1024
+    const size_t ncols = ctx.key_widths.size();
+    for (size_t off = 0; off < bn; off += tile)
+    {
+        const size_t tn = std::min(tile, bn - off);
+        char * dst = packed + off * key_width;
+        for (size_t c = 0; c < ncols; ++c)
+            ctx.key_packers[c](kcol_src[c], batch_start + off, tn, dst, key_width, ctx.key_offsets[c], ctx.key_widths[c]);
+        if constexpr (scatter)
+            hashRouteRun<key_width, true>(dst, tn, hashes + off, pleaf + off, hist, ctx.leaf_shift);
+        else
+            hashRouteRun<key_width, false>(dst, tn, hashes + off, nullptr, hist, ctx.leaf_shift);
+    }
+}
+
+/// Phase 1 — Probe. For each batch: pack (multi-column) + 64-bit hash, fused with the per-row leaf id +
+/// leaf histogram. When the batch is wide enough to amortise it (the gate below), counting-sort the row
+/// ids by leaf into `perm` (zero copy — keys/hashes stay put) and probe one leaf at a time so the
+/// leaf's table state is register-hoisted and its cell touches stay cache- / TLB-local; otherwise fall
+/// back to the flat per-row routed probe. Either way matches land directly in `s.left_rows`/`s.refs`,
+/// then are grouped by build block for the bulk gathers when the build had duplicates.
 void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeScratch & s)
 {
     s.left_rows.clear();
     s.refs.clear();
     s.left_rows.reserve(n);
     s.refs.reserve(n);
-
-    constexpr size_t tile_rows = RadixJoin::BuildSide::SCATTER_CHUNK_ROWS; /// 1024
 
     const bool single_col = ctx.key_widths.size() == 1;
     const char * single_raw = nullptr;
@@ -232,63 +314,103 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
     }
     else
     {
-        s.packed.resize(tile_rows * ctx.key_width);
         s.kcol_src.clear();
         s.kcol_src.reserve(ctx.key_widths.size());
         for (const auto & name : ctx.key_names_left)
             s.kcol_src.push_back(block.getByName(name).column->getRawData().data());
     }
-    s.hashes.resize(tile_rows);
 
     const bool has_chain = ctx.leaf_tables.next_chain != nullptr;
+    const size_t num_leaves = ctx.num_leaves;
 
-    for (size_t tile_start = 0; tile_start < n; tile_start += tile_rows)
+    for (size_t batch_start = 0; batch_start < n; batch_start += PROBE_BATCH_ROWS)
     {
-        const size_t tn = std::min(tile_rows, n - tile_start);
+        const size_t bn = std::min(PROBE_BATCH_ROWS, n - batch_start);
 
-        /// Phase 1a — pack (multi-column) + the full 64-bit hash of each packed key into the reused
-        /// scratch. Single-column keys point straight at the column's raw data (zero copy).
+        /// Engage the scatter only with a real radix fan-out (`total_bits > 0`), a leaf id that fits the
+        /// UInt16 `pleaf` (`total_bits <= 16`), and enough rows per leaf to amortise the counting sort.
+        const bool use_scatter
+            = ctx.total_bits > 0 && ctx.total_bits <= 16 && bn >= num_leaves * MIN_SCATTER_ROWS_PER_LEAF;
+
+        s.hashes.resize(bn);
         const char * keys = nullptr;
         if (single_col)
         {
-            keys = single_raw + tile_start * ctx.key_width;
+            keys = single_raw + batch_start * ctx.key_width;
         }
         else
         {
-            char * dst = s.packed.data();
-            for (size_t c = 0; c < ctx.key_widths.size(); ++c)
-                ctx.key_packers[c](s.kcol_src[c], tile_start, tn, dst, ctx.key_width, ctx.key_offsets[c], ctx.key_widths[c]);
-            keys = dst;
+            s.packed.resize(bn * ctx.key_width);
+            keys = s.packed.data();
         }
-        UInt64 * hashes = s.hashes.data();
+
+        if (use_scatter)
+        {
+            s.pleaf.resize(bn);
+            s.leaf_start.assign(num_leaves + 1, 0);
+        }
+
+        /// Phase 1a — pack (multi-column) + hash, fused with the leaf route + histogram on the scatter path.
         switch (ctx.key_width)
         {
-#define RHJ_PROBE_HASH(W) \
-    case W: for (size_t i = 0; i < tn; ++i) hashes[i] = RadixJoin::hashPackedKey<W>(keys + i * (W)); break;
-            RHJ_PROBE_HASH(4)  RHJ_PROBE_HASH(8)  RHJ_PROBE_HASH(12) RHJ_PROBE_HASH(16)
-            RHJ_PROBE_HASH(20) RHJ_PROBE_HASH(24) RHJ_PROBE_HASH(28) RHJ_PROBE_HASH(32)
-            RHJ_PROBE_HASH(36) RHJ_PROBE_HASH(40) RHJ_PROBE_HASH(44) RHJ_PROBE_HASH(48)
-            RHJ_PROBE_HASH(52) RHJ_PROBE_HASH(56) RHJ_PROBE_HASH(60) RHJ_PROBE_HASH(64)
-#undef RHJ_PROBE_HASH
+#define RHJ_PACK_HASH(W) \
+    case W: \
+        if (use_scatter) \
+            packHashRouteBatch<W, true>( \
+                ctx, single_col, keys, s.kcol_src, batch_start, bn, s.packed.data(), s.hashes.data(), s.pleaf.data(), s.leaf_start.data()); \
+        else \
+            packHashRouteBatch<W, false>( \
+                ctx, single_col, keys, s.kcol_src, batch_start, bn, s.packed.data(), s.hashes.data(), nullptr, nullptr); \
+        break;
+            RHJ_PACK_HASH(4)  RHJ_PACK_HASH(8)  RHJ_PACK_HASH(12) RHJ_PACK_HASH(16)
+            RHJ_PACK_HASH(20) RHJ_PACK_HASH(24) RHJ_PACK_HASH(28) RHJ_PACK_HASH(32)
+            RHJ_PACK_HASH(36) RHJ_PACK_HASH(40) RHJ_PACK_HASH(44) RHJ_PACK_HASH(48)
+            RHJ_PACK_HASH(52) RHJ_PACK_HASH(56) RHJ_PACK_HASH(60) RHJ_PACK_HASH(64)
+#undef RHJ_PACK_HASH
             default:
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
         }
 
-        /// Phase 1b — direct leaf-table lookup into the reused tile buffers, then append to the global
-        /// match buffers with the tile offset applied to the probe-row index.
-        s.tile_left.clear();
-        s.tile_refs.clear();
-        RadixJoin::collectMatches(
-            ctx.key_width, has_chain, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
-            ctx.block_base.data(), hashes, keys, tn, s.tile_left, s.tile_refs);
-        const auto tile_base = static_cast<UInt32>(tile_start);
-        for (UInt32 r : s.tile_left)
-            s.left_rows.push_back(tile_base + r);
-        s.refs.insert(s.refs.end(), s.tile_refs.begin(), s.tile_refs.end());
+        /// Phase 1b — lookup. Both paths append matches (absolute batch-local row id) to the global match
+        /// buffers; `batch_start` is folded back in afterwards (a no-op for the single-batch common case).
+        const size_t match_begin = s.left_rows.size();
+        if (use_scatter)
+        {
+            {
+                ProfileEventTimeIncrement<Microseconds> probe_perm_watch(ProfileEvents::RadixHashJoinProbePermMicroseconds);
+                /// Exclusive scan turns the histogram into per-leaf run starts, then the counting sort drops
+                /// each row id into its leaf's run. Only the 4-byte ids are moved; keys and hashes stay put.
+                for (size_t leaf = 1; leaf <= num_leaves; ++leaf)
+                    s.leaf_start[leaf] += s.leaf_start[leaf - 1];
+                s.leaf_cursor.assign(s.leaf_start.begin(), s.leaf_start.end());
+                s.perm.resize(bn);
+                for (size_t i = 0; i < bn; ++i)
+                    s.perm[s.leaf_cursor[s.pleaf[i]]++] = static_cast<UInt32>(i);
+            }
+
+            ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
+            RadixJoin::collectMatchesScattered(
+                ctx.key_width, has_chain, ctx.leaf_tables.leaves.data(), ctx.block_base.data(),
+                s.hashes.data(), keys, s.perm.data(), s.leaf_start.data(), num_leaves, s.left_rows, s.refs);
+        }
+        else
+        {
+            ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
+            RadixJoin::collectMatches(
+                ctx.key_width, has_chain, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
+                ctx.block_base.data(), s.hashes.data(), keys, bn, s.left_rows, s.refs);
+        }
+
+        if (batch_start != 0)
+        {
+            const auto base = static_cast<UInt32>(batch_start);
+            for (size_t m = match_begin; m < s.left_rows.size(); ++m)
+                s.left_rows[m] += base;
+        }
     }
 
     /// Hybrid gather decision. With a duplicate-free build the matches are ~1:1 and scattered, so a
-    /// direct typed gather in probe order (no sort, no temp) wins. With duplicates the probe rows fan
+    /// direct typed gather in match order (no sort, no temp) wins. With duplicates the probe rows fan
     /// out and grouping by build block (counting sort) gives the gather base-pointer locality.
     s.grouped = has_chain;
     if (s.grouped)
@@ -659,7 +781,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     {
         const ProbeContext ctx{
             st.key_names_left, st.key_widths, st.key_offsets, st.key_packers, st.key_width,
-            st.leaf_tables, st.plan.leaf_shift, st.plan.total_bits, st.block_base};
+            st.leaf_tables, st.plan.leaf_shift, st.plan.total_bits, st.block_base, st.leaf_tables.leaves.size()};
         probeBlock(ctx, block, n, s);
     }
     else

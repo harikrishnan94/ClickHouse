@@ -1530,6 +1530,9 @@ The server successfully detected this situation and will download merged part fr
     M(ConcurrentHashJoinProbeMicroseconds, "ConcurrentHashJoin (parallel_hash): probe phase time (`joinBlock` plus draining the lazy join result), summed across threads.", ValueType::Microseconds) \
     M(RadixHashJoinBuildMicroseconds, "RadixHashJoin (radix_hash): build phase time (`addBlockToJoin` plus the cooperative post-build in `ensureBuilt`), summed across threads.", ValueType::Microseconds) \
     M(RadixHashJoinProbeMicroseconds, "RadixHashJoin (radix_hash): probe phase time (`joinBlock` excluding `ensureBuilt`), summed across threads.", ValueType::Microseconds) \
+    M(RadixHashJoinProbePermMicroseconds, "RadixHashJoin (radix_hash): time spent in the probe permutation stage during `joinBlock`, summed across threads.", ValueType::Microseconds) \
+    M(RadixHashJoinProbeCollectMatchesMicroseconds, "RadixHashJoin (radix_hash): time spent collecting matches during the probe phase in `joinBlock`, summed across threads.", ValueType::Microseconds) \
+    M(RadixHashJoinProbePackHashRouteMicroseconds, "RadixHashJoin (radix_hash): time spent packing hash route information during probe in `joinBlock`, summed across threads.", ValueType::Microseconds) \
     \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \
