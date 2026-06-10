@@ -32,11 +32,8 @@
 
 namespace ProfileEvents
 {
-extern const Event RadixHashProbeSelectMicroseconds;
-extern const Event RadixHashProbeLookupMicroseconds;
-extern const Event RadixHashProbeGatherMicroseconds;
-extern const Event RadixHashProbeRows;
-extern const Event RadixHashOutputRows;
+extern const Event RadixHashJoinBuildMicroseconds;
+extern const Event RadixHashJoinProbeMicroseconds;
 }
 
 namespace DB
@@ -245,16 +242,12 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
 
     const bool has_chain = ctx.leaf_tables.next_chain != nullptr;
 
-    UInt64 sel_us = 0;
-    UInt64 lookup_us = 0;
-
     for (size_t tile_start = 0; tile_start < n; tile_start += tile_rows)
     {
         const size_t tn = std::min(tile_rows, n - tile_start);
 
         /// Phase 1a — pack (multi-column) + the full 64-bit hash of each packed key into the reused
         /// scratch. Single-column keys point straight at the column's raw data (zero copy).
-        Stopwatch sw_sel;
         const char * keys = nullptr;
         if (single_col)
         {
@@ -280,11 +273,9 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
             default:
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
         }
-        sel_us += sw_sel.elapsedMicroseconds();
 
         /// Phase 1b — direct leaf-table lookup into the reused tile buffers, then append to the global
         /// match buffers with the tile offset applied to the probe-row index.
-        Stopwatch sw_lookup;
         s.tile_left.clear();
         s.tile_refs.clear();
         RadixJoin::collectMatches(
@@ -294,7 +285,6 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         for (UInt32 r : s.tile_left)
             s.left_rows.push_back(tile_base + r);
         s.refs.insert(s.refs.end(), s.tile_refs.begin(), s.tile_refs.end());
-        lookup_us += sw_lookup.elapsedMicroseconds();
     }
 
     /// Hybrid gather decision. With a duplicate-free build the matches are ~1:1 and scattered, so a
@@ -303,11 +293,6 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
     s.grouped = has_chain;
     if (s.grouped)
         sortMatchesByBlock(ctx, s);
-
-    ProfileEvents::increment(ProfileEvents::RadixHashProbeSelectMicroseconds, sel_us);
-    ProfileEvents::increment(ProfileEvents::RadixHashProbeLookupMicroseconds, lookup_us);
-    ProfileEvents::increment(ProfileEvents::RadixHashProbeRows, n);
-    ProfileEvents::increment(ProfileEvents::RadixHashOutputRows, s.left_rows.size());
 }
 
 /// Phase 2 — Gather Left. Left columns and required right-key columns are both gathered from the probe
@@ -561,6 +546,8 @@ bool RadixHashJoin::addBlockToJoin(const Block & block, size_t num_rows, bool ch
 
 bool RadixHashJoin::addBlockToJoin(const Block & block, size_t /*num_rows*/, bool /*check_limits*/, size_t build_lane)
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+
     /// Normalise to the right sample structure (by name, in order) so key columns sit at the build-side
     /// key positions and every payload column is gatherable by name later. Materialise so the key
     /// columns expose contiguous raw data and the stored payload types match `columns_to_add`.
@@ -571,6 +558,7 @@ bool RadixHashJoin::addBlockToJoin(const Block & block, size_t /*num_rows*/, boo
     Block normalized = materializeBlock(Block(std::move(cols)));
 
     state->build_side->add(normalized, build_lane);
+
     return true;
 }
 
@@ -633,7 +621,13 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
 
 JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
 {
-    ensureBuilt();
+    /// The cooperative post-build runs on the probe threads, but it belongs to the build phase:
+    {
+        ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+        ensureBuilt();
+    }
+
+    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
 
     State & st = *state;
     const size_t n = block.rows();
@@ -683,11 +677,8 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     ColumnsWithTypeAndName out;
     out.reserve(st.out_plan.left.size() + st.out_plan.required.size() + st.out_plan.payload.size());
 
-    Stopwatch sw_gather;
     gatherLeft(st.out_plan, block, s, out);
     gatherRight(st.out_plan, st.payload, s, out);
-    if (can_probe)
-        ProfileEvents::increment(ProfileEvents::RadixHashProbeGatherMicroseconds, sw_gather.elapsedMicroseconds());
 
     return IJoinResult::createFromBlock(Block(std::move(out)));
 }

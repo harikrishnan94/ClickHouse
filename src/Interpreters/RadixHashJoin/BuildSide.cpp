@@ -5,22 +5,12 @@
 #include <Columns/IColumn.h>
 
 #include <Common/Exception.h>
-#include <Common/ProfileEvents.h>
-#include <Common/Stopwatch.h>
 
 #include <algorithm>
 #include <bit>
 #include <numeric>
 #include <optional>
 #include <span>
-
-namespace ProfileEvents
-{
-extern const Event RadixHashBuildSelectMicroseconds;
-extern const Event RadixHashBuildScatterMicroseconds;
-extern const Event RadixHashBuildBlocksMoved;
-extern const Event RadixHashScatterRows;
-}
 
 namespace DB
 {
@@ -190,8 +180,6 @@ void BuildSide::add(const Block & block, size_t lane)
     const size_t n = kept.rows();
     chassert(n <= std::numeric_limits<UInt32>::max()); /// row_no is a 0-based UInt32; INVALID_ROW is reserved
 
-    Stopwatch sw;
-
     if (n > 0)
     {
         /// (2) Route word per row, into a reused scratch buffer (NOT stored per row). Single-column
@@ -225,11 +213,8 @@ void BuildSide::add(const Block & block, size_t lane)
             ++hist[(row & replica_mask) * num_leaves + ((route[row] >> safe_shift) & leaf_mask)];
     }
 
-    ProfileEvents::increment(ProfileEvents::RadixHashBuildSelectMicroseconds, sw.elapsedMicroseconds());
-
     state.blocks.push_back(std::move(kept));
     state.rows_of_block.push_back(static_cast<UInt32>(n));
-    ProfileEvents::increment(ProfileEvents::RadixHashBuildBlocksMoved);
 }
 
 void BuildSide::finishBuild()
@@ -451,10 +436,7 @@ LeafArrays BuildSide::scatterSinglePass(CoopPool & coord)
     }
 
     std::atomic<UInt64> total_bytes{0};
-    Stopwatch sw;
     scatterBlockRanges(coord, num_leaves, shift, mask, slot_off, out.key_base.data(), out.ref_base.data(), total_bytes);
-    ProfileEvents::increment(ProfileEvents::RadixHashBuildScatterMicroseconds, sw.elapsedMicroseconds());
-    ProfileEvents::increment(ProfileEvents::RadixHashScatterRows, total_rows);
 
     out.bytes_scattered = total_bytes.load();
     return out;
@@ -589,7 +571,6 @@ LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
     }
 
     std::atomic<UInt64> total_bytes{0};
-    Stopwatch sw;
 
     /// Pass 0: blocks -> 2^pass_bits[0] partitions (an intermediate arena).
     const UInt32 pass0_bits = part_plan.pass_bits[0];
@@ -666,9 +647,6 @@ LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
         level0_arena.release(level0.key[partition]);
         total_bytes.fetch_add(local_bytes, std::memory_order_relaxed);
     });
-
-    ProfileEvents::increment(ProfileEvents::RadixHashBuildScatterMicroseconds, sw.elapsedMicroseconds());
-    ProfileEvents::increment(ProfileEvents::RadixHashScatterRows, total_rows * num_passes);
 
     out.bytes_scattered = total_bytes.load();
     return out;
