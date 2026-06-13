@@ -42,8 +42,9 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
     const auto * keys = static_cast<const char *>(la.key_base[leaf]);
     const BuildRef * refs = la.ref_base[leaf];
     constexpr size_t stride = leafCellBytes(key_width);
-    const UInt64 num_buckets = ht.num_buckets;
+    const UInt64 num_buckets = ht.numBuckets();
     const UInt64 mask = num_buckets - 1;
+    char * const cells = ht.cells();
 
     constexpr size_t group = 64;
     UInt64 pf_pos[group];
@@ -56,7 +57,7 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
     auto prefetch_burst = [&](size_t count)
     {
         for (size_t i = 0; i < count; ++i)
-            __builtin_prefetch(ht.cells + pf_pos[i] * stride, /*rw=*/1, /*locality=*/3);
+            __builtin_prefetch(cells + pf_pos[i] * stride, /*rw=*/1, /*locality=*/3);
     };
 
     bool saw_dup = false;
@@ -170,10 +171,11 @@ void collectMatchesImpl(
     size_t active = 0;
 
     /// Assign the next unprocessed probe row to `s`. Computes the leaf, home bucket, and issues the
-    /// prefetch for the home cell. Empty leaves (num_buckets == 0) yield no match — we skip straight to
-    /// the next row. Leaves `s` Inactive once every row has been pulled. `active` counts slots currently
-    /// in Scan; a slot recycled here was active for its previous row, so we adjust by the net change
-    /// (decrement here, re-increment only when a new row is actually assigned).
+    /// prefetch for the home cell. Empty leaves yield no match — we skip straight to the next row.
+    /// Leaves `s` Inactive once every row has been pulled. `active` counts slots currently in Scan; a
+    /// slot recycled here was active for its previous row, so we adjust by the net change (decrement
+    /// here, re-increment only when a new row is actually assigned). `num_buckets`/`mask` are recovered
+    /// once per probe row here (a shift + an and), never in the inner round-robin step loop.
     auto pull_next = [&](Slot & s)
     {
         if (s.stage != Stage::Inactive)
@@ -184,15 +186,16 @@ void collectMatchesImpl(
             const UInt64 h = hashes[row];
             const size_t leaf = total_bits ? (routeBits(h) >> leaf_shift) : 0;
             const LeafHT & ht = leaves[leaf];
-            if (ht.num_buckets == 0)
+            if (ht.empty())
                 continue; /// empty leaf: no match, pull another row
 
+            const UInt64 num_buckets = ht.numBuckets();
             s.stage = Stage::Scan;
             s.row = static_cast<UInt32>(row);
-            s.cells = ht.cells;
+            s.cells = ht.cells();
             s.key = packed_keys + row * key_width;
-            s.mask = ht.num_buckets - 1;
-            s.pos = leafBucket(bucketBits(h), ht.num_buckets) & s.mask;
+            s.mask = num_buckets - 1;
+            s.pos = leafBucket(bucketBits(h), num_buckets) & s.mask;
             __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
             ++active;
             return;
@@ -265,12 +268,12 @@ LeafTables buildLeafTables(
     UInt64 num_rows,
     size_t key_width,
     size_t num_workers,
-    CoopPool & coord)
+    const ParallelFor & parallel_for)
 {
     LeafTables out;
     out.num_rows = num_rows;
     const size_t num_leaves = leaf_arrays.num_leaves;
-    out.leaves.assign(num_leaves, LeafHT{});
+    out.leaves.assign(num_leaves, LeafHT{}); /// every leaf starts empty (word == 0)
 
     /// One arena per build worker for the BuildRefList Batch nodes. Each worker only ever allocates from
     /// its own arena (single-writer, no locking); the arenas live in `out` so the nodes outlive the
@@ -279,27 +282,21 @@ LeafTables buildLeafTables(
     for (auto & a : out.build_arenas)
         a = std::make_unique<DB::Arena>();
 
-    /// Per-leaf sizing (integer math only; no allocation, no page touch).
-    for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+    /// Each worker sizes, allocates, 0-inits (empty cell == BuildRefList word 0), and fills its own
+    /// leaf's cell array — sizing, allocation, zeroing and fill all spread across the build threads, no
+    /// single-threaded carve. The leaf descriptor (cells + bucket count) is packed and published in one
+    /// store. Batch nodes for that leaf's duplicate keys come from the worker's own arena.
+    parallel_for(num_leaves, [&](size_t leaf, size_t worker)
     {
         const UInt64 rows = leaf_arrays.leaf_rows[leaf];
         if (rows == 0)
-            continue;
-        out.leaves[leaf].num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~0.5 load factor
-    }
-
-    /// Each worker allocates, 0-inits (empty cell == BuildRefList word 0), and fills its own leaf's cell
-    /// array — allocation, zeroing and fill all spread across the build threads, no single-threaded carve.
-    /// Batch nodes for that leaf's duplicate keys come from the worker's own arena.
-    coord.parallelFor(num_leaves, [&](size_t leaf, size_t worker)
-    {
-        if (leaf_arrays.leaf_rows[leaf] == 0)
             return;
         chassert(worker < out.build_arenas.size());
-        const size_t cell_bytes = static_cast<size_t>(out.leaves[leaf].num_buckets) * leafCellBytes(key_width);
+        const UInt64 num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~0.5 load factor
+        const size_t cell_bytes = static_cast<size_t>(num_buckets) * leafCellBytes(key_width);
         char * cells = static_cast<char *>(out.arena.allocate(cell_bytes, LINE_BYTES));
         std::memset(cells, 0, cell_bytes);
-        out.leaves[leaf].cells = cells;
+        out.leaves[leaf] = LeafHT(cells, num_buckets);
         fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
     });
 

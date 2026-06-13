@@ -38,6 +38,7 @@ namespace DB
     M(COMPLETED_PIPELINE_EXECUTOR, "QueryCompPipeEx") \
     M(CONFIG_RELOADER, "ConfigReloader") \
     M(CONCURRENT_JOIN, "ConcurrentJoin") \
+    M(RADIX_JOIN, "RadixJoin") \
     M(CREATE_TABLES, "CreateTables") \
     M(CUSTOM_RESOURCE_MANAGER, "CustomResMgr") \
     M(DATABASE_BACKUP, "DatabaseBackup") \

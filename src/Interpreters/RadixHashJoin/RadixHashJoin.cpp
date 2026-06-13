@@ -1,10 +1,10 @@
 #include <Interpreters/RadixHashJoin/RadixHashJoin.h>
 
 #include <Interpreters/RadixHashJoin/BuildSide.h>
-#include <Interpreters/RadixHashJoin/CoopPool.h>
 #include <Interpreters/RadixHashJoin/KeyLayout.h>
 #include <Interpreters/RadixHashJoin/LeafTable.h>
 #include <Interpreters/RadixHashJoin/PackedKeyHash.h>
+#include <Interpreters/RadixHashJoin/ParallelFor.h>
 #include <Interpreters/RadixHashJoin/PartitionPlan.h>
 
 #include <Interpreters/RowRefs.h>
@@ -22,9 +22,13 @@
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 #include <Common/Stopwatch.h>
+#include <Common/ThreadPool.h>
+#include <Common/ThreadGroupSwitcher.h>
 #include <Common/assert_cast.h>
+#include <Common/setThreadName.h>
 
 #include <atomic>
+#include <exception>
 #include <mutex>
 #include <numeric>
 
@@ -37,6 +41,13 @@ extern const Event RadixHashJoinProbeMicroseconds;
 extern const Event RadixHashJoinProbePermMicroseconds;
 extern const Event RadixHashJoinProbeCollectMatchesMicroseconds;
 extern const Event RadixHashJoinProbePackHashRouteMicroseconds;
+}
+
+namespace CurrentMetrics
+{
+extern const Metric RadixHashJoinPoolThreads;
+extern const Metric RadixHashJoinPoolThreadsActive;
+extern const Metric RadixHashJoinPoolThreadsScheduled;
 }
 
 namespace DB
@@ -58,6 +69,77 @@ size_t detectL2Bytes()
         return static_cast<size_t>(ret);
 #endif
     return 0;
+}
+
+/// `RadixJoin::ParallelFor` backed by a `ThreadPool` (used the same way `ConcurrentHashJoin` drives its
+/// pool: `scheduleOrThrow` + `wait`, with each task inheriting the query's thread group). Distributes
+/// `total` units across up to `num_workers` tasks with dynamic work-stealing on an atomic cursor —
+/// leaf sizes are highly skewed, so a static equal-count split would serialize on the big leaves. Each
+/// task carries a fixed dense `worker` id in [0, num_workers) (one task per id), so a unit may index a
+/// per-worker resource (e.g. `LeafTables::build_arenas[worker]`) under a single-writer invariant. The
+/// first unit exception is captured and rethrown after every task has stopped.
+///
+/// This is the sole executor of the parallel post-build, so each worker charges its CPU time to
+/// `RadixHashJoinBuildMicroseconds` (attributed to the query via the thread-group switch). Summed over
+/// workers and over the post-build's `parallel_for` steps, this is the parallel build cost — the same
+/// summed-across-threads accounting as the per-build-thread `addBlockToJoin` watch; it deliberately
+/// excludes the orchestrating thread's idle wait in `pool.wait()`.
+void runParallelFor(ThreadPool & pool, size_t num_workers, const ThreadGroupPtr & thread_group, size_t total, const RadixJoin::UnitFn & fn)
+{
+    if (total == 0)
+        return;
+
+    const size_t workers = std::min(num_workers, total);
+    std::atomic<size_t> next{0};
+    std::mutex exc_mutex;
+    std::exception_ptr first_exc;
+
+    auto capture = [&](std::exception_ptr e)
+    {
+        std::lock_guard lock(exc_mutex);
+        if (!first_exc)
+            first_exc = std::move(e);
+        next.store(total, std::memory_order_relaxed); /// stop the other workers from pulling more units
+    };
+
+    try
+    {
+        for (size_t w = 0; w < workers; ++w)
+        {
+            pool.scheduleOrThrow([&, w, thread_group]
+            {
+                ThreadGroupSwitcher switcher(thread_group, ThreadName::RADIX_JOIN);
+                /// Charge this worker's build CPU (build_watch is destroyed before the switcher detaches,
+                /// so the increment lands while the thread is still attached to the query group).
+                ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+                while (true)
+                {
+                    const size_t unit = next.fetch_add(1, std::memory_order_relaxed);
+                    if (unit >= total)
+                        break;
+                    try
+                    {
+                        fn(unit, w);
+                    }
+                    catch (...)
+                    {
+                        capture(std::current_exception());
+                        break;
+                    }
+                }
+            });
+        }
+    }
+    catch (...)
+    {
+        /// A failed schedule (or any setup error): stop the running tasks, then drain and propagate.
+        capture(std::current_exception());
+    }
+
+    pool.wait();
+
+    if (first_exc)
+        std::rethrow_exception(first_exc);
 }
 
 /// Precomputed (once) output schema of the probe. One entry per output column, grouped by gather kind.
@@ -500,8 +582,9 @@ struct RadixHashJoin::State
 
     std::unique_ptr<RadixJoin::BuildSide> build_side;
 
-    std::atomic<bool> build_phase_finished{false};
-    RadixJoin::CoopPool coord;
+    /// The dedicated pool the eager post-build is parallelised over (sized to max_threads, created in
+    /// the constructor). Mirrors `ConcurrentHashJoin::pool`.
+    std::unique_ptr<ThreadPool> pool;
 
     std::atomic<bool> built{false};
     RadixJoin::LeafTables leaf_tables;
@@ -590,6 +673,17 @@ RadixHashJoin::RadixHashJoin(
     state->plan = RadixJoin::PartitionPlan::choose(rhs_size_estimation, detectL2Bytes(), max_partitions_per_pass);
     state->build_side = std::make_unique<RadixJoin::BuildSide>(state->plan, state->key_positions, state->key_widths, max_threads);
 
+    /// Dedicated pool for the eager post-build (scatter + leaf-table build), sized to max_threads and
+    /// driven exactly like ConcurrentHashJoin's: `scheduleOrThrow` + `wait`. queue_size == max_threads
+    /// because `runParallelFor` schedules at most one task per worker id.
+    state->pool = std::make_unique<ThreadPool>(
+        CurrentMetrics::RadixHashJoinPoolThreads,
+        CurrentMetrics::RadixHashJoinPoolThreadsActive,
+        CurrentMetrics::RadixHashJoinPoolThreadsScheduled,
+        /*max_threads_*/ max_threads,
+        /*max_free_threads_*/ 0,
+        /*queue_size_*/ max_threads);
+
     /// One probe-scratch slot per probe lane (the pipeline replicates the probe across at most max_threads
     /// lanes); each lane owns its slot, so the probe path is lock-free. Slots are filled lazily on use.
     state->lane_scratch.resize(max_threads);
@@ -667,52 +761,67 @@ void RadixHashJoin::checkTypesOfKeys(const Block & block) const
 
 void RadixHashJoin::onBuildPhaseFinish()
 {
-    state->build_side->finishBuild();
-    state->build_phase_finished.store(true, std::memory_order_release);
+    /// The eager post-build is build-phase work. JoiningTransform calls this from `work()` (heavy work
+    /// allowed) exactly once, before any real probe, so the join is fully built when it returns.
+    ///
+    /// Build-time accounting (`RadixHashJoinBuildMicroseconds`) is summed across every thread that does
+    /// build work, matching the per-build-thread `addBlockToJoin` watch: the barrier below and the
+    /// serial index construction in `runPostBuild` are charged on this thread; the parallel scatter and
+    /// leaf-table build are charged per worker inside `runParallelFor`. The orchestrating thread's idle
+    /// wait in `pool.wait()` is deliberately NOT charged.
+    {
+        ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+        state->build_side->finishBuild(); /// merge + prefix-sum the histograms (the build barrier)
+    }
+    runPostBuild();
 }
 
 void RadixHashJoin::runPostBuild()
 {
+    /// Capture the calling thread's group once so every pool task attaches to the same query group; the
+    /// `ParallelFor` then schedules the post-build steps on `state->pool`.
+    const ThreadGroupPtr thread_group = getCurrentThreadGroup();
+    const size_t num_workers = max_threads;
+    ThreadPool & pool = *state->pool;
+    const RadixJoin::ParallelFor parallel_for = [&pool, num_workers, thread_group](size_t total, const RadixJoin::UnitFn & fn)
+    {
+        runParallelFor(pool, num_workers, thread_group, total, fn);
+    };
+
     /// Deferred exact key+ref scatter into the per-leaf arrays. The route hash is recomputed from the
     /// key inside the scatter; the leaf bucket is recomputed in the leaf-table build — nothing per-row
     /// is carried, and no payload is moved.
-    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(state->coord);
+    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(parallel_for);
 
     state->block_base = state->build_side->blockBase();
     state->total_rows = state->build_side->totalRows();
 
-    state->leaf_tables = RadixJoin::buildLeafTables(leaves, state->total_rows, state->key_width, max_threads, state->coord);
+    state->leaf_tables = RadixJoin::buildLeafTables(leaves, state->total_rows, state->key_width, num_workers, parallel_for);
 
     /// Register each stored right block (in accumulation order) so a `BuildRef::blockNo()` indexes
     /// `blocksData()` directly. `add` returns size()-1, so block_no == build index (the chassert below).
-    state->stored_columns_index = std::make_shared<StoredColumnsIndex>();
-    state->columns_infos.reserve(state->build_side->blocks().size());
-    for (const auto & block : state->build_side->blocks())
+    /// Serial, on this thread — charged to the build phase to match the parallel sections above.
     {
-        state->columns_infos.emplace_back(std::make_unique<ColumnsInfo>(block.getColumns()));
-        const UInt32 bn = state->stored_columns_index->add(state->columns_infos.back().get()); /// NOLINT(clang-analyzer-deadcode.DeadStores)
-        chassert(bn + 1 == state->columns_infos.size()); /// block_no == build index (bn read only in the chassert)
+        ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+        state->stored_columns_index = std::make_shared<StoredColumnsIndex>();
+        state->columns_infos.reserve(state->build_side->blocks().size());
+        for (const auto & block : state->build_side->blocks())
+        {
+            state->columns_infos.emplace_back(std::make_unique<ColumnsInfo>(block.getColumns()));
+            const UInt32 bn = state->stored_columns_index->add(state->columns_infos.back().get()); /// NOLINT(clang-analyzer-deadcode.DeadStores)
+            chassert(bn + 1 == state->columns_infos.size()); /// block_no == build index (bn read only in the chassert)
+        }
+
+        state->total_bytes = state->leaf_tables.arena.bytesReserved();
     }
 
-    state->total_bytes = state->leaf_tables.arena.bytesReserved();
-
     leaves = RadixJoin::LeafArrays(); /// scatter arrays no longer needed once the tables are built
+
+    /// Publish all post-build state to the probe threads. The pipeline already orders
+    /// `onBuildPhaseFinish` before any real `joinBlock`, but this release/acquire on `built` is the
+    /// documented barrier: `leaf_tables`, `stored_columns_index`, `block_base`, `total_rows` are all
+    /// written above and become visible to a probe thread that observes `built == true`.
     state->built.store(true, std::memory_order_release);
-}
-
-void RadixHashJoin::ensureBuilt()
-{
-    if (state->built.load(std::memory_order_acquire))
-        return;
-
-    /// Header/planning path: transformHeader calls joinBlock before onBuildPhaseFinish — emit only the
-    /// output schema (no probe) until the build barrier has run.
-    if (!state->build_phase_finished.load(std::memory_order_acquire))
-        return;
-
-    /// Cooperative post-build: the first probe thread is the leader; the rest help drain the parallel
-    /// scatter / table-build work units.
-    state->coord.run([this] { runPostBuild(); });
 }
 
 JoinResultPtr RadixHashJoin::joinBlock(Block block)
@@ -722,12 +831,9 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block)
 
 JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
 {
-    /// The cooperative post-build runs on the probe threads, but it belongs to the build phase:
-    {
-        ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
-        ensureBuilt();
-    }
-
+    /// The join is fully built by `onBuildPhaseFinish` before any real probe; `joinBlock` never builds.
+    /// Before the build barrier (the header/planning path: `transformHeader` calls `joinBlock` first)
+    /// `built` is still false and the block below emits the output schema only.
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
 
     State & st = *state;

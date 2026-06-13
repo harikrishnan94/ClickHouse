@@ -1,9 +1,9 @@
 #include <Interpreters/RadixHashJoin/Arena.h>
 #include <Interpreters/RadixHashJoin/BuildSide.h>
-#include <Interpreters/RadixHashJoin/CoopPool.h>
 #include <Interpreters/RadixHashJoin/KeyRefScatter.h>
 #include <Interpreters/RadixHashJoin/LeafTable.h>
 #include <Interpreters/RadixHashJoin/PackedKeyHash.h>
+#include <Interpreters/RadixHashJoin/ParallelFor.h>
 #include <Interpreters/RadixHashJoin/PartitionPlan.h>
 
 #include <Columns/ColumnsNumber.h>
@@ -14,7 +14,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <map>
+#include <mutex>
 #include <random>
 #include <thread>
 #include <vector>
@@ -34,20 +37,56 @@ Block makeU64Block(const std::vector<UInt64> & values, const std::string & name)
     return block;
 }
 
-/// Run a CoopPool body across `threads` participants (1 == fully sequential).
-void runCoop(CoopPool & pool, size_t threads, const std::function<void()> & body)
+/// A `ParallelFor` for the tests: sequential when `num_workers <= 1`, otherwise `num_workers`
+/// std::threads doing dynamic work-stealing on an atomic cursor, each carrying a fixed dense worker id.
+/// Mirrors the production pool-backed runner's contract (dense worker ids, dynamic balancing, exception
+/// propagation), so it exercises the same `BuildSide`/`buildLeafTables` code paths.
+ParallelFor makeParallelFor(size_t num_workers)
 {
-    if (threads <= 1)
+    return [num_workers](size_t total, const UnitFn & fn)
     {
-        pool.run(body);
-        return;
-    }
-    std::vector<std::thread> ts;
-    ts.reserve(threads);
-    for (size_t t = 0; t < threads; ++t)
-        ts.emplace_back([&] { pool.run(body); });
-    for (auto & t : ts)
-        t.join();
+        if (total == 0)
+            return;
+        if (num_workers <= 1)
+        {
+            for (size_t unit = 0; unit < total; ++unit)
+                fn(unit, 0);
+            return;
+        }
+
+        const size_t workers = std::min(num_workers, total);
+        std::atomic<size_t> next{0};
+        std::mutex exc_mutex;
+        std::exception_ptr first_exc;
+        std::vector<std::thread> ts;
+        ts.reserve(workers);
+        for (size_t w = 0; w < workers; ++w)
+            ts.emplace_back([&, w]
+            {
+                while (true)
+                {
+                    const size_t unit = next.fetch_add(1);
+                    if (unit >= total)
+                        break;
+                    try
+                    {
+                        fn(unit, w);
+                    }
+                    catch (...)
+                    {
+                        std::lock_guard lock(exc_mutex);
+                        if (!first_exc)
+                            first_exc = std::current_exception();
+                        next.store(total);
+                        break;
+                    }
+                }
+            });
+        for (auto & t : ts)
+            t.join();
+        if (first_exc)
+            std::rethrow_exception(first_exc);
+    };
 }
 
 /// Build the leaf tables from a single-column UInt64 build side, probe every probe key, and assert the
@@ -94,19 +133,15 @@ void checkBuildAndProbe(
     build_side.finishBuild();
     ASSERT_EQ(build_side.totalRows(), build_keys.size());
 
-    CoopPool coord;
-    LeafTables tables;
-    runCoop(coord, post_build_threads, [&]
-    {
-        LeafArrays leaves = build_side.scatterToLeaves(coord);
-        /// No-churn: one output allocation per non-empty leaf, never per (block x leaf).
-        UInt64 non_empty = 0;
-        for (UInt64 r : leaves.leaf_rows)
-            non_empty += (r != 0);
-        EXPECT_EQ(leaves.alloc_count, non_empty);
+    const ParallelFor parallel_for = makeParallelFor(post_build_threads);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for);
+    /// No-churn: one output allocation per non-empty leaf, never per (block x leaf).
+    UInt64 non_empty = 0;
+    for (UInt64 r : leaves.leaf_rows)
+        non_empty += (r != 0);
+    EXPECT_EQ(leaves.alloc_count, non_empty);
 
-        tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, coord);
-    });
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, parallel_for);
 
     /// The build key stored at a matched BuildRef, read back from the (possibly reordered, under
     /// parallel add) accumulated blocks. The flat-row order need not match the original vector — only
