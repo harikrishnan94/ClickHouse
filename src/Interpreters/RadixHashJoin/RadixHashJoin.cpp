@@ -287,7 +287,7 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
             s.kcol_src.push_back(block.getByName(name).column->getRawData().data());
     }
 
-    const bool has_chain = ctx.leaf_tables.next_chain != nullptr;
+    const bool has_dups = ctx.leaf_tables.any_duplicates.load(std::memory_order_relaxed);
 
     for (size_t batch_start = 0; batch_start < n; batch_start += PROBE_BATCH_ROWS)
     {
@@ -327,8 +327,8 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         {
             ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
             RadixJoin::collectMatches(
-                ctx.key_width, has_chain, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
-                ctx.block_base.data(), s.hashes.data(), keys, bn, s.left_rows, s.refs);
+                ctx.key_width, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
+                s.hashes.data(), keys, bn, s.left_rows, s.refs);
         }
 
         if (batch_start != 0)
@@ -342,7 +342,7 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
     /// Hybrid gather decision. With a duplicate-free build the matches are ~1:1 and scattered, so a
     /// direct typed gather in match order (no sort, no temp) wins. With duplicates the probe rows fan
     /// out and grouping by build block (counting sort) gives the gather base-pointer locality.
-    s.grouped = has_chain;
+    s.grouped = has_dups;
     if (s.grouped)
         sortMatchesByBlock(ctx, s);
 }
@@ -681,7 +681,7 @@ void RadixHashJoin::runPostBuild()
     state->block_base = state->build_side->blockBase();
     state->total_rows = state->build_side->totalRows();
 
-    state->leaf_tables = RadixJoin::buildLeafTables(leaves, state->block_base, state->total_rows, state->key_width, state->coord);
+    state->leaf_tables = RadixJoin::buildLeafTables(leaves, state->total_rows, state->key_width, max_threads, state->coord);
 
     /// Register each stored right block (in accumulation order) so a `BuildRef::blockNo()` indexes
     /// `blocksData()` directly. `add` returns size()-1, so block_no == build index (the chassert below).
@@ -690,8 +690,8 @@ void RadixHashJoin::runPostBuild()
     for (const auto & block : state->build_side->blocks())
     {
         state->columns_infos.emplace_back(std::make_unique<ColumnsInfo>(block.getColumns()));
-        const UInt32 bn = state->stored_columns_index->add(state->columns_infos.back().get());
-        chassert(bn + 1 == state->columns_infos.size()); /// block_no == build index
+        const UInt32 bn = state->stored_columns_index->add(state->columns_infos.back().get()); /// NOLINT(clang-analyzer-deadcode.DeadStores)
+        chassert(bn + 1 == state->columns_infos.size()); /// block_no == build index (bn read only in the chassert)
     }
 
     state->total_bytes = state->leaf_tables.arena.bytesReserved();

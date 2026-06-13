@@ -96,7 +96,6 @@ void checkBuildAndProbe(
 
     CoopPool coord;
     LeafTables tables;
-    std::vector<UInt64> block_base;
     runCoop(coord, post_build_threads, [&]
     {
         LeafArrays leaves = build_side.scatterToLeaves(coord);
@@ -106,8 +105,7 @@ void checkBuildAndProbe(
             non_empty += (r != 0);
         EXPECT_EQ(leaves.alloc_count, non_empty);
 
-        block_base = build_side.blockBase();
-        tables = buildLeafTables(leaves, block_base, build_side.totalRows(), key_width, coord);
+        tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, coord);
     });
 
     /// The build key stored at a matched BuildRef, read back from the (possibly reordered, under
@@ -129,11 +127,10 @@ void checkBuildAndProbe(
     for (size_t i = 0; i < probe_keys.size(); ++i)
         hashes[i] = hashPackedKey<key_width>(&probe_keys[i]);
 
-    const bool has_dups = tables.next_chain != nullptr;
     std::vector<UInt32> out_rows;
     std::vector<BuildRef> out_refs;
     collectMatches(
-        key_width, has_dups, tables.leaves.data(), plan.leaf_shift, plan.total_bits, block_base.data(),
+        key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
         hashes.data(), probe_keys.data(), probe_keys.size(), out_rows, out_refs);
 
     /// Every emitted match must resolve to a build row whose key equals the probe key, and the number

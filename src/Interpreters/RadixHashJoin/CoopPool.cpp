@@ -3,7 +3,7 @@
 namespace DB::RadixJoin
 {
 
-void CoopPool::drainJob(const std::shared_ptr<Job> & job)
+void CoopPool::drainJob(const std::shared_ptr<Job> & job, size_t worker)
 {
     while (true)
     {
@@ -13,7 +13,7 @@ void CoopPool::drainJob(const std::shared_ptr<Job> & job)
 
         try
         {
-            job->fn(idx);
+            job->fn(idx, worker);
         }
         catch (...)
         {
@@ -35,7 +35,7 @@ void CoopPool::drainJob(const std::shared_ptr<Job> & job)
     }
 }
 
-void CoopPool::parallelFor(size_t total, std::function<void(size_t)> fn)
+void CoopPool::parallelFor(size_t total, std::function<void(size_t unit, size_t worker)> fn)
 {
     if (total == 0)
         return;
@@ -50,7 +50,7 @@ void CoopPool::parallelFor(size_t total, std::function<void(size_t)> fn)
     }
     cv.notify_all(); /// wake helpers waiting for work
 
-    drainJob(job); /// the leader pulls units too
+    drainJob(job, leader_worker); /// the leader pulls units too, under its own worker id
 
     {
         std::unique_lock lock(mutex);
@@ -67,7 +67,10 @@ void CoopPool::run(std::function<void()> body)
     bool expected = false;
     if (leader_taken.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
     {
-        /// Leader: run body() (which issues the parallelFor steps), then close the session.
+        /// Leader: take worker id 0 (it is the first participant), run body() (which issues the
+        /// parallelFor steps), then close the session.
+        leader_worker = next_worker.fetch_add(1, std::memory_order_relaxed);
+
         std::exception_ptr exc;
         try
         {
@@ -91,6 +94,12 @@ void CoopPool::run(std::function<void()> body)
     else
     {
         /// Helper (also covers callers that arrive after the session already finished).
+        ///
+        /// A dense worker id is consumed lazily, only once this thread actually becomes a draining
+        /// participant. Late callers that wake to find the session already done return below without
+        /// having claimed an id, so the id space stays dense in [0, #participants).
+        bool worker_assigned = false;
+        size_t worker = 0;
         while (true)
         {
             std::shared_ptr<Job> job;
@@ -105,7 +114,14 @@ void CoopPool::run(std::function<void()> body)
                 }
                 job = current_job;
             }
-            drainJob(job);
+
+            if (!worker_assigned)
+            {
+                worker = next_worker.fetch_add(1, std::memory_order_relaxed);
+                worker_assigned = true;
+            }
+
+            drainJob(job, worker);
         }
     }
 }

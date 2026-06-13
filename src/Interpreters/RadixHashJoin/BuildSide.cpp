@@ -98,7 +98,7 @@ PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> coun
     };
 
     if (coord != nullptr)
-        coord->parallelFor(num_parts, [&](size_t part) { carve(part); });
+        coord->parallelFor(num_parts, [&](size_t part, size_t /*worker*/) { carve(part); });
     else
         for (size_t part = 0; part < num_parts; ++part)
             carve(part);
@@ -178,7 +178,7 @@ void BuildSide::add(const Block & block, size_t lane)
     /// (1) Zero copy: a COW shared_ptr move, no column data copied.
     Block kept = block;
     const size_t n = kept.rows();
-    chassert(n <= std::numeric_limits<UInt32>::max()); /// row_no is a 0-based UInt32; INVALID_ROW is reserved
+    chassert(n <= std::numeric_limits<UInt32>::max()); /// row_no is a 0-based UInt32 (DB::BuildRef::row_no)
 
     if (n > 0)
     {
@@ -225,7 +225,7 @@ void BuildSide::finishBuild()
     for (const auto & up : local)
         if (up)
             num_blocks += up->blocks.size();
-    chassert(num_blocks <= BLOCK_NO_MASK); /// block_no uses the low 31 bits (MSB is the singleton marker)
+    chassert(num_blocks <= DB::BuildRef::BLOCK_NO_MASK); /// block_no uses the low 31 bits (MSB is the singleton marker)
 
     all_blocks.reserve(num_blocks);
     rows_per_block.reserve(num_blocks);
@@ -300,9 +300,9 @@ void BuildSide::scatterBlockRanges(
     /// the direct incremental cursors. Key and ref are scattered as two separate columns.
     const bool use_swwc = shouldUseSwwc(static_cast<int>(num_parts));
 
-    coord.parallelFor(num_used, [&](size_t worker)
+    coord.parallelFor(num_used, [&](size_t slot, size_t /*worker*/)
     {
-        const UInt64 * offsets = slot_part_offset.data() + worker * num_parts;
+        const UInt64 * offsets = slot_part_offset.data() + slot * num_parts;
 
         std::vector<void *> kcur;
         std::vector<BuildRef *> rcur;
@@ -344,7 +344,7 @@ void BuildSide::scatterBlockRanges(
 
         UInt64 local_bytes = 0;
 
-        for (size_t block_idx = slot_block_begin[worker]; block_idx < slot_block_end[worker]; ++block_idx)
+        for (size_t block_idx = slot_block_begin[slot]; block_idx < slot_block_end[slot]; ++block_idx)
         {
             const size_t n = rows_per_block[block_idx];
             if (n == 0)
@@ -627,7 +627,7 @@ LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
     for (size_t pass_idx = 1; pass_idx < num_passes; ++pass_idx)
         max_refine_fanout = std::max(max_refine_fanout, size_t{1} << part_plan.pass_bits[pass_idx]);
 
-    coord.parallelFor(p0, [&](size_t partition)
+    coord.parallelFor(p0, [&](size_t partition, size_t /*worker*/)
     {
         if (level0_counts[partition] == 0)
             return;

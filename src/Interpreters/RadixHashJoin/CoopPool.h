@@ -41,19 +41,25 @@ public:
 
     /// Distribute `total` work units across the leader and any present helpers; blocks until all units
     /// finish. Called only by the leader, only from inside `body`. No-op for total == 0.
-    void parallelFor(size_t total, std::function<void(size_t)> fn);
+    ///
+    /// `fn` receives the work unit index and a dense 0-based `worker` id identifying the calling thread
+    /// among the participants of the current `run` session (leader + every helper that drains). Worker
+    /// ids are unique and dense in [0, #participants); since participants are probe threads arriving
+    /// during the one-time build window, #participants <= max_threads, so the caller may size per-worker
+    /// resources to max_threads.
+    void parallelFor(size_t total, std::function<void(size_t unit, size_t worker)> fn);
 
 private:
     struct Job
     {
-        std::function<void(size_t)> fn;
+        std::function<void(size_t unit, size_t worker)> fn;
         size_t total = 0;
         std::atomic<size_t> next{0};
         std::atomic<size_t> done{0};
         std::exception_ptr exc; /// first unit exception; guarded by CoopPool::mutex
     };
 
-    void drainJob(const std::shared_ptr<Job> & job);
+    void drainJob(const std::shared_ptr<Job> & job, size_t worker);
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -61,6 +67,8 @@ private:
     bool session_done = false;              /// leader finished body(); guarded by mutex
     std::exception_ptr leader_exception;    /// leader/unit exception to propagate; guarded by mutex
     std::atomic<bool> leader_taken{false};
+    std::atomic<size_t> next_worker{0};     /// hands out dense 0-based worker ids to participants
+    size_t leader_worker = 0;               /// the leader's own worker id (set before body())
 };
 
 }
