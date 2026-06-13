@@ -116,8 +116,8 @@ void checkBuildAndProbe(
     const auto & blocks = build_side.blocks();
     auto build_key_at = [&](BuildRef ref) -> UInt64
     {
-        const auto & col = typeid_cast<const ColumnUInt64 &>(*blocks[ref.block_no].getByPosition(0).column);
-        return col.getData()[ref.row_no];
+        const auto & col = typeid_cast<const ColumnUInt64 &>(*blocks[ref.blockNo()].getByPosition(0).column);
+        return col.getData()[ref.rowNo()];
     };
 
     /// Expected per-key build-row count (every build row with that key value).

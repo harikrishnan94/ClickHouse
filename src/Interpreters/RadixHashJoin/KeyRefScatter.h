@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Interpreters/RowRefs.h>
+
 #include <base/types.h>
 
 #include <cstddef>
@@ -7,6 +9,12 @@
 
 namespace DB::RadixJoin
 {
+
+/// The build-row reference is the shared `DB::BuildRef` (see Interpreters/RowRefs.h): an 8-byte
+/// `{ row_no, block_no }` whose `block_no` MSB is the SINGLETON_FLAG. RadixHashJoin keeps the flag on
+/// cell HEADS only; every ref outside the heads (scatter output, chain links, probe output) is
+/// flag-free, so callers index with `ref.blockNo()` / `ref.rowNo()` which mask the flag.
+using DB::BuildRef;
 
 /** Fixed-width, column-major radix scatter for the build side.
   *
@@ -34,25 +42,13 @@ namespace DB::RadixJoin
   * each partition exactly once (the "no allocator churn" property).
   */
 
-/// A reference to a build row: which accumulated block, and the 0-based row within it. Exactly 8 B so
-/// it scatters as an 8-byte column and fits beside the key in a leaf cell. The empty-cell / chain-tail
-/// sentinel is `row_no == INVALID_ROW`; the leaf hash table additionally steals the MSB of `block_no`
-/// of a CELL HEAD as a "single build row for this key" marker (see LeafTable). Every ref OUTSIDE the
-/// cell heads (scatter output, chain links, probe output) is flag-free, so `block_no` resolves
-/// directly.
-struct BuildRef
-{
-    UInt32 block_no;
-    UInt32 row_no;
-};
-static_assert(sizeof(BuildRef) == 8, "BuildRef must be 8 bytes");
-
-/// Reserved row index marking an empty leaf cell / chain tail (cells + chain are memset to 0xFF).
+/// Reserved row index marking an empty leaf cell / chain tail (cells + chain are memset to 0xFF). The
+/// empty-cell / chain-tail sentinel is `row_no == INVALID_ROW`.
 inline constexpr UInt32 INVALID_ROW = 0xFFFFFFFFu;
 /// MSB of a cell-head block_no: "this key occurs exactly once on the build side" (probe fast path).
-inline constexpr UInt32 SINGLETON_FLAG = 0x80000000u;
+inline constexpr UInt32 SINGLETON_FLAG = DB::BuildRef::SINGLETON_FLAG;
 /// Low 31 bits: the real block_no. The build caps the block count to this many blocks.
-inline constexpr UInt32 BLOCK_NO_MASK = 0x7FFFFFFFu;
+inline constexpr UInt32 BLOCK_NO_MASK = DB::BuildRef::BLOCK_NO_MASK;
 
 /// Cache-line width: NT stores and the SWWC staging line are whole lines of this size.
 inline constexpr size_t LINE_BYTES = 64;

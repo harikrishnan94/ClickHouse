@@ -195,7 +195,7 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
 
     s.block_start.assign(num_blocks + 1, 0);
     for (const RadixJoin::BuildRef ref : s.refs)
-        ++s.block_start[ref.block_no + 1];
+        ++s.block_start[ref.blockNo() + 1];
     for (size_t b = 1; b <= num_blocks; ++b)
         s.block_start[b] += s.block_start[b - 1];
 
@@ -205,9 +205,9 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
     for (size_t m = 0; m < out_rows; ++m)
     {
         const RadixJoin::BuildRef ref = s.refs[m];
-        const UInt64 pos = s.cursor[ref.block_no]++;
+        const UInt64 pos = s.cursor[ref.blockNo()]++;
         s.sorted_left_rows[pos] = s.left_rows[m];
-        s.sorted_row_no[pos] = ref.row_no;
+        s.sorted_row_no[pos] = ref.rowNo();
     }
 
     s.runs.clear();
@@ -390,7 +390,7 @@ void gatherNumericDirect(IColumn & out_col, const std::vector<const IColumn *> &
     for (size_t i = 0; i < out_rows; ++i)
     {
         const RadixJoin::BuildRef ref = refs[i];
-        dst[i] = assert_cast<const ColumnVector<T> *>(by_block[ref.block_no])->getData()[ref.row_no];
+        dst[i] = assert_cast<const ColumnVector<T> *>(by_block[ref.blockNo()])->getData()[ref.rowNo()];
     }
 }
 
@@ -420,7 +420,7 @@ void gatherPayloadDirect(
         default:
             col->reserve(out_rows);
             for (size_t i = 0; i < out_rows; ++i)
-                col->insertFrom(*by_block[refs[i].block_no], refs[i].row_no);
+                col->insertFrom(*by_block[refs[i].blockNo()], refs[i].rowNo());
     }
     out.emplace_back(std::move(col), po.type, po.name);
 }
