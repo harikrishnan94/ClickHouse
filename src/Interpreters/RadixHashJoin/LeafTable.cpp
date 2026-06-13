@@ -149,15 +149,11 @@ void collectMatchesImpl(
     /// state stays tiny and register/L1-resident.
     constexpr size_t ring_size = 16;
 
-    enum class Stage : UInt8
-    {
-        Inactive, /// no work assigned to this slot
-        Scan,     /// open-addressing linear-probe step pending on `cells + pos * stride`
-    };
-
     struct Slot
     {
-        Stage stage = Stage::Inactive;
+        /// false == Inactive (no work assigned); true == Scan (an open-addressing linear-probe step is
+        /// pending on `cells + pos * stride`). Only two states, so a flag rather than an enum.
+        bool active_slot = false;
         UInt32 row = 0;            /// probe row index
         const char * cells = nullptr;   /// owning leaf's cell array
         const char * key = nullptr;     /// packed_keys + row * key_width
@@ -178,7 +174,7 @@ void collectMatchesImpl(
     /// once per probe row here (a shift + an and), never in the inner round-robin step loop.
     auto pull_next = [&](Slot & s)
     {
-        if (s.stage != Stage::Inactive)
+        if (s.active_slot)
             --active; /// release the slot's previous row before (maybe) taking a new one
         while (next_row < n)
         {
@@ -190,7 +186,7 @@ void collectMatchesImpl(
                 continue; /// empty leaf: no match, pull another row
 
             const UInt64 num_buckets = ht.numBuckets();
-            s.stage = Stage::Scan;
+            s.active_slot = true;
             s.row = static_cast<UInt32>(row);
             s.cells = ht.cells();
             s.key = packed_keys + row * key_width;
@@ -200,7 +196,7 @@ void collectMatchesImpl(
             ++active;
             return;
         }
-        s.stage = Stage::Inactive;
+        s.active_slot = false;
     };
 
     /// Prologue: fill the ring with the first up-to-RING_SIZE rows, each computing its initial state and
@@ -216,12 +212,9 @@ void collectMatchesImpl(
     while (active != 0)
     {
         Slot & s = ring[i];
-        if (i + 1 == ring_size)
-            i = 0;
-        else
-            ++i;
+        i = (i + 1) & (ring_size - 1); /// ring_size is a power of two, so this wraps without a branch
 
-        if (s.stage == Stage::Inactive)
+        if (!s.active_slot)
             continue;
 
         /// The home/probe cell prefetched on the previous visit is now resident.
