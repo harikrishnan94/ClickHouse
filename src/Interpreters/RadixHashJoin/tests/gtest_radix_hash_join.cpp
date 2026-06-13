@@ -208,7 +208,7 @@ TEST(RadixHashJoin, ScatterColumnRoundTripDirect)
     std::vector<UInt32> route(n);
     std::vector<UInt64> src(n);
     std::vector<size_t> counts(partitions, 0);
-    std::mt19937 rng(123);
+    std::mt19937 rng(123); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
     for (size_t i = 0; i < n; ++i)
     {
         route[i] = static_cast<UInt32>(rng());
@@ -255,7 +255,7 @@ TEST(RadixHashJoin, BuildProbeManyToManyParallel)
     /// Heavy duplicates on both sides -> exercises the chain and the singleton fast path.
     std::vector<UInt64> build_keys;
     std::vector<UInt64> probe_keys;
-    std::mt19937 rng(7);
+    std::mt19937 rng(7); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
     for (size_t i = 0; i < 20000; ++i)
         build_keys.push_back(rng() % 500); /// ~40 build rows per key
     for (size_t i = 0; i < 8000; ++i)
@@ -268,7 +268,7 @@ TEST(RadixHashJoin, BuildProbeForcedMultiPass)
     /// Force several scatter passes with a tiny per-pass cap; results must be identical to single-pass.
     std::vector<UInt64> build_keys;
     std::vector<UInt64> probe_keys;
-    std::mt19937 rng(99);
+    std::mt19937 rng(99); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
     for (size_t i = 0; i < 30000; ++i)
         build_keys.push_back(rng());
     for (size_t i = 0; i < 30000; ++i)
