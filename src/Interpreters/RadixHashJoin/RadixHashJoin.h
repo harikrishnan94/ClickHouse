@@ -31,9 +31,10 @@ class TableJoin;
   *
   * Lifecycle:
   *   addBlockToJoin     accumulate the right block (move) + count rows per leaf; no scatter, no copy.
-  *   onBuildPhaseFinish merge the per-thread histograms and prefix-sum them (the build barrier).
-  *   joinBlock          on the first call after the barrier, the probe threads cooperatively run the
-  *                      scatter + leaf-table build (no dedicated pool); then probe and emit.
+  *   onBuildPhaseFinish merge + prefix-sum the per-thread histograms (the build barrier), then run the
+  *                      whole post-build eagerly on a dedicated `ThreadPool` (scatter + leaf-table build
+  *                      + payload-resolution index). The join is fully built when this returns.
+  *   joinBlock          probe and emit; never builds (before the build barrier it emits schema only).
   */
 class RadixHashJoin : public IJoin
 {
@@ -76,10 +77,8 @@ public:
     void onBuildPhaseFinish() override;
 
 private:
-    /// Run by the first probe thread after the build barrier (the others help via the CoopPool). A no-op
-    /// once built, or before the barrier (the header/planning path).
-    void ensureBuilt();
-    /// The post-build body executed once by the CoopPool leader: scatter + leaf-table build + colptr.
+    /// The eager post-build, run once from `onBuildPhaseFinish` and parallelised over `State::pool`:
+    /// scatter to leaves + leaf-table build + the build-row payload-resolution index.
     void runPostBuild();
 
     std::shared_ptr<TableJoin> table_join;

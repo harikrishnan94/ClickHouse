@@ -79,7 +79,7 @@ struct PartitionArrays
     UInt64 alloc_count = 0;
 };
 
-PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> counts, size_t key_width, CoopPool * coord)
+PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> counts, size_t key_width, const ParallelFor * parallel_for)
 {
     const size_t num_parts = counts.size();
     PartitionArrays out;
@@ -97,8 +97,8 @@ PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> coun
         out.ref[part] = reinterpret_cast<BuildRef *>(base + key_bytes); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     };
 
-    if (coord != nullptr)
-        coord->parallelFor(num_parts, [&](size_t part, size_t /*worker*/) { carve(part); });
+    if (parallel_for != nullptr)
+        (*parallel_for)(num_parts, [&](size_t part, size_t /*worker*/) { carve(part); });
     else
         for (size_t part = 0; part < num_parts; ++part)
             carve(part);
@@ -281,7 +281,7 @@ LeafArrays BuildSide::makeLeafArrays() const
 }
 
 void BuildSide::scatterBlockRanges(
-    CoopPool & coord,
+    const ParallelFor & parallel_for,
     size_t num_parts,
     UInt32 shift,
     UInt32 mask,
@@ -300,7 +300,7 @@ void BuildSide::scatterBlockRanges(
     /// the direct incremental cursors. Key and ref are scattered as two separate columns.
     const bool use_swwc = shouldUseSwwc(static_cast<int>(num_parts));
 
-    coord.parallelFor(num_used, [&](size_t slot, size_t /*worker*/)
+    parallel_for(num_used, [&](size_t slot, size_t /*worker*/)
     {
         const UInt64 * offsets = slot_part_offset.data() + slot * num_parts;
 
@@ -400,13 +400,13 @@ void BuildSide::scatterBlockRanges(
     });
 }
 
-LeafArrays BuildSide::scatterSinglePass(CoopPool & coord)
+LeafArrays BuildSide::scatterSinglePass(const ParallelFor & parallel_for)
 {
     LeafArrays out = makeLeafArrays();
     const size_t num_leaves = part_plan.num_leaves;
     const size_t num_used = used_slots.size();
 
-    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, &coord);
+    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, &parallel_for);
     out.key_base = std::move(arrs.key);
     out.ref_base = std::move(arrs.ref);
     out.alloc_count = arrs.alloc_count;
@@ -436,7 +436,7 @@ LeafArrays BuildSide::scatterSinglePass(CoopPool & coord)
     }
 
     std::atomic<UInt64> total_bytes{0};
-    scatterBlockRanges(coord, num_leaves, shift, mask, slot_off, out.key_base.data(), out.ref_base.data(), total_bytes);
+    scatterBlockRanges(parallel_for, num_leaves, shift, mask, slot_off, out.key_base.data(), out.ref_base.data(), total_bytes);
 
     out.bytes_scattered = total_bytes.load();
     return out;
@@ -549,7 +549,7 @@ void BuildSide::refine(
     }
 }
 
-LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
+LeafArrays BuildSide::scatterMultiPass(const ParallelFor & parallel_for)
 {
     const size_t num_leaves = part_plan.num_leaves;
     const size_t kw = key_width;
@@ -562,7 +562,7 @@ LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
 
     LeafArrays out = makeLeafArrays();
     {
-        auto arrs = allocExactPartitions(out.arena, global_hist, kw, &coord);
+        auto arrs = allocExactPartitions(out.arena, global_hist, kw, &parallel_for);
         out.key_base = std::move(arrs.key);
         out.ref_base = std::move(arrs.ref);
         out.alloc_count = arrs.alloc_count;
@@ -619,15 +619,15 @@ LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
     }
 
     Arena level0_arena;
-    auto level0 = allocExactPartitions(level0_arena, level0_counts, kw, &coord);
-    scatterBlockRanges(coord, p0, shift0, mask0, slot_off0, level0.key.data(), level0.ref.data(), total_bytes);
+    auto level0 = allocExactPartitions(level0_arena, level0_counts, kw, &parallel_for);
+    scatterBlockRanges(parallel_for, p0, shift0, mask0, slot_off0, level0.key.data(), level0.ref.data(), total_bytes);
 
     /// Refine each pass-0 partition to its leaves (one parallel unit per partition).
     size_t max_refine_fanout = 1;
     for (size_t pass_idx = 1; pass_idx < num_passes; ++pass_idx)
         max_refine_fanout = std::max(max_refine_fanout, size_t{1} << part_plan.pass_bits[pass_idx]);
 
-    coord.parallelFor(p0, [&](size_t partition, size_t /*worker*/)
+    parallel_for(p0, [&](size_t partition, size_t /*worker*/)
     {
         if (level0_counts[partition] == 0)
             return;
@@ -652,10 +652,10 @@ LeafArrays BuildSide::scatterMultiPass(CoopPool & coord)
     return out;
 }
 
-LeafArrays BuildSide::scatterToLeaves(CoopPool & coord)
+LeafArrays BuildSide::scatterToLeaves(const ParallelFor & parallel_for)
 {
     chassert(finished);
-    return part_plan.pass_bits.size() <= 1 ? scatterSinglePass(coord) : scatterMultiPass(coord);
+    return part_plan.pass_bits.size() <= 1 ? scatterSinglePass(parallel_for) : scatterMultiPass(parallel_for);
 }
 
 }

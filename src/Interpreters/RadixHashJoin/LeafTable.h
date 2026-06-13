@@ -3,12 +3,14 @@
 #include <Interpreters/RadixHashJoin/Arena.h>
 #include <Interpreters/RadixHashJoin/BuildSide.h>
 #include <Interpreters/RadixHashJoin/KeyRefScatter.h>
+#include <Interpreters/RadixHashJoin/ParallelFor.h>
 
 #include <Common/Arena.h>
 
 #include <atomic>
 #include <base/types.h>
 
+#include <bit>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -42,11 +44,49 @@ namespace DB::RadixJoin
   * `total_bits + log2(buckets) <= 32` saturation. Build and probe recompute the identical hash, so the
   * bucket matches on both sides; the leaves carry key + ref only (no stored hash).
   */
+/** A single 64-bit descriptor for one leaf's open-addressing table, packing the cell base pointer and
+  * the bucket count into one word so a leaf vector of millions of entries stays half the size.
+  *
+  * Encoding: `cells` is `LINE_BYTES`(=64)-aligned, so its low 6 bits are always zero and instead hold
+  * `e = log2(num_buckets)` (`num_buckets` is a power of two; the exponent fits in 6 bits since
+  * `e <= 63`). A non-empty leaf has `num_buckets >= 2` (so `e >= 1`) and a non-null `cells`, so its
+  * word is never zero; the all-zero word is therefore an unambiguous, cheap empty-leaf sentinel. The
+  * pointer is reconstructed by masking off the low 6 bits (NOT by clearing high pointer bits, which
+  * would break under >48-bit virtual addresses / aarch64 TBI / Intel LAM).
+  *
+  * Accessors below are the only intended readers; call sites should not open-code the bit twiddling.
+  */
 struct LeafHT
 {
-    char * cells = nullptr;          /// cell array; stride = key_width + 8; memset to 0
-    UInt64 num_buckets = 0;          /// power of two (0 == empty leaf); mask = num_buckets - 1
+    /// Low 6 bits = log2(num_buckets); the rest = the LINE_BYTES-aligned `cells` pointer. 0 == empty.
+    UInt64 word = 0;
+
+    static constexpr UInt64 EXP_MASK = LINE_BYTES - 1; /// low 6 bits (cells alignment leaves them free)
+
+    LeafHT() = default;
+
+    /// `cells_` must be LINE_BYTES-aligned; `num_buckets_` a power of two >= 2 (a non-empty leaf). The
+    /// pointer is mutable on purpose (the cell array is written during the build) — `cells()` hands it
+    /// back as `char *` — even though this ctor only reads its address.
+    LeafHT(char * cells_, UInt64 num_buckets_) noexcept /// NOLINT(readability-non-const-parameter)
+        : word(reinterpret_cast<UInt64>(cells_) | static_cast<UInt64>(std::countr_zero(num_buckets_))) /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    {
+    }
+
+    /// True for an empty leaf (no rows): the all-zero word.
+    bool empty() const noexcept { return word == 0; }
+
+    /// The cell array base (stride = leafCellBytes(key_width); memset to 0). Null for an empty leaf.
+    char * cells() const noexcept { return reinterpret_cast<char *>(word & ~EXP_MASK); } /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast, performance-no-int-to-ptr)
+
+    /// Number of buckets (a power of two). Only meaningful for a non-empty leaf.
+    UInt64 numBuckets() const noexcept { return UInt64{1} << (word & EXP_MASK); }
+
+    /// The probe mask `num_buckets - 1`. Only meaningful for a non-empty leaf.
+    UInt64 mask() const noexcept { return numBuckets() - 1; }
 };
+
+static_assert(sizeof(LeafHT) == 8, "LeafHT must be a single 64-bit word");
 
 /// Cell stride for a key of `key_width` bytes (BuildRefList head word + key).
 constexpr size_t leafCellBytes(size_t key_width) noexcept
@@ -72,11 +112,13 @@ inline bool leafInsert(LeafHT & ht, UInt32 low_hash, const void * key, BuildRef 
 {
     static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
     constexpr size_t stride = leafCellBytes(key_width);
-    const UInt64 mask = ht.num_buckets - 1;
-    UInt64 pos = leafBucket(low_hash, ht.num_buckets) & mask;
+    const UInt64 num_buckets = ht.numBuckets();
+    const UInt64 mask = num_buckets - 1;
+    char * const cells = ht.cells();
+    UInt64 pos = leafBucket(low_hash, num_buckets) & mask;
     while (true)
     {
-        char * cell = ht.cells + pos * stride;
+        char * cell = cells + pos * stride;
         auto * list = reinterpret_cast<DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (list->word == 0)
         {
@@ -134,15 +176,15 @@ struct LeafTables
 };
 
 /// Build every leaf table from a finished `LeafArrays`. Cell arrays are allocated, 0-initialised and
-/// filled in parallel across the CoopPool workers; the BuildRefList Batch nodes are allocated from the
-/// per-worker `build_arenas` (`num_workers` of them, one per CoopPool participant). Must run as the
-/// CoopPool leader's body.
+/// filled in parallel via `parallel_for`; the BuildRefList Batch nodes are allocated from the per-worker
+/// `build_arenas` (`num_workers` of them, indexed by the unit callback's dense `worker` id under a
+/// single-writer invariant). `num_workers` must match the worker-id space of `parallel_for`.
 LeafTables buildLeafTables(
     const LeafArrays & leaf_arrays,
     UInt64 num_rows,
     size_t key_width,
     size_t num_workers,
-    CoopPool & coord);
+    const ParallelFor & parallel_for);
 
 /// Probe `n` left rows (their full 64-bit hashes + packed keys) against the leaf tables, appending one
 /// `(left_row, BuildRef)` per match to the output buffers (singleton keys emit one ref; multi-row keys

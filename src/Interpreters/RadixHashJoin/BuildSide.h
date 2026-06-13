@@ -2,9 +2,9 @@
 
 #include <Core/Block.h>
 #include <Interpreters/RadixHashJoin/Arena.h>
-#include <Interpreters/RadixHashJoin/CoopPool.h>
 #include <Interpreters/RadixHashJoin/KeyLayout.h>
 #include <Interpreters/RadixHashJoin/KeyRefScatter.h>
+#include <Interpreters/RadixHashJoin/ParallelFor.h>
 #include <Interpreters/RadixHashJoin/PartitionPlan.h>
 
 #include <base/types.h>
@@ -59,9 +59,10 @@ struct LeafArrays
   *                      prefix-sum it. Records each worker's contiguous block range for the scatter.
   *
   *   scatterToLeaves()  allocate each leaf's key/ref array EXACTLY ONCE from `global_hist` (the
-  *                      no-churn property) and scatter into them, parallelised on the caller's
-  *                      CoopPool. One pass when the leaf count fits the per-pass fanout cap, otherwise
-  *                      a depth-first multi-pass radix that frees each intermediate as it is consumed.
+  *                      no-churn property) and scatter into them, parallelised over the caller's
+  *                      `ParallelFor`. One pass when the leaf count fits the per-pass fanout cap,
+  *                      otherwise a depth-first multi-pass radix that frees each intermediate as it
+  *                      is consumed.
   *
   * Build lanes: each call to `add` carries a stable 0-based build-lane index (from the pipeline's
   * per-lane FillingRightJoinSideTransform) that selects this lane's LocalState slot directly — no
@@ -82,7 +83,7 @@ public:
 
     void add(const Block & block, size_t lane); /// phase 1 (per build lane, lock-free)
     void finishBuild();                     /// phase 2 (single barrier)
-    LeafArrays scatterToLeaves(CoopPool & coord); /// phase 3 (leader inside CoopPool::run)
+    LeafArrays scatterToLeaves(const ParallelFor & parallel_for); /// phase 3 (parallelised post-build)
 
     const PartitionPlan & plan() const { return part_plan; }
     size_t packedKeyWidth() const { return key_width; }
@@ -115,14 +116,14 @@ private:
     void packKeyChunk(const Block & block, size_t row_begin, size_t rows, char * dst) const;
 
     LeafArrays makeLeafArrays() const;
-    LeafArrays scatterSinglePass(CoopPool & coord);
-    LeafArrays scatterMultiPass(CoopPool & coord);
+    LeafArrays scatterSinglePass(const ParallelFor & parallel_for);
+    LeafArrays scatterMultiPass(const ParallelFor & parallel_for);
 
     /// The shared scatter worker body: each build-thread slot scatters its own contiguous block range
     /// into `num_parts` partitions, seeding its write cursors once from a per-(slot, partition) offset
     /// matrix (so the writes are disjoint and lock-free). Used by single-pass (leaves) and pass-0.
     void scatterBlockRanges(
-        CoopPool & coord,
+        const ParallelFor & parallel_for,
         size_t num_parts,
         UInt32 shift,
         UInt32 mask,
