@@ -147,6 +147,17 @@ void fillLeafDispatch(size_t key_width, LeafHT & ht, const LeafArrays & la, size
     }
 }
 
+/// AMAC (Asynchronous Memory Access Chaining) probe: instead of finding matches one probe row at a
+/// time (so each data-dependent miss — the home cell, every linear-probe collision step, every chain
+/// link — stalls the core for a full DRAM latency), we keep RING_SIZE independent probe rows in flight.
+/// Each ring slot is a tiny state machine that performs exactly ONE memory-dependent step per visit and
+/// software-prefetches the address it will dereference on its NEXT visit. By the time the round-robin
+/// returns to that slot the line is resident, so the misses overlap instead of serialising. This beats
+/// a fixed prefetch distance because the open-addressing walk length and the chain length are
+/// data-dependent and unknown ahead of time — the slot prefetches exactly the next address it needs.
+///
+/// The set of emitted (row, ref) pairs is identical to the sequential find; only the interleaving (and
+/// therefore the output order) differs, which is irrelevant for an unordered hash join.
 template <size_t key_width, bool has_chain>
 void collectMatchesImpl(
     const LeafHT * leaves,
@@ -160,47 +171,152 @@ void collectMatchesImpl(
     std::vector<BuildRef> & out_refs)
 {
     constexpr size_t stride = leafCellBytes(key_width);
-    constexpr size_t prefetch_distance = 16;
 
-    for (size_t row = 0; row < n; ++row)
+    /// Number of in-flight probe rows. ~16 keeps that many independent DRAM accesses outstanding,
+    /// matching the line-fill-buffer / outstanding-miss budget of a typical big core, while the ring
+    /// state stays tiny and register/L1-resident.
+    constexpr size_t ring_size = 16;
+
+    enum class Stage : UInt8
     {
-        if (row + prefetch_distance < n)
-        {
-            const UInt64 h = hashes[row + prefetch_distance];
-            const size_t pleaf = total_bits ? (routeBits(h) >> leaf_shift) : 0;
-            const LeafHT & pht = leaves[pleaf];
-            if (pht.num_buckets != 0)
-            {
-                const UInt64 ppos = leafBucket(bucketBits(h), pht.num_buckets) & (pht.num_buckets - 1);
-                __builtin_prefetch(pht.cells + ppos * stride, /*rw=*/0, /*locality=*/1);
-            }
-        }
+        Inactive, /// no work assigned to this slot
+        Scan,     /// open-addressing linear-probe step pending on `cells + pos * stride`
+        Chain,    /// (has_chain only) next chain link pending on `next_chain[chain_flat]`
+    };
 
-        const UInt64 h = hashes[row];
-        const size_t leaf = total_bits ? (routeBits(h) >> leaf_shift) : 0;
-        const LeafHT & ht = leaves[leaf];
-        BuildRef cur = leafFind<key_width>(ht, bucketBits(h), packed_keys + row * key_width);
-        if (cur.row_no == INVALID_ROW)
+    struct Slot
+    {
+        Stage stage = Stage::Inactive;
+        UInt32 row = 0;            /// probe row index
+        const char * cells = nullptr;   /// owning leaf's cell array
+        const char * key = nullptr;     /// packed_keys + row * key_width
+        UInt64 mask = 0;           /// num_buckets - 1
+        UInt64 pos = 0;            /// current linear-probe slot
+        const BuildRef * next_chain = nullptr; /// owning leaf's chain array (has_chain only)
+        UInt64 chain_flat = 0;     /// flat index of the chain entry to read next (has_chain only)
+    };
+
+    Slot ring[ring_size];
+
+    size_t next_row = 0;
+    size_t active = 0;
+
+    /// Assign the next unprocessed probe row to `s`. Computes the leaf, home bucket, and issues the
+    /// prefetch for the home cell. Empty leaves (num_buckets == 0) yield no match — we skip straight to
+    /// the next row. Leaves `s` Inactive once every row has been pulled. `active` counts slots currently
+    /// in Scan/Chain; a slot recycled here was active for its previous row, so we adjust by the net
+    /// change (decrement here, re-increment only when a new row is actually assigned).
+    auto pull_next = [&](Slot & s)
+    {
+        if (s.stage != Stage::Inactive)
+            --active; /// release the slot's previous row before (maybe) taking a new one
+        while (next_row < n)
+        {
+            const size_t row = next_row++;
+            const UInt64 h = hashes[row];
+            const size_t leaf = total_bits ? (routeBits(h) >> leaf_shift) : 0;
+            const LeafHT & ht = leaves[leaf];
+            if (ht.num_buckets == 0)
+                continue; /// empty leaf: no match, pull another row
+
+            s.stage = Stage::Scan;
+            s.row = static_cast<UInt32>(row);
+            s.cells = ht.cells;
+            s.key = packed_keys + row * key_width;
+            s.mask = ht.num_buckets - 1;
+            s.pos = leafBucket(bucketBits(h), ht.num_buckets) & s.mask;
+            if constexpr (has_chain)
+                s.next_chain = ht.next_chain;
+            __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
+            ++active;
+            return;
+        }
+        s.stage = Stage::Inactive;
+    };
+
+    /// Prologue: fill the ring with the first up-to-RING_SIZE rows, each computing its initial state and
+    /// issuing its home-cell prefetch. Slots start Inactive, so the prologue only ever increments.
+    for (Slot & s : ring)
+        pull_next(s);
+
+    /// Pipeline: round-robin over the ring, one memory-dependent step per visit, until every row has been
+    /// pulled (next_row == n) AND no slot still has work (active == 0). `active` is mutated through the
+    /// `pull_next` lambda's by-reference capture, which clang-tidy's local analysis cannot see.
+    size_t i = 0;
+    // NOLINTNEXTLINE(bugprone-infinite-loop)
+    while (active != 0)
+    {
+        Slot & s = ring[i];
+        if (i + 1 == ring_size)
+            i = 0;
+        else
+            ++i;
+
+        if (s.stage == Stage::Inactive)
             continue;
 
-        if constexpr (!has_chain)
+        if (s.stage == Stage::Scan)
         {
-            out_left_rows.push_back(static_cast<UInt32>(row));
-            out_refs.push_back(clearSingleton(cur));
-        }
-        else if (isSingleton(cur))
-        {
-            out_left_rows.push_back(static_cast<UInt32>(row));
-            out_refs.push_back(clearSingleton(cur));
-        }
-        else
-        {
-            chassert(ht.next_chain != nullptr);
-            while (cur.row_no != INVALID_ROW)
+            /// The home/probe cell prefetched on the previous visit is now resident.
+            const char * cell = s.cells + s.pos * stride;
+            const BuildRef head = *reinterpret_cast<const BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+            if (head.row_no == INVALID_ROW)
             {
-                out_left_rows.push_back(static_cast<UInt32>(row));
-                out_refs.push_back(cur);
-                cur = ht.next_chain[leafFlat(cur, block_base)];
+                /// Empty cell: this probe row has no match. Recycle the slot.
+                pull_next(s);
+            }
+            else if (__builtin_memcmp(cell + sizeof(BuildRef), s.key, key_width) == 0)
+            {
+                /// Key match: emit the head. Mirrors the sequential find exactly.
+                if constexpr (!has_chain)
+                {
+                    out_left_rows.push_back(s.row);
+                    out_refs.push_back(clearSingleton(head));
+                    pull_next(s);
+                }
+                else if (isSingleton(head))
+                {
+                    out_left_rows.push_back(s.row);
+                    out_refs.push_back(clearSingleton(head));
+                    pull_next(s);
+                }
+                else
+                {
+                    /// Multi-row key: the head is already flag-free. Emit it, then walk the chain. The
+                    /// head's flat index feeds the first chain read, prefetched for the next visit.
+                    out_left_rows.push_back(s.row);
+                    out_refs.push_back(head);
+                    s.chain_flat = leafFlat(head, block_base);
+                    s.stage = Stage::Chain;
+                    __builtin_prefetch(s.next_chain + s.chain_flat, /*rw=*/0, /*locality=*/1);
+                }
+            }
+            else
+            {
+                /// Collision: advance one slot, prefetch the next cell, stay in Scan.
+                s.pos = (s.pos + 1) & s.mask;
+                __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
+            }
+        }
+        else /// Stage::Chain (only reachable when has_chain)
+        {
+            if constexpr (has_chain)
+            {
+                /// The chain entry prefetched last visit is resident.
+                const BuildRef cur = s.next_chain[s.chain_flat];
+                if (cur.row_no == INVALID_ROW)
+                {
+                    /// Chain tail: this probe row is done. Recycle the slot.
+                    pull_next(s);
+                }
+                else
+                {
+                    /// Emit this chain ref (flag-free by construction), then prefetch the next link.
+                    out_left_rows.push_back(s.row);
+                    out_refs.push_back(cur);
+                    s.chain_flat = leafFlat(cur, block_base);
+                    __builtin_prefetch(s.next_chain + s.chain_flat, /*rw=*/0, /*locality=*/1);
+                }
             }
         }
     }
