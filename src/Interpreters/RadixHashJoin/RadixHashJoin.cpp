@@ -21,6 +21,7 @@
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
+#include <Common/ScopedLLCMissCounter.h>
 #include <Common/Stopwatch.h>
 #include <Common/ThreadPool.h>
 #include <Common/ThreadGroupSwitcher.h>
@@ -38,6 +39,7 @@ namespace ProfileEvents
 {
 extern const Event RadixHashJoinBuildMicroseconds;
 extern const Event RadixHashJoinProbeMicroseconds;
+extern const Event RadixHashJoinProbeLLCMisses;
 extern const Event RadixHashJoinProbePermMicroseconds;
 extern const Event RadixHashJoinProbeCollectMatchesMicroseconds;
 extern const Event RadixHashJoinProbePackHashRouteMicroseconds;
@@ -835,6 +837,9 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     /// Before the build barrier (the header/planning path: `transformHeader` calls `joinBlock` first)
     /// `built` is still false and the block below emits the output schema only.
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
+    /// Benchmarking instrumentation: demand LLC load misses incurred by this probe (no-op unless
+    /// perf_event hardware counters are available). Scoped to the same region as `probe_watch`.
+    ScopedLLCMissCounter probe_llc(ProfileEvents::RadixHashJoinProbeLLCMisses);
 
     State & st = *state;
     const size_t n = block.rows();

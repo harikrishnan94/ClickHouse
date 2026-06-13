@@ -19,6 +19,7 @@
 #include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
+#include <Common/ScopedLLCMissCounter.h>
 #include <Common/ThreadPool.h>
 #include <Common/AllocatorWithMemoryTracking.h>
 #include <Common/setThreadName.h>
@@ -63,6 +64,7 @@ namespace ProfileEvents
 extern const Event HashJoinPreallocatedElementsInHashTables;
 extern const Event ConcurrentHashJoinBuildMicroseconds;
 extern const Event ConcurrentHashJoinProbeMicroseconds;
+extern const Event ConcurrentHashJoinProbeLLCMisses;
 }
 
 namespace CurrentMetrics
@@ -410,6 +412,8 @@ public:
     JoinResultBlock next() override
     {
         ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
+        /// Benchmarking instrumentation: probe-stage demand LLC load misses (no-op without perf_event).
+        ScopedLLCMissCounter probe_llc(ProfileEvents::ConcurrentHashJoinProbeLLCMisses);
 
         if (!current_result)
         {
@@ -442,6 +446,8 @@ public:
 JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
 {
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
+    /// Benchmarking instrumentation: probe-stage demand LLC load misses (no-op without perf_event).
+    ScopedLLCMissCounter probe_llc(ProfileEvents::ConcurrentHashJoinProbeLLCMisses);
 
     ScatteredBlocks dispatched_blocks;
 
