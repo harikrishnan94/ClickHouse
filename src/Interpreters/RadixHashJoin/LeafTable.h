@@ -186,15 +186,15 @@ LeafTables buildLeafTables(
     size_t num_workers,
     const ParallelFor & parallel_for);
 
-/// Probe `n` left rows (their full 64-bit hashes + packed keys) against the leaf tables, appending one
-/// `(left_row, BuildRef)` per match to the output buffers (singleton keys emit one ref; multi-row keys
-/// iterate the whole BuildRefList).
+/// Probe `n` left rows (their packed keys) against the leaf tables, appending one `(left_row, BuildRef)`
+/// per match to the output buffers (singleton keys emit one ref; multi-row keys iterate the whole
+/// BuildRefList). The 64-bit hash of each key is computed internally, inside the probe pipeline, so its
+/// latency overlaps with the in-flight cell misses (no precomputed hash array is passed in).
 void collectMatches(
     size_t key_width,
     const LeafHT * leaves,
     UInt32 leaf_shift,
     UInt32 total_bits,
-    const UInt64 * hashes,
     const void * packed_keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,

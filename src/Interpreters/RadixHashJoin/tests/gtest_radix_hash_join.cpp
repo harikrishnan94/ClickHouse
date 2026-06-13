@@ -158,15 +158,11 @@ void checkBuildAndProbe(
     for (UInt64 k : build_keys)
         ++expected_count[k];
 
-    std::vector<UInt64> hashes(probe_keys.size());
-    for (size_t i = 0; i < probe_keys.size(); ++i)
-        hashes[i] = hashPackedKey<key_width>(&probe_keys[i]);
-
     std::vector<UInt32> out_rows;
     std::vector<BuildRef> out_refs;
     collectMatches(
         key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
-        hashes.data(), probe_keys.data(), probe_keys.size(), out_rows, out_refs);
+        probe_keys.data(), probe_keys.size(), out_rows, out_refs);
 
     /// Every emitted match must resolve to a build row whose key equals the probe key, and the number
     /// of matches per probe row must equal the count of build rows with that key.

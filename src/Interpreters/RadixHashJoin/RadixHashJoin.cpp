@@ -186,10 +186,10 @@ struct BlockRun
   */
 struct ProbeScratch
 {
-    /// Batch-wide pack + hash. Capacity is reused across batches and only ever grows, so the steady
-    /// state does no per-batch heap allocation.
+    /// Batch-wide multi-column key packing. Capacity is reused across batches and only ever grows, so the
+    /// steady state does no per-batch heap allocation. The per-row hash is no longer materialised here —
+    /// it is computed on the fly inside `collectMatches`.
     std::vector<char> packed;                   /// multi-column packed keys for the whole batch
-    std::vector<UInt64> hashes;                 /// per-batch 64-bit key hashes
     std::vector<const char *> kcol_src;         /// raw data of each left key column
 
     /// Matches (one (left_row, ref) per match), in probe order.
@@ -304,37 +304,20 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
     }
 }
 
-/// Hash a contiguous run of `count` packed keys (each `W` bytes) into `hashes`. Width-templated so the
-/// hash is the unrolled compile-time kernel.
+/// Pack the batch's multi-column keys into `packed` in `SCATTER_CHUNK_ROWS` tiles (chunk-aware) so each
+/// tile's per-column scatter writes stay L1-resident. Single-column keys need no packing (the column's
+/// raw data is used directly) and never reach here. The 64-bit hash is NOT computed here anymore — it is
+/// derived from the packed key inside the probe pipeline (`collectMatches`), where its multiply-fold
+/// latency overlaps with the in-flight cell misses.
 template <size_t key_width>
-void hashRun(const char * keys, size_t count, UInt64 * hashes)
-{
-    for (size_t i = 0; i < count; ++i)
-        hashes[i] = RadixJoin::hashPackedKey<key_width>(keys + i * key_width);
-}
-
-/// Produce the batch's packed keys (multi-column only) and 64-bit hashes. Single-column keys are hashed
-/// straight off the column's raw data (zero copy, no packing, no tiling). Multi-column keys are packed
-/// in `SCATTER_CHUNK_ROWS` tiles and each tile is hashed immediately while its packed bytes are still
-/// L1-hot.
-template <size_t key_width>
-void packHashBatch(
+void packBatch(
     const ProbeContext & ctx,
-    bool single_col,
-    const char * single_keys,
     const std::vector<const char *> & kcol_src,
     size_t batch_start,
     size_t bn,
-    char * packed,
-    UInt64 * hashes)
+    char * packed)
 {
     ProfileEventTimeIncrement<Microseconds> probe_pack_hash_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
-    if (single_col)
-    {
-        hashRun<key_width>(single_keys, bn, hashes);
-        return;
-    }
-
     constexpr size_t tile = RadixJoin::BuildSide::SCATTER_CHUNK_ROWS; /// 1024
     const size_t ncols = ctx.key_widths.size();
     for (size_t off = 0; off < bn; off += tile)
@@ -343,7 +326,6 @@ void packHashBatch(
         char * dst = packed + off * key_width;
         for (size_t c = 0; c < ncols; ++c)
             ctx.key_packers[c](kcol_src[c], batch_start + off, tn, dst, key_width, ctx.key_offsets[c], ctx.key_widths[c]);
-        hashRun<key_width>(dst, tn, hashes + off);
     }
 }
 
@@ -377,7 +359,6 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
     {
         const size_t bn = std::min(PROBE_BATCH_ROWS, n - batch_start);
 
-        s.hashes.resize(bn);
         const char * keys = nullptr;
         if (single_col)
         {
@@ -387,22 +368,23 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         {
             s.packed.resize(bn * ctx.key_width);
             keys = s.packed.data();
-        }
 
-        /// Phase 1a — pack (multi-column) + hash.
-        switch (ctx.key_width)
-        {
-#define RHJ_PACK_HASH(W) \
+            /// Phase 1a — pack the multi-column keys (chunk-aware). Single-column keys skip this entirely;
+            /// the per-row hash is computed later inside `collectMatches`.
+            switch (ctx.key_width)
+            {
+#define RHJ_PACK(W) \
     case W: \
-        packHashBatch<W>(ctx, single_col, keys, s.kcol_src, batch_start, bn, s.packed.data(), s.hashes.data()); \
+        packBatch<W>(ctx, s.kcol_src, batch_start, bn, s.packed.data()); \
         break;
-            RHJ_PACK_HASH(4)  RHJ_PACK_HASH(8)  RHJ_PACK_HASH(12) RHJ_PACK_HASH(16)
-            RHJ_PACK_HASH(20) RHJ_PACK_HASH(24) RHJ_PACK_HASH(28) RHJ_PACK_HASH(32)
-            RHJ_PACK_HASH(36) RHJ_PACK_HASH(40) RHJ_PACK_HASH(44) RHJ_PACK_HASH(48)
-            RHJ_PACK_HASH(52) RHJ_PACK_HASH(56) RHJ_PACK_HASH(60) RHJ_PACK_HASH(64)
-#undef RHJ_PACK_HASH
-            default:
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
+                RHJ_PACK(4)  RHJ_PACK(8)  RHJ_PACK(12) RHJ_PACK(16)
+                RHJ_PACK(20) RHJ_PACK(24) RHJ_PACK(28) RHJ_PACK(32)
+                RHJ_PACK(36) RHJ_PACK(40) RHJ_PACK(44) RHJ_PACK(48)
+                RHJ_PACK(52) RHJ_PACK(56) RHJ_PACK(60) RHJ_PACK(64)
+#undef RHJ_PACK
+                default:
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
+            }
         }
 
         /// Phase 1b — lookup. Matches (absolute batch-local row id) are appended to the global match
@@ -412,7 +394,7 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
             ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
             RadixJoin::collectMatches(
                 ctx.key_width, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
-                s.hashes.data(), keys, bn, s.left_rows, s.refs);
+                keys, bn, s.left_rows, s.refs);
         }
 
         if (batch_start != 0)

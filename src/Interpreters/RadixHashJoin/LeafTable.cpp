@@ -136,7 +136,6 @@ void collectMatchesImpl(
     const LeafHT * leaves,
     UInt32 leaf_shift,
     UInt32 total_bits,
-    const UInt64 * hashes,
     const char * packed_keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,
@@ -167,12 +166,15 @@ void collectMatchesImpl(
     size_t next_row = 0;
     size_t active = 0;
 
-    /// Assign the next unprocessed probe row to `s`. Computes the leaf, home bucket, and issues the
-    /// prefetch for the home cell. Empty leaves yield no match — we skip straight to the next row.
-    /// Leaves `s` Inactive once every row has been pulled. `active` counts slots currently in Scan; a
-    /// slot recycled here was active for its previous row, so we adjust by the net change (decrement
-    /// here, re-increment only when a new row is actually assigned). `num_buckets`/`mask` are recovered
-    /// once per probe row here (a shift + an and), never in the inner round-robin step loop.
+    /// Assign the next unprocessed probe row to `s`. Hashes the packed key here (instead of reading a
+    /// precomputed hash array), then computes the leaf, home bucket, and issues the prefetch for the home
+    /// cell. Doing the hash here is the point: its multiply-fold latency overlaps with the outstanding
+    /// cell-miss of the other in-flight ring slots, hiding it behind memory access. Empty leaves yield no
+    /// match — we skip straight to the next row. Leaves `s` Inactive once every row has been pulled.
+    /// `active` counts slots currently in Scan; a slot recycled here was active for its previous row, so
+    /// we adjust by the net change (decrement here, re-increment only when a new row is actually
+    /// assigned). `num_buckets`/`mask` are recovered once per probe row here (a shift + an and), never in
+    /// the inner round-robin step loop.
     auto pull_next = [&](Slot & s)
     {
         if (s.cells != nullptr)
@@ -180,7 +182,8 @@ void collectMatchesImpl(
         while (next_row < n)
         {
             const size_t row = next_row++;
-            const UInt64 h = hashes[row];
+            const char * key = packed_keys + row * key_width;
+            const UInt64 h = hashPackedKey<key_width>(key);
             const size_t leaf = total_bits ? (routeBits(h) >> leaf_shift) : 0;
             const LeafHT & ht = leaves[leaf];
             if (ht.empty())
@@ -189,7 +192,7 @@ void collectMatchesImpl(
             const UInt64 num_buckets = ht.numBuckets();
             s.row = static_cast<UInt32>(row);
             s.cells = ht.cells(); /// non-null: marks the slot active (empty leaves were skipped above)
-            s.key = packed_keys + row * key_width;
+            s.key = key;
             s.mask = num_buckets - 1;
             s.pos = leafBucket(bucketBits(h), num_buckets) & s.mask;
             __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
@@ -301,7 +304,6 @@ void collectMatches(
     const LeafHT * leaves,
     UInt32 leaf_shift,
     UInt32 total_bits,
-    const UInt64 * hashes,
     const void * packed_keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,
@@ -311,7 +313,7 @@ void collectMatches(
 
 #define RHJ_DISPATCH(W) \
     case W: \
-        collectMatchesImpl<W>(leaves, leaf_shift, total_bits, hashes, keys, n, out_left_rows, out_refs); \
+        collectMatchesImpl<W>(leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
         return;
     switch (key_width)
     {
