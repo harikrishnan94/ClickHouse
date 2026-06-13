@@ -60,10 +60,18 @@ inline UInt64 leafBucket(UInt32 low_hash, UInt64 num_buckets) noexcept
     return static_cast<UInt64>(low_hash) & (num_buckets - 1);
 }
 
-/// Flat chain index of a build row: block_base[block_no] + row_no. Always called on flag-free refs.
+/// The empty-cell / chain-tail sentinel ref: `row_no == INVALID_ROW`, flag-free. All-ones word, which
+/// matches the 0xFF-initialised cells and chain slots. (`DB::BuildRef` has a user-provided constructor
+/// and cannot be aggregate-initialised, so the sentinel is built from its word.)
+inline BuildRef invalidRef() noexcept
+{
+    return BuildRef::fromWord(~UInt64(0));
+}
+
+/// Flat chain index of a build row: block_base[block_no] + row_no. Masks the singleton flag.
 inline UInt64 leafFlat(BuildRef ref, const UInt64 * block_base) noexcept
 {
-    return block_base[ref.block_no] + ref.row_no;
+    return block_base[ref.blockNo()] + ref.rowNo();
 }
 
 inline BuildRef markSingleton(BuildRef ref) noexcept
@@ -101,14 +109,14 @@ inline BuildRef leafInsert(LeafHT & ht, UInt32 low_hash, const void * key, Build
             /// First occurrence: store the key and mark the head as a singleton (one build row so far).
             __builtin_memcpy_inline(cell + sizeof(BuildRef), key, key_width);
             *head = markSingleton(ref);
-            return BuildRef{INVALID_ROW, INVALID_ROW};
+            return invalidRef();
         }
         if (__builtin_memcmp(cell + sizeof(BuildRef), key, key_width) == 0)
         {
             /// Duplicate key: the new head is flag-free (the key is now multi-row); return the old head
             /// cleared of the marker so the caller links a flag-free ref into next_chain.
             const BuildRef old = clearSingleton(*head);
-            *head = ref;
+            *head = clearSingleton(ref);
             return old;
         }
         pos = (pos + 1) & mask;
@@ -122,7 +130,7 @@ inline BuildRef leafFind(const LeafHT & ht, UInt32 low_hash, const void * key) n
 {
     static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
     if (ht.num_buckets == 0)
-        return BuildRef{INVALID_ROW, INVALID_ROW};
+        return invalidRef();
     constexpr size_t stride = leafCellBytes(key_width);
     const UInt64 mask = ht.num_buckets - 1;
     UInt64 pos = leafBucket(low_hash, ht.num_buckets) & mask;
@@ -131,7 +139,7 @@ inline BuildRef leafFind(const LeafHT & ht, UInt32 low_hash, const void * key) n
         const char * cell = ht.cells + pos * stride;
         const BuildRef head = *reinterpret_cast<const BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (head.row_no == INVALID_ROW)
-            return BuildRef{INVALID_ROW, INVALID_ROW};
+            return invalidRef();
         if (__builtin_memcmp(cell + sizeof(BuildRef), key, key_width) == 0)
             return head;
         pos = (pos + 1) & mask;

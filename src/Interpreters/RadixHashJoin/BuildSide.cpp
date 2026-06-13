@@ -352,7 +352,7 @@ void BuildSide::scatterBlockRanges(
 
             refs.resize(n);
             for (size_t row = 0; row < n; ++row)
-                refs[row] = BuildRef{static_cast<UInt32>(block_idx), static_cast<UInt32>(row)};
+                refs[row] = BuildRef(static_cast<UInt32>(block_idx), static_cast<UInt32>(row));
 
             const char * raw_keys = multi_col
                 ? nullptr
