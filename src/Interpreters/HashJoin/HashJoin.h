@@ -374,8 +374,8 @@ public:
 /// NOLINTEND(bugprone-macro-parentheses)
     };
 
-    using MapsOne = MapsTemplate<RowRef>;
-    using MapsAll = MapsTemplate<RowRefList>;
+    using MapsOne = MapsTemplate<BuildRef>;
+    using MapsAll = MapsTemplate<BuildRefList>;
     using MapsAsof = MapsTemplate<AsofRowRefs>;
 
     using MapsVariant = std::variant<MapsOne, MapsAll, MapsAsof>;
@@ -384,6 +384,8 @@ public:
     {
         ColumnsInfo columns_info;
         ScatteredBlock::Selector selector;
+        /// Index of this block in RightTableData::stored_columns_index; the high half of BuildRef.
+        UInt32 block_no = 0;
 
         size_t allocatedBytes() const;
     };
@@ -421,6 +423,11 @@ public:
         Block sample_block; /// Block as it would appear in the BlockList
         ScatteredColumnsList columns; /// Columns of "right" table.
         NullmapList nullmaps; /// Nullmaps for blocks of "right" table (if needed)
+
+        /// Resolves BuildRef::block_no to the stored block's ColumnsInfo.
+        /// Shared between all slots of a ConcurrentHashJoin so that block numbers stay
+        /// globally unique: cells built by any slot end up in the shared two-level map.
+        StoredColumnsIndexPtr stored_columns_index = std::make_shared<StoredColumnsIndex>();
 
         /// Additional data - strings for string keys and continuation elements of single-linked lists of references to rows.
         Arena pool;
@@ -477,11 +484,18 @@ public:
     const Block & savedBlockSample() const { return data->sample_block; }
 
     bool isUsed(size_t off) const;
-    bool isUsed(const Columns * columns_ptr, size_t row_idx) const;
+    bool isUsed(UInt32 block_no, size_t row_idx) const;
 
     void debugKeys() const;
 
     void shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_optimize = false);
+
+    /// Capture the query memory usage baseline that `shrinkStoredBlocksToFit` measures growth
+    /// against. Normally the first `addBlockToJoin` captures it; a deferred build
+    /// (`ConcurrentHashJoin`) buffers the right blocks outside this class first, and without this
+    /// call the baseline would only be captured at replay time, hiding all the buffered bytes from
+    /// the shrink heuristic. Idempotent: only the first call has an effect.
+    void captureMemoryUsageBaseline();
 
     void setMaxJoinedBlockRows(size_t value) { max_joined_block_rows = value; }
     void setMaxJoinedBlockBytes(size_t value) { max_joined_block_bytes = value; }
