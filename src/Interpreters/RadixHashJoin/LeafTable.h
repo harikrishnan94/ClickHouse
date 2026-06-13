@@ -173,24 +173,4 @@ void collectMatches(
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs);
 
-/// Leaf-partitioned probe: the caller has already counting-sorted the probe rows by leaf into `perm`
-/// (row ids grouped by leaf) with `leaf_start` holding the `num_leaves + 1` exclusive run offsets into
-/// `perm`. Probes one leaf at a time so the leaf's table state (`cells` / `mask` / `next_chain`) is
-/// hoisted into registers for the whole run and the random cell touches stay within that single leaf's
-/// cache- / TLB-resident slice, with `fillLeaf`-style group-pipelined burst prefetch. `hashes` and
-/// `packed_keys` are indexed THROUGH `perm` (zero-copy: only 4-byte row ids were moved). Emits the same
-/// `(left_row, BuildRef)` matches as `collectMatches`, in leaf-grouped order (stable within a leaf).
-void collectMatchesScattered(
-    size_t key_width,
-    bool has_duplicates,
-    const LeafHT * leaves,
-    const UInt64 * block_base,
-    const UInt64 * hashes,
-    const void * packed_keys,
-    const UInt32 * perm,
-    const UInt32 * leaf_start,
-    size_t num_leaves,
-    std::vector<UInt32> & out_left_rows,
-    std::vector<BuildRef> & out_refs);
-
 }
