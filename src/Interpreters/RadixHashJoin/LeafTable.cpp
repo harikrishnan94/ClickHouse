@@ -27,11 +27,13 @@ namespace
 /// key's hash, recomputed here from the key (no hash is stored on the leaves).
 ///
 /// Group-pipelined prefetch: for each group of rows we (1) compute their home buckets in a tight
-/// vectorizable loop, (2) issue the whole group's cell prefetches back-to-back (exposing group-wide
-/// memory-level parallelism), then (3) insert the PREVIOUS group, whose cells were prefetched a full
-/// group earlier. The group size over-provisions the line-fill buffers so it degrades gracefully on
-/// smaller cores, and group*cell-bytes stays within L1. A duplicate appends to the cell's BuildRefList
-/// (the first duplicate of a key allocates one Batch node from this worker's `arena`).
+/// vectorizable loop (one hash per key), retaining them in a ping-ponged buffer, (2) issue the whole
+/// group's cell prefetches back-to-back (exposing group-wide memory-level parallelism), then (3) insert
+/// the PREVIOUS group, whose cells were prefetched a full group earlier, reusing its retained home
+/// buckets — so the per-key hash is computed exactly once. The group size over-provisions the line-fill
+/// buffers so it degrades gracefully on smaller cores, and group*cell-bytes stays within L1. A duplicate
+/// appends to the cell's BuildRefList (the first duplicate of a key allocates one Batch node from this
+/// worker's `arena`).
 template <size_t key_width>
 void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
 {
@@ -47,31 +49,36 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
     char * const cells = ht.cells();
 
     constexpr size_t group = 64;
-    UInt64 pf_pos[group];
+    /// Two home-bucket buffers ping-ponged across groups: while the NEXT group's buckets are computed
+    /// (and prefetched) into one buffer, the CURRENT group is inserted from the other, reusing the bucket
+    /// each key's single hash already produced. `cur` always points at the buffer whose cells are now
+    /// resident; `nxt` receives the lookahead group.
+    UInt64 pos_buf[2][group];
+    UInt64 * cur = pos_buf[0];
+    UInt64 * nxt = pos_buf[1];
 
-    auto compute_buckets = [&](UInt64 base, size_t count)
+    auto compute_buckets = [&](UInt64 * dst, UInt64 base, size_t count)
     {
         for (size_t i = 0; i < count; ++i)
-            pf_pos[i] = leafBucket(bucketBits(hashPackedKey<key_width>(keys + (base + i) * key_width)), num_buckets) & mask;
+            dst[i] = leafBucket(bucketBits(hashPackedKey<key_width>(keys + (base + i) * key_width)), num_buckets) & mask;
     };
-    auto prefetch_burst = [&](size_t count)
+    auto prefetch_burst = [&](const UInt64 * src, size_t count)
     {
         for (size_t i = 0; i < count; ++i)
-            __builtin_prefetch(cells + pf_pos[i] * stride, /*rw=*/1, /*locality=*/3);
+            __builtin_prefetch(cells + src[i] * stride, /*rw=*/1, /*locality=*/3);
     };
 
     bool saw_dup = false;
-    auto insert_row = [&](UInt64 r)
+    auto insert_row = [&](UInt64 r, UInt64 pos)
     {
-        const bool is_dup = leafInsert<key_width>(
-            ht, bucketBits(hashPackedKey<key_width>(keys + r * key_width)), keys + r * key_width, refs[r], arena);
+        const bool is_dup = leafInsertAt<key_width>(ht, pos, keys + r * key_width, refs[r], arena);
         saw_dup |= is_dup;
     };
 
     {
         const size_t prime = static_cast<size_t>(std::min<UInt64>(group, rows));
-        compute_buckets(0, prime);
-        prefetch_burst(prime);
+        compute_buckets(cur, 0, prime);
+        prefetch_burst(cur, prime);
     }
 
     UInt64 row = 0;
@@ -79,13 +86,14 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
     {
         const UInt64 next = row + group;
         const size_t to_prefetch = next < rows ? static_cast<size_t>(std::min<UInt64>(group, rows - next)) : 0;
-        compute_buckets(next, to_prefetch);
-        prefetch_burst(to_prefetch);
+        compute_buckets(nxt, next, to_prefetch);
+        prefetch_burst(nxt, to_prefetch);
         for (size_t i = 0; i < group; ++i)
-            insert_row(row + i);
+            insert_row(row + i, cur[i]);
+        std::swap(cur, nxt);
     }
-    for (; row < rows; ++row)
-        insert_row(row);
+    for (size_t i = 0; row < rows; ++row, ++i)
+        insert_row(row, cur[i]);
 
     /// Relaxed + idempotent: only ever flips false->true, mirrors the old first-duplicate trigger.
     if (saw_dup)
