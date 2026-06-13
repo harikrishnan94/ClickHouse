@@ -8,8 +8,6 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
-#include <functional>
-#include <mutex>
 
 namespace DB
 {
@@ -25,25 +23,6 @@ namespace DB::RadixJoin
 namespace
 {
 
-/// Shared lazy allocator of the chain array. The first fill worker to hit a duplicate allocates and
-/// 0xFF-initialises all `num_rows` slots (so every tail reads INVALID_ROW with no explicit writes),
-/// publishes the pointer, and the others pick it up. An all-unique build never calls `acquire`.
-struct LazyChain
-{
-    std::once_flag once;
-    std::atomic<BuildRef *> ptr{nullptr};
-    std::function<BuildRef *(UInt64)> alloc;
-    UInt64 num_rows = 0;
-
-    BuildRef * acquire()
-    {
-        if (BuildRef * p = ptr.load(std::memory_order_acquire))
-            return p;
-        std::call_once(once, [this] { ptr.store(alloc(num_rows), std::memory_order_release); });
-        return ptr.load(std::memory_order_acquire);
-    }
-};
-
 /// Fill one leaf by inserting all its scattered (key, ref) rows. The bucket is the low 32 bits of the
 /// key's hash, recomputed here from the key (no hash is stored on the leaves).
 ///
@@ -51,10 +30,10 @@ struct LazyChain
 /// vectorizable loop, (2) issue the whole group's cell prefetches back-to-back (exposing group-wide
 /// memory-level parallelism), then (3) insert the PREVIOUS group, whose cells were prefetched a full
 /// group earlier. The group size over-provisions the line-fill buffers so it degrades gracefully on
-/// smaller cores, and group*cell-bytes stays within L1. The chain link on a duplicate is, after the
-/// one-time lazy allocation, a single store with no atomic on the steady-state path.
+/// smaller cores, and group*cell-bytes stays within L1. A duplicate appends to the cell's BuildRefList
+/// (the first duplicate of a key allocates one Batch node from this worker's `arena`).
 template <size_t key_width>
-void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base, LazyChain & chain)
+void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
 {
     const UInt64 rows = la.leaf_rows[leaf];
     if (rows == 0)
@@ -80,26 +59,12 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * bl
             __builtin_prefetch(ht.cells + pf_pos[i] * stride, /*rw=*/1, /*locality=*/3);
     };
 
-    /// Keep the chain pointer local so the steady-state duplicate handler does not touch the atomic.
-    BuildRef * chain_ptr = chain.ptr.load(std::memory_order_acquire);
-    bool have_chain = chain_ptr != nullptr;
-    if (have_chain)
-        ht.next_chain = chain_ptr;
-
+    bool saw_dup = false;
     auto insert_row = [&](UInt64 r)
     {
-        const BuildRef old_head = leafInsert<key_width>(
-            ht, bucketBits(hashPackedKey<key_width>(keys + r * key_width)), keys + r * key_width, refs[r]);
-        if (old_head.row_no != INVALID_ROW)
-        {
-            if (!have_chain)
-            {
-                chain_ptr = chain.acquire();
-                ht.next_chain = chain_ptr;
-                have_chain = true;
-            }
-            chain_ptr[leafFlat(refs[r], block_base)] = old_head;
-        }
+        const bool is_dup = leafInsert<key_width>(
+            ht, bucketBits(hashPackedKey<key_width>(keys + r * key_width)), keys + r * key_width, refs[r], arena);
+        saw_dup |= is_dup;
     };
 
     {
@@ -120,50 +85,56 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * bl
     }
     for (; row < rows; ++row)
         insert_row(row);
+
+    /// Relaxed + idempotent: only ever flips false->true, mirrors the old first-duplicate trigger.
+    if (saw_dup)
+        any_duplicates.store(true, std::memory_order_relaxed);
 }
 
-void fillLeafDispatch(size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, const UInt64 * block_base, LazyChain & chain)
+void fillLeafDispatch(
+    size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
 {
     switch (key_width)
     {
-        case 4:  fillLeaf<4>(ht, la, leaf, block_base, chain);  return;
-        case 8:  fillLeaf<8>(ht, la, leaf, block_base, chain);  return;
-        case 12: fillLeaf<12>(ht, la, leaf, block_base, chain); return;
-        case 16: fillLeaf<16>(ht, la, leaf, block_base, chain); return;
-        case 20: fillLeaf<20>(ht, la, leaf, block_base, chain); return;
-        case 24: fillLeaf<24>(ht, la, leaf, block_base, chain); return;
-        case 28: fillLeaf<28>(ht, la, leaf, block_base, chain); return;
-        case 32: fillLeaf<32>(ht, la, leaf, block_base, chain); return;
-        case 36: fillLeaf<36>(ht, la, leaf, block_base, chain); return;
-        case 40: fillLeaf<40>(ht, la, leaf, block_base, chain); return;
-        case 44: fillLeaf<44>(ht, la, leaf, block_base, chain); return;
-        case 48: fillLeaf<48>(ht, la, leaf, block_base, chain); return;
-        case 52: fillLeaf<52>(ht, la, leaf, block_base, chain); return;
-        case 56: fillLeaf<56>(ht, la, leaf, block_base, chain); return;
-        case 60: fillLeaf<60>(ht, la, leaf, block_base, chain); return;
-        case 64: fillLeaf<64>(ht, la, leaf, block_base, chain); return;
+        case 4:  fillLeaf<4>(ht, la, leaf, arena, any_duplicates);  return;
+        case 8:  fillLeaf<8>(ht, la, leaf, arena, any_duplicates);  return;
+        case 12: fillLeaf<12>(ht, la, leaf, arena, any_duplicates); return;
+        case 16: fillLeaf<16>(ht, la, leaf, arena, any_duplicates); return;
+        case 20: fillLeaf<20>(ht, la, leaf, arena, any_duplicates); return;
+        case 24: fillLeaf<24>(ht, la, leaf, arena, any_duplicates); return;
+        case 28: fillLeaf<28>(ht, la, leaf, arena, any_duplicates); return;
+        case 32: fillLeaf<32>(ht, la, leaf, arena, any_duplicates); return;
+        case 36: fillLeaf<36>(ht, la, leaf, arena, any_duplicates); return;
+        case 40: fillLeaf<40>(ht, la, leaf, arena, any_duplicates); return;
+        case 44: fillLeaf<44>(ht, la, leaf, arena, any_duplicates); return;
+        case 48: fillLeaf<48>(ht, la, leaf, arena, any_duplicates); return;
+        case 52: fillLeaf<52>(ht, la, leaf, arena, any_duplicates); return;
+        case 56: fillLeaf<56>(ht, la, leaf, arena, any_duplicates); return;
+        case 60: fillLeaf<60>(ht, la, leaf, arena, any_duplicates); return;
+        case 64: fillLeaf<64>(ht, la, leaf, arena, any_duplicates); return;
         default:
             throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin leaf table: unsupported key width {}", key_width);
     }
 }
 
 /// AMAC (Asynchronous Memory Access Chaining) probe: instead of finding matches one probe row at a
-/// time (so each data-dependent miss — the home cell, every linear-probe collision step, every chain
-/// link — stalls the core for a full DRAM latency), we keep RING_SIZE independent probe rows in flight.
-/// Each ring slot is a tiny state machine that performs exactly ONE memory-dependent step per visit and
-/// software-prefetches the address it will dereference on its NEXT visit. By the time the round-robin
-/// returns to that slot the line is resident, so the misses overlap instead of serialising. This beats
-/// a fixed prefetch distance because the open-addressing walk length and the chain length are
-/// data-dependent and unknown ahead of time — the slot prefetches exactly the next address it needs.
+/// time (so each data-dependent miss — the home cell, every linear-probe collision step — stalls the
+/// core for a full DRAM latency), we keep RING_SIZE independent probe rows in flight. Each ring slot is
+/// a tiny state machine that performs exactly ONE memory-dependent step per visit and software-
+/// prefetches the address it will dereference on its NEXT visit. By the time the round-robin returns to
+/// that slot the line is resident, so the misses overlap instead of serialising. This beats a fixed
+/// prefetch distance because the open-addressing walk length is data-dependent and unknown ahead of
+/// time — the slot prefetches exactly the next address it needs.
 ///
-/// The set of emitted (row, ref) pairs is identical to the sequential find; only the interleaving (and
-/// therefore the output order) differs, which is irrelevant for an unordered hash join.
-template <size_t key_width, bool has_chain>
+/// On a key match the cell word is a `DB::BuildRefList`: a singleton (the common case) emits its one
+/// inline ref with no further loads; a multi-row key iterates its BuildRefList (the rare duplicate
+/// path). The set of emitted (row, ref) pairs is identical to the sequential find; only the
+/// interleaving (and therefore the output order) differs, which is irrelevant for an unordered join.
+template <size_t key_width>
 void collectMatchesImpl(
     const LeafHT * leaves,
     UInt32 leaf_shift,
     UInt32 total_bits,
-    const UInt64 * block_base,
     const UInt64 * hashes,
     const char * packed_keys,
     size_t n,
@@ -181,7 +152,6 @@ void collectMatchesImpl(
     {
         Inactive, /// no work assigned to this slot
         Scan,     /// open-addressing linear-probe step pending on `cells + pos * stride`
-        Chain,    /// (has_chain only) next chain link pending on `next_chain[chain_flat]`
     };
 
     struct Slot
@@ -192,8 +162,6 @@ void collectMatchesImpl(
         const char * key = nullptr;     /// packed_keys + row * key_width
         UInt64 mask = 0;           /// num_buckets - 1
         UInt64 pos = 0;            /// current linear-probe slot
-        const BuildRef * next_chain = nullptr; /// owning leaf's chain array (has_chain only)
-        UInt64 chain_flat = 0;     /// flat index of the chain entry to read next (has_chain only)
     };
 
     Slot ring[ring_size];
@@ -204,8 +172,8 @@ void collectMatchesImpl(
     /// Assign the next unprocessed probe row to `s`. Computes the leaf, home bucket, and issues the
     /// prefetch for the home cell. Empty leaves (num_buckets == 0) yield no match — we skip straight to
     /// the next row. Leaves `s` Inactive once every row has been pulled. `active` counts slots currently
-    /// in Scan/Chain; a slot recycled here was active for its previous row, so we adjust by the net
-    /// change (decrement here, re-increment only when a new row is actually assigned).
+    /// in Scan; a slot recycled here was active for its previous row, so we adjust by the net change
+    /// (decrement here, re-increment only when a new row is actually assigned).
     auto pull_next = [&](Slot & s)
     {
         if (s.stage != Stage::Inactive)
@@ -225,8 +193,6 @@ void collectMatchesImpl(
             s.key = packed_keys + row * key_width;
             s.mask = ht.num_buckets - 1;
             s.pos = leafBucket(bucketBits(h), ht.num_buckets) & s.mask;
-            if constexpr (has_chain)
-                s.next_chain = ht.next_chain;
             __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
             ++active;
             return;
@@ -255,69 +221,39 @@ void collectMatchesImpl(
         if (s.stage == Stage::Inactive)
             continue;
 
-        if (s.stage == Stage::Scan)
+        /// The home/probe cell prefetched on the previous visit is now resident.
+        const char * cell = s.cells + s.pos * stride;
+        const UInt64 word = *reinterpret_cast<const UInt64 *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        if (word == 0)
         {
-            /// The home/probe cell prefetched on the previous visit is now resident.
-            const char * cell = s.cells + s.pos * stride;
-            const BuildRef head = *reinterpret_cast<const BuildRef *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-            if (head.row_no == INVALID_ROW)
+            /// Empty cell: this probe row has no match. Recycle the slot.
+            pull_next(s);
+        }
+        else if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), s.key, key_width) == 0)
+        {
+            /// Key match. Singleton (the common case): the word IS the encoded ref — emit it directly.
+            if (refWordIsInline(word))
             {
-                /// Empty cell: this probe row has no match. Recycle the slot.
-                pull_next(s);
-            }
-            else if (__builtin_memcmp(cell + sizeof(BuildRef), s.key, key_width) == 0)
-            {
-                /// Key match: emit the head. Mirrors the sequential find exactly.
-                if constexpr (!has_chain)
-                {
-                    out_left_rows.push_back(s.row);
-                    out_refs.push_back(clearSingleton(head));
-                    pull_next(s);
-                }
-                else if (isSingleton(head))
-                {
-                    out_left_rows.push_back(s.row);
-                    out_refs.push_back(clearSingleton(head));
-                    pull_next(s);
-                }
-                else
-                {
-                    /// Multi-row key: the head is already flag-free. Emit it, then walk the chain. The
-                    /// head's flat index feeds the first chain read, prefetched for the next visit.
-                    out_left_rows.push_back(s.row);
-                    out_refs.push_back(head);
-                    s.chain_flat = leafFlat(head, block_base);
-                    s.stage = Stage::Chain;
-                    __builtin_prefetch(s.next_chain + s.chain_flat, /*rw=*/0, /*locality=*/1);
-                }
+                out_left_rows.push_back(s.row);
+                out_refs.push_back(BuildRef::fromWord(word));
             }
             else
             {
-                /// Collision: advance one slot, prefetch the next cell, stay in Scan.
-                s.pos = (s.pos + 1) & s.mask;
-                __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
-            }
-        }
-        else /// Stage::Chain (only reachable when has_chain)
-        {
-            if constexpr (has_chain)
-            {
-                /// The chain entry prefetched last visit is resident.
-                const BuildRef cur = s.next_chain[s.chain_flat];
-                if (cur.row_no == INVALID_ROW)
+                /// Multi-row key (rare): iterate the whole BuildRefList, emitting one ref per row.
+                const auto & list = *reinterpret_cast<const DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                for (auto it = list.begin(); it.ok(); ++it)
                 {
-                    /// Chain tail: this probe row is done. Recycle the slot.
-                    pull_next(s);
-                }
-                else
-                {
-                    /// Emit this chain ref (flag-free by construction), then prefetch the next link.
                     out_left_rows.push_back(s.row);
-                    out_refs.push_back(cur);
-                    s.chain_flat = leafFlat(cur, block_base);
-                    __builtin_prefetch(s.next_chain + s.chain_flat, /*rw=*/0, /*locality=*/1);
+                    out_refs.push_back(BuildRef::fromWord(*it));
                 }
             }
+            pull_next(s);
+        }
+        else
+        {
+            /// Collision: advance one slot, prefetch the next cell, stay in Scan.
+            s.pos = (s.pos + 1) & s.mask;
+            __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
         }
     }
 }
@@ -326,15 +262,22 @@ void collectMatchesImpl(
 
 LeafTables buildLeafTables(
     const LeafArrays & leaf_arrays,
-    const std::vector<UInt64> & block_base,
     UInt64 num_rows,
     size_t key_width,
+    size_t num_workers,
     CoopPool & coord)
 {
     LeafTables out;
     out.num_rows = num_rows;
     const size_t num_leaves = leaf_arrays.num_leaves;
     out.leaves.assign(num_leaves, LeafHT{});
+
+    /// One arena per build worker for the BuildRefList Batch nodes. Each worker only ever allocates from
+    /// its own arena (single-writer, no locking); the arenas live in `out` so the nodes outlive the
+    /// probe. Constructed up front so the worker index maps to a fixed, stable slot.
+    out.build_arenas.resize(num_workers);
+    for (auto & a : out.build_arenas)
+        a = std::make_unique<DB::Arena>();
 
     /// Per-leaf sizing (integer math only; no allocation, no page touch).
     for (size_t leaf = 0; leaf < num_leaves; ++leaf)
@@ -345,47 +288,29 @@ LeafTables buildLeafTables(
         out.leaves[leaf].num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~0.5 load factor
     }
 
-    LazyChain chain;
-    chain.num_rows = num_rows;
-    Arena * arena_ptr = &out.arena;
-    chain.alloc = [arena_ptr](UInt64 n) -> BuildRef *
-    {
-        BuildRef * p = arena_ptr->allocateArray<BuildRef>(n);
-        std::memset(p, 0xFF, n * sizeof(BuildRef));
-        return p;
-    };
-
-    /// Each worker allocates, 0xFF-inits, and fills its own leaf's cell array — allocation, zeroing and
-    /// fill all spread across the build threads, no single-threaded carve.
-    const UInt64 * block_base_ptr = block_base.data();
-    coord.parallelFor(num_leaves, [&](size_t leaf)
+    /// Each worker allocates, 0-inits (empty cell == BuildRefList word 0), and fills its own leaf's cell
+    /// array — allocation, zeroing and fill all spread across the build threads, no single-threaded carve.
+    /// Batch nodes for that leaf's duplicate keys come from the worker's own arena.
+    coord.parallelFor(num_leaves, [&](size_t leaf, size_t worker)
     {
         if (leaf_arrays.leaf_rows[leaf] == 0)
             return;
+        chassert(worker < out.build_arenas.size());
         const size_t cell_bytes = static_cast<size_t>(out.leaves[leaf].num_buckets) * leafCellBytes(key_width);
         char * cells = static_cast<char *>(out.arena.allocate(cell_bytes, LINE_BYTES));
-        std::memset(cells, 0xFF, cell_bytes);
+        std::memset(cells, 0, cell_bytes);
         out.leaves[leaf].cells = cells;
-        fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, block_base_ptr, chain);
+        fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
     });
-
-    /// Publish the final chain pointer to the leaves that did not see a duplicate themselves.
-    out.next_chain = chain.ptr.load(std::memory_order_acquire);
-    if (out.next_chain != nullptr)
-        for (size_t leaf = 0; leaf < num_leaves; ++leaf)
-            if (out.leaves[leaf].next_chain == nullptr)
-                out.leaves[leaf].next_chain = out.next_chain;
 
     return out;
 }
 
 void collectMatches(
     size_t key_width,
-    bool has_duplicates,
     const LeafHT * leaves,
     UInt32 leaf_shift,
     UInt32 total_bits,
-    const UInt64 * block_base,
     const UInt64 * hashes,
     const void * packed_keys,
     size_t n,
@@ -396,10 +321,7 @@ void collectMatches(
 
 #define RHJ_DISPATCH(W) \
     case W: \
-        if (has_duplicates) \
-            collectMatchesImpl<W, true>(leaves, leaf_shift, total_bits, block_base, hashes, keys, n, out_left_rows, out_refs); \
-        else \
-            collectMatchesImpl<W, false>(leaves, leaf_shift, total_bits, block_base, hashes, keys, n, out_left_rows, out_refs); \
+        collectMatchesImpl<W>(leaves, leaf_shift, total_bits, hashes, keys, n, out_left_rows, out_refs); \
         return;
     switch (key_width)
     {

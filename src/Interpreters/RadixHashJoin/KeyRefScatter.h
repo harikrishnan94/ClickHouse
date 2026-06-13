@@ -11,9 +11,9 @@ namespace DB::RadixJoin
 {
 
 /// The build-row reference is the shared `DB::BuildRef` (see Interpreters/RowRefs.h): an 8-byte
-/// `{ row_no, block_no }` whose `block_no` MSB is the SINGLETON_FLAG. RadixHashJoin keeps the flag on
-/// cell HEADS only; every ref outside the heads (scatter output, chain links, probe output) is
-/// flag-free, so callers index with `ref.blockNo()` / `ref.rowNo()` which mask the flag.
+/// `{ row_no, block_no }` whose `block_no` MSB is the inline/singleton flag (set by the ctor, so every
+/// RadixHashJoin ref carries it). Callers index with `ref.blockNo()` / `ref.rowNo()`, which mask the
+/// flag; a leaf cell head is a `DB::BuildRefList` and an empty cell is the all-zero word (see LeafTable).
 using DB::BuildRef;
 
 /** Fixed-width, column-major radix scatter for the build side.
@@ -41,14 +41,6 @@ using DB::BuildRef;
   * separate count pass (sizes come from the build histogram). This is what makes the build allocate
   * each partition exactly once (the "no allocator churn" property).
   */
-
-/// Reserved row index marking an empty leaf cell / chain tail (cells + chain are memset to 0xFF). The
-/// empty-cell / chain-tail sentinel is `row_no == INVALID_ROW`.
-inline constexpr UInt32 INVALID_ROW = 0xFFFFFFFFu;
-/// MSB of a cell-head block_no: "this key occurs exactly once on the build side" (probe fast path).
-inline constexpr UInt32 SINGLETON_FLAG = DB::BuildRef::SINGLETON_FLAG;
-/// Low 31 bits: the real block_no. The build caps the block count to this many blocks.
-inline constexpr UInt32 BLOCK_NO_MASK = DB::BuildRef::BLOCK_NO_MASK;
 
 /// Cache-line width: NT stores and the SWWC staging line are whole lines of this size.
 inline constexpr size_t LINE_BYTES = 64;
