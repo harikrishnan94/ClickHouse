@@ -6,8 +6,8 @@
 #include <Interpreters/RadixHashJoin/LeafTable.h>
 #include <Interpreters/RadixHashJoin/PackedKeyHash.h>
 #include <Interpreters/RadixHashJoin/PartitionPlan.h>
-#include <Interpreters/RadixHashJoin/PayloadColumns.h>
 
+#include <Interpreters/RowRefs.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/JoinUtils.h>
 #include <Interpreters/HashJoin/HashJoin.h> /// canRemoveColumnsFromLeftBlock
@@ -68,7 +68,7 @@ struct LeftOut
 };
 struct PayOut
 {
-    size_t payload_idx; /// index into PayloadColumns::columns
+    size_t payload_idx; /// position in `columns_to_add` (also indexes `payload_right_indexes`)
     DataTypePtr type;
     String name;
 };
@@ -381,24 +381,37 @@ void gatherLeft(const OutputPlan & plan, const Block & block, ProbeScratch & s, 
 /// Direct typed gather of one fixed-width numeric payload column in probe order: the build value of
 /// each match is copied straight into the output data array. The column type is dispatched ONCE (the
 /// loop body is a plain typed load/store, no per-row virtual call) and there is a single copy with no
-/// temp allocation. `by_block[block_no]` is the build column holding the matched row.
+/// temp allocation. `stored_columns[block_no]->columns[col_idx]` is the build column holding the
+/// matched row; `col_idx` is the payload column's position in `right_sample_block`.
 template <typename T>
-void gatherNumericDirect(IColumn & out_col, const std::vector<const IColumn *> & by_block, const RadixJoin::BuildRef * refs, size_t out_rows)
+void gatherNumericDirect(
+    IColumn & out_col,
+    const ColumnsInfo * const * stored_columns,
+    size_t col_idx,
+    const RadixJoin::BuildRef * refs,
+    size_t out_rows)
 {
     auto & dst = assert_cast<ColumnVector<T> &>(out_col).getData();
     dst.resize(out_rows);
     for (size_t i = 0; i < out_rows; ++i)
     {
         const RadixJoin::BuildRef ref = refs[i];
-        dst[i] = assert_cast<const ColumnVector<T> *>(by_block[ref.blockNo()])->getData()[ref.rowNo()];
+        const IColumn * src = stored_columns[ref.blockNo()]->columns[col_idx].get();
+        dst[i] = assert_cast<const ColumnVector<T> *>(src)->getData()[ref.rowNo()];
     }
 }
 
 /// Gather one payload column directly in probe order (the duplicate-free / sparse path). Fixed-width
 /// numeric columns take the typed no-dispatch path above; anything else (String, Nullable, Decimal,
-/// wide ints, ...) falls back to per-row insertFrom.
+/// wide ints, ...) falls back to per-row insertFrom. `col_idx` is the payload column's position in
+/// `right_sample_block`; `stored_columns[block_no]->columns[col_idx]` is the build column.
 void gatherPayloadDirect(
-    const PayOut & po, const RadixJoin::PayloadColumns & payload, const RadixJoin::BuildRef * refs, size_t out_rows, ColumnsWithTypeAndName & out)
+    const PayOut & po,
+    const ColumnsInfo * const * stored_columns,
+    size_t col_idx,
+    const RadixJoin::BuildRef * refs,
+    size_t out_rows,
+    ColumnsWithTypeAndName & out)
 {
     auto col = po.type->createColumn();
     if (out_rows == 0)
@@ -406,11 +419,10 @@ void gatherPayloadDirect(
         out.emplace_back(std::move(col), po.type, po.name);
         return;
     }
-    const auto & by_block = payload.columns[po.payload_idx].by_block;
     switch (col->getDataType())
     {
 #define RHJ_GATHER_NUMERIC(TYPE_INDEX, T) \
-    case TypeIndex::TYPE_INDEX: gatherNumericDirect<T>(*col, by_block, refs, out_rows); break;
+    case TypeIndex::TYPE_INDEX: gatherNumericDirect<T>(*col, stored_columns, col_idx, refs, out_rows); break;
         RHJ_GATHER_NUMERIC(UInt8, UInt8)   RHJ_GATHER_NUMERIC(UInt16, UInt16)
         RHJ_GATHER_NUMERIC(UInt32, UInt32) RHJ_GATHER_NUMERIC(UInt64, UInt64)
         RHJ_GATHER_NUMERIC(Int8, Int8)     RHJ_GATHER_NUMERIC(Int16, Int16)
@@ -420,7 +432,11 @@ void gatherPayloadDirect(
         default:
             col->reserve(out_rows);
             for (size_t i = 0; i < out_rows; ++i)
-                col->insertFrom(*by_block[refs[i].blockNo()], refs[i].rowNo());
+            {
+                const RadixJoin::BuildRef ref = refs[i];
+                const IColumn * src = stored_columns[ref.blockNo()]->columns[col_idx].get();
+                col->insertFrom(*src, ref.rowNo());
+            }
     }
     out.emplace_back(std::move(col), po.type, po.name);
 }
@@ -429,13 +445,20 @@ void gatherPayloadDirect(
 /// Two paths, chosen in probeBlock: the duplicate-free direct typed gather (probe order), or, when the
 /// build had duplicates, gathering one build block at a time over the sorted runs (one IColumn::index +
 /// one insertRangeFrom per block). Neither path does per-row virtual dispatch on a numeric payload.
-void gatherRight(const OutputPlan & plan, const RadixJoin::PayloadColumns & payload, ProbeScratch & s, ColumnsWithTypeAndName & out)
+/// `stored_columns` resolves a `BuildRef::blockNo()` to the stored block's `ColumnsInfo`;
+/// `payload_right_indexes[po.payload_idx]` is the payload column's position in `right_sample_block`.
+void gatherRight(
+    const OutputPlan & plan,
+    const ColumnsInfo * const * stored_columns,
+    const std::vector<size_t> & payload_right_indexes,
+    ProbeScratch & s,
+    ColumnsWithTypeAndName & out)
 {
     if (!s.grouped)
     {
         const size_t out_rows = s.refs.size();
         for (const auto & po : plan.payload)
-            gatherPayloadDirect(po, payload, s.refs.data(), out_rows, out);
+            gatherPayloadDirect(po, stored_columns, payload_right_indexes[po.payload_idx], s.refs.data(), out_rows, out);
         return;
     }
 
@@ -445,15 +468,16 @@ void gatherRight(const OutputPlan & plan, const RadixJoin::PayloadColumns & payl
 
     for (const auto & po : plan.payload)
     {
+        const size_t col_idx = payload_right_indexes[po.payload_idx];
         auto col = po.type->createColumn();
         col->reserve(out_rows);
-        /// `payload` is only populated after the build; an empty `runs` (header path / no matches) must
-        /// not touch it. Fetch the per-block pointers inside the loop so the empty case is a clean no-op.
+        /// `stored_columns` is only valid after the build; an empty `runs` (header path / no matches)
+        /// must not touch it. Fetch the per-block source inside the loop so the empty case is a no-op.
         for (const auto & run : s.runs)
         {
-            const auto & by_block = payload.columns[po.payload_idx].by_block;
+            const IColumn * src = stored_columns[run.block_no]->columns[col_idx].get();
             s.payload_index->getData().assign(s.sorted_row_no.begin() + run.begin, s.sorted_row_no.begin() + run.end);
-            ColumnPtr gathered = by_block[run.block_no]->index(*s.payload_index, 0);
+            ColumnPtr gathered = src->index(*s.payload_index, 0);
             col->insertRangeFrom(*gathered, 0, run.end - run.begin);
         }
         out.emplace_back(std::move(col), po.type, po.name);
@@ -481,7 +505,16 @@ struct RadixHashJoin::State
 
     std::atomic<bool> built{false};
     RadixJoin::LeafTables leaf_tables;
-    RadixJoin::PayloadColumns payload;
+
+    /// Build-block payload resolution, shared with the other join algorithms (see RowRefs.h). Each stored
+    /// right block is registered (in accumulation order) so `BuildRef::blockNo()` indexes `blocksData()`
+    /// directly. `columns_infos` owns the `ColumnsInfo` objects (stable addresses; the index holds raw
+    /// `const ColumnsInfo *`). `payload_right_indexes[payload_idx]` is the payload column's position in
+    /// `right_sample_block` (computed once in the constructor), mirroring CHJ's `right_indexes`.
+    StoredColumnsIndexPtr stored_columns_index;
+    std::vector<std::unique_ptr<ColumnsInfo>> columns_infos;
+    std::vector<size_t> payload_right_indexes;
+
     std::vector<UInt64> block_base;
     UInt64 total_rows = 0;
     size_t total_bytes = 0;
@@ -569,6 +602,13 @@ RadixHashJoin::RadixHashJoin(
     for (const auto & col : state->columns_to_add)
         state->payload_output_names.push_back(table_join->renamedRightColumnName(col.name));
 
+    /// Resolve each payload column's position in `right_sample_block` once. Stored blocks are normalised
+    /// to right-sample column order, so this position indexes the block's `ColumnsInfo::columns` directly.
+    /// `payload_idx` (the position in `columns_to_add`) indexes this vector.
+    state->payload_right_indexes.reserve(state->columns_to_add.columns());
+    for (const auto & col : state->columns_to_add)
+        state->payload_right_indexes.push_back(right_sample_block->getPositionByName(col.name));
+
     state->required_right_keys = table_join->getRequiredRightKeys(state->right_table_keys, state->required_right_keys_sources);
     state->required_right_keys_output_names.reserve(state->required_right_keys.columns());
     for (const auto & col : state->required_right_keys)
@@ -643,7 +683,16 @@ void RadixHashJoin::runPostBuild()
 
     state->leaf_tables = RadixJoin::buildLeafTables(leaves, state->block_base, state->total_rows, state->key_width, state->coord);
 
-    state->payload.build(state->build_side->blocks(), state->columns_to_add, state->payload_output_names);
+    /// Register each stored right block (in accumulation order) so a `BuildRef::blockNo()` indexes
+    /// `blocksData()` directly. `add` returns size()-1, so block_no == build index (the chassert below).
+    state->stored_columns_index = std::make_shared<StoredColumnsIndex>();
+    state->columns_infos.reserve(state->build_side->blocks().size());
+    for (const auto & block : state->build_side->blocks())
+    {
+        state->columns_infos.emplace_back(std::make_unique<ColumnsInfo>(block.getColumns()));
+        const UInt32 bn = state->stored_columns_index->add(state->columns_infos.back().get());
+        chassert(bn + 1 == state->columns_infos.size()); /// block_no == build index
+    }
 
     state->total_bytes = state->leaf_tables.arena.bytesReserved();
 
@@ -730,7 +779,11 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     out.reserve(st.out_plan.left.size() + st.out_plan.required.size() + st.out_plan.payload.size());
 
     gatherLeft(st.out_plan, block, s, out);
-    gatherRight(st.out_plan, st.payload, s, out);
+    /// `stored_columns_index` is populated only by runPostBuild; on the header / empty-probe path there
+    /// are no runs/refs, so gatherRight never dereferences the (null) base — pass it through unguarded.
+    const ColumnsInfo * const * stored_columns
+        = st.stored_columns_index ? st.stored_columns_index->blocksData() : nullptr;
+    gatherRight(st.out_plan, stored_columns, st.payload_right_indexes, s, out);
 
     return IJoinResult::createFromBlock(Block(std::move(out)));
 }
