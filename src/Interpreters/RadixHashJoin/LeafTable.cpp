@@ -151,11 +151,12 @@ void collectMatchesImpl(
 
     struct Slot
     {
-        /// false == Inactive (no work assigned); true == Scan (an open-addressing linear-probe step is
-        /// pending on `cells + pos * stride`). Only two states, so a flag rather than an enum.
-        bool active_slot = false;
         UInt32 row = 0;            /// probe row index
-        const char * cells = nullptr;   /// owning leaf's cell array
+        /// Activeness is encoded by `cells` itself: nullptr == Inactive (no work assigned); a non-null
+        /// leaf cell array == Scan (a linear-probe step is pending on `cells + pos * stride`). An assigned
+        /// slot always gets a non-null `ht.cells()` (empty leaves are skipped), so no separate flag is
+        /// needed and the activeness test folds into the `cells` load the step already performs.
+        const char * cells = nullptr;   /// owning leaf's cell array; nullptr == inactive slot
         const char * key = nullptr;     /// packed_keys + row * key_width
         UInt64 mask = 0;           /// num_buckets - 1
         UInt64 pos = 0;            /// current linear-probe slot
@@ -174,7 +175,7 @@ void collectMatchesImpl(
     /// once per probe row here (a shift + an and), never in the inner round-robin step loop.
     auto pull_next = [&](Slot & s)
     {
-        if (s.active_slot)
+        if (s.cells != nullptr)
             --active; /// release the slot's previous row before (maybe) taking a new one
         while (next_row < n)
         {
@@ -186,9 +187,8 @@ void collectMatchesImpl(
                 continue; /// empty leaf: no match, pull another row
 
             const UInt64 num_buckets = ht.numBuckets();
-            s.active_slot = true;
             s.row = static_cast<UInt32>(row);
-            s.cells = ht.cells();
+            s.cells = ht.cells(); /// non-null: marks the slot active (empty leaves were skipped above)
             s.key = packed_keys + row * key_width;
             s.mask = num_buckets - 1;
             s.pos = leafBucket(bucketBits(h), num_buckets) & s.mask;
@@ -196,7 +196,7 @@ void collectMatchesImpl(
             ++active;
             return;
         }
-        s.active_slot = false;
+        s.cells = nullptr; /// no row left: mark the slot inactive
     };
 
     /// Prologue: fill the ring with the first up-to-RING_SIZE rows, each computing its initial state and
@@ -214,7 +214,7 @@ void collectMatchesImpl(
         Slot & s = ring[i];
         i = (i + 1) & (ring_size - 1); /// ring_size is a power of two, so this wraps without a branch
 
-        if (!s.active_slot)
+        if (s.cells == nullptr)
             continue;
 
         /// The home/probe cell prefetched on the previous visit is now resident.
