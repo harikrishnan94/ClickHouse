@@ -8,6 +8,7 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <type_traits>
 
 namespace DB
 {
@@ -139,7 +140,14 @@ void fillLeafDispatch(
 /// inline ref with no further loads; a multi-row key iterates its BuildRefList (the rare duplicate
 /// path). The set of emitted (row, ref) pairs is identical to the sequential find; only the
 /// interleaving (and therefore the output order) differs, which is irrelevant for an unordered join.
-template <size_t key_width>
+/// Templated on the ring depth `ring_size` and on `PosT`, the bucket-index type. When every leaf's bucket
+/// count fits in 32 bits — `max_bucket_bits <= 31`, the practical case — `PosT == UInt32` and a slot is a
+/// dense 16 bytes: {cells (8), pos (4), row (2), bits (1)}. `mask` is recomputed from `bits` rather than
+/// stored, and `row` is a UInt16 because a probe batch is capped at `PROBE_BATCH_ROWS <= 65536`. Keeping
+/// `ring_size` slots × 16 B register/L1-resident is what lets a deeper ring expose more memory-level
+/// parallelism without the spill a fatter slot would cost. For the (impractical) >2^31-bucket leaf,
+/// `PosT == UInt64` widens the slot to 24 bytes and stays correct.
+template <size_t key_width, size_t ring_size, typename PosT>
 void collectMatchesImpl(
     const LeafHT * leaves,
     UInt32 leaf_shift,
@@ -149,25 +157,21 @@ void collectMatchesImpl(
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
+    static_assert(ring_size >= 1 && (ring_size & (ring_size - 1)) == 0, "ring_size must be a power of two");
+    static_assert(std::is_same_v<PosT, UInt32> || std::is_same_v<PosT, UInt64>, "PosT must be UInt32 or UInt64");
     constexpr size_t stride = leafCellBytes(key_width);
-
-    /// Number of in-flight probe rows. ~16 keeps that many independent DRAM accesses outstanding,
-    /// matching the line-fill-buffer / outstanding-miss budget of a typical big core, while the ring
-    /// state stays tiny and register/L1-resident.
-    constexpr size_t ring_size = 16;
 
     struct Slot
     {
-        UInt32 row = 0;            /// probe row index
-        /// Activeness is encoded by `cells` itself: nullptr == Inactive (no work assigned); a non-null
-        /// leaf cell array == Scan (a linear-probe step is pending on `cells + pos * stride`). An assigned
-        /// slot always gets a non-null `ht.cells()` (empty leaves are skipped), so no separate flag is
-        /// needed and the activeness test folds into the `cells` load the step already performs.
-        const char * cells = nullptr;   /// owning leaf's cell array; nullptr == inactive slot
-        const char * key = nullptr;     /// packed_keys + row * key_width
-        UInt64 mask = 0;           /// num_buckets - 1
-        UInt64 pos = 0;            /// current linear-probe slot
+        /// Owning leaf's cell array; nullptr means the slot is inactive (no work assigned). A non-null
+        /// pointer means a linear-probe step is pending at `cells + pos * stride`; assigned slots always
+        /// get a non-null pointer (empty leaves are skipped), so no separate active flag is needed.
+        const char * cells = nullptr;
+        PosT pos = 0;              /// current linear-probe bucket index, in [0, num_buckets)
+        UInt16 row = 0;            /// probe row within the batch (< PROBE_BATCH_ROWS <= 65536)
+        UInt8 bits = 0;            /// log2(num_buckets); the probe mask is (PosT{1} << bits) - 1
     };
+    static_assert(sizeof(Slot) == (std::is_same_v<PosT, UInt32> ? 16 : 24), "unexpected AMAC Slot size");
 
     Slot ring[ring_size];
 
@@ -178,11 +182,11 @@ void collectMatchesImpl(
     /// precomputed hash array), then computes the leaf, home bucket, and issues the prefetch for the home
     /// cell. Doing the hash here is the point: its multiply-fold latency overlaps with the outstanding
     /// cell-miss of the other in-flight ring slots, hiding it behind memory access. Empty leaves yield no
-    /// match — we skip straight to the next row. Leaves `s` Inactive once every row has been pulled.
-    /// `active` counts slots currently in Scan; a slot recycled here was active for its previous row, so
-    /// we adjust by the net change (decrement here, re-increment only when a new row is actually
-    /// assigned). `num_buckets`/`mask` are recovered once per probe row here (a shift + an and), never in
-    /// the inner round-robin step loop.
+    /// match — we skip straight to the next row. Leaves `s` inactive once every row has been pulled.
+    /// `active` counts slots currently in flight; a slot recycled here was active for its previous row, so
+    /// we adjust by the net change (decrement here, re-increment only when a new row is actually assigned).
+    /// `bits` (= log2 num_buckets) is recovered once per probe row here; the inner step recomputes the mask
+    /// from it rather than carrying a wider stored mask, which is what keeps the slot at 16 bytes.
     auto pull_next = [&](Slot & s)
     {
         if (s.cells != nullptr)
@@ -198,11 +202,11 @@ void collectMatchesImpl(
                 continue; /// empty leaf: no match, pull another row
 
             const UInt64 num_buckets = ht.numBuckets();
-            s.row = static_cast<UInt32>(row);
+            chassert(row <= 0xFFFF); /// guaranteed by PROBE_BATCH_ROWS <= 65536
+            s.row = static_cast<UInt16>(row);
             s.cells = ht.cells(); /// non-null: marks the slot active (empty leaves were skipped above)
-            s.key = key;
-            s.mask = num_buckets - 1;
-            s.pos = leafBucket(bucketBits(h), num_buckets) & s.mask;
+            s.bits = static_cast<UInt8>(std::countr_zero(num_buckets));
+            s.pos = static_cast<PosT>(leafBucket(bucketBits(h), num_buckets)); /// already in [0, num_buckets)
             __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
             ++active;
             return;
@@ -211,7 +215,7 @@ void collectMatchesImpl(
     };
 
     /// Prologue: fill the ring with the first up-to-RING_SIZE rows, each computing its initial state and
-    /// issuing its home-cell prefetch. Slots start Inactive, so the prologue only ever increments.
+    /// issuing its home-cell prefetch. Slots start inactive, so the prologue only ever increments.
     for (Slot & s : ring)
         pull_next(s);
 
@@ -236,7 +240,7 @@ void collectMatchesImpl(
             /// Empty cell: this probe row has no match. Recycle the slot.
             pull_next(s);
         }
-        else if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), s.key, key_width) == 0)
+        else if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), packed_keys + s.row * key_width, key_width) == 0)
         {
             /// Key match. Singleton (the common case): the word IS the encoded ref — emit it directly.
             if (refWordIsInline(word))
@@ -258,11 +262,44 @@ void collectMatchesImpl(
         }
         else
         {
-            /// Collision: advance one slot, prefetch the next cell, stay in Scan.
-            s.pos = (s.pos + 1) & s.mask;
+            /// Collision: advance one slot, prefetch the next cell, stay in Scan. The mask is recomputed
+            /// from `bits` (num_buckets is a power of two, bits <= 31 for the UInt32 path so the shift is
+            /// in range).
+            const PosT mask = (static_cast<PosT>(1) << s.bits) - 1;
+            s.pos = (s.pos + 1) & mask;
             __builtin_prefetch(s.cells + s.pos * stride, /*rw=*/0, /*locality=*/1);
         }
     }
+}
+
+/// Width dispatch for a chosen `PosT` (UInt32 for the 16-byte slot, UInt64 fallback). The production ring
+/// depth is the single tuning constant; both PosT instantiations share it.
+template <typename PosT>
+void collectMatchesPos(
+    size_t key_width,
+    const LeafHT * leaves,
+    UInt32 leaf_shift,
+    UInt32 total_bits,
+    const char * keys,
+    size_t n,
+    std::vector<UInt32> & out_left_rows,
+    std::vector<BuildRef> & out_refs)
+{
+    constexpr size_t ring_size = 32;
+#define RHJ_DISPATCH(W) \
+    case W: \
+        collectMatchesImpl<W, ring_size, PosT>(leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
+        return;
+    switch (key_width)
+    {
+        RHJ_DISPATCH(4)  RHJ_DISPATCH(8)  RHJ_DISPATCH(12) RHJ_DISPATCH(16)
+        RHJ_DISPATCH(20) RHJ_DISPATCH(24) RHJ_DISPATCH(28) RHJ_DISPATCH(32)
+        RHJ_DISPATCH(36) RHJ_DISPATCH(40) RHJ_DISPATCH(44) RHJ_DISPATCH(48)
+        RHJ_DISPATCH(52) RHJ_DISPATCH(56) RHJ_DISPATCH(60) RHJ_DISPATCH(64)
+        default:
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin leaf table: unsupported key width {}", key_width);
+    }
+#undef RHJ_DISPATCH
 }
 
 }
@@ -304,6 +341,14 @@ LeafTables buildLeafTables(
         fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
     });
 
+    /// Probe slot's `pos`/`mask` are UInt32 (a 16-byte slot) iff every leaf's bucket count fits in 32 bits.
+    /// Track the max log2(num_buckets) once here so the probe never has to rescan the leaves. (Empty leaves
+    /// report 0 via numBuckets()==1, so they never raise the max.)
+    UInt8 max_bits = 0;
+    for (const LeafHT & ht : out.leaves)
+        max_bits = std::max(max_bits, static_cast<UInt8>(std::countr_zero(ht.numBuckets())));
+    out.max_bucket_bits = max_bits;
+
     return out;
 }
 
@@ -314,25 +359,19 @@ void collectMatches(
     UInt32 total_bits,
     const void * packed_keys,
     size_t n,
+    bool pos_fits_u32,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
     const auto * keys = static_cast<const char *>(packed_keys);
 
-#define RHJ_DISPATCH(W) \
-    case W: \
-        collectMatchesImpl<W>(leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
-        return;
-    switch (key_width)
-    {
-        RHJ_DISPATCH(4)  RHJ_DISPATCH(8)  RHJ_DISPATCH(12) RHJ_DISPATCH(16)
-        RHJ_DISPATCH(20) RHJ_DISPATCH(24) RHJ_DISPATCH(28) RHJ_DISPATCH(32)
-        RHJ_DISPATCH(36) RHJ_DISPATCH(40) RHJ_DISPATCH(44) RHJ_DISPATCH(48)
-        RHJ_DISPATCH(52) RHJ_DISPATCH(56) RHJ_DISPATCH(60) RHJ_DISPATCH(64)
-        default:
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin leaf table: unsupported key width {}", key_width);
-    }
-#undef RHJ_DISPATCH
+    /// Pick the 16-byte (UInt32 bucket-index) slot when every leaf fits in 32 bits — the practical case;
+    /// the UInt64 fallback keeps a >2^31-bucket leaf correct. `pos_fits_u32` is constant for the whole
+    /// probe phase (derived from the built leaves), so this branch predicts perfectly.
+    if (pos_fits_u32)
+        collectMatchesPos<UInt32>(key_width, leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
+    else
+        collectMatchesPos<UInt64>(key_width, leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
 }
 
 }

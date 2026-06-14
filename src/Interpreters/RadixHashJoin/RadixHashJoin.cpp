@@ -227,6 +227,7 @@ struct ProbeContext
 /// Block-scope leaf partitioning is done in batches of this many rows so the pack/hash/route scratch
 /// stays bounded even when the user raises `max_block_size` (the common case is one batch per block).
 constexpr size_t PROBE_BATCH_ROWS = 65536;
+static_assert(PROBE_BATCH_ROWS <= 65536, "the AMAC probe slot stores the per-batch row index in a UInt16");
 
 /// Precompute the output schema once: left columns (filtered by the analyzer rules), then payload
 /// columns whose output name is not already provided by a left column, then required right-key columns
@@ -394,7 +395,7 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
             ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
             RadixJoin::collectMatches(
                 ctx.key_width, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
-                keys, bn, s.left_rows, s.refs);
+                keys, bn, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31, s.left_rows, s.refs);
         }
 
         if (batch_start != 0)
