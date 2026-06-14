@@ -44,7 +44,8 @@ public:
         SharedHeader right_sample_block_,
         size_t max_threads_,
         std::optional<UInt64> rhs_size_estimation_,
-        UInt64 max_partitions_per_pass_);
+        UInt64 max_partitions_per_pass_,
+        bool size_tables_by_distinct_estimate_);
 
     ~RadixHashJoin() override;
 
@@ -87,6 +88,9 @@ private:
     size_t max_threads;
     std::optional<UInt64> rhs_size_estimation;
     UInt64 max_partitions_per_pass;
+    /// When true, leaf hash tables are sized by a per-leaf HLL distinct-key estimate (only ever smaller)
+    /// rather than by row count. Gated by setting `radix_hash_join_size_tables_by_distinct_estimate`.
+    bool size_tables_by_distinct_estimate;
 
     std::mutex totals_mutex;
 

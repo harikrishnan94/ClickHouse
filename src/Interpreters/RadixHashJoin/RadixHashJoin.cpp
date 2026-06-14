@@ -612,12 +612,14 @@ RadixHashJoin::RadixHashJoin(
     SharedHeader right_sample_block_,
     size_t max_threads_,
     std::optional<UInt64> rhs_size_estimation_,
-    UInt64 max_partitions_per_pass_)
+    UInt64 max_partitions_per_pass_,
+    bool size_tables_by_distinct_estimate_)
     : table_join(std::move(table_join_))
     , right_sample_block(right_sample_block_)
     , max_threads(std::max<size_t>(max_threads_, 1))
     , rhs_size_estimation(rhs_size_estimation_)
     , max_partitions_per_pass(max_partitions_per_pass_)
+    , size_tables_by_distinct_estimate(size_tables_by_distinct_estimate_)
     , state(std::make_unique<State>())
 {
     /// The planner gate guarantees the invariants below; re-check and fail loudly if violated.
@@ -776,7 +778,7 @@ void RadixHashJoin::runPostBuild()
     /// Deferred exact key+ref scatter into the per-leaf arrays. The route hash is recomputed from the
     /// key inside the scatter; the leaf bucket is recomputed in the leaf-table build — nothing per-row
     /// is carried, and no payload is moved.
-    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(parallel_for);
+    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(parallel_for, num_workers, size_tables_by_distinct_estimate);
 
     state->block_base = state->build_side->blockBase();
     state->total_rows = state->build_side->totalRows();

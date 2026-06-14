@@ -44,6 +44,7 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"enable_join_runtime_filter_shared_fixed_hash_table", false, true, "New setting to share the hash join's FixedHashMap as the runtime filter for the probe side, replacing the Set/BloomFilter built upstream by the runtime filter framework."},
             {"ai_function_embedding_max_batch_size", 100, 100, "New setting"},
             {"max_partitions_per_pass", 8192, 8192, "New setting for the `radix_hash` join algorithm: the maximum fanout of a single radix scatter pass."},
+            {"radix_hash_join_size_tables_by_distinct_estimate", false, true, "New setting for the `radix_hash` join algorithm: size each leaf hash table by a HyperLogLog distinct-key estimate (only ever smaller) instead of by row count."},
             {"enable_sharding_aggregator", false, false, "New setting to enable sharded `GROUP BY` optimization that distributes rows across threads by hashing the grouping key, so each thread aggregates a disjoint subset of keys without a merge phase; this is efficient for high cardinality keys with evenly distributed data."},
             {"allow_experimental_text_index_lazy_apply", false, false, "New setting to gate experimental lazy posting list apply mode"},
             {"text_index_posting_list_apply_mode", "materialize", "materialize", "New setting for lazy posting list apply mode"},

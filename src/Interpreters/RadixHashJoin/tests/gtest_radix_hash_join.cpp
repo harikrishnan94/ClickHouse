@@ -1,5 +1,6 @@
 #include <Interpreters/RadixHashJoin/Arena.h>
 #include <Interpreters/RadixHashJoin/BuildSide.h>
+#include <Interpreters/RadixHashJoin/Hll.h>
 #include <Interpreters/RadixHashJoin/KeyRefScatter.h>
 #include <Interpreters/RadixHashJoin/LeafTable.h>
 #include <Interpreters/RadixHashJoin/PackedKeyHash.h>
@@ -134,18 +135,11 @@ void checkBuildAndProbe(
     ASSERT_EQ(build_side.totalRows(), build_keys.size());
 
     const ParallelFor parallel_for = makeParallelFor(post_build_threads);
-    LeafArrays leaves = build_side.scatterToLeaves(parallel_for);
-    /// No-churn: one output allocation per non-empty leaf, never per (block x leaf).
-    UInt64 non_empty = 0;
-    for (UInt64 r : leaves.leaf_rows)
-        non_empty += (r != 0);
-    EXPECT_EQ(leaves.alloc_count, non_empty);
-
-    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, parallel_for);
 
     /// The build key stored at a matched BuildRef, read back from the (possibly reordered, under
     /// parallel add) accumulated blocks. The flat-row order need not match the original vector — only
-    /// the matched KEY VALUES and per-probe-row match COUNTS are part of the join contract.
+    /// the matched KEY VALUES and per-probe-row match COUNTS are part of the join contract. These are
+    /// independent of how the leaf tables are sized, so compute them once.
     const auto & blocks = build_side.blocks();
     auto build_key_at = [&](BuildRef ref) -> UInt64
     {
@@ -158,27 +152,71 @@ void checkBuildAndProbe(
     for (UInt64 k : build_keys)
         ++expected_count[k];
 
-    std::vector<UInt32> out_rows;
-    std::vector<BuildRef> out_refs;
-    collectMatches(
-        key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
-        probe_keys.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
+    /// Scatter, build the leaf tables and probe with distinct-estimate sizing either off or on, verifying
+    /// the full join result both ways. Returns the total bucket count over non-empty leaves so the caller
+    /// can assert that estimate sizing only ever shrinks the tables. ASSERT_* cannot be used in a non-void
+    /// lambda, so failures use EXPECT_* (the run completes and the caller still sees the size comparison).
+    auto run = [&](bool estimate_distinct) -> UInt64
+    {
+        LeafArrays leaves = build_side.scatterToLeaves(parallel_for, post_build_threads, estimate_distinct);
 
-    /// Every emitted match must resolve to a build row whose key equals the probe key, and the number
-    /// of matches per probe row must equal the count of build rows with that key.
-    std::map<UInt32, size_t> got_count;
-    for (size_t m = 0; m < out_rows.size(); ++m)
-    {
-        ASSERT_EQ(build_key_at(out_refs[m]), probe_keys[out_rows[m]]) << "match " << m;
-        ++got_count[out_rows[m]];
-    }
-    for (size_t i = 0; i < probe_keys.size(); ++i)
-    {
-        auto it = expected_count.find(probe_keys[i]);
-        const size_t expected = it == expected_count.end() ? 0 : it->second;
-        const size_t actual = got_count.contains(static_cast<UInt32>(i)) ? got_count[static_cast<UInt32>(i)] : 0;
-        ASSERT_EQ(actual, expected) << "probe row " << i << " key " << probe_keys[i];
-    }
+        /// No-churn: one output allocation per non-empty leaf, never per (block x leaf).
+        UInt64 non_empty = 0;
+        for (UInt64 r : leaves.leaf_rows)
+            non_empty += (r != 0);
+        EXPECT_EQ(leaves.alloc_count, non_empty);
+
+        if (estimate_distinct)
+        {
+            /// Each per-leaf estimate is present and clamped into [1, leaf_rows] (so a table only shrinks).
+            EXPECT_EQ(leaves.distinct_key_estimates.size(), leaves.num_leaves);
+            for (size_t leaf = 0; leaf < leaves.num_leaves; ++leaf)
+                if (leaves.leaf_rows[leaf] != 0)
+                {
+                    EXPECT_GE(leaves.distinct_key_estimates[leaf], UInt64{1});
+                    EXPECT_LE(leaves.distinct_key_estimates[leaf], leaves.leaf_rows[leaf]);
+                }
+        }
+        else
+        {
+            EXPECT_TRUE(leaves.distinct_key_estimates.empty());
+        }
+
+        LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, parallel_for);
+
+        std::vector<UInt32> out_rows;
+        std::vector<BuildRef> out_refs;
+        collectMatches(
+            key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
+            probe_keys.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
+
+        /// Every emitted match must resolve to a build row whose key equals the probe key, and the number
+        /// of matches per probe row must equal the count of build rows with that key.
+        std::map<UInt32, size_t> got_count;
+        for (size_t m = 0; m < out_rows.size(); ++m)
+        {
+            EXPECT_EQ(build_key_at(out_refs[m]), probe_keys[out_rows[m]]) << "estimate=" << estimate_distinct << " match " << m;
+            ++got_count[out_rows[m]];
+        }
+        for (size_t i = 0; i < probe_keys.size(); ++i)
+        {
+            auto it = expected_count.find(probe_keys[i]);
+            const size_t expected = it == expected_count.end() ? 0 : it->second;
+            const size_t actual = got_count.contains(static_cast<UInt32>(i)) ? got_count[static_cast<UInt32>(i)] : 0;
+            EXPECT_EQ(actual, expected) << "estimate=" << estimate_distinct << " probe row " << i << " key " << probe_keys[i];
+        }
+
+        UInt64 total_buckets = 0;
+        for (const LeafHT & ht : tables.leaves)
+            if (!ht.empty())
+                total_buckets += ht.numBuckets();
+        return total_buckets;
+    };
+
+    /// Identical join result with the setting off and on; distinct-estimate sizing only ever shrinks tables.
+    const UInt64 buckets_rowcount = run(/*estimate_distinct=*/false);
+    const UInt64 buckets_estimate = run(/*estimate_distinct=*/true);
+    EXPECT_LE(buckets_estimate, buckets_rowcount);
 }
 
 }
@@ -324,4 +362,96 @@ TEST(RadixHashJoin, BuildProbeForcedMultiPass)
     auto plan = PartitionPlan::choose(30000, 8u << 10, 4);
     ASSERT_GT(plan.pass_bits.size(), 1u);
     checkBuildAndProbe(build_keys, probe_keys, plan, 4, 4);
+}
+
+namespace
+{
+/// Build the leaf tables for `build_keys` with distinct-estimate sizing off or on, returning the total
+/// bucket count over non-empty leaves — used to assert the estimate only ever shrinks the tables.
+UInt64 totalLeafBuckets(const std::vector<UInt64> & build_keys, PartitionPlan plan, size_t threads, bool estimate)
+{
+    constexpr size_t key_width = 8;
+    BuildSide build_side(plan, {0}, {key_width}, std::max<size_t>(threads, 1));
+    build_side.add(makeU64Block(build_keys, "k0"), 0);
+    build_side.finishBuild();
+    const ParallelFor parallel_for = makeParallelFor(threads);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, threads, estimate);
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, threads, parallel_for);
+    UInt64 total = 0;
+    for (const LeafHT & ht : tables.leaves)
+        if (!ht.empty())
+            total += ht.numBuckets();
+    return total;
+}
+}
+
+TEST(RadixHashJoin, HllEstimateAccuracy)
+{
+    /// Feed N distinct keys' low-32 hashes (exactly the production HLL input) into one dense sketch and
+    /// check the estimate lands in a generous relative band — loose enough never to flake on the fixed
+    /// input, tight enough to catch a broken estimator (which would be off by a large factor).
+    for (UInt8 precision : {Hll::MIN_PRECISION, static_cast<UInt8>(5), Hll::MAX_PRECISION})
+    {
+        const double tol = precision >= 6 ? 0.35 : (precision == 5 ? 0.50 : 0.80);
+        for (size_t n : {16, 100, 1000, 5000, 20000})
+        {
+            std::vector<UInt8> regs(Hll::numRegisters(precision), 0);
+            for (size_t i = 0; i < n; ++i)
+            {
+                const UInt64 v = i;
+                Hll::add(regs.data(), precision, bucketBits(hashPackedKey<8>(&v)));
+            }
+            const UInt64 est = Hll::estimate(regs.data(), precision);
+            EXPECT_GE(est, static_cast<UInt64>(static_cast<double>(n) * (1.0 - tol))) << "p=" << int(precision) << " n=" << n << " est=" << est;
+            EXPECT_LE(est, static_cast<UInt64>(static_cast<double>(n) * (1.0 + tol))) << "p=" << int(precision) << " n=" << n << " est=" << est;
+        }
+    }
+}
+
+TEST(RadixHashJoin, HllMergeEqualsSingleSketch)
+{
+    /// HLL merge is a register-wise max, so splitting the inserts across partial sketches and merging them
+    /// must yield exactly the same registers (hence the same estimate) as one sketch that saw them all —
+    /// this is what makes the per-worker partial sketches safe to combine.
+    constexpr UInt8 precision = Hll::MAX_PRECISION;
+    constexpr size_t n = 50000;
+    constexpr size_t parts = 5;
+    std::vector<UInt8> single(Hll::numRegisters(precision), 0);
+    std::vector<std::vector<UInt8>> partials(parts, std::vector<UInt8>(Hll::numRegisters(precision), 0));
+    for (size_t i = 0; i < n; ++i)
+    {
+        const UInt64 v = i * 0x9E3779B97F4A7C15ULL + 1;
+        const UInt32 h = bucketBits(hashPackedKey<8>(&v));
+        Hll::add(single.data(), precision, h);
+        Hll::add(partials[i % parts].data(), precision, h);
+    }
+    std::vector<UInt8> merged(Hll::numRegisters(precision), 0);
+    for (const auto & part : partials)
+        Hll::merge(merged.data(), part.data(), precision);
+    EXPECT_EQ(merged, single); /// registers identical
+    EXPECT_EQ(Hll::estimate(merged.data(), precision), Hll::estimate(single.data(), precision));
+}
+
+TEST(RadixHashJoin, DistinctEstimateShrinksDuplicateHeavyBuild)
+{
+    /// A duplicate-free build is sized about the same either way (estimate ~= rows, clamped so never more);
+    /// a duplicate-heavy build (few distinct keys, many rows each) is sized materially smaller.
+    std::vector<UInt64> unique_keys;
+    for (UInt64 i = 0; i < 100000; ++i)
+        unique_keys.push_back(i * 2654435761ULL);
+    auto plan_u = PartitionPlan::choose(unique_keys.size(), 2u << 20, 8192);
+    const UInt64 u_off = totalLeafBuckets(unique_keys, plan_u, 4, /*estimate=*/false);
+    const UInt64 u_on = totalLeafBuckets(unique_keys, plan_u, 4, /*estimate=*/true);
+    EXPECT_LE(u_on, u_off);          /// the estimate can only shrink the tables
+    EXPECT_GE(u_on * 2, u_off);      /// ...and for unique keys it stays close to row-count sizing
+
+    std::vector<UInt64> dup_keys;
+    std::mt19937 rng(2024); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
+    for (size_t i = 0; i < 200000; ++i)
+        dup_keys.push_back(rng() % 1000); /// 1000 distinct keys, ~200 rows each
+    auto plan_d = PartitionPlan::choose(dup_keys.size(), 2u << 20, 8192);
+    const UInt64 d_off = totalLeafBuckets(dup_keys, plan_d, 4, /*estimate=*/false);
+    const UInt64 d_on = totalLeafBuckets(dup_keys, plan_d, 4, /*estimate=*/true);
+    /// Sized by ~1000 distinct keys rather than 200000 rows -> dramatically smaller.
+    EXPECT_LT(d_on * 4, d_off) << "estimate-sized buckets=" << d_on << " row-count buckets=" << d_off;
 }

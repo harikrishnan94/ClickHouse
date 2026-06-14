@@ -103,6 +103,7 @@ struct JoinSettings
     UInt64 max_size_to_preallocate_for_joins;
     UInt64 parallel_hash_join_threshold;
     UInt64 max_partitions_per_pass;
+    bool radix_hash_join_size_tables_by_distinct_estimate;
     UInt64 join_output_by_rowlist_perkey_rows_threshold;
     bool allow_experimental_join_right_table_sorting;
     UInt64 join_to_sort_minimum_perkey_rows;

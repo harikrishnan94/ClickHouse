@@ -7711,6 +7711,9 @@ The former is used when we know that the right table size is below the threshold
     DECLARE(UInt64, max_partitions_per_pass, 8192, R"(
 For the `radix_hash` join algorithm, the maximum number of partitions (fanout) produced by a single radix scatter pass. The total leaf count is split into the minimum number of passes that respect this cap.
 )", 0) \
+    DECLARE(Bool, radix_hash_join_size_tables_by_distinct_estimate, true, R"(
+For the `radix_hash` join algorithm, size each leaf hash table by an estimate of its number of distinct keys (computed with HyperLogLog during the build scatter) rather than by its raw row count. This can only shrink a leaf table, so duplicate-heavy build sides get smaller, more cache-resident tables; join results are unaffected. When disabled, leaf tables are sized by row count.
+)", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.
 

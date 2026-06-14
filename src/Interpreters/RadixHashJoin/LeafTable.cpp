@@ -392,7 +392,12 @@ LeafTables buildLeafTables(
         if (rows == 0)
             return;
         chassert(worker < out.build_arenas.size());
-        const UInt64 num_buckets = std::bit_ceil(rows * 2); /// exact-reserve, ~0.5 load factor
+        /// Size by the HLL distinct-key estimate when available (it is clamped to `rows` upstream, so this
+        /// only ever shrinks the table); otherwise fall back to the raw row count. Either way ~0.5 load.
+        const UInt64 sizing_rows = leaf_arrays.distinct_key_estimates.empty()
+            ? rows
+            : leaf_arrays.distinct_key_estimates[leaf];
+        const UInt64 num_buckets = std::bit_ceil(std::max<UInt64>(sizing_rows, 1) * 2);
         const size_t cell_bytes = static_cast<size_t>(num_buckets) * leafCellBytes(key_width);
         char * cells = static_cast<char *>(out.arena.allocate(cell_bytes, LINE_BYTES));
         std::memset(cells, 0, cell_bytes);
