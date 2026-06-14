@@ -162,7 +162,7 @@ void checkBuildAndProbe(
     std::vector<BuildRef> out_refs;
     collectMatches(
         key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
-        probe_keys.data(), probe_keys.size(), out_rows, out_refs);
+        probe_keys.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
 
     /// Every emitted match must resolve to a build row whose key equals the probe key, and the number
     /// of matches per probe row must equal the count of build rows with that key.
@@ -289,6 +289,24 @@ TEST(RadixHashJoin, BuildProbeManyToManyParallel)
     for (size_t i = 0; i < 8000; ++i)
         probe_keys.push_back(rng() % 700); /// some keys never in build
     checkBuildAndProbe(build_keys, probe_keys, PartitionPlan::choose(20000, 2u << 20, 8192), 4, 4);
+}
+
+TEST(RadixHashJoin, BuildProbeHeavyDuplicatesFewKeys)
+{
+    /// Very few distinct keys with hundreds of rows each: all rows of a key share one hash, so they land in
+    /// ONE leaf homing to the SAME bucket, and up to `ring_size` of these same-key rows are in flight in the
+    /// AMAC build ring simultaneously. This is the maximal stress for the ring's fused read->act duplicate
+    /// coalescing — a stale read (reading a batch of cells before acting) would either drop rows or split a
+    /// key across two cells. The per-probe-row match counts must still equal the brute-force counts.
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    for (UInt64 k = 0; k < 8; ++k)
+        for (size_t r = 0; r < 600; ++r)
+            build_keys.push_back(k * 2654435761ULL); /// 8 keys x 600 rows, each key in a single leaf/bucket
+    for (UInt64 k = 0; k < 12; ++k)
+        probe_keys.push_back(k * 2654435761ULL); /// keys 0..7 hit (600 each), 8..11 miss
+    /// Single-threaded build + post-build keeps every same-key row of a leaf in the one ring, in flight.
+    checkBuildAndProbe(build_keys, probe_keys, PartitionPlan::choose(4800, 2u << 20, 8192), 1, 1);
 }
 
 TEST(RadixHashJoin, BuildProbeForcedMultiPass)
