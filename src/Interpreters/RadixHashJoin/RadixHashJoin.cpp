@@ -11,6 +11,7 @@
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/JoinUtils.h>
 #include <Interpreters/HashJoin/HashJoin.h> /// canRemoveColumnsFromLeftBlock
+#include <Interpreters/HashTablesStatistics.h>
 #include <Interpreters/castColumn.h>
 
 #include <Core/Block.h>
@@ -26,10 +27,12 @@
 #include <Common/assert_cast.h>
 #include <Common/setThreadName.h>
 
+#include <algorithm>
 #include <atomic>
 #include <exception>
 #include <mutex>
 #include <numeric>
+#include <optional>
 
 #include <unistd.h>
 
@@ -588,13 +591,15 @@ RadixHashJoin::RadixHashJoin(
     size_t max_threads_,
     std::optional<UInt64> rhs_size_estimation_,
     UInt64 max_partitions_per_pass_,
-    bool size_tables_by_distinct_estimate_)
+    bool size_tables_by_distinct_estimate_,
+    const StatsCollectingParams & stats_collecting_params_)
     : table_join(std::move(table_join_))
     , right_sample_block(right_sample_block_)
     , max_threads(std::max<size_t>(max_threads_, 1))
     , rhs_size_estimation(rhs_size_estimation_)
     , max_partitions_per_pass(max_partitions_per_pass_)
     , size_tables_by_distinct_estimate(size_tables_by_distinct_estimate_)
+    , stats_collecting_params(stats_collecting_params_)
     , state(std::make_unique<State>())
 {
     /// The planner gate guarantees the invariants below; re-check and fail loudly if violated.
@@ -739,15 +744,59 @@ void RadixHashJoin::runPostBuild()
         runParallelFor(pool, num_workers, thread_group, total, fn);
     };
 
+    /// "The stats": on a warm run the cross-run hash-table statistics already hold this join's distinct-key
+    /// estimate from a previous build, so the per-leaf HLL can be skipped entirely. The HLL only ever
+    /// shrinks a leaf table and a too-small estimate is detected and rebuilt by `buildLeafTables`, so the
+    /// cached value never affects correctness — only how much build CPU the estimation costs.
+    std::optional<RadixHashJoinEntry> stats_hint;
+    if (size_tables_by_distinct_estimate && stats_collecting_params.isCollectionAndUseEnabled())
+        stats_hint = getHashTablesStatistics<RadixHashJoinEntry>().getSizeHint(stats_collecting_params);
+
+    /// Run the per-leaf HLL only when distinct-estimate sizing is on AND no cached estimate is available
+    /// (a cold run, or stats collection disabled). A warm run reuses the cached estimate instead.
+    const bool run_hll = size_tables_by_distinct_estimate && !stats_hint.has_value();
+
     /// Deferred exact key+ref scatter into the per-leaf arrays. The route hash is recomputed from the
     /// key inside the scatter; the leaf bucket is recomputed in the leaf-table build — nothing per-row
     /// is carried, and no payload is moved.
-    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(parallel_for, num_workers, size_tables_by_distinct_estimate);
+    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(parallel_for, num_workers, run_hll);
 
     state->block_base = state->build_side->blockBase();
     state->total_rows = state->build_side->totalRows();
 
+    /// Warm run: reconstruct each leaf's distinct-key estimate from the cached global distinct count and
+    /// the exact per-leaf row histogram (`leaf_rows`). Scaling by the global distinct ratio is exact when
+    /// key multiplicity is uniform across leaves (and only ever an over/under-estimate otherwise, which is
+    /// safe — see above). This replaces the HLL output the scatter would have produced.
+    if (size_tables_by_distinct_estimate && stats_hint && state->total_rows > 0)
+    {
+        const UInt64 distinct_total = std::max<UInt64>(stats_hint->distinct_keys, 1);
+        const size_t num_leaves = leaves.leaf_rows.size();
+        leaves.distinct_key_estimates.assign(num_leaves, 0);
+        for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+        {
+            const UInt64 rows = leaves.leaf_rows[leaf];
+            if (rows == 0)
+                continue;
+            const UInt64 est = static_cast<UInt64>(
+                static_cast<double>(rows) * static_cast<double>(distinct_total) / static_cast<double>(state->total_rows));
+            leaves.distinct_key_estimates[leaf] = std::clamp<UInt64>(est, 1, rows);
+        }
+    }
+
     state->leaf_tables = RadixJoin::buildLeafTables(leaves, state->total_rows, state->key_width, num_workers, parallel_for);
+
+    /// Cold run: publish the freshly computed HLL distinct-key estimate to the cross-run stats so the next
+    /// (warm) run can skip the HLL. Only the cold run updates it — reusing the cached value verbatim on warm
+    /// runs avoids drift from the proportional reconstruction above.
+    if (run_hll && stats_collecting_params.isCollectionAndUseEnabled() && !leaves.distinct_key_estimates.empty())
+    {
+        UInt64 distinct_total = 0;
+        for (const UInt64 est : leaves.distinct_key_estimates)
+            distinct_total += est;
+        if (distinct_total > 0)
+            getHashTablesStatistics<RadixHashJoinEntry>().update({.distinct_keys = distinct_total}, stats_collecting_params);
+    }
 
     /// Register each stored right block (in accumulation order) so a `BuildRef::blockNo()` indexes
     /// `blocksData()` directly. `add` returns size()-1, so block_no == build index (the chassert below).

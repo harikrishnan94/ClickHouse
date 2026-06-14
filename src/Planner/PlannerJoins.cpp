@@ -1273,7 +1273,12 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 params.max_threads,
                 params.rhs_size_estimation,
                 params.max_partitions_per_pass,
-                params.radix_hash_join_size_tables_by_distinct_estimate);
+                params.radix_hash_join_size_tables_by_distinct_estimate,
+                StatsCollectingParams{
+                    params.hash_table_key_hash,
+                    params.collect_hash_table_stats_during_joins,
+                    params.max_entries_for_hash_table_stats,
+                    params.max_size_to_preallocate_for_joins});
 
         /// Key gate failed: fall back cleanly to parallel_hash.
         return createRadixHashJoinFallback(table_join, right_table_expression_header, params);
