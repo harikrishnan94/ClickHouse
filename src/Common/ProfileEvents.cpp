@@ -1463,16 +1463,6 @@ The server successfully detected this situation and will download merged part fr
     \
     M(JoinBuildPostProcessingMicroseconds, "Elapsed time of post-processing steps after building the right JOIN side.", ValueType::Microseconds) \
     \
-    M(ConcurrentHashJoinBuildMicroseconds, "ConcurrentHashJoin (parallel_hash): build phase time (`addBlockToJoin` plus the hash-map merge in `onBuildPhaseFinish`), summed across threads.", ValueType::Microseconds) \
-    M(ConcurrentHashJoinProbeMicroseconds, "ConcurrentHashJoin (parallel_hash): probe phase time (`joinBlock` plus draining the lazy join result), summed across threads.", ValueType::Microseconds) \
-    M(ConcurrentHashJoinProbeLLCMisses, "ConcurrentHashJoin (parallel_hash): demand last-level-cache load misses during the probe (`joinBlock` plus draining the lazy join result), summed across threads. Benchmarking instrumentation; populated only when perf_event hardware counters can be opened (e.g. a low enough perf_event_paranoid).", ValueType::Number) \
-    M(RadixHashJoinBuildMicroseconds, "RadixHashJoin (radix_hash): build phase time (`addBlockToJoin` plus the eager post-build in `onBuildPhaseFinish`), summed across threads.", ValueType::Microseconds) \
-    M(RadixHashJoinProbeMicroseconds, "RadixHashJoin (radix_hash): probe phase time (`joinBlock`), summed across threads.", ValueType::Microseconds) \
-    M(RadixHashJoinProbeLLCMisses, "RadixHashJoin (radix_hash): demand last-level-cache load misses during the probe (`joinBlock`), summed across threads. Benchmarking instrumentation; populated only when perf_event hardware counters can be opened (e.g. a low enough perf_event_paranoid).", ValueType::Number) \
-    M(RadixHashJoinProbePermMicroseconds, "RadixHashJoin (radix_hash): time spent in the probe permutation stage during `joinBlock`, summed across threads.", ValueType::Microseconds) \
-    M(RadixHashJoinProbeCollectMatchesMicroseconds, "RadixHashJoin (radix_hash): time spent collecting matches during the probe phase in `joinBlock`, summed across threads.", ValueType::Microseconds) \
-    M(RadixHashJoinProbePackHashRouteMicroseconds, "RadixHashJoin (radix_hash): time spent packing hash route information during probe in `joinBlock`, summed across threads.", ValueType::Microseconds) \
-    \
     M(AIInputTokens, "Total prompt tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIOutputTokens, "Total completion tokens consumed across all AI function calls in the query.", ValueType::Number) \
     M(AIAPICalls, "Number of HTTP requests dispatched to AI providers.", ValueType::Number) \
