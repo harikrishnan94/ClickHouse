@@ -32,6 +32,11 @@ struct LeafArrays
     std::vector<BuildRef *> ref_base; /// num_leaves
     std::vector<UInt64> leaf_rows;   /// num_leaves; == global histogram
 
+    /// num_leaves; per-leaf HLL distinct-key estimate (always clamped to `leaf_rows`, so it can only
+    /// shrink a leaf table). Empty when distinct-estimate sizing is disabled, in which case the leaf
+    /// hash tables fall back to row-count sizing.
+    std::vector<UInt64> distinct_key_estimates;
+
     /// Diagnostics asserted by the unit tests / gates.
     UInt64 alloc_count = 0;          /// number of per-partition output allocations (no-churn gate)
     UInt64 bytes_scattered = 0;      /// total key+ref bytes written, summed over passes
@@ -83,7 +88,12 @@ public:
 
     void add(const Block & block, size_t lane); /// phase 1 (per build lane, lock-free)
     void finishBuild();                     /// phase 2 (single barrier)
-    LeafArrays scatterToLeaves(const ParallelFor & parallel_for); /// phase 3 (parallelised post-build)
+
+    /// phase 3 (parallelised post-build). `num_workers` is the dense worker-id space of `parallel_for`,
+    /// used to size the per-worker HLL partial sketches. When `estimate_distinct_keys` is set, a per-worker
+    /// HLL sketch of each leaf's keys is accumulated on the FINAL scatter pass (lock-free, single-writer per
+    /// worker), then merged into `LeafArrays::distinct_key_estimates`; otherwise that field is left empty.
+    LeafArrays scatterToLeaves(const ParallelFor & parallel_for, size_t num_workers, bool estimate_distinct_keys);
 
     const PartitionPlan & plan() const { return part_plan; }
     size_t packedKeyWidth() const { return key_width; }
@@ -122,6 +132,8 @@ private:
     /// The shared scatter worker body: each build-thread slot scatters its own contiguous block range
     /// into `num_parts` partitions, seeding its write cursors once from a per-(slot, partition) offset
     /// matrix (so the writes are disjoint and lock-free). Used by single-pass (leaves) and pass-0.
+    /// `accumulate_hll` is set only when this call is the FINAL leaf-writing pass (single-pass scatter) and
+    /// distinct-estimate sizing is on; pass-0 of a multi-pass scatter (partitions, not leaves) leaves it off.
     void scatterBlockRanges(
         const ParallelFor & parallel_for,
         size_t num_parts,
@@ -130,9 +142,12 @@ private:
         const std::vector<UInt64> & slot_part_offset,
         void * const * key_bases,
         BuildRef * const * ref_bases,
-        std::atomic<UInt64> & total_bytes);
+        std::atomic<UInt64> & total_bytes,
+        bool accumulate_hll);
 
     /// Depth-first refinement of one already-scattered partition down to its leaves (multi-pass only).
+    /// `worker` is the dense worker id of the enclosing scatter unit, used to key this subtree's HLL
+    /// partial sketch on the final pass (constant for the whole recursion).
     struct RefineScratch;
     void refine(
         size_t first_leaf,
@@ -144,7 +159,8 @@ private:
         LeafArrays & out,
         const std::vector<UInt64> & hist_prefix,
         RefineScratch & scratch,
-        UInt64 & local_bytes);
+        UInt64 & local_bytes,
+        size_t worker);
 
     PartitionPlan part_plan;
     std::vector<size_t> key_positions;
@@ -153,6 +169,11 @@ private:
     std::vector<ColumnPackFn> key_packers;  /// one width-specialized packer per key column
     size_t key_width = 0;
     size_t max_threads = 1;
+
+    /// Transient per-worker HLL partial sketches, owned by a local in `scatterToLeaves` and only non-null
+    /// for the duration of that call; the scatter passes consult it to accumulate on the final pass.
+    struct HllScatterState;
+    HllScatterState * hll_scatter = nullptr;
 
     std::vector<std::unique_ptr<LocalState>> local;
 

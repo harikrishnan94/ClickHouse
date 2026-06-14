@@ -253,6 +253,8 @@ struct JoinAlgorithmParams
 
     UInt64 max_partitions_per_pass;
 
+    bool radix_hash_join_size_tables_by_distinct_estimate;
+
     UInt64 grace_hash_join_initial_buckets;
     UInt64 grace_hash_join_max_buckets;
 
