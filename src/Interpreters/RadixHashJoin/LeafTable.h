@@ -101,43 +101,6 @@ inline UInt64 leafBucket(UInt32 low_hash, UInt64 num_buckets) noexcept
     return static_cast<UInt64>(low_hash) & (num_buckets - 1);
 }
 
-/// Insert one build row (`key` / `ref`) into leaf `ht`, starting the linear probe at the precomputed
-/// home bucket `pos` (`leafBucket(bucketBits(hash), num_buckets)`, already masked into
-/// `[0, num_buckets)`). Taking the home bucket directly — rather than the hash — lets the caller reuse
-/// the bucket it already computed for the prefetch, so the per-key hash is computed exactly once.
-/// Returns whether the key was ALREADY present (a duplicate); `false` means this was the first row of
-/// the key. The cell head is a `DB::BuildRefList`: a first occurrence claims the cell and stores the ref
-/// inline (singleton); a duplicate appends the ref to the list, allocating a Batch node from `arena` on
-/// the first duplicate. `arena` is the calling build worker's own arena (single-writer per leaf, so no
-/// locking). Width-templated so the key copy/compare are compile-time-sized.
-template <size_t key_width>
-inline bool leafInsertAt(LeafHT & ht, UInt64 pos, const void * key, BuildRef ref, DB::Arena & arena) noexcept
-{
-    static_assert(key_width >= 4 && key_width % 4 == 0 && key_width <= 64);
-    constexpr size_t stride = leafCellBytes(key_width);
-    const UInt64 mask = ht.numBuckets() - 1;
-    char * const cells = ht.cells();
-    while (true)
-    {
-        char * cell = cells + pos * stride;
-        auto * list = reinterpret_cast<DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-        if (list->word == 0)
-        {
-            /// First occurrence: claim the cell, store the key, and insert the singleton ref.
-            __builtin_memcpy_inline(cell + sizeof(DB::BuildRefList), key, key_width);
-            list->insert(ref.word(), arena);
-            return false;
-        }
-        if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), key, key_width) == 0)
-        {
-            /// Duplicate key: append the ref to the list (allocates a Batch node on the first duplicate).
-            list->insert(ref.word(), arena);
-            return true;
-        }
-        pos = (pos + 1) & mask;
-    }
-}
-
 /// All the built leaf tables; owns the arena backing the cells plus the per-worker arenas backing the
 /// BuildRefList Batch nodes (all read-only for the whole probe).
 struct LeafTables
