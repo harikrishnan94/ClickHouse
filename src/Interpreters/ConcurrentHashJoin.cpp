@@ -19,6 +19,7 @@
 #include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
+#include <Common/ScopedLLCMissCounter.h>
 #include <Common/ThreadPool.h>
 #include <Common/AllocatorWithMemoryTracking.h>
 #include <Common/setThreadName.h>
@@ -59,6 +60,9 @@ using namespace DB;
 namespace ProfileEvents
 {
 extern const Event HashJoinPreallocatedElementsInHashTables;
+extern const Event ConcurrentHashJoinBuildMicroseconds;
+extern const Event ConcurrentHashJoinProbeMicroseconds;
+extern const Event ConcurrentHashJoinProbeLLCMisses;
 extern const Event HashJoinDeferredPreallocatedElementsInHashTables;
 }
 
@@ -353,6 +357,8 @@ ConcurrentHashJoin::~ConcurrentHashJoin()
 
 bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_limits)
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
+
     /// We materialize columns here to avoid materializing them multiple times on different threads
     /// (inside different `hash_join`-s) because the block will be shared.
     Block right_block = hash_joins[0]->data->materializeColumnsFromRightBlock(right_block_);
@@ -510,6 +516,10 @@ public:
 
     JoinResultBlock next() override
     {
+        ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
+        /// Benchmarking instrumentation: probe-stage demand LLC load misses (no-op without perf_event).
+        ScopedLLCMissCounter probe_llc(ProfileEvents::ConcurrentHashJoinProbeLLCMisses);
+
         if (!current_result)
         {
             /// Skip empty dispatched blocks to avoid running the full join machinery for nothing,
@@ -540,6 +550,10 @@ public:
 
 JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
 {
+    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
+    /// Benchmarking instrumentation: probe-stage demand LLC load misses (no-op without perf_event).
+    ScopedLLCMissCounter probe_llc(ProfileEvents::ConcurrentHashJoinProbeLLCMisses);
+
     ScatteredBlocks dispatched_blocks;
 
     hash_joins[0]->data->materializeColumnsFromLeftBlock(block);
@@ -944,6 +958,8 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
+
     if (deferred_build)
     {
         /// Exact-size build: reserve each slot's owned buckets to the actual global row count, then
