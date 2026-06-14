@@ -122,6 +122,15 @@ struct BuildPolicy
     const BuildRef * refs{}; /// la.ref_base[leaf]: dense per-leaf row refs
     DB::Arena & arena;     /// this build worker's arena for BuildRefList Batch nodes
     bool saw_dup = false;
+    /// First-occurrence claims placed so far, and whether this leaf was undersized. The distinct-key
+    /// ESTIMATE that sized this leaf can under-count (it estimates distinct low-32 hashes, but two distinct
+    /// full keys may share those bits, and HLL itself has variance), so the table could be too small to
+    /// hold every distinct key with a spare empty cell. We never let the table fill its LAST cell: a claim
+    /// that would leave zero empty cells is refused and `overflowed` is set, so an empty cell ALWAYS remains
+    /// — which is what makes every linear-probe walk (this build's collisions and every later probe miss)
+    /// terminate. `fillLeaf` then rebuilds the flagged leaf with safe row-count sizing.
+    UInt64 claimed = 0;
+    bool overflowed = false;
 
     struct Slot
     {
@@ -144,12 +153,23 @@ struct BuildPolicy
 
     bool step(Slot & s) noexcept
     {
+        if (overflowed) /// undersized leaf: stop placing keys and let the ring drain; the leaf is rebuilt.
+            return true;
         char * cell = cells + static_cast<size_t>(s.pos) * stride;
         auto * list = reinterpret_cast<DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         if (list->word == 0) /// fresh read: empty cell -> claim it for this key (first occurrence)
         {
+            /// `mask == num_buckets - 1`: `claimed == mask` means only one empty cell is left. Claiming it
+            /// would make the table 100% full, leaving no sentinel to terminate a probe miss -> refuse and
+            /// flag the leaf for a safe rebuild instead.
+            if (claimed == mask)
+            {
+                overflowed = true;
+                return true;
+            }
             __builtin_memcpy_inline(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width);
             list->insert(refs[s.row].word(), arena);
+            ++claimed;
             return true; /// done
         }
         if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width) == 0)
@@ -169,12 +189,14 @@ struct BuildPolicy
 /// ring. The bucket is the low 32 bits of the key's hash, recomputed here from the key (no hash is stored
 /// on the leaves). A duplicate appends to the cell's BuildRefList (the first duplicate of a key allocates
 /// one Batch node from this worker's `arena`).
+/// Returns whether the leaf overflowed — i.e. its distinct-estimate sizing was too small to hold every
+/// distinct key with a spare empty cell. `buildLeafTables` rebuilds such a leaf with safe row-count sizing.
 template <size_t key_width, size_t ring_size, typename PosT>
-void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
+bool fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
 {
     const UInt64 rows = la.leaf_rows[leaf];
     if (rows == 0)
-        return;
+        return false;
     chassert((rows < BuildPolicy<key_width, PosT>::kInactive)); /// leaf row index must fit a UInt32 (sentinel reserved)
 
     BuildPolicy<key_width, PosT> policy{
@@ -189,18 +211,19 @@ void fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
     /// Relaxed + idempotent: only ever flips false->true, mirrors the old first-duplicate trigger.
     if (policy.saw_dup)
         any_duplicates.store(true, std::memory_order_relaxed);
+    return policy.overflowed;
 }
 
 /// Width dispatch for a chosen `PosT` and the build ring depth (mirrors the probe's `collectMatchesPos`).
+/// Returns whether the leaf overflowed its distinct-estimate sizing.
 template <typename PosT>
-void fillLeafDispatchPos(
+bool fillLeafDispatchPos(
     size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
 {
     constexpr size_t ring_size = 32;
 #define RHJ_FILL_DISPATCH(W) \
     case W: \
-        fillLeaf<W, ring_size, PosT>(ht, la, leaf, arena, any_duplicates); \
-        return;
+        return fillLeaf<W, ring_size, PosT>(ht, la, leaf, arena, any_duplicates);
     switch (key_width)
     {
         RHJ_FILL_DISPATCH(4)  RHJ_FILL_DISPATCH(8)  RHJ_FILL_DISPATCH(12) RHJ_FILL_DISPATCH(16)
@@ -213,15 +236,14 @@ void fillLeafDispatchPos(
 #undef RHJ_FILL_DISPATCH
 }
 
-void fillLeafDispatch(
+bool fillLeafDispatch(
     size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
 {
     /// One leaf at a time, so its bucket count is known here: a UInt32 bucket index (8-byte slot) suffices
     /// unless this single leaf has >2^31 buckets (~1e9 rows); the UInt64 fallback keeps that case correct.
     if (std::countr_zero(ht.numBuckets()) <= 31)
-        fillLeafDispatchPos<UInt32>(key_width, ht, la, leaf, arena, any_duplicates);
-    else
-        fillLeafDispatchPos<UInt64>(key_width, ht, la, leaf, arena, any_duplicates);
+        return fillLeafDispatchPos<UInt32>(key_width, ht, la, leaf, arena, any_duplicates);
+    return fillLeafDispatchPos<UInt64>(key_width, ht, la, leaf, arena, any_duplicates);
 }
 
 /// Probe policy for `amacRing`: find every build match for a batch of probe rows, read-only, emitting the
@@ -397,12 +419,25 @@ LeafTables buildLeafTables(
         const UInt64 sizing_rows = leaf_arrays.distinct_key_estimates.empty()
             ? rows
             : leaf_arrays.distinct_key_estimates[leaf];
-        const UInt64 num_buckets = std::bit_ceil(std::max<UInt64>(sizing_rows, 1) * 2);
-        const size_t cell_bytes = static_cast<size_t>(num_buckets) * leafCellBytes(key_width);
-        char * cells = static_cast<char *>(out.arena.allocate(cell_bytes, LINE_BYTES));
-        std::memset(cells, 0, cell_bytes);
-        out.leaves[leaf] = LeafHT(cells, num_buckets);
-        fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
+        auto alloc_and_fill = [&](UInt64 num_buckets)
+        {
+            const size_t cell_bytes = static_cast<size_t>(num_buckets) * leafCellBytes(key_width);
+            char * cells = static_cast<char *>(out.arena.allocate(cell_bytes, LINE_BYTES));
+            std::memset(cells, 0, cell_bytes);
+            out.leaves[leaf] = LeafHT(cells, num_buckets);
+            return fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
+        };
+
+        const UInt64 est_buckets = std::bit_ceil(std::max<UInt64>(sizing_rows, 1) * 2);
+        if (alloc_and_fill(est_buckets) && est_buckets < std::bit_ceil(rows * 2))
+        {
+            /// The distinct estimate undersized this leaf (it couldn't hold every distinct key with a spare
+            /// empty cell). Rebuild from scratch with safe row-count sizing — `bit_ceil(rows * 2) >= 2*rows`
+            /// keeps the load <= 0.5, so all distinct keys (<= rows) fit and an empty cell always remains, so
+            /// this rebuild cannot overflow. (The undersized array is abandoned in the arena, freed with it.)
+            const bool overflowed_again = alloc_and_fill(std::bit_ceil(rows * 2));
+            chassert(!overflowed_again);
+        }
     });
 
     /// Probe slot's `pos`/`mask` are UInt32 (a 16-byte slot) iff every leaf's bucket count fits in 32 bits.

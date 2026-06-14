@@ -20,6 +20,7 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -454,4 +455,51 @@ TEST(RadixHashJoin, DistinctEstimateShrinksDuplicateHeavyBuild)
     const UInt64 d_on = totalLeafBuckets(dup_keys, plan_d, 4, /*estimate=*/true);
     /// Sized by ~1000 distinct keys rather than 200000 rows -> dramatically smaller.
     EXPECT_LT(d_on * 4, d_off) << "estimate-sized buckets=" << d_on << " row-count buckets=" << d_off;
+}
+
+TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
+{
+    /// Heavy skew (few distinct keys, many rows) forced into MANY leaves so each leaf holds only a couple
+    /// of distinct keys — the danger zone where the distinct estimate (over low-32 hashes, with HLL
+    /// variance) can under-count and size a leaf too small. The build must still guarantee every non-empty
+    /// leaf has an empty cell (num_buckets > distinct keys in the leaf); otherwise the open-addressing build
+    /// collision walk or a later probe miss would loop forever. (Regression test for that infinite loop.)
+    constexpr size_t key_width = 8;
+    std::vector<UInt64> build_keys;
+    for (UInt64 k = 0; k < 8000; ++k)
+        for (size_t r = 0; r < 50; ++r)
+            build_keys.push_back(k * 2654435761ULL); /// 8000 distinct keys, 50 rows each
+    /// A tiny L2 forces many leaves -> ~1-2 distinct keys per leaf.
+    auto plan = PartitionPlan::choose(build_keys.size(), 4u << 10, 8192);
+
+    BuildSide build_side(plan, {0}, {key_width}, 4);
+    build_side.add(makeU64Block(build_keys, "k0"), 0);
+    build_side.finishBuild();
+    const ParallelFor parallel_for = makeParallelFor(4);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 4, parallel_for);
+
+    /// Route each distinct key to its leaf and assert the safety invariant: num_buckets > distinct keys.
+    std::vector<std::set<UInt64>> leaf_keys(leaves.num_leaves);
+    for (UInt64 k : std::set<UInt64>(build_keys.begin(), build_keys.end()))
+    {
+        const UInt64 h = hashPackedKey<key_width>(&k);
+        const size_t leaf = plan.total_bits ? (routeBits(h) >> plan.leaf_shift) : 0;
+        leaf_keys[leaf].insert(k);
+    }
+    for (size_t leaf = 0; leaf < leaves.num_leaves; ++leaf)
+        if (!tables.leaves[leaf].empty())
+            EXPECT_GT(tables.leaves[leaf].numBuckets(), leaf_keys[leaf].size()) << "leaf " << leaf;
+
+    /// A miss-heavy probe (keys disjoint from the build) must TERMINATE and find nothing — this is where
+    /// the missing empty cell looped before the fix.
+    std::vector<UInt64> probe_miss;
+    for (UInt64 i = 0; i < 20000; ++i)
+        probe_miss.push_back(0x8000000000000000ULL + i);
+    std::vector<UInt32> out_rows;
+    std::vector<BuildRef> out_refs;
+    collectMatches(
+        key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
+        probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
+    EXPECT_TRUE(out_rows.empty());
 }
