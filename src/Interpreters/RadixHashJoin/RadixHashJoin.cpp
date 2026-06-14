@@ -20,7 +20,10 @@
 #include <Columns/IColumn.h>
 #include <DataTypes/IDataType.h>
 
+#include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/Exception.h>
+#include <Common/ProfileEvents.h>
+#include <Common/ScopedLLCMissCounter.h>
 #include <Common/Stopwatch.h>
 #include <Common/ThreadPool.h>
 #include <Common/ThreadGroupSwitcher.h>
@@ -35,6 +38,16 @@
 #include <optional>
 
 #include <unistd.h>
+
+namespace ProfileEvents
+{
+extern const Event RadixHashJoinBuildMicroseconds;
+extern const Event RadixHashJoinProbeMicroseconds;
+extern const Event RadixHashJoinProbeLLCMisses;
+extern const Event RadixHashJoinProbePermMicroseconds;
+extern const Event RadixHashJoinProbeCollectMatchesMicroseconds;
+extern const Event RadixHashJoinProbePackHashRouteMicroseconds;
+}
 
 namespace CurrentMetrics
 {
@@ -71,6 +84,12 @@ size_t detectL2Bytes()
 /// task carries a fixed dense `worker` id in [0, num_workers) (one task per id), so a unit may index a
 /// per-worker resource (e.g. `LeafTables::build_arenas[worker]`) under a single-writer invariant. The
 /// first unit exception is captured and rethrown after every task has stopped.
+///
+/// This is the sole executor of the parallel post-build, so each worker charges its CPU time to
+/// `RadixHashJoinBuildMicroseconds` (attributed to the query via the thread-group switch). Summed over
+/// workers and over the post-build's `parallel_for` steps, this is the parallel build cost — the same
+/// summed-across-threads accounting as the per-build-thread `addBlockToJoin` watch; it deliberately
+/// excludes the orchestrating thread's idle wait in `pool.wait()`.
 void runParallelFor(ThreadPool & pool, size_t num_workers, const ThreadGroupPtr & thread_group, size_t total, const RadixJoin::UnitFn & fn)
 {
     if (total == 0)
@@ -96,6 +115,9 @@ void runParallelFor(ThreadPool & pool, size_t num_workers, const ThreadGroupPtr 
             pool.scheduleOrThrow([&, w, thread_group]
             {
                 ThreadGroupSwitcher switcher(thread_group, ThreadName::RADIX_JOIN);
+                /// Charge this worker's build CPU (build_watch is destroyed before the switcher detaches,
+                /// so the increment lands while the thread is still attached to the query group).
+                ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
                 while (true)
                 {
                     const size_t unit = next.fetch_add(1, std::memory_order_relaxed);
@@ -300,6 +322,7 @@ void packBatch(
     size_t bn,
     char * packed)
 {
+    ProfileEventTimeIncrement<Microseconds> probe_pack_hash_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
     constexpr size_t tile = RadixJoin::BuildSide::SCATTER_CHUNK_ROWS; /// 1024
     const size_t ncols = ctx.key_widths.size();
     for (size_t off = 0; off < bn; off += tile)
@@ -372,9 +395,12 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         /// Phase 1b — lookup. Matches (absolute batch-local row id) are appended to the global match
         /// buffers; `batch_start` is folded back in afterwards (a no-op for the single-batch common case).
         const size_t match_begin = s.left_rows.size();
-        RadixJoin::collectMatches(
-            ctx.key_width, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
-            keys, bn, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31, s.left_rows, s.refs);
+        {
+            ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
+            RadixJoin::collectMatches(
+                ctx.key_width, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
+                keys, bn, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31, s.left_rows, s.refs);
+        }
 
         if (batch_start != 0)
         {
@@ -699,6 +725,8 @@ bool RadixHashJoin::addBlockToJoin(const Block & block, size_t num_rows, bool ch
 
 bool RadixHashJoin::addBlockToJoin(const Block & block, size_t /*num_rows*/, bool /*check_limits*/, size_t build_lane)
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+
     /// Normalise to the right sample structure (by name, in order) so key columns sit at the build-side
     /// key positions and every payload column is gatherable by name later. Materialise so the key
     /// columns expose contiguous raw data and the stored payload types match `columns_to_add`.
@@ -728,7 +756,16 @@ void RadixHashJoin::onBuildPhaseFinish()
 {
     /// The eager post-build is build-phase work. JoiningTransform calls this from `work()` (heavy work
     /// allowed) exactly once, before any real probe, so the join is fully built when it returns.
-    state->build_side->finishBuild(); /// merge + prefix-sum the histograms (the build barrier)
+    ///
+    /// Build-time accounting (`RadixHashJoinBuildMicroseconds`) is summed across every thread that does
+    /// build work, matching the per-build-thread `addBlockToJoin` watch: the barrier below and the
+    /// serial index construction in `runPostBuild` are charged on this thread; the parallel scatter and
+    /// leaf-table build are charged per worker inside `runParallelFor`. The orchestrating thread's idle
+    /// wait in `pool.wait()` is deliberately NOT charged.
+    {
+        ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
+        state->build_side->finishBuild(); /// merge + prefix-sum the histograms (the build barrier)
+    }
     runPostBuild();
 }
 
@@ -800,8 +837,9 @@ void RadixHashJoin::runPostBuild()
 
     /// Register each stored right block (in accumulation order) so a `BuildRef::blockNo()` indexes
     /// `blocksData()` directly. `add` returns size()-1, so block_no == build index (the chassert below).
-    /// Serial, on this thread.
+    /// Serial, on this thread — charged to the build phase to match the parallel sections above.
     {
+        ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
         state->stored_columns_index = std::make_shared<StoredColumnsIndex>();
         state->columns_infos.reserve(state->build_side->blocks().size());
         for (const auto & block : state->build_side->blocks())
@@ -833,6 +871,11 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     /// The join is fully built by `onBuildPhaseFinish` before any real probe; `joinBlock` never builds.
     /// Before the build barrier (the header/planning path: `transformHeader` calls `joinBlock` first)
     /// `built` is still false and the block below emits the output schema only.
+    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
+    /// Benchmarking instrumentation: demand LLC load misses incurred by this probe (no-op unless
+    /// perf_event hardware counters are available). Scoped to the same region as `probe_watch`.
+    ScopedLLCMissCounter probe_llc(ProfileEvents::RadixHashJoinProbeLLCMisses);
+
     State & st = *state;
     const size_t n = block.rows();
 
