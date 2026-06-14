@@ -149,6 +149,9 @@ struct LeafTables
     /// Set during build the first time any key gets a duplicate row. Selects the grouped probe path.
     std::atomic<bool> any_duplicates{false};
     UInt64 num_rows = 0;
+    /// max log2(num_buckets) over leaves. The probe uses a dense 16-byte (UInt32 bucket-index) slot iff
+    /// this is <= 31 — i.e. no leaf has more than 2^31 buckets (always, in practice).
+    UInt8 max_bucket_bits = 0;
     Arena arena;                     /// owns the cells (read-only for the whole probe)
 
     LeafTables() = default;
@@ -162,6 +165,7 @@ struct LeafTables
         , build_arenas(std::move(other.build_arenas))
         , any_duplicates(other.any_duplicates.load(std::memory_order_relaxed))
         , num_rows(other.num_rows)
+        , max_bucket_bits(other.max_bucket_bits)
         , arena(std::move(other.arena))
     {
     }
@@ -171,6 +175,7 @@ struct LeafTables
         build_arenas = std::move(other.build_arenas);
         any_duplicates.store(other.any_duplicates.load(std::memory_order_relaxed), std::memory_order_relaxed);
         num_rows = other.num_rows;
+        max_bucket_bits = other.max_bucket_bits;
         arena = std::move(other.arena);
         return *this;
     }
@@ -191,6 +196,8 @@ LeafTables buildLeafTables(
 /// per match to the output buffers (singleton keys emit one ref; multi-row keys iterate the whole
 /// BuildRefList). The 64-bit hash of each key is computed internally, inside the probe pipeline, so its
 /// latency overlaps with the in-flight cell misses (no precomputed hash array is passed in).
+/// `pos_fits_u32` selects the dense 16-byte probe slot (UInt32 bucket index); pass
+/// `LeafTables::max_bucket_bits <= 31`. When false a 24-byte slot (UInt64 index) is used for correctness.
 void collectMatches(
     size_t key_width,
     const LeafHT * leaves,
@@ -198,6 +205,7 @@ void collectMatches(
     UInt32 total_bits,
     const void * packed_keys,
     size_t n,
+    bool pos_fits_u32,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs);
 
