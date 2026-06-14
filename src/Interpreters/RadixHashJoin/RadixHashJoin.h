@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Core/Block_fwd.h>
+#include <Interpreters/HashTablesStatistics.h>
 #include <Interpreters/IJoin.h>
 
 #include <memory>
@@ -45,7 +46,8 @@ public:
         size_t max_threads_,
         std::optional<UInt64> rhs_size_estimation_,
         UInt64 max_partitions_per_pass_,
-        bool size_tables_by_distinct_estimate_);
+        bool size_tables_by_distinct_estimate_,
+        const StatsCollectingParams & stats_collecting_params_);
 
     ~RadixHashJoin() override;
 
@@ -91,6 +93,11 @@ private:
     /// When true, leaf hash tables are sized by a per-leaf HLL distinct-key estimate (only ever smaller)
     /// rather than by row count. Gated by setting `radix_hash_join_size_tables_by_distinct_estimate`.
     bool size_tables_by_distinct_estimate;
+
+    /// Cross-run hash-table statistics ("the stats"): keyed by the query plan, this lets a warm run reuse
+    /// the previous run's distinct-key estimate and skip the per-leaf HLL estimation entirely. Disabled
+    /// (key == 0) when `collect_hash_table_stats_during_joins` is off, in which case every run runs the HLL.
+    StatsCollectingParams stats_collecting_params;
 
     std::mutex totals_mutex;
 
