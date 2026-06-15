@@ -115,6 +115,9 @@ struct LeafTables
     /// max log2(num_buckets) over leaves. The probe uses a dense 16-byte (UInt32 bucket-index) slot iff
     /// this is <= 31 — i.e. no leaf has more than 2^31 buckets (always, in practice).
     UInt8 max_bucket_bits = 0;
+    /// Number of cell-array allocations from `arena` during `buildLeafTables` (byte-balanced chunks plus rare
+    /// overflow rebuilds). Diagnostic mirror of `LeafArrays::alloc_count`.
+    UInt64 cell_alloc_count = 0;
     Arena arena;                     /// owns the cells (read-only for the whole probe)
 
     LeafTables() = default;
@@ -129,6 +132,7 @@ struct LeafTables
         , any_duplicates(other.any_duplicates.load(std::memory_order_relaxed))
         , num_rows(other.num_rows)
         , max_bucket_bits(other.max_bucket_bits)
+        , cell_alloc_count(other.cell_alloc_count)
         , arena(std::move(other.arena))
     {
     }
@@ -139,6 +143,7 @@ struct LeafTables
         any_duplicates.store(other.any_duplicates.load(std::memory_order_relaxed), std::memory_order_relaxed);
         num_rows = other.num_rows;
         max_bucket_bits = other.max_bucket_bits;
+        cell_alloc_count = other.cell_alloc_count;
         arena = std::move(other.arena);
         return *this;
     }
