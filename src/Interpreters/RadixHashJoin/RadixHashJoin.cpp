@@ -398,7 +398,7 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         {
             ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
             RadixJoin::collectMatches(
-                ctx.key_width, ctx.leaf_tables.leaves.data(), ctx.leaf_shift, ctx.total_bits,
+                ctx.key_width, ctx.leaf_tables.grouped, ctx.leaf_shift, ctx.total_bits,
                 keys, bn, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31, s.left_rows, s.refs);
         }
 
@@ -906,7 +906,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     {
         const ProbeContext ctx{
             st.key_names_left, st.key_widths, st.key_offsets, st.key_packers, st.key_width,
-            st.leaf_tables, st.plan.leaf_shift, st.plan.total_bits, st.block_base, st.leaf_tables.leaves.size()};
+            st.leaf_tables, st.plan.leaf_shift, st.plan.total_bits, st.block_base, st.plan.num_leaves};
         probeBlock(ctx, block, n, s);
     }
     else

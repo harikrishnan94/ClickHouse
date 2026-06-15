@@ -128,7 +128,7 @@ struct BuildPolicy
     /// hold every distinct key with a spare empty cell. We never let the table fill its LAST cell: a claim
     /// that would leave zero empty cells is refused and `overflowed` is set, so an empty cell ALWAYS remains
     /// — which is what makes every linear-probe walk (this build's collisions and every later probe miss)
-    /// terminate. `fillLeaf` then rebuilds the flagged leaf with safe row-count sizing.
+    /// terminate. `fillLeaf` then rebuilds the flagged group with safe row-count sizing.
     UInt64 claimed = 0;
     bool overflowed = false;
 
@@ -153,7 +153,7 @@ struct BuildPolicy
 
     bool step(Slot & s) noexcept
     {
-        if (overflowed) /// undersized leaf: stop placing keys and let the ring drain; the leaf is rebuilt.
+        if (overflowed) /// undersized leaf: stop placing keys and let the ring drain; the group is rebuilt.
             return true;
         char * cell = cells + static_cast<size_t>(s.pos) * stride;
         auto * list = reinterpret_cast<DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -161,7 +161,7 @@ struct BuildPolicy
         {
             /// `mask == num_buckets - 1`: `claimed == mask` means only one empty cell is left. Claiming it
             /// would make the table 100% full, leaving no sentinel to terminate a probe miss -> refuse and
-            /// flag the leaf for a safe rebuild instead.
+            /// flag the group for a safe rebuild instead.
             if (claimed == mask)
             {
                 overflowed = true;
@@ -190,9 +190,9 @@ struct BuildPolicy
 /// on the leaves). A duplicate appends to the cell's BuildRefList (the first duplicate of a key allocates
 /// one Batch node from this worker's `arena`).
 /// Returns whether the leaf overflowed — i.e. its distinct-estimate sizing was too small to hold every
-/// distinct key with a spare empty cell. `buildLeafTables` rebuilds such a leaf with safe row-count sizing.
+/// distinct key with a spare empty cell. `buildLeafTables` rebuilds such a group with safe row-count sizing.
 template <size_t key_width, size_t ring_size, typename PosT>
-bool fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
+bool fillLeaf(char * cells, UInt64 num_buckets, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates) /// NOLINT(readability-non-const-parameter)
 {
     const UInt64 rows = la.leaf_rows[leaf];
     if (rows == 0)
@@ -200,8 +200,8 @@ bool fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
     chassert((rows < BuildPolicy<key_width, PosT>::kInactive)); /// leaf row index must fit a UInt32 (sentinel reserved)
 
     BuildPolicy<key_width, PosT> policy{
-        ht.cells(),
-        static_cast<PosT>(ht.numBuckets() - 1),
+        cells,
+        static_cast<PosT>(num_buckets - 1),
         static_cast<const char *>(la.key_base[leaf]),
         la.ref_base[leaf],
         arena,
@@ -218,12 +218,12 @@ bool fillLeaf(LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena
 /// Returns whether the leaf overflowed its distinct-estimate sizing.
 template <typename PosT>
 bool fillLeafDispatchPos(
-    size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
+    size_t key_width, char * cells, UInt64 num_buckets, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates) /// NOLINT(readability-non-const-parameter)
 {
     constexpr size_t ring_size = 32;
 #define RHJ_FILL_DISPATCH(W) \
     case W: \
-        return fillLeaf<W, ring_size, PosT>(ht, la, leaf, arena, any_duplicates);
+        return fillLeaf<W, ring_size, PosT>(cells, num_buckets, la, leaf, arena, any_duplicates);
     switch (key_width)
     {
         RHJ_FILL_DISPATCH(4)  RHJ_FILL_DISPATCH(8)  RHJ_FILL_DISPATCH(12) RHJ_FILL_DISPATCH(16)
@@ -237,13 +237,13 @@ bool fillLeafDispatchPos(
 }
 
 bool fillLeafDispatch(
-    size_t key_width, LeafHT & ht, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates)
+    size_t key_width, char * cells, UInt64 num_buckets, const LeafArrays & la, size_t leaf, DB::Arena & arena, std::atomic<bool> & any_duplicates) /// NOLINT(readability-non-const-parameter)
 {
     /// One leaf at a time, so its bucket count is known here: a UInt32 bucket index (8-byte slot) suffices
     /// unless this single leaf has >2^31 buckets (~1e9 rows); the UInt64 fallback keeps that case correct.
-    if (std::countr_zero(ht.numBuckets()) <= 31)
-        return fillLeafDispatchPos<UInt32>(key_width, ht, la, leaf, arena, any_duplicates);
-    return fillLeafDispatchPos<UInt64>(key_width, ht, la, leaf, arena, any_duplicates);
+    if (std::countr_zero(num_buckets) <= 31)
+        return fillLeafDispatchPos<UInt32>(key_width, cells, num_buckets, la, leaf, arena, any_duplicates);
+    return fillLeafDispatchPos<UInt64>(key_width, cells, num_buckets, la, leaf, arena, any_duplicates);
 }
 
 /// Probe policy for `amacRing`: find every build match for a batch of probe rows, read-only, emitting the
@@ -252,7 +252,7 @@ bool fillLeafDispatch(
 /// `cells` and `bits`. The slot is a dense 16 bytes for the practical `PosT == UInt32`:
 /// {cells (8), pos (4), row (2), bits (1)}; `mask` is recomputed from `bits` rather than stored, and `row`
 /// is a UInt16 because a probe batch is capped at `PROBE_BATCH_ROWS <= 65536`. A non-null `cells` is the
-/// active sentinel (empty leaves are skipped in `startRow`). Hashing in `startRow` overlaps the multiply-
+/// active sentinel (empty groups are skipped in `startRow`). Hashing in `startRow` overlaps the multiply-
 /// fold latency with the other slots' outstanding cell misses. On a key match the cell word is a
 /// `DB::BuildRefList`: a singleton (the common case) emits its one inline ref with no further load, while a
 /// multi-row key iterates its BuildRefList (the rare duplicate path). The set of emitted pairs equals the
@@ -264,7 +264,9 @@ struct ProbePolicy
     static_assert(std::is_same_v<PosT, UInt32> || std::is_same_v<PosT, UInt64>, "PosT must be UInt32 or UInt64");
     static constexpr size_t stride = leafCellBytes(key_width);
 
-    const LeafHT * leaves;
+    const LeafHT * groups;
+    UInt32 group_bits;
+    UInt32 local_shift;
     UInt32 leaf_shift;
     UInt32 total_bits;
     const char * packed_keys;
@@ -273,7 +275,7 @@ struct ProbePolicy
 
     struct Slot
     {
-        const char * cells = nullptr; /// owning leaf's cells; nullptr == inactive (empty leaves are skipped)
+        const char * cells = nullptr; /// owning leaf's cells; nullptr == inactive (empty groups are skipped)
         PosT pos = 0;                 /// current linear-probe bucket index, in [0, num_buckets)
         UInt16 row = 0;               /// probe row within the batch (< PROBE_BATCH_ROWS <= 65536)
         UInt8 bits = 0;               /// log2(num_buckets); the probe mask is (PosT{1} << bits) - 1
@@ -286,16 +288,19 @@ struct ProbePolicy
     bool startRow(Slot & s, size_t row) noexcept
     {
         const UInt64 h = hashPackedKey<key_width>(packed_keys + row * key_width);
-        const size_t leaf = total_bits ? (routeBits(h) >> leaf_shift) : 0;
-        const LeafHT & ht = leaves[leaf];
-        if (ht.empty())
-            return false; /// empty leaf: no match, the driver pulls another row
-        const UInt64 num_buckets = ht.numBuckets();
-        chassert(row <= 0xFFFF); /// guaranteed by PROBE_BATCH_ROWS <= 65536
+        const UInt32 route = routeBits(h);
+        const UInt32 g = total_bits ? (route >> (32 - group_bits)) : 0;
+        const LeafHT gw = groups[g];
+        if (gw.empty())
+            return false;
+        const UInt64 nb = gw.numBuckets();
+        const size_t leaf_stride = roundUpToLine(static_cast<size_t>(nb) * stride);
+        const size_t local = total_bits ? ((route >> leaf_shift) & ((size_t{1} << local_shift) - 1)) : 0;
+        chassert(row <= 0xFFFF);
         s.row = static_cast<UInt16>(row);
-        s.cells = ht.cells(); /// non-null: marks the slot active (empty leaves were skipped above)
-        s.bits = static_cast<UInt8>(std::countr_zero(num_buckets));
-        s.pos = static_cast<PosT>(leafBucket(bucketBits(h), num_buckets)); /// already in [0, num_buckets)
+        s.cells = gw.cells() + local * leaf_stride;
+        s.bits = gw.bits();
+        s.pos = static_cast<PosT>(leafBucket(bucketBits(h), nb));
         __builtin_prefetch(s.cells + static_cast<size_t>(s.pos) * stride, /*rw=*/0, /*locality=*/1);
         return true;
     }
@@ -338,10 +343,10 @@ struct ProbePolicy
 
 /// AMAC (Asynchronous Memory Access Chaining) probe over the shared `amacRing`: see `ProbePolicy` and the
 /// `amacRing` header for the pipeline and its correctness contract. Templated on the ring depth `ring_size`
-/// and on `PosT`, the bucket-index type chosen by the caller from the built leaves' max bucket count.
+/// and on `PosT`, the bucket-index type chosen by the caller from the built groups' max bucket count.
 template <size_t key_width, size_t ring_size, typename PosT>
 void collectMatchesImpl(
-    const LeafHT * leaves,
+    const GroupedLeaves & grouped,
     UInt32 leaf_shift,
     UInt32 total_bits,
     const char * packed_keys,
@@ -349,7 +354,16 @@ void collectMatchesImpl(
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
-    ProbePolicy<key_width, PosT> policy{leaves, leaf_shift, total_bits, packed_keys, out_left_rows, out_refs};
+    ProbePolicy<key_width, PosT> policy{
+        grouped.groups.data(),
+        grouped.group_bits,
+        grouped.local_shift,
+        leaf_shift,
+        total_bits,
+        packed_keys,
+        out_left_rows,
+        out_refs,
+    };
     amacRing<ring_size>(policy, n);
 }
 
@@ -358,7 +372,7 @@ void collectMatchesImpl(
 template <typename PosT>
 void collectMatchesPos(
     size_t key_width,
-    const LeafHT * leaves,
+    const GroupedLeaves & grouped,
     UInt32 leaf_shift,
     UInt32 total_bits,
     const char * keys,
@@ -369,7 +383,7 @@ void collectMatchesPos(
     constexpr size_t ring_size = 32;
 #define RHJ_DISPATCH(W) \
     case W: \
-        collectMatchesImpl<W, ring_size, PosT>(leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
+        collectMatchesImpl<W, ring_size, PosT>(grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
         return;
     switch (key_width)
     {
@@ -381,6 +395,35 @@ void collectMatchesPos(
             throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin leaf table: unsupported key width {}", key_width);
     }
 #undef RHJ_DISPATCH
+}
+
+void fillGroupLeaves(
+    size_t gpos,
+    size_t group_size,
+    const LeafArrays & leaf_arrays,
+    size_t key_width,
+    size_t stride,
+    const std::vector<UInt8> & group_bucket_bits,
+    const std::vector<size_t> & leaf_stride,
+    const std::vector<char *> & group_base,
+    LeafTables & out,
+    const ParallelFor & parallel_for)
+{
+    const UInt64 nb = UInt64{1} << group_bucket_bits[gpos];
+    const size_t leaf_bytes = static_cast<size_t>(nb) * stride;
+    parallel_for(group_size, [&](size_t local, size_t worker)
+    {
+        char * cells = group_base[gpos] + local * leaf_stride[gpos];
+        std::memset(cells, 0, leaf_bytes);
+        const size_t leaf = gpos * group_size + local;
+        const UInt64 rows = leaf_arrays.leaf_rows[leaf];
+        if (rows == 0)
+            return;
+        chassert(worker < out.build_arenas.size());
+        const bool overflowed = fillLeafDispatch(
+            key_width, cells, nb, leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
+        chassert(!overflowed);
+    });
 }
 
 }
@@ -395,7 +438,7 @@ LeafTables buildLeafTables(
     LeafTables out;
     out.num_rows = num_rows;
     const size_t num_leaves = leaf_arrays.num_leaves;
-    out.leaves.assign(num_leaves, LeafHT{}); /// every leaf starts empty (word == 0)
+    const UInt32 total_bits = num_leaves <= 1 ? 0u : static_cast<UInt32>(std::countr_zero(num_leaves));
 
     /// One arena per build worker for the BuildRefList Batch nodes. Each worker only ever allocates from
     /// its own arena (single-writer, no locking); the arenas live in `out` so the nodes outlive the
@@ -406,103 +449,114 @@ LeafTables buildLeafTables(
 
     const size_t stride = leafCellBytes(key_width);
 
-    /// Pass A: per-leaf sizing + exclusive byte prefix (serial; negligible vs fill).
-    std::vector<UInt64> num_buckets(num_leaves, 0);     /// 0 == empty leaf (stays LeafHT{})
-    std::vector<size_t> byte_prefix(num_leaves + 1, 0); /// padded per-leaf bytes, exclusive prefix
-    for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+    const UInt32 group_bits = std::min<UInt32>(total_bits, MAX_GROUP_BITS);
+    const size_t num_groups = size_t{1} << group_bits;
+    const size_t group_size = size_t{1} << (total_bits - group_bits);
+
+    std::vector<UInt8> group_bucket_bits(num_groups, 0);
+    std::vector<size_t> leaf_stride(num_groups, 0);
+    std::vector<char *> group_base(num_groups, nullptr);
+
+    /// Per-group sizing: snap to the LARGEST member so every leaf in the group fits.
+    for (size_t gpos = 0; gpos < num_groups; ++gpos)
     {
-        const UInt64 rows = leaf_arrays.leaf_rows[leaf];
-        size_t padded = 0;
-        if (rows != 0)
+        UInt64 max_sizing = 0;
+        for (size_t l = 0; l < group_size; ++l)
         {
-            const UInt64 sizing_rows = leaf_arrays.distinct_key_estimates.empty()
+            const size_t leaf = gpos * group_size + l;
+            const UInt64 rows = leaf_arrays.leaf_rows[leaf];
+            if (rows == 0)
+                continue;
+            const UInt64 sizing = leaf_arrays.distinct_key_estimates.empty()
                 ? rows
                 : leaf_arrays.distinct_key_estimates[leaf];
-            const UInt64 est_buckets = std::bit_ceil(std::max<UInt64>(sizing_rows, 1) * 2);
-            num_buckets[leaf] = est_buckets;
-            padded = roundUpToLine(static_cast<size_t>(est_buckets) * stride);
+            max_sizing = std::max(max_sizing, sizing);
         }
-        byte_prefix[leaf + 1] = byte_prefix[leaf] + padded;
+        if (max_sizing == 0)
+            continue;
+        const UInt64 nb = std::bit_ceil(max_sizing * 2);
+        group_bucket_bits[gpos] = static_cast<UInt8>(std::countr_zero(nb));
+        leaf_stride[gpos] = roundUpToLine(static_cast<size_t>(nb) * stride);
     }
-    const size_t total_bytes = byte_prefix[num_leaves];
 
     std::atomic<UInt64> cell_alloc_count{0};
 
-    if (total_bytes != 0)
+    /// One allocation per non-empty group (<= 256 mallocs total); parallel over groups.
+    parallel_for(num_groups, [&](size_t gpos, size_t /*worker*/)
     {
-        /// Chunk boundaries: contiguous byte-balanced ranges tiling [0, num_leaves).
-        size_t non_empty = 0;
-        for (UInt64 rows : leaf_arrays.leaf_rows)
-            non_empty += (rows != 0);
-        const size_t num_chunks = std::clamp(num_workers, size_t{1}, non_empty);
-        std::vector<size_t> bound(num_chunks + 1);
-        bound[0] = 0;
-        bound[num_chunks] = num_leaves;
-        for (size_t chunk = 1; chunk < num_chunks; ++chunk)
+        if (group_bucket_bits[gpos] == 0)
+            return;
+        const size_t block_bytes = group_size * leaf_stride[gpos];
+        char * block = static_cast<char *>(out.arena.allocate(block_bytes, LINE_BYTES));
+        cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+        group_base[gpos] = block;
+    });
+
+    std::vector<UInt8> leaf_overflowed(num_leaves, 0);
+
+    /// Fill: parallel over leaves (dynamic, handles row skew; keeps build_arenas[worker]).
+    parallel_for(num_leaves, [&](size_t leaf, size_t worker)
+    {
+        const size_t gpos = leaf >> (total_bits - group_bits);
+        if (group_bucket_bits[gpos] == 0)
+            return;
+        const size_t local = leaf & (group_size - 1);
+        const UInt64 nb = UInt64{1} << group_bucket_bits[gpos];
+        char * cells = group_base[gpos] + local * leaf_stride[gpos];
+        std::memset(cells, 0, static_cast<size_t>(nb) * stride);
+        const UInt64 rows = leaf_arrays.leaf_rows[leaf];
+        if (rows == 0)
+            return;
+        chassert(worker < out.build_arenas.size());
+        const bool overflowed = fillLeafDispatch(
+            key_width, cells, nb, leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
+        if (overflowed)
+            leaf_overflowed[leaf] = 1;
+    });
+
+    /// Group-level rebuild for any group where a leaf overflowed its distinct-estimate sizing.
+    for (size_t gpos = 0; gpos < num_groups; ++gpos)
+    {
+        if (group_bucket_bits[gpos] == 0)
+            continue;
+
+        bool needs_rebuild = false;
+        UInt64 max_rows = 0;
+        for (size_t l = 0; l < group_size; ++l)
         {
-            const size_t target = (total_bytes * chunk) / num_chunks;
-            bound[chunk] = static_cast<size_t>(std::lower_bound(byte_prefix.begin(), byte_prefix.end(), target) - byte_prefix.begin());
+            const size_t leaf = gpos * group_size + l;
+            if (leaf_overflowed[leaf])
+                needs_rebuild = true;
+            max_rows = std::max(max_rows, leaf_arrays.leaf_rows[leaf]);
         }
+        if (!needs_rebuild)
+            continue;
 
-        /// Pass B: one big allocation per chunk, carve 64-aligned per-leaf bases, publish.
-        parallel_for(num_chunks, [&](size_t chunk, size_t /*worker*/)
-        {
-            const size_t chunk_begin = bound[chunk];
-            const size_t chunk_end = bound[chunk + 1];
-            const size_t range_bytes = byte_prefix[chunk_end] - byte_prefix[chunk_begin];
-            if (range_bytes == 0)
-                return;
+        const UInt64 safe_nb = std::bit_ceil(max_rows * 2);
+        group_bucket_bits[gpos] = static_cast<UInt8>(std::countr_zero(safe_nb));
+        leaf_stride[gpos] = roundUpToLine(static_cast<size_t>(safe_nb) * stride);
 
-            char * block = static_cast<char *>(out.arena.allocate(range_bytes, LINE_BYTES));
-            cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+        const size_t block_bytes = group_size * leaf_stride[gpos];
+        char * block = static_cast<char *>(out.arena.allocate(block_bytes, LINE_BYTES));
+        cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+        group_base[gpos] = block;
 
-            size_t off = 0;
-            for (size_t leaf = chunk_begin; leaf < chunk_end; ++leaf)
-            {
-                if (num_buckets[leaf] == 0)
-                    continue;
-                out.leaves[leaf] = LeafHT(block + off, num_buckets[leaf]);
-                off += roundUpToLine(static_cast<size_t>(num_buckets[leaf]) * stride);
-            }
-            chassert(off == range_bytes);
-        });
-
-        /// Pass C: fill dynamically over leaves (row-count skew); zero each leaf immediately before fill.
-        parallel_for(num_leaves, [&](size_t leaf, size_t worker)
-        {
-            const UInt64 rows = leaf_arrays.leaf_rows[leaf];
-            if (rows == 0)
-                return;
-            chassert(worker < out.build_arenas.size());
-
-            std::memset(out.leaves[leaf].cells(), 0, static_cast<size_t>(num_buckets[leaf]) * stride);
-
-            const bool overflowed = fillLeafDispatch(
-                key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
-
-            if (overflowed && num_buckets[leaf] < std::bit_ceil(rows * 2))
-            {
-                const UInt64 safe_buckets = std::bit_ceil(rows * 2);
-                const size_t safe_bytes = static_cast<size_t>(safe_buckets) * stride;
-                char * cells = static_cast<char *>(out.arena.allocate(safe_bytes, LINE_BYTES));
-                cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
-                std::memset(cells, 0, safe_bytes);
-                out.leaves[leaf] = LeafHT(cells, safe_buckets);
-                const bool overflowed_again = fillLeafDispatch(
-                    key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
-                chassert(!overflowed_again);
-            }
-        });
+        fillGroupLeaves(gpos, group_size, leaf_arrays, key_width, stride, group_bucket_bits, leaf_stride, group_base, out, parallel_for);
     }
+
+    out.grouped.group_bits = group_bits;
+    out.grouped.local_shift = total_bits - group_bits;
+    out.grouped.groups.assign(num_groups, LeafHT{});
+    for (size_t gpos = 0; gpos < num_groups; ++gpos)
+        if (group_bucket_bits[gpos] != 0)
+            out.grouped.groups[gpos] = LeafHT(group_base[gpos], UInt64{1} << group_bucket_bits[gpos]);
 
     out.cell_alloc_count = cell_alloc_count.load(std::memory_order_relaxed);
 
-    /// Probe slot's `pos`/`mask` are UInt32 (a 16-byte slot) iff every leaf's bucket count fits in 32 bits.
-    /// Track the max log2(num_buckets) once here so the probe never has to rescan the leaves. (Empty leaves
-    /// report 0 via numBuckets()==1, so they never raise the max.)
+    /// Probe slot's `pos`/`mask` are UInt32 (a 16-byte slot) iff every group's bucket count fits in 32 bits.
     UInt8 max_bits = 0;
-    for (const LeafHT & leaf_ht : out.leaves)
-        max_bits = std::max(max_bits, static_cast<UInt8>(std::countr_zero(leaf_ht.numBuckets())));
+    for (UInt8 bits : group_bucket_bits)
+        max_bits = std::max(max_bits, bits);
     out.max_bucket_bits = max_bits;
 
     return out;
@@ -510,7 +564,7 @@ LeafTables buildLeafTables(
 
 void collectMatches(
     size_t key_width,
-    const LeafHT * leaves,
+    const GroupedLeaves & grouped,
     UInt32 leaf_shift,
     UInt32 total_bits,
     const void * packed_keys,
@@ -521,13 +575,13 @@ void collectMatches(
 {
     const auto * keys = static_cast<const char *>(packed_keys);
 
-    /// Pick the 16-byte (UInt32 bucket-index) slot when every leaf fits in 32 bits — the practical case;
-    /// the UInt64 fallback keeps a >2^31-bucket leaf correct. `pos_fits_u32` is constant for the whole
-    /// probe phase (derived from the built leaves), so this branch predicts perfectly.
+    /// Pick the 16-byte (UInt32 bucket-index) slot when every group fits in 32 bits — the practical case;
+    /// the UInt64 fallback keeps a >2^31-bucket group correct. `pos_fits_u32` is constant for the whole
+    /// probe phase (derived from the built groups), so this branch predicts perfectly.
     if (pos_fits_u32)
-        collectMatchesPos<UInt32>(key_width, leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
+        collectMatchesPos<UInt32>(key_width, grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
     else
-        collectMatchesPos<UInt64>(key_width, leaves, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
+        collectMatchesPos<UInt64>(key_width, grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
 }
 
 }

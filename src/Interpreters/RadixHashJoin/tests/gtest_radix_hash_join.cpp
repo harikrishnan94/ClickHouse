@@ -8,7 +8,9 @@
 #include <Interpreters/RadixHashJoin/PartitionPlan.h>
 
 #include <Columns/ColumnsNumber.h>
+#include <Columns/ColumnFixedString.h>
 #include <Core/Block.h>
+#include <DataTypes/DataTypeFixedString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Common/typeid_cast.h>
 
@@ -16,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <exception>
 #include <map>
 #include <mutex>
@@ -89,6 +92,30 @@ ParallelFor makeParallelFor(size_t num_workers)
         if (first_exc)
             std::rethrow_exception(first_exc);
     };
+}
+
+UInt64 leafNumBuckets(const GroupedLeaves & g, size_t leaf)
+{
+    const size_t gpos = leaf >> g.local_shift;
+    const LeafHT & gw = g.groups[gpos];
+    if (gw.empty())
+        return 0;
+    return gw.numBuckets();
+}
+
+UInt64 totalNonEmptyLeafBuckets(const GroupedLeaves & g, const std::vector<UInt64> & leaf_rows)
+{
+    UInt64 total = 0;
+    for (size_t leaf = 0; leaf < leaf_rows.size(); ++leaf)
+        if (leaf_rows[leaf] != 0)
+            total += leafNumBuckets(g, leaf);
+    return total;
+}
+
+void assertGroupedMetadataBounded(const LeafTables & tables)
+{
+    EXPECT_LE(tables.grouped.groups.size(), MAX_UNIQUE_BUCKET_SIZES);
+    EXPECT_LE(tables.cell_alloc_count, MAX_UNIQUE_BUCKET_SIZES * 2);
 }
 
 /// Build the leaf tables from a single-column UInt64 build side, probe every probe key, and assert the
@@ -184,15 +211,14 @@ void checkBuildAndProbe(
         }
 
         LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, parallel_for);
-        const size_t max_cell_allocs = post_build_threads + (estimate_distinct ? non_empty : 0);
-        EXPECT_LE(tables.cell_alloc_count, max_cell_allocs);
+        assertGroupedMetadataBounded(tables);
         if (!estimate_distinct)
-            EXPECT_LE(tables.cell_alloc_count, post_build_threads);
+            EXPECT_LE(tables.cell_alloc_count, MAX_UNIQUE_BUCKET_SIZES);
 
         std::vector<UInt32> out_rows;
         std::vector<BuildRef> out_refs;
         collectMatches(
-            key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
+            key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
             probe_keys.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
 
         /// Every emitted match must resolve to a build row whose key equals the probe key, and the number
@@ -211,17 +237,40 @@ void checkBuildAndProbe(
             EXPECT_EQ(actual, expected) << "estimate=" << estimate_distinct << " probe row " << i << " key " << probe_keys[i];
         }
 
-        UInt64 total_buckets = 0;
-        for (const LeafHT & ht : tables.leaves)
-            if (!ht.empty())
-                total_buckets += ht.numBuckets();
-        return total_buckets;
+        return totalNonEmptyLeafBuckets(tables.grouped, leaves.leaf_rows);
     };
 
     /// Identical join result with the setting off and on; distinct-estimate sizing only ever shrinks tables.
     const UInt64 buckets_rowcount = run(/*estimate_distinct=*/false);
     const UInt64 buckets_estimate = run(/*estimate_distinct=*/true);
     EXPECT_LE(buckets_estimate, buckets_rowcount);
+}
+
+UInt64 findKeyForLeaf(PartitionPlan plan, size_t target_leaf)
+{
+    for (UInt64 k = 1; k < 500'000'000ULL; ++k)
+    {
+        const UInt64 h = hashPackedKey<8>(&k);
+        const size_t leaf = plan.total_bits ? (routeBits(h) >> plan.leaf_shift) : 0;
+        if (leaf == target_leaf)
+            return k;
+    }
+    ADD_FAILURE() << "no key routes to leaf " << target_leaf;
+    return 0;
+}
+
+Block makeFixedKeyBlock(const std::vector<UInt64> & key_values, size_t key_width, const std::string & name)
+{
+    auto col = ColumnFixedString::create(key_width);
+    std::vector<char> buf(key_width, 0);
+    for (UInt64 v : key_values)
+    {
+        std::memcpy(buf.data(), &v, sizeof(v));
+        col->insertData(buf.data(), key_width);
+    }
+    Block block;
+    block.insert(ColumnWithTypeAndName(std::move(col), std::make_shared<DataTypeFixedString>(key_width), name));
+    return block;
 }
 
 }
@@ -382,17 +431,10 @@ UInt64 totalLeafBuckets(const std::vector<UInt64> & build_keys, PartitionPlan pl
     const ParallelFor parallel_for = makeParallelFor(threads);
     LeafArrays leaves = build_side.scatterToLeaves(parallel_for, threads, estimate);
     LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, threads, parallel_for);
-    UInt64 non_empty = 0;
-    for (UInt64 rows : leaves.leaf_rows)
-        non_empty += (rows != 0);
-    EXPECT_LE(tables.cell_alloc_count, threads + (estimate ? non_empty : 0));
+    assertGroupedMetadataBounded(tables);
     if (!estimate)
-        EXPECT_LE(tables.cell_alloc_count, threads);
-    UInt64 total = 0;
-    for (const LeafHT & ht : tables.leaves)
-        if (!ht.empty())
-            total += ht.numBuckets();
-    return total;
+        EXPECT_LE(tables.cell_alloc_count, MAX_UNIQUE_BUCKET_SIZES);
+    return totalNonEmptyLeafBuckets(tables.grouped, leaves.leaf_rows);
 }
 }
 
@@ -488,10 +530,7 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
     const ParallelFor parallel_for = makeParallelFor(4);
     LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
     LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 4, parallel_for);
-    UInt64 non_empty = 0;
-    for (UInt64 rows : leaves.leaf_rows)
-        non_empty += (rows != 0);
-    EXPECT_LE(tables.cell_alloc_count, 4 + non_empty);
+    assertGroupedMetadataBounded(tables);
 
     /// Route each distinct key to its leaf and assert the safety invariant: num_buckets > distinct keys.
     std::vector<std::set<UInt64>> leaf_keys(leaves.num_leaves);
@@ -502,8 +541,8 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
         leaf_keys[leaf].insert(k);
     }
     for (size_t leaf = 0; leaf < leaves.num_leaves; ++leaf)
-        if (!tables.leaves[leaf].empty())
-            EXPECT_GT(tables.leaves[leaf].numBuckets(), leaf_keys[leaf].size()) << "leaf " << leaf;
+        if (leaves.leaf_rows[leaf] != 0)
+            EXPECT_GT(leafNumBuckets(tables.grouped, leaf), leaf_keys[leaf].size()) << "leaf " << leaf;
 
     /// A miss-heavy probe (keys disjoint from the build) must TERMINATE and find nothing — this is where
     /// the missing empty cell looped before the fix.
@@ -513,7 +552,174 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
     std::vector<UInt32> out_rows;
     std::vector<BuildRef> out_refs;
     collectMatches(
-        key_width, tables.leaves.data(), plan.leaf_shift, plan.total_bits,
+        key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
     EXPECT_TRUE(out_rows.empty());
+}
+
+TEST(RadixHashJoin, BuildProbeGroupedLeaves4096)
+{
+    /// Exercise group_size > 1 (4096 leaves -> group_size = 16) and verify grouped metadata stays bounded.
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    std::mt19937 rng(4096); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
+    for (size_t i = 0; i < 50000; ++i)
+        build_keys.push_back(rng());
+    for (size_t i = 0; i < 10000; ++i)
+        probe_keys.push_back(i % 3 == 0 ? build_keys[i % build_keys.size()] : rng());
+    auto plan = PartitionPlan::choose(50000, 512, 8192);
+    ASSERT_EQ(plan.num_leaves, 4096u);
+    ASSERT_GT(plan.total_bits, MAX_GROUP_BITS);
+    checkBuildAndProbe(build_keys, probe_keys, plan, 4, 4);
+}
+
+TEST(RadixHashJoin, GroupedLeavesEmptyLeafSlotInitialized)
+{
+    /// F1 regression: a sparse build leaves most leaf slots empty inside non-empty groups. Probing an empty
+    /// sibling leaf must terminate (zero matches), not loop on uninitialized cells. Also verify hits on the
+    /// populated leaves match brute force.
+    constexpr size_t key_width = 8;
+    auto plan = PartitionPlan::choose(50000, 512, 8192);
+    ASSERT_EQ(plan.num_leaves, 4096u);
+    ASSERT_GT(plan.total_bits, MAX_GROUP_BITS);
+
+    const size_t group_size = size_t{1} << (plan.total_bits - MAX_GROUP_BITS);
+    ASSERT_GT(group_size, 1u);
+
+    std::vector<UInt64> build_keys;
+    for (size_t g = 0; g < 64; ++g)
+        build_keys.push_back(findKeyForLeaf(plan, g * group_size));
+
+    BuildSide build_side(plan, {0}, {key_width}, 4);
+    build_side.add(makeU64Block(build_keys, "k0"), 0);
+    build_side.finishBuild();
+    const ParallelFor parallel_for = makeParallelFor(4);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 4, parallel_for);
+    assertGroupedMetadataBounded(tables);
+
+    /// Miss-heavy probe: keys route to empty sibling leaves (local=1) inside populated groups.
+    std::vector<UInt64> probe_miss;
+    for (size_t g = 0; g < 64; ++g)
+        probe_miss.push_back(findKeyForLeaf(plan, g * group_size + 1));
+    for (UInt64 i = 0; i < 20000; ++i)
+        probe_miss.push_back(0xD000000000000000ULL + i);
+
+    std::vector<UInt32> out_rows;
+    std::vector<BuildRef> out_refs;
+    collectMatches(
+        key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
+        probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
+    EXPECT_TRUE(out_rows.empty());
+
+    /// Hit probe: every build key must match exactly once.
+    collectMatches(
+        key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
+        build_keys.data(), build_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
+    ASSERT_EQ(out_rows.size(), build_keys.size());
+    const auto & blocks = build_side.blocks();
+    for (size_t m = 0; m < out_rows.size(); ++m)
+    {
+        const auto & col = typeid_cast<const ColumnUInt64 &>(*blocks[out_refs[m].blockNo()].getByPosition(0).column);
+        EXPECT_EQ(col.getData()[out_refs[m].rowNo()], build_keys[out_rows[m]]);
+    }
+}
+
+TEST(RadixHashJoin, BuildProbeGroupedLeaves64ByteKeys)
+{
+    /// Exercise the stride=72 path (key_width=64) with grouped metadata and size_t leaf_stride arithmetic.
+    constexpr size_t key_width = 64;
+    auto plan = PartitionPlan::choose(50000, 512, 8192);
+    ASSERT_EQ(plan.num_leaves, 4096u);
+    ASSERT_GT(plan.total_bits, MAX_GROUP_BITS);
+
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    std::mt19937 rng(64000); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
+    for (size_t i = 0; i < 50000; ++i)
+        build_keys.push_back(rng());
+    for (size_t i = 0; i < 10000; ++i)
+        probe_keys.push_back(i % 3 == 0 ? build_keys[i % build_keys.size()] : rng());
+
+    BuildSide build_side(plan, {0}, {key_width}, 4);
+    build_side.add(makeFixedKeyBlock(build_keys, key_width, "k0"), 0);
+    build_side.finishBuild();
+    const ParallelFor parallel_for = makeParallelFor(4);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 4, parallel_for);
+    assertGroupedMetadataBounded(tables);
+
+    std::map<UInt64, size_t> expected_count;
+    for (UInt64 k : build_keys)
+        ++expected_count[k];
+
+    std::vector<char> packed_probe(probe_keys.size() * key_width, 0);
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+        std::memcpy(packed_probe.data() + i * key_width, &probe_keys[i], sizeof(UInt64));
+
+    std::vector<UInt32> out_rows;
+    std::vector<BuildRef> out_refs;
+    collectMatches(
+        key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
+        packed_probe.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
+
+    const auto & blocks = build_side.blocks();
+    auto build_key_at = [&](BuildRef ref) -> UInt64
+    {
+        const auto & col = typeid_cast<const ColumnFixedString &>(*blocks[ref.blockNo()].getByPosition(0).column);
+        UInt64 v = 0;
+        std::memcpy(&v, col.getChars().data() + ref.rowNo() * key_width, sizeof(v));
+        return v;
+    };
+
+    std::map<UInt32, size_t> got_count;
+    for (size_t m = 0; m < out_rows.size(); ++m)
+    {
+        EXPECT_EQ(build_key_at(out_refs[m]), probe_keys[out_rows[m]]);
+        ++got_count[out_rows[m]];
+    }
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+    {
+        auto it = expected_count.find(probe_keys[i]);
+        const size_t expected = it == expected_count.end() ? 0 : it->second;
+        const size_t actual = got_count.contains(static_cast<UInt32>(i)) ? got_count[static_cast<UInt32>(i)] : 0;
+        EXPECT_EQ(actual, expected) << "probe row " << i << " key " << probe_keys[i];
+    }
+}
+
+TEST(RadixHashJoin, GroupedLeavesLoadInvariant)
+{
+    /// After build, every non-empty group satisfies load <= 0.5 against the max row count in the group.
+    constexpr size_t key_width = 8;
+    std::vector<UInt64> build_keys;
+    std::mt19937 rng(777); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
+    for (size_t i = 0; i < 80000; ++i)
+        build_keys.push_back(rng() % 5000);
+    auto plan = PartitionPlan::choose(build_keys.size(), 2u << 10, 8192);
+    ASSERT_GE(plan.num_leaves, 512u);
+
+    BuildSide build_side(plan, {0}, {key_width}, 4);
+    build_side.add(makeU64Block(build_keys, "k0"), 0);
+    build_side.finishBuild();
+    const ParallelFor parallel_for = makeParallelFor(4);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/false);
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 4, parallel_for);
+    assertGroupedMetadataBounded(tables);
+
+    const size_t num_groups = tables.grouped.groups.size();
+    const size_t group_size = size_t{1} << tables.grouped.local_shift;
+    for (size_t gpos = 0; gpos < num_groups; ++gpos)
+    {
+        const LeafHT & gw = tables.grouped.groups[gpos];
+        if (gw.empty())
+            continue;
+        const UInt8 bits = gw.bits();
+        UInt64 max_rows = 0;
+        for (size_t local = 0; local < group_size; ++local)
+        {
+            const size_t leaf = gpos * group_size + local;
+            max_rows = std::max(max_rows, leaves.leaf_rows[leaf]);
+        }
+        EXPECT_GE(UInt64{1} << bits, max_rows * 2) << "group " << gpos;
+    }
 }

@@ -44,15 +44,18 @@ namespace DB::RadixJoin
   * `total_bits + log2(buckets) <= 32` saturation. Build and probe recompute the identical hash, so the
   * bucket matches on both sides; the leaves carry key + ref only (no stored hash).
   */
-/** A single 64-bit descriptor for one leaf's open-addressing table, packing the cell base pointer and
-  * the bucket count into one word so a leaf vector of millions of entries stays half the size.
+static constexpr size_t MAX_UNIQUE_BUCKET_SIZES = 256;
+static constexpr UInt32 MAX_GROUP_BITS = 8;
+
+/** A single 64-bit descriptor packing a LINE_BYTES-aligned cell base and log2(num_buckets) into one word.
   *
-  * Encoding: `cells` is `LINE_BYTES`(=64)-aligned, so its low 6 bits are always zero and instead hold
-  * `e = log2(num_buckets)` (`num_buckets` is a power of two; the exponent fits in 6 bits since
-  * `e <= 63`). A non-empty leaf has `num_buckets >= 2` (so `e >= 1`) and a non-null `cells`, so its
-  * word is never zero; the all-zero word is therefore an unambiguous, cheap empty-leaf sentinel. The
-  * pointer is reconstructed by masking off the low 6 bits (NOT by clearing high pointer bits, which
-  * would break under >48-bit virtual addresses / aarch64 TBI / Intel LAM).
+  * Per-leaf use: one word per leaf. Grouped use: one word per homogeneous leaf group (the group base and
+  * the shared bucket count). Encoding: `cells` is `LINE_BYTES`(=64)-aligned, so its low 6 bits are always
+  * zero and instead hold `e = log2(num_buckets)` (`num_buckets` is a power of two; the exponent fits in
+  * 6 bits since `e <= 63`). A non-empty table has `num_buckets >= 2` (so `e >= 1`) and a non-null
+  * `cells`, so its word is never zero; the all-zero word is therefore an unambiguous, cheap empty
+  * sentinel. The pointer is reconstructed by masking off the low 6 bits (NOT by clearing high pointer
+  * bits, which would break under >48-bit virtual addresses / aarch64 TBI / Intel LAM).
   *
   * Accessors below are the only intended readers; call sites should not open-code the bit twiddling.
   */
@@ -65,7 +68,7 @@ struct LeafHT
 
     LeafHT() = default;
 
-    /// `cells_` must be LINE_BYTES-aligned; `num_buckets_` a power of two >= 2 (a non-empty leaf). The
+    /// `cells_` must be LINE_BYTES-aligned; `num_buckets_` a power of two >= 2 (a non-empty table). The
     /// pointer is mutable on purpose (the cell array is written during the build) — `cells()` hands it
     /// back as `char *` — even though this ctor only reads its address.
     LeafHT(char * cells_, UInt64 num_buckets_) noexcept /// NOLINT(readability-non-const-parameter)
@@ -73,20 +76,34 @@ struct LeafHT
     {
     }
 
-    /// True for an empty leaf (no rows): the all-zero word.
+    /// True for an empty table (no rows): the all-zero word.
     bool empty() const noexcept { return word == 0; }
 
-    /// The cell array base (stride = leafCellBytes(key_width); memset to 0). Null for an empty leaf.
+    /// The cell array base (stride = leafCellBytes(key_width); memset to 0). Null for an empty table.
     char * cells() const noexcept { return reinterpret_cast<char *>(word & ~EXP_MASK); } /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast, performance-no-int-to-ptr)
 
-    /// Number of buckets (a power of two). Only meaningful for a non-empty leaf.
+    /// log2(num_buckets). Only meaningful for a non-empty table.
+    UInt8 bits() const noexcept { return static_cast<UInt8>(word & EXP_MASK); }
+
+    /// Number of buckets (a power of two). Only meaningful for a non-empty table.
     UInt64 numBuckets() const noexcept { return UInt64{1} << (word & EXP_MASK); }
 
-    /// The probe mask `num_buckets - 1`. Only meaningful for a non-empty leaf.
+    /// The probe mask `num_buckets - 1`. Only meaningful for a non-empty table.
     UInt64 mask() const noexcept { return numBuckets() - 1; }
 };
 
 static_assert(sizeof(LeafHT) == 8, "LeafHT must be a single 64-bit word");
+
+/** Homogeneous leaf groups: consecutive leaf-id ranges share one bucket count and a single arena
+  * allocation, so the probe-side metadata is at most 256 entries (2 KB, one page, L1-resident)
+  * instead of an up-to-8 MB per-leaf descriptor vector.
+  */
+struct GroupedLeaves
+{
+    UInt32 group_bits = 0;   /// g = route >> (32 - group_bits)
+    UInt32 local_shift = 0;  /// total_bits - group_bits; local = (route >> leaf_shift) & ((1<<local_shift)-1)
+    std::vector<LeafHT> groups; /// one packed {base|exp} word per group; LeafHT{} (word 0) == empty group
+};
 
 /// Cell stride for a key of `key_width` bytes (BuildRefList head word + key).
 constexpr size_t leafCellBytes(size_t key_width) noexcept
@@ -105,18 +122,18 @@ inline UInt64 leafBucket(UInt32 low_hash, UInt64 num_buckets) noexcept
 /// BuildRefList Batch nodes (all read-only for the whole probe).
 struct LeafTables
 {
-    std::vector<LeafHT> leaves;      /// indexed by leaf id — the probe-side O(1) lookup vector
+    GroupedLeaves grouped;
     /// Per-build-worker arenas holding the BuildRefList Batch nodes. One per worker (single-writer
     /// during build); their stable addresses must outlive the probe, hence they live here.
     std::vector<std::unique_ptr<DB::Arena>> build_arenas;
     /// Set during build the first time any key gets a duplicate row. Selects the grouped probe path.
     std::atomic<bool> any_duplicates{false};
     UInt64 num_rows = 0;
-    /// max log2(num_buckets) over leaves. The probe uses a dense 16-byte (UInt32 bucket-index) slot iff
-    /// this is <= 31 — i.e. no leaf has more than 2^31 buckets (always, in practice).
+    /// max log2(num_buckets) over groups. The probe uses a dense 16-byte (UInt32 bucket-index) slot iff
+    /// this is <= 31 — i.e. no group has more than 2^31 buckets (always, in practice).
     UInt8 max_bucket_bits = 0;
-    /// Number of cell-array allocations from `arena` during `buildLeafTables` (byte-balanced chunks plus rare
-    /// overflow rebuilds). Diagnostic mirror of `LeafArrays::alloc_count`.
+    /// Number of cell-array allocations from `arena` during `buildLeafTables` (one per non-empty group plus
+    /// rare overflow rebuilds). Diagnostic mirror of `LeafArrays::alloc_count`.
     UInt64 cell_alloc_count = 0;
     Arena arena;                     /// owns the cells (read-only for the whole probe)
 
@@ -127,7 +144,7 @@ struct LeafTables
     /// copyable nor movable, so the moves are spelled out (relaxed load/store; the build barrier already
     /// orders the concurrent build-time writes against the post-build read).
     LeafTables(LeafTables && other) noexcept
-        : leaves(std::move(other.leaves))
+        : grouped(std::move(other.grouped))
         , build_arenas(std::move(other.build_arenas))
         , any_duplicates(other.any_duplicates.load(std::memory_order_relaxed))
         , num_rows(other.num_rows)
@@ -138,7 +155,7 @@ struct LeafTables
     }
     LeafTables & operator=(LeafTables && other) noexcept
     {
-        leaves = std::move(other.leaves);
+        grouped = std::move(other.grouped);
         build_arenas = std::move(other.build_arenas);
         any_duplicates.store(other.any_duplicates.load(std::memory_order_relaxed), std::memory_order_relaxed);
         num_rows = other.num_rows;
@@ -168,7 +185,7 @@ LeafTables buildLeafTables(
 /// `LeafTables::max_bucket_bits <= 31`. When false a 24-byte slot (UInt64 index) is used for correctness.
 void collectMatches(
     size_t key_width,
-    const LeafHT * leaves,
+    const GroupedLeaves & grouped,
     UInt32 leaf_shift,
     UInt32 total_bits,
     const void * packed_keys,
