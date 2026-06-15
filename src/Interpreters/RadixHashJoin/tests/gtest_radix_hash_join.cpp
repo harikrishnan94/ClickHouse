@@ -184,6 +184,10 @@ void checkBuildAndProbe(
         }
 
         LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, post_build_threads, parallel_for);
+        const size_t max_cell_allocs = post_build_threads + (estimate_distinct ? non_empty : 0);
+        EXPECT_LE(tables.cell_alloc_count, max_cell_allocs);
+        if (!estimate_distinct)
+            EXPECT_LE(tables.cell_alloc_count, post_build_threads);
 
         std::vector<UInt32> out_rows;
         std::vector<BuildRef> out_refs;
@@ -378,6 +382,12 @@ UInt64 totalLeafBuckets(const std::vector<UInt64> & build_keys, PartitionPlan pl
     const ParallelFor parallel_for = makeParallelFor(threads);
     LeafArrays leaves = build_side.scatterToLeaves(parallel_for, threads, estimate);
     LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, threads, parallel_for);
+    UInt64 non_empty = 0;
+    for (UInt64 rows : leaves.leaf_rows)
+        non_empty += (rows != 0);
+    EXPECT_LE(tables.cell_alloc_count, threads + (estimate ? non_empty : 0));
+    if (!estimate)
+        EXPECT_LE(tables.cell_alloc_count, threads);
     UInt64 total = 0;
     for (const LeafHT & ht : tables.leaves)
         if (!ht.empty())
@@ -403,8 +413,8 @@ TEST(RadixHashJoin, HllEstimateAccuracy)
                 Hll::add(regs.data(), precision, bucketBits(hashPackedKey<8>(&v)));
             }
             const UInt64 est = Hll::estimate(regs.data(), precision);
-            EXPECT_GE(est, static_cast<UInt64>(static_cast<double>(n) * (1.0 - tol))) << "p=" << int(precision) << " n=" << n << " est=" << est;
-            EXPECT_LE(est, static_cast<UInt64>(static_cast<double>(n) * (1.0 + tol))) << "p=" << int(precision) << " n=" << n << " est=" << est;
+            EXPECT_GE(est, static_cast<UInt64>(static_cast<double>(n) * (1.0 - tol))) << "p=" << static_cast<int>(precision) << " n=" << n << " est=" << est;
+            EXPECT_LE(est, static_cast<UInt64>(static_cast<double>(n) * (1.0 + tol))) << "p=" << static_cast<int>(precision) << " n=" << n << " est=" << est;
         }
     }
 }
@@ -478,6 +488,10 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
     const ParallelFor parallel_for = makeParallelFor(4);
     LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
     LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 4, parallel_for);
+    UInt64 non_empty = 0;
+    for (UInt64 rows : leaves.leaf_rows)
+        non_empty += (rows != 0);
+    EXPECT_LE(tables.cell_alloc_count, 4 + non_empty);
 
     /// Route each distinct key to its leaf and assert the safety invariant: num_buckets > distinct keys.
     std::vector<std::set<UInt64>> leaf_keys(leaves.num_leaves);

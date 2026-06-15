@@ -55,7 +55,7 @@ template <size_t ring_size, typename Policy>
 void amacRing(Policy & policy, size_t n)
 {
     static_assert(ring_size >= 1 && (ring_size & (ring_size - 1)) == 0, "ring_size must be a power of two");
-    using Slot = typename Policy::Slot;
+    using Slot = Policy::Slot;
 
     Slot ring[ring_size]; /// every slot default-constructs to INACTIVE
 
@@ -401,51 +401,108 @@ LeafTables buildLeafTables(
     /// its own arena (single-writer, no locking); the arenas live in `out` so the nodes outlive the
     /// probe. Constructed up front so the worker index maps to a fixed, stable slot.
     out.build_arenas.resize(num_workers);
-    for (auto & a : out.build_arenas)
-        a = std::make_unique<DB::Arena>();
+    for (auto & worker_arena : out.build_arenas)
+        worker_arena = std::make_unique<DB::Arena>();
 
-    /// Each worker sizes, allocates, 0-inits (empty cell == BuildRefList word 0), and fills its own
-    /// leaf's cell array — sizing, allocation, zeroing and fill all spread across the build threads, no
-    /// single-threaded carve. The leaf descriptor (cells + bucket count) is packed and published in one
-    /// store. Batch nodes for that leaf's duplicate keys come from the worker's own arena.
-    parallel_for(num_leaves, [&](size_t leaf, size_t worker)
+    const size_t stride = leafCellBytes(key_width);
+
+    /// Pass A: per-leaf sizing + exclusive byte prefix (serial; negligible vs fill).
+    std::vector<UInt64> num_buckets(num_leaves, 0);     /// 0 == empty leaf (stays LeafHT{})
+    std::vector<size_t> byte_prefix(num_leaves + 1, 0); /// padded per-leaf bytes, exclusive prefix
+    for (size_t leaf = 0; leaf < num_leaves; ++leaf)
     {
         const UInt64 rows = leaf_arrays.leaf_rows[leaf];
-        if (rows == 0)
-            return;
-        chassert(worker < out.build_arenas.size());
-        /// Size by the HLL distinct-key estimate when available (it is clamped to `rows` upstream, so this
-        /// only ever shrinks the table); otherwise fall back to the raw row count. Either way ~0.5 load.
-        const UInt64 sizing_rows = leaf_arrays.distinct_key_estimates.empty()
-            ? rows
-            : leaf_arrays.distinct_key_estimates[leaf];
-        auto alloc_and_fill = [&](UInt64 num_buckets)
+        size_t padded = 0;
+        if (rows != 0)
         {
-            const size_t cell_bytes = static_cast<size_t>(num_buckets) * leafCellBytes(key_width);
-            char * cells = static_cast<char *>(out.arena.allocate(cell_bytes, LINE_BYTES));
-            std::memset(cells, 0, cell_bytes);
-            out.leaves[leaf] = LeafHT(cells, num_buckets);
-            return fillLeafDispatch(key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
-        };
-
-        const UInt64 est_buckets = std::bit_ceil(std::max<UInt64>(sizing_rows, 1) * 2);
-        if (alloc_and_fill(est_buckets) && est_buckets < std::bit_ceil(rows * 2))
-        {
-            /// The distinct estimate undersized this leaf (it couldn't hold every distinct key with a spare
-            /// empty cell). Rebuild from scratch with safe row-count sizing — `bit_ceil(rows * 2) >= 2*rows`
-            /// keeps the load <= 0.5, so all distinct keys (<= rows) fit and an empty cell always remains, so
-            /// this rebuild cannot overflow. (The undersized array is abandoned in the arena, freed with it.)
-            const bool overflowed_again = alloc_and_fill(std::bit_ceil(rows * 2));
-            chassert(!overflowed_again);
+            const UInt64 sizing_rows = leaf_arrays.distinct_key_estimates.empty()
+                ? rows
+                : leaf_arrays.distinct_key_estimates[leaf];
+            const UInt64 est_buckets = std::bit_ceil(std::max<UInt64>(sizing_rows, 1) * 2);
+            num_buckets[leaf] = est_buckets;
+            padded = roundUpToLine(static_cast<size_t>(est_buckets) * stride);
         }
-    });
+        byte_prefix[leaf + 1] = byte_prefix[leaf] + padded;
+    }
+    const size_t total_bytes = byte_prefix[num_leaves];
+
+    std::atomic<UInt64> cell_alloc_count{0};
+
+    if (total_bytes != 0)
+    {
+        /// Chunk boundaries: contiguous byte-balanced ranges tiling [0, num_leaves).
+        size_t non_empty = 0;
+        for (UInt64 rows : leaf_arrays.leaf_rows)
+            non_empty += (rows != 0);
+        const size_t num_chunks = std::clamp(num_workers, size_t{1}, non_empty);
+        std::vector<size_t> bound(num_chunks + 1);
+        bound[0] = 0;
+        bound[num_chunks] = num_leaves;
+        for (size_t chunk = 1; chunk < num_chunks; ++chunk)
+        {
+            const size_t target = (total_bytes * chunk) / num_chunks;
+            bound[chunk] = static_cast<size_t>(std::lower_bound(byte_prefix.begin(), byte_prefix.end(), target) - byte_prefix.begin());
+        }
+
+        /// Pass B: one big allocation per chunk, carve 64-aligned per-leaf bases, publish.
+        parallel_for(num_chunks, [&](size_t chunk, size_t /*worker*/)
+        {
+            const size_t chunk_begin = bound[chunk];
+            const size_t chunk_end = bound[chunk + 1];
+            const size_t range_bytes = byte_prefix[chunk_end] - byte_prefix[chunk_begin];
+            if (range_bytes == 0)
+                return;
+
+            char * block = static_cast<char *>(out.arena.allocate(range_bytes, LINE_BYTES));
+            cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+
+            size_t off = 0;
+            for (size_t leaf = chunk_begin; leaf < chunk_end; ++leaf)
+            {
+                if (num_buckets[leaf] == 0)
+                    continue;
+                out.leaves[leaf] = LeafHT(block + off, num_buckets[leaf]);
+                off += roundUpToLine(static_cast<size_t>(num_buckets[leaf]) * stride);
+            }
+            chassert(off == range_bytes);
+        });
+
+        /// Pass C: fill dynamically over leaves (row-count skew); zero each leaf immediately before fill.
+        parallel_for(num_leaves, [&](size_t leaf, size_t worker)
+        {
+            const UInt64 rows = leaf_arrays.leaf_rows[leaf];
+            if (rows == 0)
+                return;
+            chassert(worker < out.build_arenas.size());
+
+            std::memset(out.leaves[leaf].cells(), 0, static_cast<size_t>(num_buckets[leaf]) * stride);
+
+            const bool overflowed = fillLeafDispatch(
+                key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
+
+            if (overflowed && num_buckets[leaf] < std::bit_ceil(rows * 2))
+            {
+                const UInt64 safe_buckets = std::bit_ceil(rows * 2);
+                const size_t safe_bytes = static_cast<size_t>(safe_buckets) * stride;
+                char * cells = static_cast<char *>(out.arena.allocate(safe_bytes, LINE_BYTES));
+                cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+                std::memset(cells, 0, safe_bytes);
+                out.leaves[leaf] = LeafHT(cells, safe_buckets);
+                const bool overflowed_again = fillLeafDispatch(
+                    key_width, out.leaves[leaf], leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
+                chassert(!overflowed_again);
+            }
+        });
+    }
+
+    out.cell_alloc_count = cell_alloc_count.load(std::memory_order_relaxed);
 
     /// Probe slot's `pos`/`mask` are UInt32 (a 16-byte slot) iff every leaf's bucket count fits in 32 bits.
     /// Track the max log2(num_buckets) once here so the probe never has to rescan the leaves. (Empty leaves
     /// report 0 via numBuckets()==1, so they never raise the max.)
     UInt8 max_bits = 0;
-    for (const LeafHT & ht : out.leaves)
-        max_bits = std::max(max_bits, static_cast<UInt8>(std::countr_zero(ht.numBuckets())));
+    for (const LeafHT & leaf_ht : out.leaves)
+        max_bits = std::max(max_bits, static_cast<UInt8>(std::countr_zero(leaf_ht.numBuckets())));
     out.max_bucket_bits = max_bits;
 
     return out;
