@@ -39,10 +39,10 @@ namespace DB::RadixJoin
   * even in a build that also contains duplicates. The Batch node is allocated only when the first
   * duplicate of a key arrives.
   *
-  * Bucket = low 32 bits of the key's hash; leaf = high bits. A well-mixed 64-bit hash has independent
-  * halves, so the within-leaf bucket shares no bits with the leaf id and there is no
-  * `total_bits + log2(buckets) <= 32` saturation. Build and probe recompute the identical hash, so the
-  * bucket matches on both sides; the leaves carry key + ref only (no stored hash).
+  * Leaf = top `total_bits` of the key's 32-bit `HashT` hash; bucket = low bits masked by
+  * `num_buckets - 1`. Routing and bucketing share one word, so the partition plan must keep
+  * `total_bits + log2(buckets) <= 32`. Build and probe recompute the identical hash, so the bucket
+  * matches on both sides; the leaves carry key + ref only (no stored hash).
   */
 static constexpr size_t MAX_UNIQUE_BUCKET_SIZES = 256;
 static constexpr UInt32 MAX_GROUP_BITS = 8;
@@ -179,7 +179,7 @@ LeafTables buildLeafTables(
 
 /// Probe `n` left rows (their packed keys) against the leaf tables, appending one `(left_row, BuildRef)`
 /// per match to the output buffers (singleton keys emit one ref; multi-row keys iterate the whole
-/// BuildRefList). The 64-bit hash of each key is computed internally, inside the probe pipeline, so its
+/// BuildRefList). The 32-bit `HashT` hash of each key is computed internally, inside the probe pipeline, so its
 /// latency overlaps with the in-flight cell misses (no precomputed hash array is passed in).
 /// The probe is the tiled AMAC-over-seeds pipeline for every key width and both duplicate-free and
 /// duplicate builds (singletons emit inline; multi-row keys iterate their BuildRefList). `pos_fits_u32`
