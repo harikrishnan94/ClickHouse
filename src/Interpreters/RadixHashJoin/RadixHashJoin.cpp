@@ -193,8 +193,12 @@ struct ProbeScratch
     /// Batch-wide multi-column key packing. Capacity is reused across batches and only ever grows, so the
     /// steady state does no per-batch heap allocation. The per-row hash is no longer materialised here —
     /// it is computed on the fly inside `collectMatches`.
-    std::vector<char> packed;                   /// multi-column packed keys for the whole batch
+    std::vector<char> packed;                   /// multi-column packed keys for the whole block
     std::vector<const char *> kcol_src;         /// raw data of each left key column
+
+    /// Reusable per-tile seed scratch for `collectMatches` (one tile worth; grows once, then reused).
+    std::vector<UInt64> seed_leaf;
+    std::vector<UInt32> seed_pos;
 
     /// Matches (one (left_row, ref) per match), in probe order.
     std::vector<UInt32> left_rows;
@@ -227,11 +231,6 @@ struct ProbeContext
     const std::vector<UInt64> & block_base;
     size_t num_leaves;
 };
-
-/// Block-scope leaf partitioning is done in batches of this many rows so the pack/hash/route scratch
-/// stays bounded even when the user raises `max_block_size` (the common case is one batch per block).
-constexpr size_t PROBE_BATCH_ROWS = 65536;
-static_assert(PROBE_BATCH_ROWS <= 65536, "the AMAC probe slot stores the per-batch row index in a UInt16");
 
 /// Precompute the output schema once: left columns (filtered by the analyzer rules), then payload
 /// columns whose output name is not already provided by a left column, then required right-key columns
@@ -334,21 +333,19 @@ void packBatch(
     }
 }
 
-/// Phase 1 — Probe. For each batch: pack (multi-column) + 64-bit hash, then the flat per-row routed
-/// probe. Matches land directly in `s.left_rows`/`s.refs`, then are grouped by build block for the bulk
-/// gathers when the build had duplicates.
+/// Phase 1 — Probe. Pack (multi-column) the whole block, then look up every row via the AMAC-over-seeds
+/// pipeline (which tiles the block internally). Matches land directly in `s.left_rows`/`s.refs`, then are
+/// grouped by build block for the bulk gathers when the build had duplicates.
 void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeScratch & s)
 {
     s.left_rows.clear();
     s.refs.clear();
-    s.left_rows.reserve(n);
-    s.refs.reserve(n);
 
     const bool single_col = ctx.key_widths.size() == 1;
-    const char * single_raw = nullptr;
+    const char * keys = nullptr;
     if (single_col)
     {
-        single_raw = block.getByName(ctx.key_names_left[0]).column->getRawData().data();
+        keys = block.getByName(ctx.key_names_left[0]).column->getRawData().data();
     }
     else
     {
@@ -356,64 +353,42 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         s.kcol_src.reserve(ctx.key_widths.size());
         for (const auto & name : ctx.key_names_left)
             s.kcol_src.push_back(block.getByName(name).column->getRawData().data());
-    }
 
-    const bool has_dups = ctx.leaf_tables.any_duplicates.load(std::memory_order_relaxed);
+        s.packed.resize(n * ctx.key_width);
+        keys = s.packed.data();
 
-    for (size_t batch_start = 0; batch_start < n; batch_start += PROBE_BATCH_ROWS)
-    {
-        const size_t bn = std::min(PROBE_BATCH_ROWS, n - batch_start);
-
-        const char * keys = nullptr;
-        if (single_col)
+        /// Phase 1a — pack the multi-column keys (chunk-aware). Single-column keys skip this entirely; the
+        /// per-row hash is computed later inside `collectMatches`.
+        switch (ctx.key_width)
         {
-            keys = single_raw + batch_start * ctx.key_width;
-        }
-        else
-        {
-            s.packed.resize(bn * ctx.key_width);
-            keys = s.packed.data();
-
-            /// Phase 1a — pack the multi-column keys (chunk-aware). Single-column keys skip this entirely;
-            /// the per-row hash is computed later inside `collectMatches`.
-            switch (ctx.key_width)
-            {
 #define RHJ_PACK(W) \
     case W: \
-        packBatch<W>(ctx, s.kcol_src, batch_start, bn, s.packed.data()); \
+        packBatch<W>(ctx, s.kcol_src, 0, n, s.packed.data()); \
         break;
-                RHJ_PACK(4)  RHJ_PACK(8)  RHJ_PACK(12) RHJ_PACK(16)
-                RHJ_PACK(20) RHJ_PACK(24) RHJ_PACK(28) RHJ_PACK(32)
-                RHJ_PACK(36) RHJ_PACK(40) RHJ_PACK(44) RHJ_PACK(48)
-                RHJ_PACK(52) RHJ_PACK(56) RHJ_PACK(60) RHJ_PACK(64)
+            RHJ_PACK(4)  RHJ_PACK(8)  RHJ_PACK(12) RHJ_PACK(16)
+            RHJ_PACK(20) RHJ_PACK(24) RHJ_PACK(28) RHJ_PACK(32)
+            RHJ_PACK(36) RHJ_PACK(40) RHJ_PACK(44) RHJ_PACK(48)
+            RHJ_PACK(52) RHJ_PACK(56) RHJ_PACK(60) RHJ_PACK(64)
 #undef RHJ_PACK
-                default:
-                    throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
-            }
+            default:
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: unsupported key width {}", ctx.key_width);
         }
+    }
 
-        /// Phase 1b — lookup. Matches (absolute batch-local row id) are appended to the global match
-        /// buffers; `batch_start` is folded back in afterwards (a no-op for the single-batch common case).
-        const size_t match_begin = s.left_rows.size();
-        {
-            ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
-            RadixJoin::collectMatches(
-                ctx.key_width, ctx.leaf_tables.grouped, ctx.leaf_shift, ctx.total_bits,
-                keys, bn, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31, s.left_rows, s.refs);
-        }
-
-        if (batch_start != 0)
-        {
-            const auto base = static_cast<UInt32>(batch_start);
-            for (size_t m = match_begin; m < s.left_rows.size(); ++m)
-                s.left_rows[m] += base;
-        }
+    /// Phase 1b — lookup. `collectMatches` tiles the block internally and writes one (row, ref) per match
+    /// directly into `s.left_rows`/`s.refs` (resizing them); the seed scratch is reused across blocks.
+    {
+        ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
+        RadixJoin::collectMatches(
+            ctx.key_width, ctx.leaf_tables.grouped, ctx.leaf_shift, ctx.total_bits,
+            keys, n, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31,
+            s.seed_leaf, s.seed_pos, s.left_rows, s.refs);
     }
 
     /// Hybrid gather decision. With a duplicate-free build the matches are ~1:1 and scattered, so a
     /// direct typed gather in match order (no sort, no temp) wins. With duplicates the probe rows fan
     /// out and grouping by build block (counting sort) gives the gather base-pointer locality.
-    s.grouped = has_dups;
+    s.grouped = ctx.leaf_tables.any_duplicates.load(std::memory_order_relaxed);
     if (s.grouped)
         sortMatchesByBlock(ctx, s);
 }
