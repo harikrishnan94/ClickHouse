@@ -146,6 +146,13 @@ inline std::vector<EvDef> perfGroup(const std::string & g)
     if (g == "loc")
         return {{"l1_hit", raw, 0x1d1}, {"l2_hit", raw, 0x2d1}, {"l3_hit", raw, 0x4d1},
                 {"l3_miss", raw, 0x20d1}, cyc, ins};
+    /// dTLB load page-walk activity (DTLB_LOAD_MISSES, event 0x12). walk_completed (umask 0x0E) counts
+    /// finished walks; walk_pending (umask 0x10) is the per-cycle PMH occupancy (avg outstanding walks);
+    /// walk_active (umask 0x10 + cmask 1) is cycles with >=1 PMH walk in flight. Raw configs verified on
+    /// this CPU via `perf stat -vv` (walk_active=0x1001012, walk_pending=0x1012, walk_completed=0xe12).
+    /// Separates "page-walk cost" (walk_active% / PMH occupancy up) from "more TLB misses" (walks/row up).
+    if (g == "tlb")
+        return {{"walk_pending", raw, 0x1012}, {"walk_active", raw, 0x1001012}, {"walk_completed", raw, 0xe12}, cyc, ins};
     return {};
 }
 
@@ -587,7 +594,7 @@ void runReport(const Args & args, const SharedHeader & right_header)
     UInt64 matches = 0;
     bool perf_ok = true;
 
-    for (const char * gname : {"lfb", "off2", "off", "l2", "stall", "loc"})
+    for (const char * gname : {"lfb", "off2", "off", "l2", "stall", "loc", "tlb"})
     {
         const auto group = perfGroup(gname);
         std::vector<std::vector<double>> per_count(group.size());
@@ -631,6 +638,10 @@ void runReport(const Args & args, const SharedHeader & right_header)
     const double st_l3 = rat("stall.stalls_l3_miss", "stall.cycles");
     const double loc_tot = val("loc.l1_hit") + val("loc.l2_hit") + val("loc.l3_hit") + val("loc.l3_miss");
     auto pct = [&](const char * k) { return loc_tot > 0 ? 100.0 * val(k) / loc_tot : 0.0; };
+    /// Page-walk activity (dTLB load walks). walks_per_row isolates COUNT; walk_active%/pmh_occupancy isolate COST.
+    const double walks_per_row = val("tlb.walk_completed") / rows;
+    const double walk_active = rat("tlb.walk_active", "tlb.cycles");
+    const double pmh_occupancy = rat("tlb.walk_pending", "tlb.cycles");
     const bool ok = (matches == args.probe_rows);
     const char * de = args.engine == "rhj"
         ? (args.distinct_estimate < 0 ? "default(on)" : (args.distinct_estimate ? "on" : "off")) : "n/a";
@@ -665,12 +676,19 @@ void runReport(const Args & args, const SharedHeader & right_header)
     fmt::print("  stalls with >=1 L2 miss outstanding  stalls_l2_miss/cycles   = {:5.1f}%\n", 100 * st_l2);
     fmt::print("  stalls with >=1 L3 miss outstanding  stalls_l3_miss/cycles   = {:5.1f}%  (~0 => prefetch hides DRAM)\n", 100 * st_l3);
 
+    fmt::print("\nPAGE WALKS (dTLB load misses; isolates walk COST from walk COUNT)\n");
+    fmt::print("  dTLB page walks per probe row        walk_completed/row      = {:6.3f}  (COUNT; ~flat => not more misses)\n", walks_per_row);
+    fmt::print("  cycles with >=1 PMH walk active      walk_active/cycles      = {:5.1f}%  (COST; up => walks longer/denser)\n", 100 * walk_active);
+    fmt::print("  avg page-walks outstanding per cycle walk_pending/cycles     = {:6.3f}  (PMH occupancy stealing MLP)\n", pmh_occupancy);
+
     fmt::print(
         "\nSUMMARY engine={} build={} probe={} threads={} ns_per_row={:.2f} mlp_off={:.2f} mlp_off_dmd={:.2f} "
         "mlp_lfb={:.2f} fb_full={:.3f} l2_miss={:.3f} swpf_hit={:.3f} swpf_per_row={:.3f} ipc={:.2f} "
-        "inst_per_row={:.1f} stalls_total={:.3f} stalls_l2={:.3f} stalls_l3={:.3f} ok={}\n",
+        "inst_per_row={:.1f} stalls_total={:.3f} stalls_l2={:.3f} stalls_l3={:.3f} "
+        "walks_per_row={:.3f} walk_active={:.3f} pmh_occ={:.3f} ok={}\n",
         args.engine, args.build_rows, args.probe_rows, args.threads, ns_per_row, mlp_off_all, mlp_off_dmd,
-        mlp_lfb, fb_full, l2_miss, swpf_hit, swpf_per_row, ipc, inst_per_row, st_total, st_l2, st_l3, ok ? 1 : 0);
+        mlp_lfb, fb_full, l2_miss, swpf_hit, swpf_per_row, ipc, inst_per_row, st_total, st_l2, st_l3,
+        walks_per_row, walk_active, pmh_occupancy, ok ? 1 : 0);
     fmt::print("======================================================================\n");
     (void)std::fflush(stdout);
 }
@@ -771,10 +789,10 @@ int main(int argc, char ** argv)
     /// PMU-instrumented mode (driver-only): build once, probe many, with per-worker phase counters.
     if (args.perf_group != "none")
     {
-        static const std::vector<std::string> valid{"lfb", "off", "off2", "loc", "l2", "stall"};
+        static const std::vector<std::string> valid{"lfb", "off", "off2", "loc", "l2", "stall", "tlb"};
         if (std::find(valid.begin(), valid.end(), args.perf_group) == valid.end())
         {
-            fmt::print(stderr, "--perf-group must be one of: lfb | off | off2 | loc | l2 | stall\n");
+            fmt::print(stderr, "--perf-group must be one of: lfb | off | off2 | loc | l2 | stall | tlb\n");
             return 2;
         }
         runInstrumented(args, right_header);
