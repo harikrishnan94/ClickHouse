@@ -118,6 +118,24 @@ void assertGroupedMetadataBounded(const LeafTables & tables)
     EXPECT_LE(tables.cell_alloc_count, MAX_UNIQUE_BUCKET_SIZES * 2);
 }
 
+/// Test wrapper around `collectMatches` that owns the per-call seed scratch (production passes reusable
+/// `ProbeScratch` buffers; the tests do not care about reuse).
+void collectMatchesTest(
+    size_t key_width,
+    const GroupedLeaves & grouped,
+    UInt32 leaf_shift,
+    UInt32 total_bits,
+    const void * packed_keys,
+    size_t n,
+    bool pos_fits_u32,
+    std::vector<UInt32> & out_left_rows,
+    std::vector<BuildRef> & out_refs)
+{
+    std::vector<UInt64> seed_leaf;
+    std::vector<UInt32> seed_pos;
+    collectMatches(key_width, grouped, leaf_shift, total_bits, packed_keys, n, pos_fits_u32, seed_leaf, seed_pos, out_left_rows, out_refs);
+}
+
 /// Build the leaf tables from a single-column UInt64 build side, probe every probe key, and assert the
 /// (probe_row -> matched build flat-rows) result equals the brute-force reference.
 void checkBuildAndProbe(
@@ -217,7 +235,7 @@ void checkBuildAndProbe(
 
         std::vector<UInt32> out_rows;
         std::vector<BuildRef> out_refs;
-        collectMatches(
+        collectMatchesTest(
             key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
             probe_keys.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
 
@@ -551,7 +569,7 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
         probe_miss.push_back(0x8000000000000000ULL + i);
     std::vector<UInt32> out_rows;
     std::vector<BuildRef> out_refs;
-    collectMatches(
+    collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
     EXPECT_TRUE(out_rows.empty());
@@ -607,13 +625,13 @@ TEST(RadixHashJoin, GroupedLeavesEmptyLeafSlotInitialized)
 
     std::vector<UInt32> out_rows;
     std::vector<BuildRef> out_refs;
-    collectMatches(
+    collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
     EXPECT_TRUE(out_rows.empty());
 
     /// Hit probe: every build key must match exactly once.
-    collectMatches(
+    collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         build_keys.data(), build_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
     ASSERT_EQ(out_rows.size(), build_keys.size());
@@ -659,7 +677,7 @@ TEST(RadixHashJoin, BuildProbeGroupedLeaves64ByteKeys)
 
     std::vector<UInt32> out_rows;
     std::vector<BuildRef> out_refs;
-    collectMatches(
+    collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         packed_probe.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
 

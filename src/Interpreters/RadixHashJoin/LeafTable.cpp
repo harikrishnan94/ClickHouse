@@ -393,6 +393,8 @@ void collectMatchesPipelined(
     UInt32 total_bits,
     const char * keys,
     size_t n,
+    std::vector<UInt64> & seed_leaf_scratch,
+    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
@@ -403,12 +405,15 @@ void collectMatchesPipelined(
     const LeafHT * groups = grouped.groups.data();
     const UInt32 local_shift = grouped.local_shift;
 
-    alignas(64) UInt64 seed_leaf[PROBE_TILE_ROWS];
-    alignas(64) UInt32 seed_pos[PROBE_TILE_ROWS];
+    /// Caller-owned, reused seed buffers (one tile worth, 12 B/row, L1-resident); no per-call allocation.
+    seed_leaf_scratch.resize(PROBE_TILE_ROWS);
+    seed_pos_scratch.resize(PROBE_TILE_ROWS);
+    UInt64 * const seed_leaf = seed_leaf_scratch.data();
+    UInt32 * const seed_pos = seed_pos_scratch.data();
 
     /// Growable raw-cursor emit: reserve the singleton lower bound (<= n matches) once and write through
     /// plain pointers; the capacity guard only ever fires for a multi-row (duplicate) key, whose match set
-    /// can exceed n. Shrink to the real count at the end (capacity retained for reuse across batches).
+    /// can exceed n. Shrink to the real count at the end (capacity retained for reuse across blocks).
     const size_t out_begin = out_left_rows.size();
     out_left_rows.resize(out_begin + n);
     out_refs.resize(out_begin + n);
@@ -436,7 +441,7 @@ void collectMatchesPipelined(
         const char * cells = nullptr; /// leaf cell-array base; nullptr == inactive (empty group / drained)
         PosT pos = 0;                 /// current linear-probe bucket index
         PosT mask = 0;                /// num_buckets - 1 (decoded once in admit)
-        UInt32 row = 0;               /// probe row within this call (< n <= PROBE_BATCH_ROWS)
+        UInt32 row = 0;               /// probe row within this call (< n, the block row count)
     };
 
     for (size_t t0 = 0; t0 < n; t0 += PROBE_TILE_ROWS)
@@ -543,7 +548,7 @@ void collectMatchesPipelined(
         }
     }
 
-    /// Shrink to the actual match count (capacity is retained for reuse across batches).
+    /// Shrink to the actual match count (capacity is retained for reuse across blocks).
     out_left_rows.resize(static_cast<size_t>(row_cur - out_left_rows.data()));
     out_refs.resize(static_cast<size_t>(ref_cur - out_refs.data()));
 }
@@ -557,12 +562,14 @@ void collectMatchesPipelinedDispatch(
     UInt32 total_bits,
     const char * keys,
     size_t n,
+    std::vector<UInt64> & seed_leaf_scratch,
+    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
 #define RHJ_PIPE_DISPATCH(W) \
     case W: \
-        collectMatchesPipelined<W, PosT>(grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
+        collectMatchesPipelined<W, PosT>(grouped, leaf_shift, total_bits, keys, n, seed_leaf_scratch, seed_pos_scratch, out_left_rows, out_refs); \
         return;
     switch (key_width)
     {
@@ -749,6 +756,8 @@ void collectMatches(
     const void * packed_keys,
     size_t n,
     bool pos_fits_u32,
+    std::vector<UInt64> & seed_leaf_scratch,
+    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
@@ -759,9 +768,9 @@ void collectMatches(
     /// keeps a >2^31-bucket group correct. `pos_fits_u32` is constant for the whole probe phase (derived from
     /// the built groups), so this branch predicts perfectly.
     if (pos_fits_u32)
-        collectMatchesPipelinedDispatch<UInt32>(key_width, grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
+        collectMatchesPipelinedDispatch<UInt32>(key_width, grouped, leaf_shift, total_bits, keys, n, seed_leaf_scratch, seed_pos_scratch, out_left_rows, out_refs);
     else
-        collectMatchesPipelinedDispatch<UInt64>(key_width, grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
+        collectMatchesPipelinedDispatch<UInt64>(key_width, grouped, leaf_shift, total_bits, keys, n, seed_leaf_scratch, seed_pos_scratch, out_left_rows, out_refs);
 }
 
 }
