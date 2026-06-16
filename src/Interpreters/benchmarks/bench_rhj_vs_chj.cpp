@@ -153,6 +153,24 @@ inline std::vector<EvDef> perfGroup(const std::string & g)
     /// Separates "page-walk cost" (walk_active% / PMH occupancy up) from "more TLB misses" (walks/row up).
     if (g == "tlb")
         return {{"walk_pending", raw, 0x1012}, {"walk_active", raw, 0x1001012}, {"walk_completed", raw, 0xe12}, cyc, ins};
+    /// Top-down Microarchitecture Analysis (TMA) via PERF_METRICS. `slots` (0x400) MUST be the group leader;
+    /// the topdown-* metric events (config 0x8000..0x8700) are read from the PERF_METRICS MSR and partition
+    /// slots exactly at L1 (retiring+bad_spec+fe_bound+be_bound == slots). L2 sub-levels: heavy_ops (under
+    /// retiring), br_mispred (under bad_spec), fetch_lat (under fe_bound), mem_bound (under be_bound).
+    /// Core-Bound is DERIVED = be_bound - mem_bound. Each fraction = metric/slots; summing raw counts across
+    /// workers and dividing yields the slots-weighted average. Verified on this SPR via `perf stat -vv`
+    /// (type 4 / "cpu" PMU) and a standalone perf_event_open test (4 L1 metrics sum to slots, no multiplexing).
+    if (g == "td")
+        return {{"slots", raw, 0x400}, {"retiring", raw, 0x8000}, {"bad_spec", raw, 0x8100},
+                {"fe_bound", raw, 0x8200}, {"be_bound", raw, 0x8300}, {"heavy_ops", raw, 0x8400},
+                {"br_mispred", raw, 0x8500}, {"fetch_lat", raw, 0x8600}, {"mem_bound", raw, 0x8700}};
+    /// Retired branch mispredictions, to separate misprediction COUNT from its TMA exposure. misp_cond
+    /// (0x11c5, BR_MISP_RETIRED.COND) is the data-dependent conditional class that dominates here;
+    /// branches (0xc4, BR_INST_RETIRED.ALL_BRANCHES) is the denominator. Counts per probe row reveal
+    /// whether a swing in the topdown Bad-Spec % is a real change in mispredicts or only a change in how
+    /// exposed they are (mispredicts hidden under a saturated backend retire fewer wrong-path slots).
+    if (g == "br")
+        return {{"misp_all", raw, 0xc5}, {"misp_cond", raw, 0x11c5}, {"branches", raw, 0xc4}, cyc, ins};
     return {};
 }
 
@@ -594,7 +612,7 @@ void runReport(const Args & args, const SharedHeader & right_header)
     UInt64 matches = 0;
     bool perf_ok = true;
 
-    for (const char * gname : {"lfb", "off2", "off", "l2", "stall", "loc", "tlb"})
+    for (const char * gname : {"lfb", "off2", "off", "l2", "stall", "loc", "tlb", "td", "br"})
     {
         const auto group = perfGroup(gname);
         std::vector<std::vector<double>> per_count(group.size());
@@ -642,6 +660,24 @@ void runReport(const Args & args, const SharedHeader & right_header)
     const double walks_per_row = val("tlb.walk_completed") / rows;
     const double walk_active = rat("tlb.walk_active", "tlb.cycles");
     const double pmh_occupancy = rat("tlb.walk_pending", "tlb.cycles");
+    /// Top-down (TMA): L1 fractions partition slots; L2 sub-levels nested under their L1 parent.
+    /// Core-Bound is derived (be_bound - mem_bound); the other "rest" buckets (light_ops, machine_clears,
+    /// fetch_bw) are implied by parent - exposed_child and not printed separately.
+    const double td_retiring = rat("td.retiring", "td.slots");
+    const double td_bad_spec = rat("td.bad_spec", "td.slots");
+    const double td_fe_bound = rat("td.fe_bound", "td.slots");
+    const double td_be_bound = rat("td.be_bound", "td.slots");
+    const double td_heavy_ops = rat("td.heavy_ops", "td.slots");
+    const double td_br_mispred = rat("td.br_mispred", "td.slots");
+    const double td_fetch_lat = rat("td.fetch_lat", "td.slots");
+    const double td_mem_bound = rat("td.mem_bound", "td.slots");
+    const double td_core_bound = td_be_bound - td_mem_bound;
+    const double td_l1_sum = td_retiring + td_bad_spec + td_fe_bound + td_be_bound; /// sanity: ~1.0
+    /// Branch mispredictions: COUNT (per probe row) and RATE (per branch), to separate from TMA exposure.
+    const double cond_misp_per_row = val("br.misp_cond") / rows;
+    const double all_misp_per_row = val("br.misp_all") / rows;
+    const double branches_per_row = val("br.branches") / rows;
+    const double misp_rate = rat("br.misp_all", "br.branches");
     const bool ok = (matches == args.probe_rows);
     const char * de = args.engine == "rhj"
         ? (args.distinct_estimate < 0 ? "default(on)" : (args.distinct_estimate ? "on" : "off")) : "n/a";
@@ -681,14 +717,34 @@ void runReport(const Args & args, const SharedHeader & right_header)
     fmt::print("  cycles with >=1 PMH walk active      walk_active/cycles      = {:5.1f}%  (COST; up => walks longer/denser)\n", 100 * walk_active);
     fmt::print("  avg page-walks outstanding per cycle walk_pending/cycles     = {:6.3f}  (PMH occupancy stealing MLP)\n", pmh_occupancy);
 
+    fmt::print("\nTOP-DOWN (TMA, PERF_METRICS; %% of pipeline slots; L1 4 sum to ~100%%)\n");
+    fmt::print("  L1  Retiring / Bad-Spec / Frontend / Backend                 = {:.1f} / {:.1f} / {:.1f} / {:.1f}%%   (sum={:.3f})\n",
+               100 * td_retiring, 100 * td_bad_spec, 100 * td_fe_bound, 100 * td_be_bound, td_l1_sum);
+    fmt::print("  L2  Backend -> Memory-Bound / Core-Bound (derived)           = {:.1f} / {:.1f}%%\n",
+               100 * td_mem_bound, 100 * td_core_bound);
+    fmt::print("  L2  Retiring->Heavy-Ops  Bad-Spec->Br-Mispred  FE->Fetch-Lat = {:.1f}%% / {:.1f}%% / {:.1f}%%\n",
+               100 * td_heavy_ops, 100 * td_br_mispred, 100 * td_fetch_lat);
+
+    fmt::print("\nBRANCH MISPREDICTIONS (COUNT, to separate from the topdown Bad-Spec EXPOSURE above)\n");
+    fmt::print("  conditional mispredicts per probe row                        = {:6.3f}\n", cond_misp_per_row);
+    fmt::print("  all-branch mispredicts per probe row                         = {:6.3f}\n", all_misp_per_row);
+    fmt::print("  branches per probe row / mispredict rate                     = {:5.1f} / {:5.2f}%%\n",
+               branches_per_row, 100 * misp_rate);
+
     fmt::print(
         "\nSUMMARY engine={} build={} probe={} threads={} ns_per_row={:.2f} mlp_off={:.2f} mlp_off_dmd={:.2f} "
         "mlp_lfb={:.2f} fb_full={:.3f} l2_miss={:.3f} swpf_hit={:.3f} swpf_per_row={:.3f} ipc={:.2f} "
         "inst_per_row={:.1f} stalls_total={:.3f} stalls_l2={:.3f} stalls_l3={:.3f} "
-        "walks_per_row={:.3f} walk_active={:.3f} pmh_occ={:.3f} ok={}\n",
+        "walks_per_row={:.3f} walk_active={:.3f} pmh_occ={:.3f} "
+        "td_retiring={:.3f} td_bad_spec={:.3f} td_fe_bound={:.3f} td_be_bound={:.3f} "
+        "td_mem_bound={:.3f} td_core_bound={:.3f} td_heavy_ops={:.3f} td_br_mispred={:.3f} td_fetch_lat={:.3f} "
+        "td_l1_sum={:.3f} cond_misp_per_row={:.3f} all_misp_per_row={:.3f} branches_per_row={:.1f} misp_rate={:.4f} ok={}\n",
         args.engine, args.build_rows, args.probe_rows, args.threads, ns_per_row, mlp_off_all, mlp_off_dmd,
         mlp_lfb, fb_full, l2_miss, swpf_hit, swpf_per_row, ipc, inst_per_row, st_total, st_l2, st_l3,
-        walks_per_row, walk_active, pmh_occupancy, ok ? 1 : 0);
+        walks_per_row, walk_active, pmh_occupancy,
+        td_retiring, td_bad_spec, td_fe_bound, td_be_bound, td_mem_bound, td_core_bound,
+        td_heavy_ops, td_br_mispred, td_fetch_lat, td_l1_sum,
+        cond_misp_per_row, all_misp_per_row, branches_per_row, misp_rate, ok ? 1 : 0);
     fmt::print("======================================================================\n");
     (void)std::fflush(stdout);
 }
