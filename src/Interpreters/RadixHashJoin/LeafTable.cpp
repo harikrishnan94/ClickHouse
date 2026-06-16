@@ -3,7 +3,6 @@
 #include <Interpreters/RadixHashJoin/PackedKeyHash.h>
 
 #include <Common/Exception.h>
-#include <Common/TargetSpecific.h>
 
 #include <algorithm>
 #include <atomic>
@@ -34,8 +33,8 @@ namespace
 /// round-robin returns to a slot the line is resident, so the data-dependent misses (the home cell, every
 /// linear-probe collision step) overlap instead of serialising. The walk length is data-dependent and
 /// unknown ahead of time, so this adapts exactly — it prefetches the next address each row actually needs,
-/// with no fixed look-ahead distance. (The PROBE uses the hoisted-seed `collectMatchesPipelined` below, not
-/// this generic driver; only the build still uses it via `BuildPolicy`.)
+/// with no fixed look-ahead distance. (The probe uses `collectMatchesPipelined` below, not this generic
+/// driver; only the build still uses it via `BuildPolicy`.)
 ///
 /// `amacRing` owns only the mechanism the policy reuses: the power-of-two round-robin, the
 /// `next_row`/`active` accounting, and the pull/recycle skeleton. The `Policy` supplies what differs:
@@ -248,82 +247,48 @@ bool fillLeafDispatch(
     return fillLeafDispatchPos<UInt64>(key_width, cells, num_buckets, la, leaf, arena, any_duplicates);
 }
 
-/// ── Tiled AMAC-over-seeds probe (the unified probe path for every key_width / PosT / dup-ness) ─────────
+/// ── AMAC probe (unified path for every key_width / PosT / dup-ness) ───────────────────────────────
 ///
-/// Stage 1+2 — `generateSeeds`: precompute, for a tile of probe rows, the open-addressing home cell each
-/// row will read. The 32-bit `HashT` hash is the SAME scalar `hashPackedKey<key_width>` the build uses
-/// (bit-exact by construction), HOISTED out of the latency-critical loop so its CRC32 no longer sits in the
-/// dependency chain in front of the cell miss. The route + address arithmetic (shifts/masks/pack) is
-/// plain data-parallel C++ that the compiler auto-vectorises per target — written through
-/// `MULTITARGET_FUNCTION_X86_V4` so an AVX-512 (`no-prefer-256-bit`) body is emitted alongside the Default
-/// body on x86, and the Default body compiles at the build baseline ISA (e.g. NEON) on every other arch.
-/// Output is the 12 B/row SoA seed stream consumed by Stage 3:
-///   `seed_leaf[k]` = (leaf cell-array base & ~63) | log2(num_buckets)   (LeafHT packing; 0 == empty group)
-///   `seed_pos[k]`  = home bucket index = leafBucket(bucketBits(hash), num_buckets)   (always fits UInt32:
-///                    it is a low-32-bit-hash value masked, so < 2^32 even for a >2^32-bucket leaf)
-/// `groups[g]` is the L1-resident (<=2 KB) descriptor table; its read is the only gather and it stays hot.
-MULTITARGET_FUNCTION_X86_V4(
-MULTITARGET_FUNCTION_HEADER(
-template <size_t key_width>
-void), generateSeeds, MULTITARGET_FUNCTION_BODY(( /// NOLINT
-    const LeafHT * groups,
-    UInt32 leaf_shift,
-    UInt32 local_shift,
-    UInt32 total_bits,
-    const char * keys,
-    size_t count,
-    UInt64 * seed_leaf,
-    UInt32 * seed_pos)
-{
-    constexpr size_t stride = leafCellBytes(key_width); /// cell stride (BuildRefList head + key)
-    const UInt64 local_mask = (UInt64{1} << local_shift) - 1;
-    for (size_t k = 0; k < count; ++k)
-    {
-        const HashT h = hashPackedKey<key_width>(keys + k * key_width);
-        const UInt64 leaf = total_bits ? (static_cast<UInt64>(routeBits(h)) >> leaf_shift) : 0;
-        const size_t g = static_cast<size_t>(leaf >> local_shift);
-        const UInt64 local = leaf & local_mask;
-        const UInt64 w = groups[g].word;
-        const UInt64 base = w & ~LeafHT::EXP_MASK;
-        const UInt32 bits = static_cast<UInt32>(w & LeafHT::EXP_MASK);
-        const UInt64 nb = UInt64{1} << bits;
-        /// Per-leaf base = group_base + local * roundUpToLine(nb * stride). The rounded stride is a multiple
-        /// of LINE_BYTES and the group base is LINE-aligned, so the leaf base keeps its low 6 bits free for
-        /// the packed `bits` (the LeafHT trick). Correct for the degenerate nb == 2 leaf (where nb * stride
-        /// may be < LINE_BYTES), which the old per-row probe shortcut got wrong. Empty group (base == 0) -> 0.
-        const size_t leaf_stride = roundUpToLine(static_cast<size_t>(nb) * stride);
-        seed_leaf[k] = base ? ((base + local * leaf_stride) | UInt64{bits}) : UInt64{0};
-        seed_pos[k] = static_cast<UInt32>(leafBucket(bucketBits(h), nb));
-    }
-})
-)
-
-/// Runtime-arch dispatch for `generateSeeds<key_width>` (see `TargetSpecific.h`).
-template <size_t key_width>
-void generateSeedsDispatch(
-    const LeafHT * groups,
-    UInt32 leaf_shift,
-    UInt32 local_shift,
-    UInt32 total_bits,
-    const char * keys,
-    size_t count,
-    UInt64 * seed_leaf,
-    UInt32 * seed_pos)
-{
-#if USE_MULTITARGET_CODE
-    if (isArchSupported(TargetArch::x86_64_v4))
-    {
-        generateSeeds_x86_64_v4<key_width>(groups, leaf_shift, local_shift, total_bits, keys, count, seed_leaf, seed_pos);
-        return;
-    }
-#endif
-    generateSeeds<key_width>(groups, leaf_shift, local_shift, total_bits, keys, count, seed_leaf, seed_pos);
-}
-
-/// Decode a `seed_leaf` word back to the leaf cell-array base (the low 6 bits carry `log2(num_buckets)`).
+/// Hash (`hashPackedKey`), leaf route, and home-cell address decode run inline in `admit` when a probe
+/// row enters the ring — the same work `generateSeeds` used to batch ahead of the AMAC loop. With CRC32
+/// `HashT` that pre-pass is no longer worth the seed-buffer traffic.
+///
+/// Decode a packed LeafHT word to the leaf cell-array base (the low 6 bits carry `log2(num_buckets)`).
 inline const char * seedCells(UInt64 w) noexcept
 {
     return reinterpret_cast<const char *>(w & ~LeafHT::EXP_MASK); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast, performance-no-int-to-ptr)
+}
+
+/// Per probe row: hash, route to a leaf group, decode the home cell-array base and home bucket index.
+/// Returns the packed LeafHT word (0 == empty group).
+template <size_t key_width, typename PosT>
+inline UInt64 probeHomeCell(
+    const LeafHT * groups,
+    UInt32 leaf_shift,
+    UInt32 local_shift,
+    UInt32 total_bits,
+    const char * keys,
+    size_t row,
+    PosT & out_pos) noexcept
+{
+    constexpr size_t stride = leafCellBytes(key_width);
+    const UInt64 local_mask = (UInt64{1} << local_shift) - 1;
+    const HashT h = hashPackedKey<key_width>(keys + row * key_width);
+    const UInt64 leaf = total_bits ? (static_cast<UInt64>(routeBits(h)) >> leaf_shift) : 0;
+    const size_t g = static_cast<size_t>(leaf >> local_shift);
+    const UInt64 local = leaf & local_mask;
+    const UInt64 w = groups[g].word;
+    const UInt64 base = w & ~LeafHT::EXP_MASK;
+    const UInt32 bits = static_cast<UInt32>(w & LeafHT::EXP_MASK);
+    if (!base)
+    {
+        out_pos = 0;
+        return 0;
+    }
+    const UInt64 nb = UInt64{1} << bits;
+    const size_t leaf_stride = roundUpToLine(static_cast<size_t>(nb) * stride);
+    out_pos = static_cast<PosT>(leafBucket(bucketBits(h), nb));
+    return (base + local * leaf_stride) | UInt64{bits};
 }
 
 /// Probe match-stream write cursors. A duplicate-free build emits at most one match per probe row, so the
@@ -365,27 +330,20 @@ emitMatchListCold(std::vector<UInt32> & rows, std::vector<BuildRef> & refs, size
     return p;
 }
 
-/// Tile sizing: 12 B/row of SoA seeds (24 KB at T = 2048) stays L1-resident so Stage 3 reads it as L1 hits.
-constexpr size_t PROBE_TILE_ROWS = 2048;
+/// Tile sizing removed: hash+route run inline in `admit` (no seed pre-pass).
 /// AMAC ring depth: independent in-flight probe rows. The literature finds ~8-10 saturates a core's L1-D
 /// MSHRs and >32 risks TLB thrashing on low-TLB-locality data (Kocberber et al., PVLDB 2015); 32 is the
 /// production default carried from the generic `amacRing`, tunable here.
 constexpr size_t PROBE_RING_SLOTS = 32;
 static_assert((PROBE_RING_SLOTS & (PROBE_RING_SLOTS - 1)) == 0, "PROBE_RING_SLOTS must be a power of two");
 
-/// Stage 3 — AMAC ring over the precomputed seed stream: the SINGLE probe path for every key width, both
-/// bucket-index widths (`PosT`), and both duplicate-free and duplicate builds. Each in-flight slot holds one
-/// probe row's open-addressing state; every round-robin visit performs ONE dependent cell read and
+/// AMAC ring probe: the SINGLE probe path for every key width, both bucket-index widths (`PosT`), and both
+/// duplicate-free and duplicate builds. Each in-flight slot holds one probe row's open-addressing state;
+/// `admit` hashes and routes the row, then every round-robin visit performs ONE dependent cell read and
 /// software-prefetches the cell its NEXT visit will read, so the random cell misses overlap instead of
-/// serialising. Unlike the (now build-only) generic `amacRing`, `admit` here does NO hash/route/address work
-/// — those are hoisted into `generateSeeds`, leaving a tiny body so the ring keeps a deep reservoir (high
-/// MLP) at the page-walk-gated scale while retaining AMAC's high IPC at cache-resident scale. The body is
-/// further trimmed by: a steady/drain split (no per-visit active check while rows remain), a fixed
-/// power-of-two ring swept with constant offsets (no modulo in the hot path), a decoded collision `mask`
-/// carried in the slot, and a growable raw cursor for match emission. A key match emits its inline ref
-/// directly (the singleton common case, no 2nd load); a multi-row key iterates its `BuildRefList` (the rare
-/// duplicate branch). `PosT` is `UInt32` for the practical case and `UInt64` for an impractical
-/// >2^31-bucket leaf (the slot widens; the collision walk stays in range).
+/// serialising. The body is trimmed by: a steady/drain split (no per-visit active check while rows remain),
+/// a fixed power-of-two ring swept with constant offsets (no modulo in the hot path), a decoded collision
+/// `mask` carried in the slot, and a growable raw cursor for match emission.
 template <size_t key_width, typename PosT>
 void collectMatchesPipelined(
     const GroupedLeaves & grouped,
@@ -393,8 +351,6 @@ void collectMatchesPipelined(
     UInt32 total_bits,
     const char * keys,
     size_t n,
-    std::vector<UInt64> & seed_leaf_scratch,
-    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
@@ -404,12 +360,6 @@ void collectMatchesPipelined(
 
     const LeafHT * groups = grouped.groups.data();
     const UInt32 local_shift = grouped.local_shift;
-
-    /// Caller-owned, reused seed buffers (one tile worth, 12 B/row, L1-resident); no per-call allocation.
-    seed_leaf_scratch.resize(PROBE_TILE_ROWS);
-    seed_pos_scratch.resize(PROBE_TILE_ROWS);
-    UInt64 * const seed_leaf = seed_leaf_scratch.data();
-    UInt32 * const seed_pos = seed_pos_scratch.data();
 
     /// Growable raw-cursor emit: reserve the singleton lower bound (<= n matches) once and write through
     /// plain pointers; the capacity guard only ever fires for a multi-row (duplicate) key, whose match set
@@ -444,107 +394,98 @@ void collectMatchesPipelined(
         UInt32 row = 0;               /// probe row within this call (< n, the block row count)
     };
 
-    for (size_t t0 = 0; t0 < n; t0 += PROBE_TILE_ROWS)
+    size_t next = 0;
+    size_t active = 0;
+    PipelineSlot ring[ring_size];
+
+    /// Hash, route, and issue the home-cell prefetch for probe row `row`; false for an empty group.
+    auto admit = [&](PipelineSlot & s, size_t row) noexcept -> bool
     {
-        const size_t count = std::min(PROBE_TILE_ROWS, n - t0);
-
-        /// Stage 1+2: scalar hash + auto-vectorised route/address -> L1 seed stream.
-        generateSeedsDispatch<key_width>(groups, leaf_shift, local_shift, total_bits, keys + t0 * key_width, count, seed_leaf, seed_pos);
-
-        size_t next = 0;
-        size_t active = 0;
-        PipelineSlot ring[ring_size];
-
-        /// Seed a slot for tile row `k` and issue its home-cell prefetch; false for an empty group (skip it).
-        auto admit = [&](PipelineSlot & s, size_t k) noexcept -> bool
-        {
-            const UInt64 w = seed_leaf[k];
-            s.cells = seedCells(w);
-            s.mask = (static_cast<PosT>(1) << (w & LeafHT::EXP_MASK)) - 1; /// (1 << bits) - 1; empty -> 0
-            s.pos = static_cast<PosT>(seed_pos[k]);
-            s.row = static_cast<UInt32>(t0 + k);
-            if (s.cells)
-                __builtin_prefetch(s.cells + static_cast<size_t>(s.pos) * cell_stride, /*rw=*/0, /*locality=*/1);
-            return s.cells != nullptr;
-        };
-
-        /// Assign the next pending tile row with work to `s` (skipping empty groups); false if none remain.
-        auto pull = [&](PipelineSlot & s) noexcept -> bool
-        {
-            while (next < count)
-                if (admit(s, next++))
-                    return true;
-            s.cells = nullptr;
-            return false;
-        };
-
-        /// One fused fresh-read -> act. Returns true when the row is DONE (recycle the slot), false on a
-        /// collision step that has already advanced `pos` and prefetched the next cell (revisit later).
-        auto step = [&](PipelineSlot & s) noexcept -> bool
-        {
-            const char * cell = s.cells + static_cast<size_t>(s.pos) * cell_stride;
-            UInt64 word = 0;
-            __builtin_memcpy(&word, cell, sizeof(UInt64)); /// the dependent miss, prefetched on the prev visit
-            if (word == 0)
-                return true; /// empty cell: this probe row has no match
-            if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width) == 0)
-            {
-                /// Key match. Singleton (the common case): the word IS the encoded ref — emit with no 2nd
-                /// load. Multi-row key (rare, duplicate build): iterate the whole BuildRefList via the out-of-
-                /// line cold helper (keeps `step` small enough to inline; pointers passed/returned by value).
-                if (refWordIsInline(word))
-                {
-                    emit_one(s.row, word);
-                }
-                else
-                {
-                    const OutPtrs p = emitMatchListCold(out_left_rows, out_refs, out_begin, {row_cur, row_end, ref_cur}, s.row, cell);
-                    row_cur = p.row_cur;
-                    row_end = p.row_end;
-                    ref_cur = p.ref_cur;
-                }
-                return true;
-            }
-            s.pos = (s.pos + 1) & s.mask;
+        const UInt64 w = probeHomeCell<key_width, PosT>(groups, leaf_shift, local_shift, total_bits, keys, row, s.pos);
+        s.cells = seedCells(w);
+        s.mask = (static_cast<PosT>(1) << (w & LeafHT::EXP_MASK)) - 1; /// (1 << bits) - 1; empty -> 0
+        s.row = static_cast<UInt32>(row);
+        if (s.cells)
             __builtin_prefetch(s.cells + static_cast<size_t>(s.pos) * cell_stride, /*rw=*/0, /*locality=*/1);
-            return false; /// collision: revisit later
-        };
+        return s.cells != nullptr;
+    };
 
-        /// Prologue: fill the ring. Reaching the steady loop below (next < count) implies EVERY slot is
-        /// active, because `pull` only fails once `next == count` and then stays failed.
-        for (PipelineSlot & slot : ring)
-            if (pull(slot))
-                ++active;
+    /// Assign the next pending row with work to `s` (skipping empty groups); false if none remain.
+    auto pull = [&](PipelineSlot & s) noexcept -> bool
+    {
+        while (next < n)
+            if (admit(s, next++))
+                return true;
+        s.cells = nullptr;
+        return false;
+    };
 
-        /// Steady phase: rows remain AND all slots active, so sweep the fixed-size ring with NO per-visit
-        /// active check (constant offsets, no modulo). On the first exhausted refill, hand off to the drain.
-        bool exhausted = false;
-        while (!exhausted && next < count)
+    /// One fused fresh-read -> act. Returns true when the row is DONE (recycle the slot), false on a
+    /// collision step that has already advanced `pos` and prefetched the next cell (revisit later).
+    auto step = [&](PipelineSlot & s) noexcept -> bool
+    {
+        const char * cell = s.cells + static_cast<size_t>(s.pos) * cell_stride;
+        UInt64 word = 0;
+        __builtin_memcpy(&word, cell, sizeof(UInt64)); /// the dependent miss, prefetched on the prev visit
+        if (word == 0)
+            return true; /// empty cell: this probe row has no match
+        if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width) == 0)
         {
-            for (PipelineSlot & slot : ring)
-                if (step(slot))
-                    if (!pull(slot))
-                    {
-                        --active; /// this slot just went inactive (no more rows)
-                        exhausted = true;
-                        break;
-                    }
-        }
-
-        /// Drain phase: no rows left (`next == count`), so a finished slot just retires (no refill). Uses the
-        /// active check; `ring_size` is a power of two so the wrap is a mask, not a modulo.
-        size_t i = 0;
-        while (active != 0)
-        {
-            PipelineSlot & s = ring[i];
-            i = (i + 1) & (ring_size - 1);
-            if (!s.cells)
-                continue;
-            if (step(s))
+            /// Key match. Singleton (the common case): the word IS the encoded ref — emit with no 2nd
+            /// load. Multi-row key (rare, duplicate build): iterate the whole BuildRefList via the out-of-
+            /// line cold helper (keeps `step` small enough to inline; pointers passed/returned by value).
+            if (refWordIsInline(word))
             {
-                s.cells = nullptr;
-                --active;
+                emit_one(s.row, word);
             }
+            else
+            {
+                const OutPtrs p = emitMatchListCold(out_left_rows, out_refs, out_begin, {row_cur, row_end, ref_cur}, s.row, cell);
+                row_cur = p.row_cur;
+                row_end = p.row_end;
+                ref_cur = p.ref_cur;
+            }
+            return true;
+        }
+        s.pos = (s.pos + 1) & s.mask;
+        __builtin_prefetch(s.cells + static_cast<size_t>(s.pos) * cell_stride, /*rw=*/0, /*locality=*/1);
+        return false; /// collision: revisit later
+    };
+
+    /// Prologue: fill the ring. Reaching the steady loop below (next < n) implies EVERY slot is
+    /// active, because `pull` only fails once `next == n` and then stays failed.
+    for (PipelineSlot & slot : ring)
+        if (pull(slot))
+            ++active;
+
+    /// Steady phase: rows remain AND all slots active, so sweep the fixed-size ring with NO per-visit
+    /// active check (constant offsets, no modulo). On the first exhausted refill, hand off to the drain.
+    bool exhausted = false;
+    while (!exhausted && next < n)
+    {
+        for (PipelineSlot & slot : ring)
+            if (step(slot))
+                if (!pull(slot))
+                {
+                    --active; /// this slot just went inactive (no more rows)
+                    exhausted = true;
+                    break;
+                }
+    }
+
+    /// Drain phase: no rows left (`next == n`), so a finished slot just retires (no refill). Uses the
+    /// active check; `ring_size` is a power of two so the wrap is a mask, not a modulo.
+    size_t i = 0;
+    while (active != 0)
+    {
+        PipelineSlot & s = ring[i];
+        i = (i + 1) & (ring_size - 1);
+        if (!s.cells)
+            continue;
+        if (step(s))
+        {
+            s.cells = nullptr;
+            --active;
         }
     }
 
@@ -562,14 +503,12 @@ void collectMatchesPipelinedDispatch(
     UInt32 total_bits,
     const char * keys,
     size_t n,
-    std::vector<UInt64> & seed_leaf_scratch,
-    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
 #define RHJ_PIPE_DISPATCH(W) \
     case W: \
-        collectMatchesPipelined<W, PosT>(grouped, leaf_shift, total_bits, keys, n, seed_leaf_scratch, seed_pos_scratch, out_left_rows, out_refs); \
+        collectMatchesPipelined<W, PosT>(grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs); \
         return;
     switch (key_width)
     {
@@ -756,21 +695,19 @@ void collectMatches(
     const void * packed_keys,
     size_t n,
     bool pos_fits_u32,
-    std::vector<UInt64> & seed_leaf_scratch,
-    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
     const auto * keys = static_cast<const char *>(packed_keys);
 
-    /// The tiled AMAC-over-seeds pipeline is the single probe path for all key widths and dup-ness. Pick the
-    /// UInt32 bucket-index slot when every group fits in 32 bits — the practical case; the UInt64 fallback
-    /// keeps a >2^31-bucket group correct. `pos_fits_u32` is constant for the whole probe phase (derived from
-    /// the built groups), so this branch predicts perfectly.
+    /// AMAC probe pipeline for all key widths and dup-ness. Pick the UInt32 bucket-index slot when every
+    /// group fits in 32 bits — the practical case; the UInt64 fallback keeps a >2^31-bucket group correct.
+    /// `pos_fits_u32` is constant for the whole probe phase (derived from the built groups), so this branch
+    /// predicts perfectly.
     if (pos_fits_u32)
-        collectMatchesPipelinedDispatch<UInt32>(key_width, grouped, leaf_shift, total_bits, keys, n, seed_leaf_scratch, seed_pos_scratch, out_left_rows, out_refs);
+        collectMatchesPipelinedDispatch<UInt32>(key_width, grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
     else
-        collectMatchesPipelinedDispatch<UInt64>(key_width, grouped, leaf_shift, total_bits, keys, n, seed_leaf_scratch, seed_pos_scratch, out_left_rows, out_refs);
+        collectMatchesPipelinedDispatch<UInt64>(key_width, grouped, leaf_shift, total_bits, keys, n, out_left_rows, out_refs);
 }
 
 }

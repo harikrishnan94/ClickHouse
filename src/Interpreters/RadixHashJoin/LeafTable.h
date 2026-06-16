@@ -181,12 +181,10 @@ LeafTables buildLeafTables(
 /// per match to the output buffers (singleton keys emit one ref; multi-row keys iterate the whole
 /// BuildRefList). The 32-bit `HashT` hash of each key is computed internally, inside the probe pipeline, so its
 /// latency overlaps with the in-flight cell misses (no precomputed hash array is passed in).
-/// The probe is the tiled AMAC-over-seeds pipeline for every key width and both duplicate-free and
-/// duplicate builds (singletons emit inline; multi-row keys iterate their BuildRefList). `pos_fits_u32`
-/// selects the UInt32 bucket-index ring slot (pass `LeafTables::max_bucket_bits <= 31`); when false a
-/// UInt64-index slot keeps a >2^31-bucket group correct. `seed_leaf_scratch`/`seed_pos_scratch` are
-/// caller-owned reusable buffers (resized to one tile internally) so the steady-state probe does no
-/// per-block allocation; pass any two vectors (their contents are scratch, not inputs or outputs).
+/// The probe is the AMAC ring pipeline for every key width and both duplicate-free and duplicate builds
+/// (singletons emit inline; multi-row keys iterate their BuildRefList). `pos_fits_u32` selects the UInt32
+/// bucket-index ring slot (pass `LeafTables::max_bucket_bits <= 31`); when false a UInt64-index slot keeps a
+/// >2^31-bucket group correct.
 void collectMatches(
     size_t key_width,
     const GroupedLeaves & grouped,
@@ -195,8 +193,6 @@ void collectMatches(
     const void * packed_keys,
     size_t n,
     bool pos_fits_u32,
-    std::vector<UInt64> & seed_leaf_scratch,
-    std::vector<UInt32> & seed_pos_scratch,
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs);
 
