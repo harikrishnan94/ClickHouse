@@ -77,7 +77,7 @@ void computeRoutesAndBucketsFixed(const char * keys, size_t n, UInt32 * route_ou
 {
     for (size_t i = 0; i < n; ++i)
     {
-        const UInt64 h = hashPackedKey<width>(keys + i * width);
+        const HashT h = hashPackedKey<width>(keys + i * width);
         route_out[i] = routeBits(h);
         bucket_out[i] = bucketBits(h);
     }

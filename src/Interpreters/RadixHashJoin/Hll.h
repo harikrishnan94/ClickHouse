@@ -22,10 +22,8 @@ namespace DB::RadixJoin
   * line. Registers store the rank directly and start at 0 (an empty register contributes `2^0 = 1` to the
   * harmonic mean).
   *
-  * The input is a 32-bit hash: the LOW 32 bits of the 64-bit packed-key hash. Those bits are statistically
-  * independent of the high 32 bits that select the leaf (`routeBits`), so register selection within a leaf
-  * is unbiased. The top `precision` bits index the register; the remaining `32 - precision` bits give the
-  * rank (leftmost-set-bit position within that field, +1).
+  * The input is the full 32-bit packed-key `HashT`. The top `precision` bits index the register; the
+  * remaining `32 - precision` bits give the rank (leftmost-set-bit position within that field, +1).
   */
 namespace Hll
 {
@@ -34,7 +32,7 @@ namespace Hll
     inline constexpr UInt8 MIN_PRECISION = 4;
     inline constexpr UInt8 MAX_PRECISION = 6;
 
-    /// We sketch the low 32 bits of the packed-key hash.
+    /// We sketch the packed-key `HashT` (32 bits).
     inline constexpr UInt32 INPUT_BITS = 32;
 
     /// Transient sketch memory (num_workers × num_leaves × 2^p) is bounded by this; precision shrinks toward

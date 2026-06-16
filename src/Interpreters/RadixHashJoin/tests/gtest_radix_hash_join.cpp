@@ -268,7 +268,7 @@ UInt64 findKeyForLeaf(PartitionPlan plan, size_t target_leaf)
 {
     for (UInt64 k = 1; k < 500'000'000ULL; ++k)
     {
-        const UInt64 h = hashPackedKey<8>(&k);
+        const HashT h = hashPackedKey<8>(&k);
         const size_t leaf = plan.total_bits ? (routeBits(h) >> plan.leaf_shift) : 0;
         if (leaf == target_leaf)
             return k;
@@ -293,22 +293,27 @@ Block makeFixedKeyBlock(const std::vector<UInt64> & key_values, size_t key_width
 
 }
 
-TEST(RadixHashJoin, PackedKeyHashDeterministicAndIndependentHalves)
+TEST(RadixHashJoin, PackedKeyHashDeterministicAndSpread)
 {
-    /// Same bytes -> same hash; both 32-bit halves vary across keys (a single hash drives leaf + bucket).
-    std::map<UInt32, int> high_counts;
-    std::map<UInt32, int> low_counts;
+    /// Same bytes -> same hash; scrambled keys produce broad route and bucket bit-slices.
+    std::set<HashT> unique;
+    std::map<UInt32, int> route_counts;
+    std::map<UInt32, int> bucket_counts;
+    constexpr UInt32 leaf_shift = 16;
+    constexpr UInt32 bucket_mask = 0xFFFFu;
     for (UInt64 v = 0; v < 100000; ++v)
     {
-        const UInt64 h1 = hashPackedKey<8>(&v);
-        const UInt64 h2 = hashPackedKey(&v, 8);
+        const UInt64 key = v * 0x9E3779B97F4A7C15ULL + 1;
+        const HashT h1 = hashPackedKey<8>(&key);
+        const HashT h2 = hashPackedKey(&key, 8);
         ASSERT_EQ(h1, h2);
-        ++high_counts[routeBits(h1)];
-        ++low_counts[bucketBits(h1)];
+        unique.insert(h1);
+        ++route_counts[h1 >> leaf_shift];
+        ++bucket_counts[h1 & bucket_mask];
     }
-    /// Sequential integers must not collapse the high or low words into a few buckets.
-    EXPECT_GT(high_counts.size(), 99000u);
-    EXPECT_GT(low_counts.size(), 99000u);
+    EXPECT_GT(unique.size(), 99000u);
+    EXPECT_GT(route_counts.size(), 50000u);
+    EXPECT_GT(bucket_counts.size(), 50000u);
 }
 
 TEST(RadixHashJoin, PartitionPlanSizingAndPasses)
@@ -458,7 +463,7 @@ UInt64 totalLeafBuckets(const std::vector<UInt64> & build_keys, PartitionPlan pl
 
 TEST(RadixHashJoin, HllEstimateAccuracy)
 {
-    /// Feed N distinct keys' low-32 hashes (exactly the production HLL input) into one dense sketch and
+    /// Feed N distinct keys' `HashT` values (exactly the production HLL input) into one dense sketch and
     /// check the estimate lands in a generous relative band — loose enough never to flake on the fixed
     /// input, tight enough to catch a broken estimator (which would be off by a large factor).
     for (UInt8 precision : {Hll::MIN_PRECISION, static_cast<UInt8>(5), Hll::MAX_PRECISION})
@@ -469,7 +474,7 @@ TEST(RadixHashJoin, HllEstimateAccuracy)
             std::vector<UInt8> regs(Hll::numRegisters(precision), 0);
             for (size_t i = 0; i < n; ++i)
             {
-                const UInt64 v = i;
+                const UInt64 v = i * 0x9E3779B97F4A7C15ULL + 1;
                 Hll::add(regs.data(), precision, bucketBits(hashPackedKey<8>(&v)));
             }
             const UInt64 est = Hll::estimate(regs.data(), precision);
@@ -519,8 +524,10 @@ TEST(RadixHashJoin, DistinctEstimateShrinksDuplicateHeavyBuild)
     std::vector<UInt64> dup_keys;
     std::mt19937 rng(2024); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
     for (size_t i = 0; i < 200000; ++i)
-        dup_keys.push_back(rng() % 1000); /// 1000 distinct keys, ~200 rows each
-    auto plan_d = PartitionPlan::choose(dup_keys.size(), 2u << 20, 8192);
+        dup_keys.push_back((rng() % 10) * 0x9E3779B97F4A7C15ULL); /// 10 distinct keys, ~20000 rows each
+    /// A small L2 forces many leaves so per-leaf row counts stay moderate and HLL can separate distinct
+    /// keys from duplicate rows under the shared 32-bit `HashT`.
+    auto plan_d = PartitionPlan::choose(dup_keys.size(), 32u << 10, 8192);
     const UInt64 d_off = totalLeafBuckets(dup_keys, plan_d, 4, /*estimate=*/false);
     const UInt64 d_on = totalLeafBuckets(dup_keys, plan_d, 4, /*estimate=*/true);
     /// Sized by ~1000 distinct keys rather than 200000 rows -> dramatically smaller.
@@ -530,7 +537,7 @@ TEST(RadixHashJoin, DistinctEstimateShrinksDuplicateHeavyBuild)
 TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
 {
     /// Heavy skew (few distinct keys, many rows) forced into MANY leaves so each leaf holds only a couple
-    /// of distinct keys — the danger zone where the distinct estimate (over low-32 hashes, with HLL
+    /// of distinct keys — the danger zone where the distinct estimate (over `HashT`, with HLL
     /// variance) can under-count and size a leaf too small. The build must still guarantee every non-empty
     /// leaf has an empty cell (num_buckets > distinct keys in the leaf); otherwise the open-addressing build
     /// collision walk or a later probe miss would loop forever. (Regression test for that infinite loop.)
@@ -554,7 +561,7 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
     std::vector<std::set<UInt64>> leaf_keys(leaves.num_leaves);
     for (UInt64 k : std::set<UInt64>(build_keys.begin(), build_keys.end()))
     {
-        const UInt64 h = hashPackedKey<key_width>(&k);
+        const HashT h = hashPackedKey<key_width>(&k);
         const size_t leaf = plan.total_bits ? (routeBits(h) >> plan.leaf_shift) : 0;
         leaf_keys[leaf].insert(k);
     }

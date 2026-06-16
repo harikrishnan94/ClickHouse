@@ -28,8 +28,7 @@ namespace DB::RadixJoin
   */
 struct PartitionPlan
 {
-    /// Width of the route word (the high half of the 64-bit packed-key hash). The top `total_bits`
-    /// of it select the leaf.
+    /// Width of the route word (the full 32-bit packed-key `HashT`). The top `total_bits` of it select the leaf.
     static constexpr UInt32 ROUTE_BITS = 32;
     /// 2^20 leaf ceiling: routing only ever needs the high bits, and the leaf vector stays bounded.
     static constexpr size_t MAX_LEAVES = 1u << 20;

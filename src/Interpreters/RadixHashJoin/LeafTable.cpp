@@ -146,7 +146,7 @@ struct BuildPolicy
 
     bool startRow(Slot & s, size_t row) noexcept
     {
-        const UInt64 h = hashPackedKey<key_width>(keys + row * key_width);
+        const HashT h = hashPackedKey<key_width>(keys + row * key_width);
         s.row = static_cast<UInt32>(row);
         s.pos = static_cast<PosT>(bucketBits(h)) & mask; /// == leafBucket(bucketBits(h), num_buckets)
         __builtin_prefetch(cells + static_cast<size_t>(s.pos) * stride, /*rw=*/1, /*locality=*/3);
@@ -251,8 +251,8 @@ bool fillLeafDispatch(
 /// ── Tiled AMAC-over-seeds probe (the unified probe path for every key_width / PosT / dup-ness) ─────────
 ///
 /// Stage 1+2 — `generateSeeds`: precompute, for a tile of probe rows, the open-addressing home cell each
-/// row will read. The 64-bit hash is the SAME scalar `hashPackedKey<key_width>` the build uses (bit-exact
-/// by construction), HOISTED out of the latency-critical loop so its multiply-fold no longer sits in the
+/// row will read. The 32-bit `HashT` hash is the SAME scalar `hashPackedKey<key_width>` the build uses
+/// (bit-exact by construction), HOISTED out of the latency-critical loop so its CRC32 no longer sits in the
 /// dependency chain in front of the cell miss. The route + address arithmetic (shifts/masks/pack) is
 /// plain data-parallel C++ that the compiler auto-vectorises per target — written through
 /// `MULTITARGET_FUNCTION_X86_V4` so an AVX-512 (`no-prefer-256-bit`) body is emitted alongside the Default
@@ -279,7 +279,7 @@ void), generateSeeds, MULTITARGET_FUNCTION_BODY(( /// NOLINT
     const UInt64 local_mask = (UInt64{1} << local_shift) - 1;
     for (size_t k = 0; k < count; ++k)
     {
-        const UInt64 h = hashPackedKey<key_width>(keys + k * key_width);
+        const HashT h = hashPackedKey<key_width>(keys + k * key_width);
         const UInt64 leaf = total_bits ? (static_cast<UInt64>(routeBits(h)) >> leaf_shift) : 0;
         const size_t g = static_cast<size_t>(leaf >> local_shift);
         const UInt64 local = leaf & local_mask;
