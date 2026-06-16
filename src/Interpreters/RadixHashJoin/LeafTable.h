@@ -181,8 +181,10 @@ LeafTables buildLeafTables(
 /// per match to the output buffers (singleton keys emit one ref; multi-row keys iterate the whole
 /// BuildRefList). The 64-bit hash of each key is computed internally, inside the probe pipeline, so its
 /// latency overlaps with the in-flight cell misses (no precomputed hash array is passed in).
-/// `pos_fits_u32` selects the dense 16-byte probe slot (UInt32 bucket index); pass
-/// `LeafTables::max_bucket_bits <= 31`. When false a 24-byte slot (UInt64 index) is used for correctness.
+/// The probe is the tiled AMAC-over-seeds pipeline for every key width and both duplicate-free and
+/// duplicate builds (singletons emit inline; multi-row keys iterate their BuildRefList). `pos_fits_u32`
+/// selects the UInt32 bucket-index ring slot (pass `LeafTables::max_bucket_bits <= 31`); when false a
+/// UInt64-index slot keeps a >2^31-bucket group correct.
 void collectMatches(
     size_t key_width,
     const GroupedLeaves & grouped,
