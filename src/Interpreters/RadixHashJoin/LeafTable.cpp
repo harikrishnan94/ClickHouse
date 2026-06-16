@@ -253,23 +253,18 @@ bool fillLeafDispatch(
 /// row enters the ring — the same work `generateSeeds` used to batch ahead of the AMAC loop. With CRC32
 /// `HashT` that pre-pass is no longer worth the seed-buffer traffic.
 ///
-/// Decode a packed LeafHT word to the leaf cell-array base (the low 6 bits carry `log2(num_buckets)`).
-inline const char * seedCells(UInt64 w) noexcept
-{
-    return reinterpret_cast<const char *>(w & ~LeafHT::EXP_MASK); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast, performance-no-int-to-ptr)
-}
-
 /// Per probe row: hash, route to a leaf group, decode the home cell-array base and home bucket index.
-/// Returns the packed LeafHT word (0 == empty group).
+/// Returns the leaf cell-array pointer, or null for an empty group.
 template <size_t key_width, typename PosT>
-inline UInt64 probeHomeCell(
+inline const char * probeHomeCell(
     const LeafHT * groups,
     UInt32 leaf_shift,
     UInt32 local_shift,
     UInt32 total_bits,
     const char * keys,
     size_t row,
-    PosT & out_pos) noexcept
+    PosT & out_pos,
+    PosT & out_mask) noexcept
 {
     constexpr size_t stride = leafCellBytes(key_width);
     const UInt64 local_mask = (UInt64{1} << local_shift) - 1;
@@ -277,18 +272,18 @@ inline UInt64 probeHomeCell(
     const UInt64 leaf = total_bits ? (static_cast<UInt64>(routeBits(h)) >> leaf_shift) : 0;
     const size_t g = static_cast<size_t>(leaf >> local_shift);
     const UInt64 local = leaf & local_mask;
-    const UInt64 w = groups[g].word;
-    const UInt64 base = w & ~LeafHT::EXP_MASK;
-    const UInt32 bits = static_cast<UInt32>(w & LeafHT::EXP_MASK);
-    if (!base)
+    const LeafHT & gh = groups[g];
+    if (gh.empty()) [[unlikely]]
     {
         out_pos = 0;
-        return 0;
+        out_mask = 0;
+        return nullptr;
     }
-    const UInt64 nb = UInt64{1} << bits;
+    const UInt64 nb = gh.num_buckets;
     const size_t leaf_stride = roundUpToLine(static_cast<size_t>(nb) * stride);
     out_pos = static_cast<PosT>(leafBucket(bucketBits(h), nb));
-    return (base + local * leaf_stride) | UInt64{bits};
+    out_mask = static_cast<PosT>(gh.mask());
+    return gh.cells + local * leaf_stride;
 }
 
 /// Probe match-stream write cursors. A duplicate-free build emits at most one match per probe row, so the
@@ -401,9 +396,7 @@ void collectMatchesPipelined(
     /// Hash, route, and issue the home-cell prefetch for probe row `row`; false for an empty group.
     auto admit = [&](PipelineSlot & s, size_t row) noexcept -> bool
     {
-        const UInt64 w = probeHomeCell<key_width, PosT>(groups, leaf_shift, local_shift, total_bits, keys, row, s.pos);
-        s.cells = seedCells(w);
-        s.mask = (static_cast<PosT>(1) << (w & LeafHT::EXP_MASK)) - 1; /// (1 << bits) - 1; empty -> 0
+        s.cells = probeHomeCell<key_width, PosT>(groups, leaf_shift, local_shift, total_bits, keys, row, s.pos, s.mask);
         s.row = static_cast<UInt32>(row);
         if (s.cells)
             __builtin_prefetch(s.cells + static_cast<size_t>(s.pos) * cell_stride, /*rw=*/0, /*locality=*/1);

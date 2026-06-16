@@ -47,62 +47,53 @@ namespace DB::RadixJoin
 static constexpr size_t MAX_UNIQUE_BUCKET_SIZES = 256;
 static constexpr UInt32 MAX_GROUP_BITS = 8;
 
-/** A single 64-bit descriptor packing a LINE_BYTES-aligned cell base and log2(num_buckets) into one word.
+/** Per-group leaf hash-table descriptor: cell-array base and bucket count stored separately (16 B).
   *
-  * Per-leaf use: one word per leaf. Grouped use: one word per homogeneous leaf group (the group base and
-  * the shared bucket count). Encoding: `cells` is `LINE_BYTES`(=64)-aligned, so its low 6 bits are always
-  * zero and instead hold `e = log2(num_buckets)` (`num_buckets` is a power of two; the exponent fits in
-  * 6 bits since `e <= 63`). A non-empty table has `num_buckets >= 2` (so `e >= 1`) and a non-null
-  * `cells`, so its word is never zero; the all-zero word is therefore an unambiguous, cheap empty
-  * sentinel. The pointer is reconstructed by masking off the low 6 bits (NOT by clearing high pointer
-  * bits, which would break under >48-bit virtual addresses / aarch64 TBI / Intel LAM).
-  *
-  * Accessors below are the only intended readers; call sites should not open-code the bit twiddling.
+  * Grouped use: one entry per homogeneous leaf group (the group base and the shared bucket count).
+  * `cells == nullptr` is the empty sentinel (no allocation in this group). `num_buckets` is a power
+  * of two when non-empty.
   */
 struct LeafHT
 {
-    /// Low 6 bits = log2(num_buckets); the rest = the LINE_BYTES-aligned `cells` pointer. 0 == empty.
-    UInt64 word = 0;
-
-    static constexpr UInt64 EXP_MASK = LINE_BYTES - 1; /// low 6 bits (cells alignment leaves them free)
+    char * cells = nullptr;
+    UInt64 num_buckets = 0;
 
     LeafHT() = default;
 
-    /// `cells_` must be LINE_BYTES-aligned; `num_buckets_` a power of two >= 2 (a non-empty table). The
-    /// pointer is mutable on purpose (the cell array is written during the build) — `cells()` hands it
-    /// back as `char *` — even though this ctor only reads its address.
+    /// `cells_` may be written during the build; the pointer is mutable on purpose.
     LeafHT(char * cells_, UInt64 num_buckets_) noexcept /// NOLINT(readability-non-const-parameter)
-        : word(reinterpret_cast<UInt64>(cells_) | static_cast<UInt64>(std::countr_zero(num_buckets_))) /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        : cells(cells_)
+        , num_buckets(num_buckets_)
     {
     }
 
-    /// True for an empty table (no rows): the all-zero word.
-    bool empty() const noexcept { return word == 0; }
+    /// True for an empty table (no rows): null `cells`.
+    bool empty() const noexcept { return cells == nullptr; }
 
     /// The cell array base (stride = leafCellBytes(key_width); memset to 0). Null for an empty table.
-    char * cells() const noexcept { return reinterpret_cast<char *>(word & ~EXP_MASK); } /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast, performance-no-int-to-ptr)
+    char * cellsPtr() const noexcept { return cells; }
 
     /// log2(num_buckets). Only meaningful for a non-empty table.
-    UInt8 bits() const noexcept { return static_cast<UInt8>(word & EXP_MASK); }
+    UInt8 bits() const noexcept { return num_buckets ? static_cast<UInt8>(std::countr_zero(num_buckets)) : 0; }
 
     /// Number of buckets (a power of two). Only meaningful for a non-empty table.
-    UInt64 numBuckets() const noexcept { return UInt64{1} << (word & EXP_MASK); }
+    UInt64 numBuckets() const noexcept { return num_buckets; }
 
     /// The probe mask `num_buckets - 1`. Only meaningful for a non-empty table.
-    UInt64 mask() const noexcept { return numBuckets() - 1; }
+    UInt64 mask() const noexcept { return num_buckets - 1; }
 };
 
-static_assert(sizeof(LeafHT) == 8, "LeafHT must be a single 64-bit word");
+static_assert(sizeof(LeafHT) == 16, "LeafHT must be 16 bytes (cells pointer + num_buckets)");
 
 /** Homogeneous leaf groups: consecutive leaf-id ranges share one bucket count and a single arena
-  * allocation, so the probe-side metadata is at most 256 entries (2 KB, one page, L1-resident)
+  * allocation, so the probe-side metadata is at most 256 entries (4 KB, one page, L1-resident)
   * instead of an up-to-8 MB per-leaf descriptor vector.
   */
 struct GroupedLeaves
 {
     UInt32 group_bits = 0;   /// g = route >> (32 - group_bits)
     UInt32 local_shift = 0;  /// total_bits - group_bits; local = (route >> leaf_shift) & ((1<<local_shift)-1)
-    std::vector<LeafHT> groups; /// one packed {base|exp} word per group; LeafHT{} (word 0) == empty group
+    std::vector<LeafHT> groups; /// one descriptor per group; LeafHT{} (cells null) == empty group
 };
 
 /// Cell stride for a key of `key_width` bytes (BuildRefList head word + key).
