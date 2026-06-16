@@ -118,8 +118,7 @@ void assertGroupedMetadataBounded(const LeafTables & tables)
     EXPECT_LE(tables.cell_alloc_count, MAX_UNIQUE_BUCKET_SIZES * 2);
 }
 
-/// Test wrapper around `collectMatches` that owns the per-call seed scratch (production passes reusable
-/// `ProbeScratch` buffers; the tests do not care about reuse).
+/// Thin wrapper around `collectMatches` for tests.
 void collectMatchesTest(
     size_t key_width,
     const GroupedLeaves & grouped,
@@ -131,9 +130,7 @@ void collectMatchesTest(
     std::vector<UInt32> & out_left_rows,
     std::vector<BuildRef> & out_refs)
 {
-    std::vector<UInt64> seed_leaf;
-    std::vector<UInt32> seed_pos;
-    collectMatches(key_width, grouped, leaf_shift, total_bits, packed_keys, n, pos_fits_u32, seed_leaf, seed_pos, out_left_rows, out_refs);
+    collectMatches(key_width, grouped, leaf_shift, total_bits, packed_keys, n, pos_fits_u32, out_left_rows, out_refs);
 }
 
 /// Build the leaf tables from a single-column UInt64 build side, probe every probe key, and assert the

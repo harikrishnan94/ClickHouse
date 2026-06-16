@@ -191,14 +191,9 @@ struct BlockRun
 struct ProbeScratch
 {
     /// Batch-wide multi-column key packing. Capacity is reused across batches and only ever grows, so the
-    /// steady state does no per-batch heap allocation. The per-row hash is no longer materialised here —
-    /// it is computed on the fly inside `collectMatches`.
+    /// steady state does no per-batch heap allocation. Hash is computed on the fly inside `collectMatches`.
     std::vector<char> packed;                   /// multi-column packed keys for the whole block
     std::vector<const char *> kcol_src;         /// raw data of each left key column
-
-    /// Reusable per-tile seed scratch for `collectMatches` (one tile worth; grows once, then reused).
-    std::vector<UInt64> seed_leaf;
-    std::vector<UInt32> seed_pos;
 
     /// Matches (one (left_row, ref) per match), in probe order.
     std::vector<UInt32> left_rows;
@@ -310,9 +305,7 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
 
 /// Pack the batch's multi-column keys into `packed` in `SCATTER_CHUNK_ROWS` tiles (chunk-aware) so each
 /// tile's per-column scatter writes stay L1-resident. Single-column keys need no packing (the column's
-/// raw data is used directly) and never reach here. The 64-bit hash is NOT computed here anymore — it is
-/// derived from the packed key inside the probe pipeline (`collectMatches`), where its multiply-fold
-/// latency overlaps with the in-flight cell misses.
+/// raw data is used directly) and never reach here.
 template <size_t key_width>
 void packBatch(
     const ProbeContext & ctx,
@@ -333,9 +326,9 @@ void packBatch(
     }
 }
 
-/// Phase 1 — Probe. Pack (multi-column) the whole block, then look up every row via the AMAC-over-seeds
-/// pipeline (which tiles the block internally). Matches land directly in `s.left_rows`/`s.refs`, then are
-/// grouped by build block for the bulk gathers when the build had duplicates.
+/// Phase 1 — Probe. Pack (multi-column) the whole block, then look up every row via the AMAC probe
+/// pipeline. Matches land directly in `s.left_rows`/`s.refs`, then are grouped by build block for the
+/// bulk gathers when the build had duplicates.
 void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeScratch & s)
 {
     s.left_rows.clear();
@@ -375,14 +368,13 @@ void probeBlock(const ProbeContext & ctx, const Block & block, size_t n, ProbeSc
         }
     }
 
-    /// Phase 1b — lookup. `collectMatches` tiles the block internally and writes one (row, ref) per match
-    /// directly into `s.left_rows`/`s.refs` (resizing them); the seed scratch is reused across blocks.
+    /// Phase 1b — lookup. `collectMatches` writes one (row, ref) per match directly into `s.left_rows`/`s.refs`.
     {
         ProfileEventTimeIncrement<Microseconds> probe_collect_matches_watch(ProfileEvents::RadixHashJoinProbeCollectMatchesMicroseconds);
         RadixJoin::collectMatches(
             ctx.key_width, ctx.leaf_tables.grouped, ctx.leaf_shift, ctx.total_bits,
             keys, n, /*pos_fits_u32=*/ctx.leaf_tables.max_bucket_bits <= 31,
-            s.seed_leaf, s.seed_pos, s.left_rows, s.refs);
+            s.left_rows, s.refs);
     }
 
     /// Hybrid gather decision. With a duplicate-free build the matches are ~1:1 and scattered, so a
