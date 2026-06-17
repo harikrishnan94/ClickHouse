@@ -119,8 +119,8 @@ struct BuildPolicy
 
     char * cells{};          /// the single leaf's cell array (hoisted; the same for every slot)
     PosT mask;             /// num_buckets - 1 (hoisted)
-    const char * keys{};     /// la.key_base[leaf]: dense per-leaf packed keys
-    const BuildRef * refs{}; /// la.ref_base[leaf]: dense per-leaf row refs
+    const LeafArrays * la = nullptr;
+    size_t leaf = 0;
     DB::Arena & arena;     /// this build worker's arena for BuildRefList Batch nodes
     bool saw_dup = false;
     /// First-occurrence claims placed so far, and whether this leaf was undersized. The distinct-key
@@ -145,7 +145,7 @@ struct BuildPolicy
 
     bool startRow(Slot & s, size_t row) noexcept
     {
-        const HashT h = hashPackedKey<key_width>(keys + row * key_width);
+        const HashT h = hashPackedKey<key_width>(static_cast<const char *>(la->keyAt(leaf, row)));
         s.row = static_cast<UInt32>(row);
         s.pos = static_cast<PosT>(bucketBits(h)) & mask; /// == leafBucket(bucketBits(h), num_buckets)
         __builtin_prefetch(cells + static_cast<size_t>(s.pos) * stride, /*rw=*/1, /*locality=*/3);
@@ -158,6 +158,7 @@ struct BuildPolicy
             return true;
         char * cell = cells + static_cast<size_t>(s.pos) * stride;
         auto * list = reinterpret_cast<DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        const void * row_key = la->keyAt(leaf, s.row);
         if (list->word == 0) /// fresh read: empty cell -> claim it for this key (first occurrence)
         {
             /// `mask == num_buckets - 1`: `claimed == mask` means only one empty cell is left. Claiming it
@@ -168,14 +169,14 @@ struct BuildPolicy
                 overflowed = true;
                 return true;
             }
-            __builtin_memcpy_inline(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width);
-            list->insert(refs[s.row].word(), arena);
+            __builtin_memcpy_inline(cell + sizeof(DB::BuildRefList), row_key, key_width);
+            list->insert(la->refAt(leaf, s.row).word(), arena);
             ++claimed;
             return true; /// done
         }
-        if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width) == 0)
+        if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), row_key, key_width) == 0)
         {
-            list->insert(refs[s.row].word(), arena); /// duplicate key: append (allocates a Batch on the first dup)
+            list->insert(la->refAt(leaf, s.row).word(), arena); /// duplicate key: append (allocates a Batch on the first dup)
             saw_dup = true;
             return true; /// done
         }
@@ -203,8 +204,8 @@ bool fillLeaf(char * cells, UInt64 num_buckets, const LeafArrays & la, size_t le
     BuildPolicy<key_width, PosT> policy{
         cells,
         static_cast<PosT>(num_buckets - 1),
-        static_cast<const char *>(la.key_base[leaf]),
-        la.ref_base[leaf],
+        &la,
+        leaf,
         arena,
     };
     amacRing<ring_size>(policy, rows);
