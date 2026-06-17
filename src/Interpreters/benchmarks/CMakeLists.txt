@@ -5,3 +5,10 @@
 # It is a research/reproduction harness only and does not modify the production join path.
 clickhouse_add_executable(bench_rhj_vs_chj bench_rhj_vs_chj.cpp)
 target_link_libraries(bench_rhj_vs_chj PRIVATE dbms)
+
+# bench_build_bandwidth: a stand-alone driver that isolates the build-side data-movement pipelines of the
+# RadixHashJoin / ConcurrentHashJoin build (CHJ zero-copy dispatch replica vs RHJ scatterToLeaves vs a
+# sequential key+ref memcpy) over the same pre-generated blocks, to quantify the true RHJ scatter overhead
+# and the true CHJ zero-copy advantage. Research/reproduction harness only; production join path untouched.
+clickhouse_add_executable(bench_build_bandwidth bench_build_bandwidth.cpp)
+target_link_libraries(bench_build_bandwidth PRIVATE dbms)
