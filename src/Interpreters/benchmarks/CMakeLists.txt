@@ -12,3 +12,9 @@ target_link_libraries(bench_rhj_vs_chj PRIVATE dbms)
 # and the true CHJ zero-copy advantage. Research/reproduction harness only; production join path untouched.
 clickhouse_add_executable(bench_build_bandwidth bench_build_bandwidth.cpp)
 target_link_libraries(bench_build_bandwidth PRIVATE dbms)
+
+# bench_scatter_perf: phase-attributed PMU instrumentation (perf_event_open groups + getrusage) of the RHJ
+# build-side data movement, wrapping the genuine BuildSide::scatterToLeaves and a memcpy baseline under
+# identical groups to explain the T_scatter vs T_memcpy gap. Research/diagnostic harness only.
+clickhouse_add_executable(bench_scatter_perf bench_scatter_perf.cpp)
+target_link_libraries(bench_scatter_perf PRIVATE dbms)
