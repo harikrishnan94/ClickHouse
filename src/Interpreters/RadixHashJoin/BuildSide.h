@@ -17,19 +17,23 @@
 namespace DB::RadixJoin
 {
 
-/** The per-leaf output of the deferred scatter: for each leaf, a dense `key` array (`leaf_rows[L]`
-  * elements of `key_width` bytes — the packed key) and a parallel `ref` array (one `BuildRef` each),
-  * both carved exactly once and 64-byte-aligned. `key[L][i]` and `ref[L][i]` are the same build row.
-  * An empty leaf has null bases. The leaf hash table (LeafTable) is built from these; afterwards the
+/// Byte offset of the packed key within a fused scatter record `[ BuildRef | key ]` (ref-first, matching
+/// the leaf cell layout `[ BuildRefList word | key ]`).
+inline constexpr size_t PACKED_KEY_OFFSET_IN_RECORD = sizeof(BuildRef);
+
+/** The per-leaf output of the deferred scatter: for each leaf, a dense fused-record array
+  * (`leaf_rows[L]` elements of `record_width` bytes — ref-first `[ BuildRef | packed key ]`),
+  * carved exactly once and 64-byte-aligned. `keyAt(L,i)` and `refAt(L,i)` address the two sub-fields.
+  * An empty leaf has a null base. The leaf hash table (LeafTable) is built from these; afterwards the
   * arrays are dropped. Move-only (owns its arena).
   */
 struct LeafArrays
 {
     size_t num_leaves = 0;
     size_t key_width = 0;
+    size_t record_width = 0; /// key_width + sizeof(BuildRef)
 
-    std::vector<void *> key_base;    /// num_leaves; null for an empty leaf
-    std::vector<BuildRef *> ref_base; /// num_leaves
+    std::vector<void *> record_base; /// num_leaves; null for an empty leaf
     std::vector<UInt64> leaf_rows;   /// num_leaves; == global histogram
 
     /// num_leaves; per-leaf HLL distinct-key estimate (always clamped to `leaf_rows`, so it can only
@@ -39,18 +43,24 @@ struct LeafArrays
 
     /// Diagnostics asserted by the unit tests / gates.
     UInt64 alloc_count = 0;          /// number of per-partition output allocations (no-churn gate)
-    UInt64 bytes_scattered = 0;      /// total key+ref bytes written, summed over passes
+    UInt64 bytes_scattered = 0;      /// total record bytes written, summed over passes
 
-    Arena arena;                     /// owns the key/ref memory
+    Arena arena;                     /// owns the fused-record memory
 
     const void * keyAt(size_t leaf, size_t i) const
     {
-        return static_cast<const char *>(key_base[leaf]) + i * key_width;
+        return static_cast<const char *>(record_base[leaf]) + i * record_width + PACKED_KEY_OFFSET_IN_RECORD;
+    }
+
+    const BuildRef & refAt(size_t leaf, size_t i) const
+    {
+        return *reinterpret_cast<const BuildRef *>( /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+            static_cast<const char *>(record_base[leaf]) + i * record_width);
     }
 };
 
-/** The build side: accumulate right blocks (zero copy), count rows per leaf, then scatter the key +
-  * BuildRef of every row into the per-leaf arrays. Three phases:
+/** The build side: accumulate right blocks (zero copy), count rows per leaf, then scatter the fused
+  * `[ BuildRef | packed key ]` of every row into the per-leaf arrays. Three phases:
   *
   *   add(block, lane)   per build lane, lock-free. COW-move the block into this lane's store, and
   *                      route each row by recomputing its packed-key hash (the route word = the high
@@ -63,7 +73,7 @@ struct LeafArrays
   *                      block_no), fold the per-worker histograms into one global histogram, and
   *                      prefix-sum it. Records each worker's contiguous block range for the scatter.
   *
-  *   scatterToLeaves()  allocate each leaf's key/ref array EXACTLY ONCE from `global_hist` (the
+  *   scatterToLeaves()  allocate each leaf's fused-record array EXACTLY ONCE from `global_hist` (the
   *                      no-churn property) and scatter into them, parallelised over the caller's
   *                      `ParallelFor`. One pass when the leaf count fits the per-pass fanout cap,
   *                      otherwise a depth-first multi-pass radix that frees each intermediate as it
@@ -77,7 +87,7 @@ struct LeafArrays
 class BuildSide
 {
 public:
-    /// Rows are scattered in chunks of this size (bounds the packed-key + route scratch).
+    /// Rows are scattered in chunks of this size (bounds the packed-key + route + fused-record scratch).
     static constexpr size_t SCATTER_CHUNK_ROWS = 1024;
 
     BuildSide(PartitionPlan plan_, std::vector<size_t> key_positions_, std::vector<size_t> key_widths_, size_t max_threads_);
@@ -97,6 +107,7 @@ public:
 
     const PartitionPlan & plan() const { return part_plan; }
     size_t packedKeyWidth() const { return key_width; }
+    size_t recordWidth() const { return record_width; }
     const std::vector<Block> & blocks() const { return all_blocks; }
     const std::vector<UInt64> & globalHistogram() const { return global_hist; }
     size_t numBlocks() const { return all_blocks.size(); }
@@ -140,8 +151,7 @@ private:
         UInt32 shift,
         UInt32 mask,
         const std::vector<UInt64> & slot_part_offset,
-        void * const * key_bases,
-        BuildRef * const * ref_bases,
+        void * const * record_bases,
         std::atomic<UInt64> & total_bytes,
         bool accumulate_hll);
 
@@ -151,8 +161,7 @@ private:
     struct RefineScratch;
     void refine(
         size_t first_leaf,
-        const void * in_keys,
-        const BuildRef * in_refs,
+        const void * in_records,
         UInt64 rows,
         size_t pass_index,
         UInt32 bits_consumed,
@@ -168,6 +177,7 @@ private:
     std::vector<size_t> key_offsets;        /// byte offset of each key column within a packed row
     std::vector<ColumnPackFn> key_packers;  /// one width-specialized packer per key column
     size_t key_width = 0;
+    size_t record_width = 0;
     size_t max_threads = 1;
 
     /// Transient per-worker HLL partial sketches, owned by a local in `scatterToLeaves` and only non-null

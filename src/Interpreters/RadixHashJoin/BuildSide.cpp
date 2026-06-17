@@ -107,33 +107,132 @@ void computeRoutesAndBuckets(const char * keys, size_t n, size_t width, UInt32 *
     }
 }
 
-/// One contiguous, 64-byte-aligned [key | ref] allocation per non-empty partition (each section
-/// line-padded so the SWWC drain can write a final partial line in-bounds). This is the ONLY place
-/// the build allocates per-partition output, so the post-build allocation count is O(num_parts) — the
-/// no-churn property the gates check.
+/// Route words from packed keys at `key_offset` within a strided fused-record array.
+template <size_t width>
+void computeRoutesStridedFixed(const char * records, size_t n, size_t stride, size_t key_offset, UInt32 * out)
+{
+    for (size_t i = 0; i < n; ++i)
+        out[i] = routeBits(hashPackedKey<width>(records + i * stride + key_offset));
+}
+
+void computeRoutesStrided(const char * records, size_t n, size_t key_width, size_t stride, size_t key_offset, UInt32 * out)
+{
+    switch (key_width)
+    {
+        case 4:  computeRoutesStridedFixed<4>(records, n, stride, key_offset, out);  return;
+        case 8:  computeRoutesStridedFixed<8>(records, n, stride, key_offset, out);  return;
+        case 12: computeRoutesStridedFixed<12>(records, n, stride, key_offset, out); return;
+        case 16: computeRoutesStridedFixed<16>(records, n, stride, key_offset, out); return;
+        case 20: computeRoutesStridedFixed<20>(records, n, stride, key_offset, out); return;
+        case 24: computeRoutesStridedFixed<24>(records, n, stride, key_offset, out); return;
+        case 28: computeRoutesStridedFixed<28>(records, n, stride, key_offset, out); return;
+        case 32: computeRoutesStridedFixed<32>(records, n, stride, key_offset, out); return;
+        case 36: computeRoutesStridedFixed<36>(records, n, stride, key_offset, out); return;
+        case 40: computeRoutesStridedFixed<40>(records, n, stride, key_offset, out); return;
+        case 44: computeRoutesStridedFixed<44>(records, n, stride, key_offset, out); return;
+        case 48: computeRoutesStridedFixed<48>(records, n, stride, key_offset, out); return;
+        case 52: computeRoutesStridedFixed<52>(records, n, stride, key_offset, out); return;
+        case 56: computeRoutesStridedFixed<56>(records, n, stride, key_offset, out); return;
+        case 60: computeRoutesStridedFixed<60>(records, n, stride, key_offset, out); return;
+        case 64: computeRoutesStridedFixed<64>(records, n, stride, key_offset, out); return;
+        default: chassert(false && "unsupported packed key width"); return;
+    }
+}
+
+template <size_t width>
+void computeRoutesAndBucketsStridedFixed(
+    const char * records, size_t n, size_t stride, size_t key_offset, UInt32 * route_out, UInt32 * bucket_out)
+{
+    for (size_t i = 0; i < n; ++i)
+    {
+        const HashT h = hashPackedKey<width>(records + i * stride + key_offset);
+        route_out[i] = routeBits(h);
+        bucket_out[i] = bucketBits(h);
+    }
+}
+
+void computeRoutesAndBucketsStrided(
+    const char * records, size_t n, size_t key_width, size_t stride, size_t key_offset, UInt32 * route_out, UInt32 * bucket_out)
+{
+    switch (key_width)
+    {
+        case 4:  computeRoutesAndBucketsStridedFixed<4>(records, n, stride, key_offset, route_out, bucket_out);  return;
+        case 8:  computeRoutesAndBucketsStridedFixed<8>(records, n, stride, key_offset, route_out, bucket_out);  return;
+        case 12: computeRoutesAndBucketsStridedFixed<12>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 16: computeRoutesAndBucketsStridedFixed<16>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 20: computeRoutesAndBucketsStridedFixed<20>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 24: computeRoutesAndBucketsStridedFixed<24>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 28: computeRoutesAndBucketsStridedFixed<28>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 32: computeRoutesAndBucketsStridedFixed<32>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 36: computeRoutesAndBucketsStridedFixed<36>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 40: computeRoutesAndBucketsStridedFixed<40>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 44: computeRoutesAndBucketsStridedFixed<44>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 48: computeRoutesAndBucketsStridedFixed<48>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 52: computeRoutesAndBucketsStridedFixed<52>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 56: computeRoutesAndBucketsStridedFixed<56>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 60: computeRoutesAndBucketsStridedFixed<60>(records, n, stride, key_offset, route_out, bucket_out); return;
+        case 64: computeRoutesAndBucketsStridedFixed<64>(records, n, stride, key_offset, route_out, bucket_out); return;
+        default: chassert(false && "unsupported packed key width"); return;
+    }
+}
+
+/// Zip one row's BuildRef and packed key into a fused record `[ ref | key ]`.
+template <size_t key_width>
+void fuseKeyRefChunkFixed(const BuildRef * refs, const char * keys, size_t n, size_t record_width, char * dst)
+{
+    for (size_t row = 0; row < n; ++row)
+    {
+        char * rec = dst + row * record_width;
+        __builtin_memcpy_inline(rec, &refs[row], sizeof(BuildRef));
+        __builtin_memcpy_inline(rec + PACKED_KEY_OFFSET_IN_RECORD, keys + row * key_width, key_width);
+    }
+}
+
+void fuseKeyRefChunk(const BuildRef * refs, const char * keys, size_t n, size_t key_width, size_t record_width, char * dst)
+{
+    switch (key_width)
+    {
+        case 4:  fuseKeyRefChunkFixed<4>(refs, keys, n, record_width, dst);  return;
+        case 8:  fuseKeyRefChunkFixed<8>(refs, keys, n, record_width, dst);  return;
+        case 12: fuseKeyRefChunkFixed<12>(refs, keys, n, record_width, dst); return;
+        case 16: fuseKeyRefChunkFixed<16>(refs, keys, n, record_width, dst); return;
+        case 20: fuseKeyRefChunkFixed<20>(refs, keys, n, record_width, dst); return;
+        case 24: fuseKeyRefChunkFixed<24>(refs, keys, n, record_width, dst); return;
+        case 28: fuseKeyRefChunkFixed<28>(refs, keys, n, record_width, dst); return;
+        case 32: fuseKeyRefChunkFixed<32>(refs, keys, n, record_width, dst); return;
+        case 36: fuseKeyRefChunkFixed<36>(refs, keys, n, record_width, dst); return;
+        case 40: fuseKeyRefChunkFixed<40>(refs, keys, n, record_width, dst); return;
+        case 44: fuseKeyRefChunkFixed<44>(refs, keys, n, record_width, dst); return;
+        case 48: fuseKeyRefChunkFixed<48>(refs, keys, n, record_width, dst); return;
+        case 52: fuseKeyRefChunkFixed<52>(refs, keys, n, record_width, dst); return;
+        case 56: fuseKeyRefChunkFixed<56>(refs, keys, n, record_width, dst); return;
+        case 60: fuseKeyRefChunkFixed<60>(refs, keys, n, record_width, dst); return;
+        case 64: fuseKeyRefChunkFixed<64>(refs, keys, n, record_width, dst); return;
+        default: chassert(false && "unsupported packed key width"); return;
+    }
+}
+
+/// One contiguous, 64-byte-aligned fused-record allocation per non-empty partition (line-padded so a
+/// final partial line can be drained in-bounds). This is the ONLY place the build allocates per-partition
+/// output, so the post-build allocation count is O(num_parts) — the no-churn property the gates check.
 struct PartitionArrays
 {
-    std::vector<void *> key;
-    std::vector<BuildRef *> ref;
+    std::vector<void *> record;
     UInt64 alloc_count = 0;
 };
 
-PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> counts, size_t key_width, const ParallelFor * parallel_for)
+PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> counts, size_t record_width, const ParallelFor * parallel_for)
 {
     const size_t num_parts = counts.size();
     PartitionArrays out;
-    out.key.assign(num_parts, nullptr);
-    out.ref.assign(num_parts, nullptr);
+    out.record.assign(num_parts, nullptr);
 
     auto carve = [&](size_t part)
     {
         if (counts[part] == 0)
             return;
-        const size_t key_bytes = roundUpToLine(counts[part] * key_width);
-        const size_t ref_bytes = roundUpToLine(counts[part] * sizeof(BuildRef));
-        char * base = static_cast<char *>(arena.allocate(key_bytes + ref_bytes, LINE_BYTES));
-        out.key[part] = base;
-        out.ref[part] = reinterpret_cast<BuildRef *>(base + key_bytes); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        const size_t record_bytes = roundUpToLine(counts[part] * record_width);
+        out.record[part] = arena.allocate(record_bytes, LINE_BYTES);
     };
 
     if (parallel_for != nullptr)
@@ -153,13 +252,11 @@ PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> coun
 struct BuildSide::RefineScratch
 {
     explicit RefineScratch(size_t max_fanout)
-        : key_scratch(max_fanout), ref_scratch(max_fanout), key_cursors(max_fanout), ref_cursors(max_fanout)
+        : record_scratch(max_fanout), record_cursors(max_fanout)
     {
     }
-    ScatterScratch key_scratch;
-    ScatterScratch ref_scratch;
-    std::vector<void *> key_cursors;
-    std::vector<BuildRef *> ref_cursors;
+    ScatterScratch record_scratch;
+    std::vector<void *> record_cursors;
     std::vector<UInt32> route;
     std::vector<UInt32> bucket; /// low-32 hash per row, only filled on the final pass when HLL is on
 };
@@ -213,6 +310,7 @@ BuildSide::BuildSide(PartitionPlan plan_, std::vector<size_t> key_positions_, st
         acc += key_widths[col];
     }
     key_width = acc;
+    record_width = key_width + sizeof(BuildRef);
 
     local.reserve(max_threads);
     for (size_t slot = 0; slot < max_threads; ++slot)
@@ -339,8 +437,8 @@ LeafArrays BuildSide::makeLeafArrays() const
     LeafArrays out;
     out.num_leaves = part_plan.num_leaves;
     out.key_width = key_width;
-    out.key_base.assign(part_plan.num_leaves, nullptr);
-    out.ref_base.assign(part_plan.num_leaves, nullptr);
+    out.record_width = record_width;
+    out.record_base.assign(part_plan.num_leaves, nullptr);
     out.leaf_rows.assign(part_plan.num_leaves, 0);
     return out;
 }
@@ -351,65 +449,69 @@ void BuildSide::scatterBlockRanges(
     UInt32 shift,
     UInt32 mask,
     const std::vector<UInt64> & slot_part_offset,
-    void * const * key_bases,
-    BuildRef * const * ref_bases,
+    void * const * record_bases,
     std::atomic<UInt64> & total_bytes,
     bool accumulate_hll)
 {
     const size_t kw = key_width;
+    const size_t rw = record_width;
     const bool multi_col = key_positions.size() > 1;
     const size_t num_used = used_slots.size();
     if (num_used == 0)
         return;
 
-    /// At high fanout the scatter routes through SWWC + NT; below the threshold (or without NT) it uses
-    /// the direct incremental cursors. Key and ref are scattered as two separate columns.
     const bool use_swwc = shouldUseSwwc(static_cast<int>(num_parts));
 
     parallel_for(num_used, [&](size_t slot, size_t worker)
     {
         const UInt64 * offsets = slot_part_offset.data() + slot * num_parts;
 
-        std::vector<void *> kcur;
-        std::vector<BuildRef *> rcur;
-        std::optional<ScatterScratch> key_ss;
-        std::optional<ScatterScratch> ref_ss;
+        std::vector<void *> rcur;
+        std::optional<ScatterScratch> record_ss;
 
         if (use_swwc)
         {
-            key_ss.emplace(num_parts);
-            ref_ss.emplace(num_parts);
+            record_ss.emplace(num_parts);
+            const bool record_tiles_line = (LINE_BYTES % rw == 0);
             for (size_t part = 0; part < num_parts; ++part)
             {
-                if (key_bases[part] != nullptr)
+                if (record_bases[part] != nullptr)
                 {
-                    key_ss->cursors()[part] = static_cast<char *>(key_bases[part]) + offsets[part] * kw;
-                    ref_ss->cursors()[part] = reinterpret_cast<char *>(ref_bases[part]) + offsets[part] * sizeof(BuildRef); /// NOLINT
+                    record_ss->cursors()[part] = static_cast<char *>(record_bases[part]) + offsets[part] * rw;
+                    if (record_tiles_line)
+                    {
+                        const UInt32 rec_m0 = static_cast<UInt32>((offsets[part] * rw) & (LINE_BYTES - 1));
+                        record_ss->peel()[part] = ((LINE_BYTES - rec_m0) & (LINE_BYTES - 1)) / static_cast<UInt32>(rw);
+                    }
+                    else
+                        record_ss->peel()[part] = 0;
+                }
+                else
+                {
+                    record_ss->peel()[part] = 0;
                 }
             }
         }
         else
         {
-            kcur.assign(num_parts, nullptr);
             rcur.assign(num_parts, nullptr);
             for (size_t part = 0; part < num_parts; ++part)
             {
-                if (key_bases[part] != nullptr)
-                {
-                    kcur[part] = static_cast<char *>(key_bases[part]) + offsets[part] * kw;
-                    rcur[part] = ref_bases[part] + offsets[part];
-                }
+                if (record_bases[part] != nullptr)
+                    rcur[part] = static_cast<char *>(record_bases[part]) + offsets[part] * rw;
             }
         }
 
         std::vector<BuildRef> refs;
         std::vector<char> packed;
+        std::vector<char> fused;
         std::vector<UInt32> route(SCATTER_CHUNK_ROWS);
         std::vector<UInt32> bucket;
         if (accumulate_hll)
             bucket.resize(SCATTER_CHUNK_ROWS);
         if (multi_col)
             packed.resize(SCATTER_CHUNK_ROWS * kw);
+        fused.resize(SCATTER_CHUNK_ROWS * rw);
 
         UInt64 local_bytes = 0;
 
@@ -441,16 +543,13 @@ void BuildSide::scatterBlockRanges(
                     keys_ptr = raw_keys + begin * kw;
                 }
 
-                /// Recompute the route words for this chunk (the same hash `add` used for the histogram).
-                /// On the final leaf-writing pass with distinct-estimate sizing on, also recover the bucket
-                /// (low-32) word from the same hash and fold each key into its leaf's per-worker HLL sketch.
                 if (accumulate_hll)
                 {
                     computeRoutesAndBuckets(keys_ptr, chunk, kw, route.data(), bucket.data());
                     const UInt8 precision = hll_scatter->precision;
                     for (size_t row = 0; row < chunk; ++row)
                     {
-                        const size_t leaf = (route[row] >> shift) & mask; /// final leaf id in a single-pass scatter
+                        const size_t leaf = (route[row] >> shift) & mask;
                         Hll::add(hll_scatter->sketch(worker, leaf), precision, bucket[row]);
                     }
                 }
@@ -459,26 +558,17 @@ void BuildSide::scatterBlockRanges(
                     computeRoutes(keys_ptr, chunk, kw, route.data());
                 }
 
+                fuseKeyRefChunk(refs.data() + begin, keys_ptr, chunk, kw, rw, fused.data());
+
                 if (use_swwc)
-                {
-                    local_bytes += appendColumnSwwc(route.data(), shift, mask, chunk, keys_ptr, kw, *key_ss);
-                    local_bytes += appendColumnSwwc(route.data(), shift, mask, chunk, refs.data() + begin, sizeof(BuildRef), *ref_ss);
-                }
+                    local_bytes += appendColumnSwwc(route.data(), shift, mask, chunk, fused.data(), rw, *record_ss);
                 else
-                {
-                    local_bytes += appendColumnDirect(route.data(), shift, mask, chunk, keys_ptr, kw, kcur.data());
-                    local_bytes += appendColumnDirect(
-                        route.data(), shift, mask, chunk, refs.data() + begin, sizeof(BuildRef),
-                        reinterpret_cast<void **>(rcur.data())); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-                }
+                    local_bytes += appendColumnDirect(route.data(), shift, mask, chunk, fused.data(), rw, rcur.data());
             }
         }
 
         if (use_swwc)
-        {
-            drainColumnSwwc(num_parts, *key_ss);
-            drainColumnSwwc(num_parts, *ref_ss);
-        }
+            drainColumnSwwc(num_parts, *record_ss);
 
         total_bytes.fetch_add(local_bytes, std::memory_order_relaxed);
     });
@@ -490,9 +580,8 @@ LeafArrays BuildSide::scatterSinglePass(const ParallelFor & parallel_for)
     const size_t num_leaves = part_plan.num_leaves;
     const size_t num_used = used_slots.size();
 
-    auto arrs = allocExactPartitions(out.arena, global_hist, key_width, &parallel_for);
-    out.key_base = std::move(arrs.key);
-    out.ref_base = std::move(arrs.ref);
+    auto arrs = allocExactPartitions(out.arena, global_hist, record_width, &parallel_for);
+    out.record_base = std::move(arrs.record);
     out.alloc_count = arrs.alloc_count;
     for (size_t leaf = 0; leaf < num_leaves; ++leaf)
         out.leaf_rows[leaf] = global_hist[leaf];
@@ -522,7 +611,7 @@ LeafArrays BuildSide::scatterSinglePass(const ParallelFor & parallel_for)
     std::atomic<UInt64> total_bytes{0};
     /// Single pass = the final leaf-writing pass; accumulate the per-leaf HLL here when it is enabled.
     scatterBlockRanges(
-        parallel_for, num_leaves, shift, mask, slot_off, out.key_base.data(), out.ref_base.data(), total_bytes,
+        parallel_for, num_leaves, shift, mask, slot_off, out.record_base.data(), total_bytes,
         /*accumulate_hll=*/hll_scatter != nullptr);
 
     out.bytes_scattered = total_bytes.load();
@@ -531,8 +620,7 @@ LeafArrays BuildSide::scatterSinglePass(const ParallelFor & parallel_for)
 
 void BuildSide::refine(
     size_t first_leaf,
-    const void * in_keys,
-    const BuildRef * in_refs,
+    const void * in_records,
     UInt64 rows,
     size_t pass_index,
     UInt32 bits_consumed,
@@ -551,69 +639,52 @@ void BuildSide::refine(
     const UInt32 mask = static_cast<UInt32>(fanout - 1);
     const bool is_last = (pass_index + 1 == part_plan.pass_bits.size());
     const size_t kw = key_width;
+    const size_t rw = record_width;
     const bool use_swwc = shouldUseSwwc(static_cast<int>(fanout));
+    const auto * in = static_cast<const char *>(in_records);
 
-    /// Recompute the route words from the scattered packed keys (nothing is carried between passes). On the
-    /// final pass with distinct-estimate sizing on, also recover the bucket (low-32) word from the same hash
-    /// so each key can be folded into its leaf's per-worker HLL sketch.
     const bool accumulate_hll = is_last && hll_scatter != nullptr;
     scratch.route.resize(rows);
     if (accumulate_hll)
     {
         scratch.bucket.resize(rows);
-        computeRoutesAndBuckets(static_cast<const char *>(in_keys), rows, kw, scratch.route.data(), scratch.bucket.data());
+        computeRoutesAndBucketsStrided(in, rows, kw, rw, PACKED_KEY_OFFSET_IN_RECORD, scratch.route.data(), scratch.bucket.data());
     }
     else
     {
-        computeRoutes(static_cast<const char *>(in_keys), rows, kw, scratch.route.data());
+        computeRoutesStrided(in, rows, kw, rw, PACKED_KEY_OFFSET_IN_RECORD, scratch.route.data());
     }
 
-    auto scatter_into = [&](void * const * key_bases, BuildRef * const * ref_bases)
+    auto scatter_into = [&](void * const * record_bases)
     {
         if (use_swwc)
         {
-            scratch.key_scratch.resetFills(fanout);
-            scratch.ref_scratch.resetFills(fanout);
+            scratch.record_scratch.resetFills(fanout);
             for (size_t child = 0; child < fanout; ++child)
-            {
-                scratch.key_scratch.cursors()[child] = key_bases[child];
-                scratch.ref_scratch.cursors()[child] = ref_bases[child];
-            }
-            appendColumnSwwc(scratch.route.data(), routing_shift, mask, rows, in_keys, kw, scratch.key_scratch);
-            appendColumnSwwc(scratch.route.data(), routing_shift, mask, rows, in_refs, sizeof(BuildRef), scratch.ref_scratch);
-            drainColumnSwwc(fanout, scratch.key_scratch);
-            drainColumnSwwc(fanout, scratch.ref_scratch);
+                scratch.record_scratch.cursors()[child] = record_bases[child];
+            appendColumnSwwc(scratch.route.data(), routing_shift, mask, rows, in, rw, scratch.record_scratch);
+            drainColumnSwwc(fanout, scratch.record_scratch);
         }
         else
         {
             for (size_t child = 0; child < fanout; ++child)
-            {
-                scratch.key_cursors[child] = key_bases[child];
-                scratch.ref_cursors[child] = ref_bases[child];
-            }
-            appendColumnDirect(scratch.route.data(), routing_shift, mask, rows, in_keys, kw, scratch.key_cursors.data());
-            appendColumnDirect(
-                scratch.route.data(), routing_shift, mask, rows, in_refs, sizeof(BuildRef),
-                reinterpret_cast<void **>(scratch.ref_cursors.data())); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                scratch.record_cursors[child] = record_bases[child];
+            appendColumnDirect(scratch.route.data(), routing_shift, mask, rows, in, rw, scratch.record_cursors.data());
         }
-        local_bytes += rows * (kw + sizeof(BuildRef));
+        local_bytes += rows * rw;
     };
 
     if (is_last)
     {
-        /// Final pass: scatter straight into the pre-allocated leaf arrays.
-        std::vector<void *> kbase(fanout);
-        std::vector<BuildRef *> rbase(fanout);
+        std::vector<void *> rbase(fanout);
         for (size_t child = 0; child < fanout; ++child)
         {
             const size_t leaf = first_leaf + child * leaves_per_child;
-            kbase[child] = out.key_base[leaf];
-            rbase[child] = out.ref_base[leaf];
+            rbase[child] = out.record_base[leaf];
         }
-        scatter_into(kbase.data(), rbase.data());
+        scatter_into(rbase.data());
         if (accumulate_hll)
         {
-            /// leaves_per_child == 1 on the final pass, so the routed child IS the absolute leaf offset.
             const UInt8 precision = hll_scatter->precision;
             for (UInt64 row = 0; row < rows; ++row)
             {
@@ -624,7 +695,6 @@ void BuildSide::refine(
         return;
     }
 
-    /// Intermediate pass: child counts from the leaf-prefix array, a RAII arena freed on return.
     std::vector<UInt64> child_counts(fanout);
     for (size_t child = 0; child < fanout; ++child)
     {
@@ -634,19 +704,16 @@ void BuildSide::refine(
     }
 
     Arena child_arena;
-    auto arrs = allocExactPartitions(child_arena, child_counts, kw, nullptr);
-    scatter_into(arrs.key.data(), arrs.ref.data());
+    auto arrs = allocExactPartitions(child_arena, child_counts, rw, nullptr);
+    scatter_into(arrs.record.data());
 
-    /// Depth-first: finish each child's subtree before the next, freeing its block immediately so peak
-    /// intermediate memory tracks the live path, not the whole tree.
     for (size_t child = 0; child < fanout; ++child)
     {
         if (child_counts[child] == 0)
             continue;
         refine(
             first_leaf + child * leaves_per_child,
-            arrs.key[child],
-            arrs.ref[child],
+            arrs.record[child],
             child_counts[child],
             pass_index + 1,
             new_bits,
@@ -655,14 +722,14 @@ void BuildSide::refine(
             scratch,
             local_bytes,
             worker);
-        child_arena.release(arrs.key[child]);
+        child_arena.release(arrs.record[child]);
     }
 }
 
 LeafArrays BuildSide::scatterMultiPass(const ParallelFor & parallel_for)
 {
     const size_t num_leaves = part_plan.num_leaves;
-    const size_t kw = key_width;
+    const size_t rw = record_width;
     const size_t num_passes = part_plan.pass_bits.size();
     const size_t num_used = used_slots.size();
 
@@ -672,9 +739,8 @@ LeafArrays BuildSide::scatterMultiPass(const ParallelFor & parallel_for)
 
     LeafArrays out = makeLeafArrays();
     {
-        auto arrs = allocExactPartitions(out.arena, global_hist, kw, &parallel_for);
-        out.key_base = std::move(arrs.key);
-        out.ref_base = std::move(arrs.ref);
+        auto arrs = allocExactPartitions(out.arena, global_hist, rw, &parallel_for);
+        out.record_base = std::move(arrs.record);
         out.alloc_count = arrs.alloc_count;
         for (size_t leaf = 0; leaf < num_leaves; ++leaf)
             out.leaf_rows[leaf] = global_hist[leaf];
@@ -729,10 +795,10 @@ LeafArrays BuildSide::scatterMultiPass(const ParallelFor & parallel_for)
     }
 
     Arena level0_arena;
-    auto level0 = allocExactPartitions(level0_arena, level0_counts, kw, &parallel_for);
+    auto level0 = allocExactPartitions(level0_arena, level0_counts, rw, &parallel_for);
     /// Pass 0 writes intermediate partitions, not final leaves -> never accumulate HLL here.
     scatterBlockRanges(
-        parallel_for, p0, shift0, mask0, slot_off0, level0.key.data(), level0.ref.data(), total_bytes,
+        parallel_for, p0, shift0, mask0, slot_off0, level0.record.data(), total_bytes,
         /*accumulate_hll=*/false);
 
     /// Refine each pass-0 partition to its leaves (one parallel unit per partition).
@@ -748,8 +814,7 @@ LeafArrays BuildSide::scatterMultiPass(const ParallelFor & parallel_for)
         UInt64 local_bytes = 0;
         refine(
             partition * leaves_per_p0,
-            level0.key[partition],
-            level0.ref[partition],
+            level0.record[partition],
             level0_counts[partition],
             /*pass_index=*/1,
             pass0_bits,
@@ -758,7 +823,7 @@ LeafArrays BuildSide::scatterMultiPass(const ParallelFor & parallel_for)
             scratch,
             local_bytes,
             worker);
-        level0_arena.release(level0.key[partition]);
+        level0_arena.release(level0.record[partition]);
         total_bytes.fetch_add(local_bytes, std::memory_order_relaxed);
     });
 

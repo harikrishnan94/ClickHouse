@@ -24,6 +24,7 @@
 #include <mutex>
 #include <random>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -745,3 +746,80 @@ TEST(RadixHashJoin, GroupedLeavesLoadInvariant)
         EXPECT_GE(UInt64{1} << bits, max_rows * 2) << "group " << gpos;
     }
 }
+
+/// Exercise fused-record scatter + leaf build + probe for every supported key width, on both the DIRECT
+/// (<256 fanout) and SWWC (>=256) scatter paths.
+class FusedKeyWidthFanout : public ::testing::TestWithParam<std::tuple<size_t, size_t>>
+{
+};
+
+TEST_P(FusedKeyWidthFanout, BuildProbe)
+{
+    const auto [key_width, num_leaves] = GetParam();
+    ASSERT_EQ(key_width % 4, 0u);
+    ASSERT_GE(key_width, 4u);
+    ASSERT_LE(key_width, 64u);
+
+    PartitionPlan plan;
+    plan.num_leaves = num_leaves;
+    plan.total_bits = num_leaves <= 1 ? 0u : static_cast<UInt32>(std::countr_zero(num_leaves));
+    plan.leaf_shift = PartitionPlan::ROUTE_BITS - plan.total_bits;
+    plan.pass_bits = {plan.total_bits};
+
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    for (UInt64 i = 0; i < 2000; ++i)
+        build_keys.push_back(i * 2654435761ULL);
+    for (UInt64 i = 0; i < 1500; ++i)
+        probe_keys.push_back((i + 500) * 2654435761ULL);
+
+    BuildSide build_side(plan, {0}, {key_width}, 2);
+    for (size_t begin = 0; begin < build_keys.size(); begin += 257)
+    {
+        const size_t end = std::min(begin + size_t{257}, build_keys.size());
+        build_side.add(makeFixedKeyBlock({build_keys.begin() + begin, build_keys.begin() + end}, key_width, "k0"), begin % 2);
+    }
+    build_side.finishBuild();
+
+    const ParallelFor parallel_for = makeParallelFor(2);
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 2, /*estimate_distinct_keys=*/false);
+    EXPECT_EQ(leaves.record_width, key_width + sizeof(BuildRef));
+    LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 2, parallel_for);
+
+    std::vector<char> packed_probe(probe_keys.size() * key_width, 0);
+    for (size_t i = 0; i < probe_keys.size(); ++i)
+        std::memcpy(packed_probe.data() + i * key_width, &probe_keys[i], std::min(sizeof(UInt64), key_width));
+
+    std::vector<UInt32> out_left;
+    std::vector<BuildRef> out_refs;
+    collectMatchesTest(
+        key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
+        packed_probe.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_left, out_refs);
+
+    std::map<UInt64, size_t> expected;
+    for (UInt64 k : build_keys)
+        ++expected[k];
+
+    /// Per-probe-row match count vs brute force.
+    for (size_t pi = 0; pi < probe_keys.size(); ++pi)
+    {
+        const UInt64 pk = probe_keys[pi];
+        size_t match_count = 0;
+        for (auto j : out_left)
+            if (j == pi)
+                ++match_count;
+        const auto it = expected.find(pk);
+        EXPECT_EQ(match_count, (it != expected.end()) ? it->second : 0u) << "key_width=" << key_width << " leaves=" << num_leaves;
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllSupportedWidths,
+    FusedKeyWidthFanout,
+    ::testing::Combine(
+        ::testing::Values(4, 8, 12, 16, 24, 32, 56, 64),
+        ::testing::Values(16, 512, 8192)),
+    [](const ::testing::TestParamInfo<FusedKeyWidthFanout::ParamType> & param_info)
+    {
+        return std::string("kw") + std::to_string(std::get<0>(param_info.param)) + "_leaves" + std::to_string(std::get<1>(param_info.param));
+    });

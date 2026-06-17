@@ -16,14 +16,14 @@ namespace DB::RadixJoin
 /// flag; a leaf cell head is a `DB::BuildRefList` and an empty cell is the all-zero word (see LeafTable).
 using DB::BuildRef;
 
-/** Fixed-width, column-major radix scatter for the build side.
+/** Fixed-width, fused-record radix scatter for the build side.
   *
-  * The build never moves payload — it only partitions two narrow columns into per-leaf arrays: the
-  * packed key (`key_width` bytes, a multiple of 4 in [4, 64]) and an 8-byte `BuildRef`. They are
-  * scattered as SEPARATE columns into SEPARATE per-partition arrays (column-major), each routed by
-  * the same per-row route word `part = (route >> shift) & mask`. Column-major keeps each output
-  * dense and lets the key width vary independently of the 8-byte ref (a fused row cell would force a
-  * single element size and waste space).
+  * The build never moves payload — it only partitions one interleaved record per row into per-leaf
+  * arrays: `[ BuildRef (8 B) | packed key (key_width B) ]` (ref-first, matching the leaf cell layout
+  * `[ BuildRefList word | key ]`). Each record is routed by `part = (route >> shift) & mask` computed
+  * from the key sub-field. One output stream per partition halves the simultaneously-written output
+  * pages versus separate key/ref columns (fewer dTLB store page walks at high fanout); both fields are
+  * needed per row so there is no space waste.
   *
   * Two write paths, chosen by fanout:
   *   - DIRECT: a plain per-partition write cursor; every element is an inlined typed store. Best when
@@ -62,8 +62,8 @@ bool shouldUseSwwc(int partitions) noexcept;
 
 /** Per-worker reusable scratch for the SWWC path: one 64-byte write-combining staging line per
   * partition, a write cursor per partition, and the current fill of each staging line. Reused across
-  * chunks/passes to avoid re-allocating the staging every call. One instance handles one column at a
-  * time; key+ref need two instances (their cursors and outputs are independent).
+  * chunks/passes to avoid re-allocating the staging every call. One instance scatters the fused record
+  * column.
   */
 class ScatterScratch
 {

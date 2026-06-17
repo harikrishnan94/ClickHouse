@@ -255,10 +255,10 @@ struct ScatterBatch : Batch
     }
 };
 
-/// RHJ memcpy baseline: carve one [key | ref] buffer per block exactly like allocExactPartitions
-/// (BuildSide.cpp:121) — line-aligned, line-padded, from a fresh RadixJoin::Arena in parallel — and
-/// memcpy each block's key bytes (the COW key column's raw data) and a generated BuildRef scratch into it.
-/// No routing: this is the lower-bound "just copy the same key+ref bytes" the scatter is measured against.
+/// RHJ memcpy baseline: carve one fused-record buffer per block exactly like allocExactPartitions
+/// (BuildSide.cpp) — line-aligned, line-padded, ref-first `[ BuildRef | key ]` — and memcpy each
+/// block's keys and generated BuildRef scratch into it. No routing: the lower-bound sequential copy the
+/// scatter is measured against.
 struct MemcpyBatch : Batch
 {
     BuildSide & build_side;
@@ -276,8 +276,8 @@ struct MemcpyBatch : Batch
     {
         const auto & blocks = build_side.blocks();
         const size_t num_blocks = blocks.size();
+        const size_t record_width = KEY_WIDTH + sizeof(BuildRef);
 
-        /// Fresh arena per run (jemalloc warm-page reuse); per-block carve like allocExactPartitions.
         RadixJoin::Arena arena;
         std::vector<char *> bases(num_blocks, nullptr);
 
@@ -286,10 +286,8 @@ struct MemcpyBatch : Batch
             const size_t n = blocks[b].rows();
             if (n == 0)
                 return;
-            const size_t key_bytes = roundUpToLine(n * KEY_WIDTH);
-            const size_t ref_bytes = roundUpToLine(n * sizeof(BuildRef));
-            char * base = static_cast<char *>(arena.allocate(key_bytes + ref_bytes, LINE_BYTES));
-            bases[b] = base;
+            const size_t record_bytes = roundUpToLine(n * record_width);
+            bases[b] = static_cast<char *>(arena.allocate(record_bytes, LINE_BYTES));
         });
 
         std::atomic<UInt64> total_bytes{0};
@@ -298,12 +296,15 @@ struct MemcpyBatch : Batch
             const size_t n = blocks[b].rows();
             if (n == 0)
                 return;
-            const size_t key_bytes = roundUpToLine(n * KEY_WIDTH);
             char * base = bases[b];
             const char * key_src = blocks[b].getByPosition(0).column->getRawData().data();
-            std::memcpy(base, key_src, n * KEY_WIDTH);
-            std::memcpy(base + key_bytes, ref_scratch.data(), n * sizeof(BuildRef));
-            total_bytes.fetch_add(n * (KEY_WIDTH + sizeof(BuildRef)), std::memory_order_relaxed);
+            for (size_t row = 0; row < n; ++row)
+            {
+                char * rec = base + row * record_width;
+                std::memcpy(rec, &ref_scratch[row], sizeof(BuildRef));
+                std::memcpy(rec + sizeof(BuildRef), key_src + row * KEY_WIDTH, KEY_WIDTH);
+            }
+            total_bytes.fetch_add(n * record_width, std::memory_order_relaxed);
         });
 
         chassert(total_bytes.load() == key_ref_volume);
