@@ -66,14 +66,6 @@ constexpr UInt64 DEFAULT_BLOCK_ROWS = 65536;
 /// 8-byte BuildRef. Single UInt64 key => key_width == 8.
 constexpr size_t KEY_WIDTH = 8;
 
-void pinToCore(int core)
-{
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(core, &set);
-    sched_setaffinity(0, sizeof(set), &set);
-}
-
 /// Distinct pseudo-random UInt64 build key for global row `i` (a bijection: intHash64 is the Murmur
 /// finalizer in src/Common/HashTable/Hash.h), so the build holds distinct keys and the route/dispatch
 /// distributions are well mixed.
@@ -107,19 +99,18 @@ double gibPerSec(UInt64 bytes, double ms)
     return ms > 0.0 ? (static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0)) / (ms / 1000.0) : 0.0;
 }
 
-/// A pinned, dynamically-balanced `ParallelFor` honoring the production contract: `fn(unit, worker)` once
+/// A dynamically-balanced `ParallelFor` honoring the production contract: `fn(unit, worker)` once
 /// per unit, dense `worker` id in [0, workers) stable per unit and owned by one thread, work-stealing on
-/// an atomic cursor (leaf sizes are skewed), exception propagation after all workers stop. Worker `w` is
-/// pinned to core `first_core + w`. Mirrors gtest's makeParallelFor + bench_rhj_vs_chj's pinning.
-ParallelFor makeParallelFor(size_t num_workers, int first_core)
+/// an atomic cursor (leaf sizes are skewed), exception propagation after all workers stop. Mirrors
+/// gtest's makeParallelFor.
+ParallelFor makeParallelFor(size_t num_workers)
 {
-    return [num_workers, first_core](size_t total, const UnitFn & fn)
+    return [num_workers](size_t total, const UnitFn & fn)
     {
         if (total == 0)
             return;
         if (num_workers <= 1)
         {
-            pinToCore(first_core);
             for (size_t unit = 0; unit < total; ++unit)
                 fn(unit, 0);
             return;
@@ -134,7 +125,6 @@ ParallelFor makeParallelFor(size_t num_workers, int first_core)
         for (size_t w = 0; w < workers; ++w)
             ts.emplace_back([&, w]
             {
-                pinToCore(first_core + static_cast<int>(w));
                 while (true)
                 {
                     const size_t unit = next.fetch_add(1);
@@ -322,7 +312,6 @@ struct Args
     size_t leaves = 0; /// 0 => PartitionPlan::choose; else fixed power-of-two single-pass plan
     int passes = 0; /// 0 => PartitionPlan::choose; else fixed single-pass plan
     int repeats = 5;
-    int first_core = 0;
 };
 
 UInt64 parseU64(const char * s) { return std::strtoull(s, nullptr, 10); }
@@ -395,12 +384,11 @@ int main(int argc, char ** argv)
         else if (a == "--leaves") args.leaves = static_cast<size_t>(parseU64(next()));
         else if (a == "--passes") args.passes = static_cast<int>(parseU64(next()));
         else if (a == "--repeats") args.repeats = static_cast<int>(parseU64(next()));
-        else if (a == "--first-core") args.first_core = static_cast<int>(parseU64(next()));
         else if (a == "--help")
         {
             fmt::print(
                 "Usage: bench_build_bandwidth [--build N] [--payload-cols C] [--threads T] [--chj-shards S]\n"
-                "       [--block-rows B] [--leaves L] [--passes P] [--repeats R] [--first-core C]\n"
+                "       [--block-rows B] [--leaves L] [--passes P] [--repeats R]\n"
                 "\n"
                 "Compares three build-side data-movement pipelines over the same pre-generated blocks:\n"
                 "  CHJ zero-copy reference = T_gen + T_dispatch (materialize + COW refcount + dispatch)\n"
@@ -433,7 +421,7 @@ int main(int argc, char ** argv)
     DB::MainThreadStatus::getInstance();
 
     const size_t num_workers = static_cast<size_t>(args.threads);
-    const ParallelFor parallel_for = makeParallelFor(num_workers, args.first_core);
+    const ParallelFor parallel_for = makeParallelFor(num_workers);
 
     const size_t l2_raw = []() -> size_t
     {
