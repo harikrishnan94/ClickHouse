@@ -273,6 +273,90 @@ void seedRecordSwwcScratch(
     }
 }
 
+/// ---- Direct column-key scatter sub-primitives (shared by single-pass and windowed multipass) ----
+
+template <size_t key_width>
+UInt32 leafFromPackedKey(const char * key, UInt32 shift, UInt32 mask) noexcept
+{
+    return static_cast<UInt32>((routeBits(hashPackedKey<key_width>(key)) >> shift) & mask);
+}
+
+template <size_t key_width>
+void storeFusedRecord(char * dst, const BuildRef & ref, const char * key) noexcept
+{
+    constexpr size_t kw = key_width;
+    __builtin_memcpy_inline(dst, &ref, sizeof(BuildRef));
+    __builtin_memcpy_inline(dst + sizeof(BuildRef), key, kw);
+}
+
+template <size_t record_width>
+void appendFusedRecordToCursor(void *& cursor, const char * fused_record) noexcept
+{
+    if (cursor == nullptr)
+        return;
+    __builtin_memcpy_inline(cursor, fused_record, record_width);
+    cursor = static_cast<char *>(cursor) + record_width;
+}
+
+template <size_t key_width, size_t record_width>
+void scatterFusedRecordToPart(void *& part_cursor, const BuildRef & ref, const char * key) noexcept
+{
+    if (part_cursor == nullptr)
+        return;
+    storeFusedRecord<key_width>(static_cast<char *>(part_cursor), ref, key);
+    part_cursor = static_cast<char *>(part_cursor) + record_width;
+}
+
+template <size_t record_width>
+void appendFusedRecordsToCursor(void *& cursor, const char * records, size_t count) noexcept
+{
+    if (cursor == nullptr || count == 0)
+        return;
+    char * dst = static_cast<char *>(cursor);
+    for (size_t i = 0; i < count; ++i)
+    {
+        __builtin_memcpy_inline(dst, records + i * record_width, record_width);
+        dst += record_width;
+    }
+    cursor = dst;
+}
+
+void seedScatterOutputCursors(
+    size_t num_parts,
+    size_t record_width,
+    void * const * record_bases,
+    const UInt64 * offsets,
+    std::vector<void *> & rcur)
+{
+    rcur.resize(num_parts);
+    for (size_t part = 0; part < num_parts; ++part)
+    {
+        if (record_bases[part] != nullptr)
+            rcur[part] = static_cast<char *>(record_bases[part]) + offsets[part] * record_width;
+        else
+            rcur[part] = nullptr;
+    }
+}
+
+/// Pass 2 of the windowed direct scatter: each staged fused record is routed to its final leaf by
+/// re-hashing the packed key sub-field (pass 1 only used the coarse window partition).
+template <size_t key_width, size_t record_width>
+void flushWindowPartitionToOutput(
+    void ** out_cursors,
+    const char * partition_base,
+    size_t count,
+    UInt32 leaf_shift,
+    UInt32 leaf_mask) noexcept
+{
+    for (size_t i = 0; i < count; ++i)
+    {
+        const char * rec = partition_base + i * record_width;
+        const char * key = rec + PACKED_KEY_OFFSET_IN_RECORD;
+        const UInt32 leaf = leafFromPackedKey<key_width>(key, leaf_shift, leaf_mask);
+        appendFusedRecordToCursor<record_width>(out_cursors[leaf], rec);
+    }
+}
+
 }
 
 /// Per-worker scratch for the depth-first multi-pass refinement (reused across the whole subtree).
@@ -357,7 +441,7 @@ void BuildSide::packKeyChunk(const Block & block, size_t row_begin, size_t rows,
     }
 }
 
-template <size_t key_width, bool multi_col>
+template <size_t key_width, bool multi_col, bool two_pass>
 void BuildSide::scatterDirectFromColumnKeysFixed(
     const ParallelFor & parallel_for,
     size_t num_used,
@@ -370,6 +454,7 @@ void BuildSide::scatterDirectFromColumnKeysFixed(
 {
     constexpr size_t kw = key_width;
     constexpr size_t rw = PACKED_KEY_OFFSET_IN_RECORD + kw;
+    constexpr size_t window_slots = SCATTER_WINDOW_SLOTS;
 
     if (num_used == 0)
         return;
@@ -380,49 +465,105 @@ void BuildSide::scatterDirectFromColumnKeysFixed(
         {
             const UInt64 * offsets = slot_off.data() + slot * num_parts;
             std::vector<void *> rcur;
-            rcur.resize(num_parts);
-            for (size_t part = 0; part < num_parts; ++part)
-            {
-                if (record_bases[part] != nullptr)
-                    rcur[part] = static_cast<char *>(record_bases[part]) + offsets[part] * rw;
-            }
+            seedScatterOutputCursors(num_parts, rw, record_bases, offsets, rcur);
 
             std::array<char, kw> packed_row;
 
-            for (size_t block_idx = slot_block_begin[slot]; block_idx < slot_block_end[slot]; ++block_idx)
+            if constexpr (two_pass)
             {
-                const size_t n = rows_per_block[block_idx];
-                if (n == 0)
-                    continue;
+                chassert(num_parts > SCATTER_MULTIPASS_PART_THRESHOLD);
+                chassert(num_parts % SCATTER_MAX_PARTS_PER_PASS == 0);
 
-                const Block & block = all_blocks[block_idx];
-                const char * raw_keys = nullptr;
-                if constexpr (!multi_col)
-                    raw_keys = block.getByPosition(key_positions[0]).column->getRawData().data();
+                const size_t leaves_per_coarse = num_parts / SCATTER_MAX_PARTS_PER_PASS;
+                const UInt32 leaf_bits = static_cast<UInt32>(std::bit_width(num_parts - 1));
+                const UInt32 coarse_bits = static_cast<UInt32>(std::bit_width(SCATTER_MAX_PARTS_PER_PASS - 1));
+                const UInt32 window_shift = shift + (leaf_bits - coarse_bits);
+                const UInt32 window_mask = static_cast<UInt32>(SCATTER_MAX_PARTS_PER_PASS - 1);
 
-                for (size_t row = 0; row < n; ++row)
+                std::vector<char> window(num_parts * window_slots * rw);
+                std::vector<UInt8> fill(SCATTER_MAX_PARTS_PER_PASS, 0);
+
+                auto flush_partition = [&](size_t coarse)
                 {
-                    const char * key = nullptr;
-                    if constexpr (multi_col)
-                    {
-                        packKeyChunk(block, row, 1, packed_row.data());
-                        key = packed_row.data();
-                    }
-                    else
-                        key = raw_keys + row * kw;
+                    if (fill[coarse] == 0)
+                        return;
+                    const char * partition_base = window.data() + coarse * leaves_per_coarse * window_slots * rw;
+                    flushWindowPartitionToOutput<key_width, rw>(
+                        rcur.data(), partition_base, fill[coarse], shift, mask);
+                    fill[coarse] = 0;
+                };
 
-                    BuildRef ref(block_idx, row);
-                    const auto leaf = (routeBits(hashPackedKey<key_width>(key)) >> shift) & mask;
-                    __builtin_memcpy_inline(rcur[leaf], &ref, sizeof(BuildRef));
-                    __builtin_memcpy_inline(static_cast<char *>(rcur[leaf]) + sizeof(BuildRef), key, kw);
-                    rcur[leaf] = static_cast<char *>(rcur[leaf]) + rw;
+                for (size_t block_idx = slot_block_begin[slot]; block_idx < slot_block_end[slot]; ++block_idx)
+                {
+                    const size_t n = rows_per_block[block_idx];
+                    if (n == 0)
+                        continue;
+
+                    const Block & block = all_blocks[block_idx];
+                    const char * raw_keys = nullptr;
+                    if constexpr (!multi_col)
+                        raw_keys = block.getByPosition(key_positions[0]).column->getRawData().data();
+
+                    for (size_t row = 0; row < n; ++row)
+                    {
+                        const char * key = nullptr;
+                        if constexpr (multi_col)
+                        {
+                            packKeyChunk(block, row, 1, packed_row.data());
+                            key = packed_row.data();
+                        }
+                        else
+                            key = raw_keys + row * kw;
+
+                        const UInt32 coarse = leafFromPackedKey<key_width>(key, window_shift, window_mask);
+                        BuildRef ref(block_idx, row);
+                        char * window_slot = window.data() + coarse * leaves_per_coarse * window_slots * rw + fill[coarse] * rw;
+                        storeFusedRecord<key_width>(window_slot, ref, key);
+                        ++fill[coarse];
+                        if (fill[coarse] == window_slots)
+                            flush_partition(coarse);
+                    }
+                    total_bytes.fetch_add(n * rw, std::memory_order_relaxed);
                 }
-                total_bytes.fetch_add(n * rw, std::memory_order_relaxed);
+
+                for (size_t coarse = 0; coarse < SCATTER_MAX_PARTS_PER_PASS; ++coarse)
+                    flush_partition(coarse);
+            }
+            else
+            {
+                for (size_t block_idx = slot_block_begin[slot]; block_idx < slot_block_end[slot]; ++block_idx)
+                {
+                    const size_t n = rows_per_block[block_idx];
+                    if (n == 0)
+                        continue;
+
+                    const Block & block = all_blocks[block_idx];
+                    const char * raw_keys = nullptr;
+                    if constexpr (!multi_col)
+                        raw_keys = block.getByPosition(key_positions[0]).column->getRawData().data();
+
+                    for (size_t row = 0; row < n; ++row)
+                    {
+                        const char * key = nullptr;
+                        if constexpr (multi_col)
+                        {
+                            packKeyChunk(block, row, 1, packed_row.data());
+                            key = packed_row.data();
+                        }
+                        else
+                            key = raw_keys + row * kw;
+
+                        const UInt32 leaf = leafFromPackedKey<key_width>(key, shift, mask);
+                        BuildRef ref(block_idx, row);
+                        scatterFusedRecordToPart<key_width, rw>(rcur[leaf], ref, key);
+                    }
+                    total_bytes.fetch_add(n * rw, std::memory_order_relaxed);
+                }
             }
         });
 }
 
-template <bool multi_col>
+template <bool multi_col, bool two_pass>
 void BuildSide::dispatchScatterDirectFromColumnKeysFixed(
     const ParallelFor & parallel_for,
     size_t num_used,
@@ -435,22 +576,22 @@ void BuildSide::dispatchScatterDirectFromColumnKeysFixed(
 {
     switch (key_width)
     {
-        case 4:  scatterDirectFromColumnKeysFixed<4, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);  return;
-        case 8:  scatterDirectFromColumnKeysFixed<8, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);  return;
-        case 12: scatterDirectFromColumnKeysFixed<12, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 16: scatterDirectFromColumnKeysFixed<16, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 20: scatterDirectFromColumnKeysFixed<20, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 24: scatterDirectFromColumnKeysFixed<24, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 28: scatterDirectFromColumnKeysFixed<28, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 32: scatterDirectFromColumnKeysFixed<32, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 36: scatterDirectFromColumnKeysFixed<36, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 40: scatterDirectFromColumnKeysFixed<40, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 44: scatterDirectFromColumnKeysFixed<44, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 48: scatterDirectFromColumnKeysFixed<48, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 52: scatterDirectFromColumnKeysFixed<52, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 56: scatterDirectFromColumnKeysFixed<56, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 60: scatterDirectFromColumnKeysFixed<60, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
-        case 64: scatterDirectFromColumnKeysFixed<64, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 4:  scatterDirectFromColumnKeysFixed<4, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);  return;
+        case 8:  scatterDirectFromColumnKeysFixed<8, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);  return;
+        case 12: scatterDirectFromColumnKeysFixed<12, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 16: scatterDirectFromColumnKeysFixed<16, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 20: scatterDirectFromColumnKeysFixed<20, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 24: scatterDirectFromColumnKeysFixed<24, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 28: scatterDirectFromColumnKeysFixed<28, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 32: scatterDirectFromColumnKeysFixed<32, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 36: scatterDirectFromColumnKeysFixed<36, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 40: scatterDirectFromColumnKeysFixed<40, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 44: scatterDirectFromColumnKeysFixed<44, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 48: scatterDirectFromColumnKeysFixed<48, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 52: scatterDirectFromColumnKeysFixed<52, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 56: scatterDirectFromColumnKeysFixed<56, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 60: scatterDirectFromColumnKeysFixed<60, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 64: scatterDirectFromColumnKeysFixed<64, multi_col, two_pass>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
         default: chassert(false && "unsupported packed key width"); return;
     }
 }
@@ -465,10 +606,21 @@ void BuildSide::scatterDirectFromColumnKeys(
     void * const * record_bases,
     std::atomic<UInt64> & total_bytes) const
 {
+    const bool two_pass = num_parts > SCATTER_MULTIPASS_PART_THRESHOLD;
     if (key_positions.size() > 1)
-        dispatchScatterDirectFromColumnKeysFixed<true>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+    {
+        if (two_pass)
+            dispatchScatterDirectFromColumnKeysFixed<true, true>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+        else
+            dispatchScatterDirectFromColumnKeysFixed<true, false>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+    }
     else
-        dispatchScatterDirectFromColumnKeysFixed<false>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+    {
+        if (two_pass)
+            dispatchScatterDirectFromColumnKeysFixed<false, true>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+        else
+            dispatchScatterDirectFromColumnKeysFixed<false, false>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+    }
 }
 
 void BuildSide::add(const Block & block, size_t lane)

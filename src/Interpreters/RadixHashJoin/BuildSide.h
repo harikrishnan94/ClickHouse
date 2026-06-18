@@ -90,6 +90,13 @@ public:
     /// Rows are scattered in chunks of this size (bounds the packed-key + route + fused-record scratch).
     static constexpr size_t SCATTER_CHUNK_ROWS = 1024;
 
+    /// Per-leaf staging depth for the windowed multipass direct scatter (see scatterDirectFromColumnKeysFixed).
+    static constexpr size_t SCATTER_WINDOW_SLOTS = 64;
+    /// Above this leaf fanout the direct scatter uses a window buffer instead of per-leaf live cursors.
+    static constexpr size_t SCATTER_MULTIPASS_PART_THRESHOLD = 1024;
+    /// Coarse fanout for pass-1 window staging in the direct scatter (pass 2 uses full leaf fanout).
+    static constexpr size_t SCATTER_MAX_PARTS_PER_PASS = 256;
+
     BuildSide(PartitionPlan plan_, std::vector<size_t> key_positions_, std::vector<size_t> key_widths_, size_t max_threads_);
     ~BuildSide();
 
@@ -167,7 +174,7 @@ private:
         void * const * record_bases,
         std::atomic<UInt64> & total_bytes) const;
 
-    template <size_t key_width, bool multi_col>
+    template <size_t key_width, bool multi_col, bool two_pass>
     void scatterDirectFromColumnKeysFixed(
         const ParallelFor & parallel_for,
         size_t num_used,
@@ -178,7 +185,7 @@ private:
         void * const * record_bases,
         std::atomic<UInt64> & total_bytes) const;
 
-    template <bool multi_col>
+    template <bool multi_col, bool two_pass>
     void dispatchScatterDirectFromColumnKeysFixed(
         const ParallelFor & parallel_for,
         size_t num_used,
