@@ -246,6 +246,32 @@ PartitionArrays allocExactPartitions(Arena & arena, std::span<const UInt64> coun
     return out;
 }
 
+/// Seed SWWC scatter scratch for fused records: per-partition write cursors and head-peel counters.
+/// `row_offsets[part]` is the 0-based row index within that partition where this writer begins (scatterBlockRanges
+/// passes per-slot offsets; refine always writes from row 0 of a fresh allocation).
+void seedRecordSwwcScratch(
+    ScatterScratch & scratch,
+    size_t num_parts,
+    size_t record_width,
+    void * const * record_bases,
+    const UInt64 * row_offsets)
+{
+    scratch.resetFills(num_parts);
+    const bool record_tiles_line = (LINE_BYTES % record_width == 0);
+    for (size_t part = 0; part < num_parts; ++part)
+    {
+        if (record_bases[part] == nullptr)
+            continue;
+        const UInt64 off = row_offsets ? row_offsets[part] : 0;
+        scratch.cursors()[part] = static_cast<char *>(record_bases[part]) + off * record_width;
+        if (record_tiles_line)
+        {
+            const UInt32 rec_m0 = static_cast<UInt32>((off * record_width) & (LINE_BYTES - 1));
+            scratch.peel()[part] = ((LINE_BYTES - rec_m0) & (LINE_BYTES - 1)) / static_cast<UInt32>(record_width);
+        }
+    }
+}
+
 }
 
 /// Per-worker scratch for the depth-first multi-pass refinement (reused across the whole subtree).
@@ -472,25 +498,7 @@ void BuildSide::scatterBlockRanges(
         if (use_swwc)
         {
             record_ss.emplace(num_parts);
-            const bool record_tiles_line = (LINE_BYTES % rw == 0);
-            for (size_t part = 0; part < num_parts; ++part)
-            {
-                if (record_bases[part] != nullptr)
-                {
-                    record_ss->cursors()[part] = static_cast<char *>(record_bases[part]) + offsets[part] * rw;
-                    if (record_tiles_line)
-                    {
-                        const UInt32 rec_m0 = static_cast<UInt32>((offsets[part] * rw) & (LINE_BYTES - 1));
-                        record_ss->peel()[part] = ((LINE_BYTES - rec_m0) & (LINE_BYTES - 1)) / static_cast<UInt32>(rw);
-                    }
-                    else
-                        record_ss->peel()[part] = 0;
-                }
-                else
-                {
-                    record_ss->peel()[part] = 0;
-                }
-            }
+            seedRecordSwwcScratch(*record_ss, num_parts, rw, record_bases, offsets);
         }
         else
         {
@@ -659,9 +667,7 @@ void BuildSide::refine(
     {
         if (use_swwc)
         {
-            scratch.record_scratch.resetFills(fanout);
-            for (size_t child = 0; child < fanout; ++child)
-                scratch.record_scratch.cursors()[child] = record_bases[child];
+            seedRecordSwwcScratch(scratch.record_scratch, fanout, rw, record_bases, nullptr);
             appendColumnSwwc(scratch.route.data(), routing_shift, mask, rows, in, rw, scratch.record_scratch);
             drainColumnSwwc(fanout, scratch.record_scratch);
         }
