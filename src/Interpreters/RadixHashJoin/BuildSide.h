@@ -105,6 +105,8 @@ public:
     /// worker), then merged into `LeafArrays::distinct_key_estimates`; otherwise that field is left empty.
     LeafArrays scatterToLeaves(const ParallelFor & parallel_for, size_t num_workers, bool estimate_distinct_keys);
 
+    LeafArrays scatterToLeaves2(const ParallelFor & parallel_for, size_t num_workers, bool = false);
+
     const PartitionPlan & plan() const { return part_plan; }
     size_t packedKeyWidth() const { return key_width; }
     size_t recordWidth() const { return record_width; }
@@ -154,6 +156,38 @@ private:
         void * const * record_bases,
         std::atomic<UInt64> & total_bytes,
         bool accumulate_hll);
+
+    void scatterDirectFromColumnKeys(
+        const ParallelFor & parallel_for,
+        size_t num_used,
+        size_t num_parts,
+        UInt32 shift,
+        UInt32 mask,
+        const std::vector<UInt64> & slot_off,
+        void * const * record_bases,
+        std::atomic<UInt64> & total_bytes) const;
+
+    template <size_t key_width, bool multi_col>
+    void scatterDirectFromColumnKeysFixed(
+        const ParallelFor & parallel_for,
+        size_t num_used,
+        size_t num_parts,
+        UInt32 shift,
+        UInt32 mask,
+        const std::vector<UInt64> & slot_off,
+        void * const * record_bases,
+        std::atomic<UInt64> & total_bytes) const;
+
+    template <bool multi_col>
+    void dispatchScatterDirectFromColumnKeysFixed(
+        const ParallelFor & parallel_for,
+        size_t num_used,
+        size_t num_parts,
+        UInt32 shift,
+        UInt32 mask,
+        const std::vector<UInt64> & slot_off,
+        void * const * record_bases,
+        std::atomic<UInt64> & total_bytes) const;
 
     /// Depth-first refinement of one already-scattered partition down to its leaves (multi-pass only).
     /// `worker` is the dense worker id of the enclosing scatter unit, used to key this subtree's HLL

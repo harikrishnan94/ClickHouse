@@ -8,6 +8,7 @@
 #include <Common/Exception.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <numeric>
 #include <optional>
@@ -354,6 +355,120 @@ void BuildSide::packKeyChunk(const Block & block, size_t row_begin, size_t rows,
         const char * column_data = block.getByPosition(key_positions[col]).column->getRawData().data();
         key_packers[col](column_data, row_begin, rows, dst, key_width, key_offsets[col], key_widths[col]);
     }
+}
+
+template <size_t key_width, bool multi_col>
+void BuildSide::scatterDirectFromColumnKeysFixed(
+    const ParallelFor & parallel_for,
+    size_t num_used,
+    size_t num_parts,
+    UInt32 shift,
+    UInt32 mask,
+    const std::vector<UInt64> & slot_off,
+    void * const * record_bases,
+    std::atomic<UInt64> & total_bytes) const
+{
+    constexpr size_t kw = key_width;
+    constexpr size_t rw = PACKED_KEY_OFFSET_IN_RECORD + kw;
+
+    if (num_used == 0)
+        return;
+
+    parallel_for(
+        num_used,
+        [&](size_t slot, size_t /* worker */)
+        {
+            const UInt64 * offsets = slot_off.data() + slot * num_parts;
+            std::vector<void *> rcur;
+            rcur.resize(num_parts);
+            for (size_t part = 0; part < num_parts; ++part)
+            {
+                if (record_bases[part] != nullptr)
+                    rcur[part] = static_cast<char *>(record_bases[part]) + offsets[part] * rw;
+            }
+
+            std::array<char, kw> packed_row;
+
+            for (size_t block_idx = slot_block_begin[slot]; block_idx < slot_block_end[slot]; ++block_idx)
+            {
+                const size_t n = rows_per_block[block_idx];
+                if (n == 0)
+                    continue;
+
+                const Block & block = all_blocks[block_idx];
+                const char * raw_keys = nullptr;
+                if constexpr (!multi_col)
+                    raw_keys = block.getByPosition(key_positions[0]).column->getRawData().data();
+
+                for (size_t row = 0; row < n; ++row)
+                {
+                    const char * key = nullptr;
+                    if constexpr (multi_col)
+                    {
+                        packKeyChunk(block, row, 1, packed_row.data());
+                        key = packed_row.data();
+                    }
+                    else
+                        key = raw_keys + row * kw;
+
+                    BuildRef ref(block_idx, row);
+                    const auto leaf = (routeBits(hashPackedKey<key_width>(key)) >> shift) & mask;
+                    __builtin_memcpy_inline(rcur[leaf], &ref, sizeof(BuildRef));
+                    __builtin_memcpy_inline(static_cast<char *>(rcur[leaf]) + sizeof(BuildRef), key, kw);
+                    rcur[leaf] = static_cast<char *>(rcur[leaf]) + rw;
+                }
+                total_bytes.fetch_add(n * rw, std::memory_order_relaxed);
+            }
+        });
+}
+
+template <bool multi_col>
+void BuildSide::dispatchScatterDirectFromColumnKeysFixed(
+    const ParallelFor & parallel_for,
+    size_t num_used,
+    size_t num_parts,
+    UInt32 shift,
+    UInt32 mask,
+    const std::vector<UInt64> & slot_off,
+    void * const * record_bases,
+    std::atomic<UInt64> & total_bytes) const
+{
+    switch (key_width)
+    {
+        case 4:  scatterDirectFromColumnKeysFixed<4, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);  return;
+        case 8:  scatterDirectFromColumnKeysFixed<8, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);  return;
+        case 12: scatterDirectFromColumnKeysFixed<12, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 16: scatterDirectFromColumnKeysFixed<16, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 20: scatterDirectFromColumnKeysFixed<20, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 24: scatterDirectFromColumnKeysFixed<24, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 28: scatterDirectFromColumnKeysFixed<28, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 32: scatterDirectFromColumnKeysFixed<32, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 36: scatterDirectFromColumnKeysFixed<36, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 40: scatterDirectFromColumnKeysFixed<40, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 44: scatterDirectFromColumnKeysFixed<44, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 48: scatterDirectFromColumnKeysFixed<48, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 52: scatterDirectFromColumnKeysFixed<52, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 56: scatterDirectFromColumnKeysFixed<56, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 60: scatterDirectFromColumnKeysFixed<60, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        case 64: scatterDirectFromColumnKeysFixed<64, multi_col>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes); return;
+        default: chassert(false && "unsupported packed key width"); return;
+    }
+}
+
+void BuildSide::scatterDirectFromColumnKeys(
+    const ParallelFor & parallel_for,
+    size_t num_used,
+    size_t num_parts,
+    UInt32 shift,
+    UInt32 mask,
+    const std::vector<UInt64> & slot_off,
+    void * const * record_bases,
+    std::atomic<UInt64> & total_bytes) const
+{
+    if (key_positions.size() > 1)
+        dispatchScatterDirectFromColumnKeysFixed<true>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
+    else
+        dispatchScatterDirectFromColumnKeysFixed<false>(parallel_for, num_used, num_parts, shift, mask, slot_off, record_bases, total_bytes);
 }
 
 void BuildSide::add(const Block & block, size_t lane)
@@ -885,6 +1000,56 @@ LeafArrays BuildSide::scatterToLeaves(const ParallelFor & parallel_for, size_t n
         hll_scatter = nullptr;
     }
 
+    return out;
+}
+
+LeafArrays BuildSide::scatterToLeaves2(const ParallelFor & parallel_for, size_t /* num_workers */, bool /* estimate_distinct_keys */)
+{
+    chassert(finished);
+
+    LeafArrays out = makeLeafArrays();
+    const size_t num_leaves = part_plan.num_leaves;
+    const size_t num_used = used_slots.size();
+
+    auto arrs = allocExactPartitions(out.arena, global_hist, record_width, &parallel_for);
+    out.record_base = std::move(arrs.record);
+    out.alloc_count = arrs.alloc_count;
+    for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+        out.leaf_rows[leaf] = global_hist[leaf];
+
+    const UInt32 shift = part_plan.total_bits > 0 ? part_plan.leaf_shift : 0u;
+    const UInt32 mask = static_cast<UInt32>(num_leaves - 1);
+
+    /// Per-(slot, leaf) start offsets within each leaf array: slot w begins where slots 0..w-1 ended.
+    std::vector<UInt64> slot_off(num_used * num_leaves, 0);
+    {
+        std::vector<UInt64> running(num_leaves, 0);
+        for (size_t worker = 0; worker < num_used; ++worker)
+        {
+            const auto & state = *local[used_slots[worker]];
+            UInt64 * start = slot_off.data() + worker * num_leaves;
+            for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+                start[leaf] = running[leaf];
+            for (size_t rep = 0; rep < state.replicas; ++rep)
+            {
+                const UInt32 * rep_hist = state.rep_hist.data() + rep * num_leaves;
+                for (size_t leaf = 0; leaf < num_leaves; ++leaf)
+                    running[leaf] += rep_hist[leaf];
+            }
+        }
+    }
+
+    std::atomic<UInt64> total_bytes{0};
+    scatterDirectFromColumnKeys(
+        parallel_for,
+        num_used,
+        num_leaves,
+        shift,
+        mask,
+        slot_off,
+        out.record_base.data(),
+        total_bytes);
+    out.bytes_scattered = total_bytes.load();
     return out;
 }
 

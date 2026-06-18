@@ -239,7 +239,7 @@ struct ScatterBatch : Batch
 
     UInt64 run(const ParallelFor & parallel_for, size_t num_workers) override
     {
-        LeafArrays leaves = build_side.scatterToLeaves(parallel_for, num_workers, /*estimate_distinct_keys=*/false);
+        LeafArrays leaves = build_side.scatterToLeaves2(parallel_for, num_workers, /*estimate_distinct_keys=*/false);
         last_bytes_scattered = leaves.bytes_scattered;
         return key_ref_volume;
     }
