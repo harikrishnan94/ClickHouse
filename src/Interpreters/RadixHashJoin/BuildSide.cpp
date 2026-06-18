@@ -280,6 +280,8 @@ struct BuildSide::RefineScratch
     explicit RefineScratch(size_t max_fanout)
         : record_scratch(max_fanout), record_cursors(max_fanout)
     {
+        route.resize(SCATTER_CHUNK_ROWS);
+        bucket.resize(SCATTER_CHUNK_ROWS);
     }
     ScatterScratch record_scratch;
     std::vector<void *> record_cursors;
@@ -652,31 +654,48 @@ void BuildSide::refine(
     const auto * in = static_cast<const char *>(in_records);
 
     const bool accumulate_hll = is_last && hll_scatter != nullptr;
-    scratch.route.resize(rows);
-    if (accumulate_hll)
-    {
-        scratch.bucket.resize(rows);
-        computeRoutesAndBucketsStrided(in, rows, kw, rw, PACKED_KEY_OFFSET_IN_RECORD, scratch.route.data(), scratch.bucket.data());
-    }
-    else
-    {
-        computeRoutesStrided(in, rows, kw, rw, PACKED_KEY_OFFSET_IN_RECORD, scratch.route.data());
-    }
 
-    auto scatter_into = [&](void * const * record_bases)
+    // Chunked scatter into `record_bases` (children or final leaves). Reads each chunk of `in`
+    // from DRAM exactly once; route/bucket stay L1-resident; cursors are incremental across chunks.
+    auto scatter_chunked = [&](void * const * record_bases)
     {
+        // --- seed ONCE (incremental write position persists across chunks) ---
         if (use_swwc)
-        {
-            seedRecordSwwcScratch(scratch.record_scratch, fanout, rw, record_bases, nullptr);
-            appendColumnSwwc(scratch.route.data(), routing_shift, mask, rows, in, rw, scratch.record_scratch);
-            drainColumnSwwc(fanout, scratch.record_scratch);
-        }
+            seedRecordSwwcScratch(scratch.record_scratch, fanout, rw, record_bases, /*row_offsets=*/nullptr);
         else
-        {
             for (size_t child = 0; child < fanout; ++child)
                 scratch.record_cursors[child] = record_bases[child];
-            appendColumnDirect(scratch.route.data(), routing_shift, mask, rows, in, rw, scratch.record_cursors.data());
+
+        UInt32 * route = scratch.route.data();
+        UInt32 * bucket = scratch.bucket.data();
+        const UInt8 precision = accumulate_hll ? hll_scatter->precision : UInt8{0};
+
+        for (UInt64 begin = 0; begin < rows; begin += SCATTER_CHUNK_ROWS)
+        {
+            const size_t chunk = std::min<UInt64>(SCATTER_CHUNK_ROWS, rows - begin);
+            const char * in_chunk = in + begin * rw;
+
+            if (accumulate_hll)
+                computeRoutesAndBucketsStrided(in_chunk, chunk, kw, rw, PACKED_KEY_OFFSET_IN_RECORD, route, bucket);
+            else
+                computeRoutesStrided(in_chunk, chunk, kw, rw, PACKED_KEY_OFFSET_IN_RECORD, route);
+
+            if (use_swwc)
+                appendColumnSwwc(route, routing_shift, mask, chunk, in_chunk, rw, scratch.record_scratch);
+            else
+                appendColumnDirect(route, routing_shift, mask, chunk, in_chunk, rw, scratch.record_cursors.data());
+
+            if (accumulate_hll)
+                for (size_t r = 0; r < chunk; ++r)
+                {
+                    const size_t leaf = first_leaf + ((route[r] >> routing_shift) & mask);
+                    Hll::add(hll_scatter->sketch(worker, leaf), precision, bucket[r]);
+                }
         }
+
+        if (use_swwc)
+            drainColumnSwwc(fanout, scratch.record_scratch);
+
         local_bytes += rows * rw;
     };
 
@@ -684,20 +703,8 @@ void BuildSide::refine(
     {
         std::vector<void *> rbase(fanout);
         for (size_t child = 0; child < fanout; ++child)
-        {
-            const size_t leaf = first_leaf + child * leaves_per_child;
-            rbase[child] = out.record_base[leaf];
-        }
-        scatter_into(rbase.data());
-        if (accumulate_hll)
-        {
-            const UInt8 precision = hll_scatter->precision;
-            for (UInt64 row = 0; row < rows; ++row)
-            {
-                const size_t leaf = first_leaf + ((scratch.route[row] >> routing_shift) & mask);
-                Hll::add(hll_scatter->sketch(worker, leaf), precision, scratch.bucket[row]);
-            }
-        }
+            rbase[child] = out.record_base[first_leaf + child * leaves_per_child];
+        scatter_chunked(rbase.data());
         return;
     }
 
@@ -711,7 +718,7 @@ void BuildSide::refine(
 
     Arena child_arena;
     auto arrs = allocExactPartitions(child_arena, child_counts, rw, nullptr);
-    scatter_into(arrs.record.data());
+    scatter_chunked(arrs.record.data());
 
     for (size_t child = 0; child < fanout; ++child)
     {
