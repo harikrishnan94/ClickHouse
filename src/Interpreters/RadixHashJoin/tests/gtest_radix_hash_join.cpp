@@ -439,6 +439,37 @@ TEST(RadixHashJoin, BuildProbeForcedMultiPass)
     checkBuildAndProbe(build_keys, probe_keys, plan, 4, 4);
 }
 
+TEST(RadixHashJoin, BuildProbeMultiPassSwwc)
+{
+    /// Multi-pass scatter where every refine pass has fanout >= 256, exercising the SWWC path inside
+    /// `refine` (resetFills + append + drain) that single-pass tests never reach.
+    if (!ntStoresAvailable())
+        GTEST_SKIP() << "SWWC requires non-temporal stores";
+
+    PartitionPlan plan;
+    plan.num_leaves = 65536;
+    plan.total_bits = 16;
+    plan.leaf_shift = PartitionPlan::ROUTE_BITS - plan.total_bits;
+    plan.pass_bits = {8, 8};
+    ASSERT_EQ(plan.pass_bits.size(), 2u);
+    for (UInt32 bits : plan.pass_bits)
+    {
+        ASSERT_GE(bits, 8u);
+        ASSERT_TRUE(shouldUseSwwc(static_cast<int>(size_t{1} << bits)));
+    }
+
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> probe_keys;
+    std::mt19937 rng(65537); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
+    for (size_t i = 0; i < 50000; ++i)
+        build_keys.push_back(rng());
+    for (size_t i = 0; i < 20000; ++i)
+        probe_keys.push_back(i % 4 == 0 ? build_keys[i % build_keys.size()] : rng());
+
+    checkBuildAndProbe(build_keys, probe_keys, plan, 1, 1);
+    checkBuildAndProbe(build_keys, probe_keys, plan, 4, 4);
+}
+
 namespace
 {
 /// Build the leaf tables for `build_keys` with distinct-estimate sizing off or on, returning the total

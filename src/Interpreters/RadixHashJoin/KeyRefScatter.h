@@ -81,6 +81,7 @@ public:
     char * staging() noexcept { return staging_buf; }      /// capacity * LINE_BYTES, LINE_BYTES-aligned
     void ** cursors() noexcept { return cursor_ptrs.data(); } /// per-partition write pointer
     UInt32 * fill() noexcept { return line_fill.data(); }    /// per-partition staging fill in bytes [0, LINE_BYTES)
+    UInt32 * peel() noexcept { return line_peel.data(); }    /// per-partition head-peel elements remaining before line-aligned
 
     /// Seed every cursor to nullptr / fill to 0 — call before reusing for a fresh set of partitions
     /// whose cursors the caller then sets.
@@ -91,6 +92,7 @@ private:
     char * staging_buf = nullptr;
     std::vector<void *> cursor_ptrs;
     std::vector<UInt32> line_fill;
+    std::vector<UInt32> line_peel;
 
     void freeStaging() noexcept;
 };
@@ -103,11 +105,13 @@ size_t appendColumnDirect(
 
 /// SWWC+NT incremental scatter of one fixed-width column. The per-partition write position, staging
 /// line and fill live in `scratch`; the caller seeds `scratch.cursors()[p]` to each partition's start
-/// (a fresh scratch already has zero fills) before the first chunk and calls `drainColumnSwwc` once
-/// after the last chunk. A worker's start is generally not line-aligned, so rows are written directly
-/// until the cursor reaches a line boundary (head peel), after which they are staged and NT-flushed in
-/// whole lines. Only valid when `ntStoresAvailable()`. Returns bytes scattered (`n * elem_width`, the
-/// same accounting as DIRECT, so totals are path-independent).
+/// and `scratch.peel()[p]` to the number of direct-write elements needed before the cursor is
+/// line-aligned (a fresh scratch already has zero fills and peels) before the first chunk and calls
+/// `drainColumnSwwc` once after the last chunk. Rows routed to a partition while `peel[p] > 0` are
+/// written directly (one-time head peel on first touch); once the counter reaches zero the cursor is
+/// line-aligned and subsequent rows are staged and NT-flushed in whole lines. Only valid when
+/// `ntStoresAvailable()`. Returns bytes scattered (`n * elem_width`, the same accounting as DIRECT,
+/// so totals are path-independent).
 size_t appendColumnSwwc(
     const UInt32 * route, UInt32 shift, UInt32 mask, size_t n, const void * src, size_t elem_width, ScatterScratch & scratch);
 
