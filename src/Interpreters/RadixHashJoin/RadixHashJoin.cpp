@@ -763,7 +763,7 @@ void RadixHashJoin::runPostBuild()
     /// Deferred exact key+ref scatter into the per-leaf arrays. The route hash is recomputed from the
     /// key inside the scatter; the leaf bucket is recomputed in the leaf-table build — nothing per-row
     /// is carried, and no payload is moved.
-    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves(parallel_for, num_workers, run_hll);
+    RadixJoin::LeafArrays leaves = state->build_side->scatterToLeaves2(parallel_for, num_workers, run_hll);
 
     state->block_base = state->build_side->blockBase();
     state->total_rows = state->build_side->totalRows();
