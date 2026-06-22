@@ -1,21 +1,21 @@
 ---
-description: 'Phase-1 result transport spec for pg_auto_click: how ClickHouse query results flow back to the remote pg_clickhouse sink over the existing Native/HTTP client protocols, with a forward-looking note on an SHM result driver.'
+description: 'Phase-1 result transport spec for streamed_table: how ClickHouse query results flow back to the remote pg_clickhouse sink over the existing Native/HTTP client protocols, with a forward-looking note on an SHM result driver.'
 sidebar_label: 'Result Transport Spec'
 sidebar_position: 206
-slug: /pg_auto_click/specs/result-transport-spec
-title: 'Result Transport — ClickHouse to Remote pg_auto_click Sink'
+slug: /streamed_table/specs/result-transport-spec
+title: 'Result Transport — ClickHouse to Remote streamed_table Sink'
 doc_type: 'reference'
 ---
 
-# Result Transport — ClickHouse to Remote pg_auto_click Sink
+# Result Transport — ClickHouse to Remote streamed_table Sink
 
-This spec pins the phase-1 transport for query results flowing from a ClickHouse server back to the remote pg_auto_click sink. It is a sibling of the source-direction SHM specs but is architecturally independent of them: the result direction reuses ClickHouse's existing client protocols verbatim and introduces no new wire contract in phase 1.
+This spec pins the phase-1 transport for query results flowing from a ClickHouse server back to the remote streamed_table sink. It is a sibling of the source-direction SHM specs but is architecturally independent of them: the result direction reuses ClickHouse's existing client protocols verbatim and introduces no new wire contract in phase 1.
 
 System mission, glossary, non-goals, cross-component invariants, and end-to-end acceptance criteria for the SHM source feature live in [system spec](./system-spec.md). The ingestion-direction wire lives in [shm-block-stream spec](./shm-block-stream-spec.md). The two directions do not share infrastructure in phase 1.
 
 ## Mission
 
-Define the transport used by the remote pg_auto_click sink (the `pg_clickhouse` FDW running inside a PostgreSQL backend process) to receive ClickHouse query results in phase 1:
+Define the transport used by the remote streamed_table sink (the `pg_clickhouse` FDW running inside a PostgreSQL backend process) to receive ClickHouse query results in phase 1:
 
 - ClickHouse executes queries pushed down from PostgreSQL via the `pg_clickhouse` FDW and returns results over its existing client-facing protocols — **Native (binary)** or **HTTP** — with no new wire contract introduced for the result direction.
 - The sink decodes incoming result blocks into PostgreSQL `Datum` values and feeds them to the PG executor one tuple at a time via the standard FDW `IterateForeignScan` callback.

@@ -15,10 +15,10 @@ Covers:
                    reference even when the producer is contending for the same slot).
 
 Specs:
-  - ~/auto_click/specs/system.md                     - AC1, AC7.
-  - ~/auto_click/specs/pollable-shm-source.md        - AC4, AC6, Failure classes table.
-  - ~/auto_click/specs/memory-tracker-integration.md - AC5, I7, I8.
-  - ~/auto_click/specs/shm-block-stream.md           - AC10.
+  - ~/streamed_table/specs/system.md                     - AC1, AC7.
+  - ~/streamed_table/specs/pollable-shm-source.md        - AC4, AC6, Failure classes table.
+  - ~/streamed_table/specs/memory-tracker-integration.md - AC5, I7, I8.
+  - ~/streamed_table/specs/shm-block-stream.md           - AC10.
 
 These tests drive shm-producer (plan task T4.1) as a detached background
 process inside the test container. The producer's CLI scenarios reproduce every AC6 class.

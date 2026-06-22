@@ -2,7 +2,7 @@
 description: 'Wire contract between any conforming external SHM producer and the ClickHouse SHM consumer: layout, framing, ordering, notification, retain/release, and version negotiation.'
 sidebar_label: 'SHM Block-Stream Wire Contract'
 sidebar_position: 202
-slug: /pg_auto_click/specs/shm-block-stream-spec
+slug: /streamed_table/specs/shm-block-stream-spec
 title: 'SHM Block-Stream Wire Contract'
 doc_type: 'reference'
 ---

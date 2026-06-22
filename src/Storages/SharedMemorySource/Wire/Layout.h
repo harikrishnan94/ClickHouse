@@ -4,7 +4,7 @@
 ///
 /// This header is the C++ source of truth for the producer/consumer wire
 /// described in the in-tree doc `docs/en/development/shm-block-stream-abi-v1.md`
-/// and the spec at `auto_click/specs/shm-block-stream.md`. The doc enumerates
+/// and the spec at `streamed_table/specs/shm-block-stream.md`. The doc enumerates
 /// the semantic obligations; this header pins the byte layouts that satisfy
 /// them. Together they constitute the AC8 versioned ABI artifact (see
 /// `shm-block-stream.md` §Acceptance criteria, AC8).

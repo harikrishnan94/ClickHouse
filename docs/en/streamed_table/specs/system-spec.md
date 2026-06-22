@@ -2,7 +2,7 @@
 description: 'System-level spec for the zero-copy SHM source feature: mission, glossary, non-goals, cross-component invariants, and end-to-end acceptance criteria.'
 sidebar_label: 'SHM Source — System Spec'
 sidebar_position: 201
-slug: /pg_auto_click/specs/system-spec
+slug: /streamed_table/specs/system-spec
 title: 'Zero-Copy SHM Source — System Spec'
 doc_type: 'reference'
 ---
@@ -75,7 +75,7 @@ Thick edges are control-plane traffic; dashed edges are the data plane. The two 
 
 **Adoption Layer ⇢ Producer (retain keeps mapping pinned until column drops).** The retain token is the sequencing primitive that keeps producer-side region reuse — republish, truncate, unmap-remap — behind consumer-side reads. The producer-facing rules for this are [shm-block-stream spec — AC10 Retain integrity under producer reuse](./shm-block-stream-spec.md#acceptance-criteria).
 
-**Result direction.** The result direction — ClickHouse query results flowing back to the remote pg_auto_click sink (the `pg_clickhouse` FDW running inside a PostgreSQL backend process) — is outside the SHM source feature's scope in phase 1. It reuses ClickHouse's existing Native and HTTP client transports verbatim. The result direction is documented in [result-transport-spec](./result-transport-spec.md).
+**Result direction.** The result direction — ClickHouse query results flowing back to the remote streamed_table sink (the `pg_clickhouse` FDW running inside a PostgreSQL backend process) — is outside the SHM source feature's scope in phase 1. It reuses ClickHouse's existing Native and HTTP client transports verbatim. The result direction is documented in [result-transport-spec](./result-transport-spec.md).
 
 ## Glossary
 
@@ -92,7 +92,7 @@ Thick edges are control-plane traffic; dashed edges are the data plane. The two 
 | **SHM-adoption ABI** | The versioned ABI introduced by this feature for producer-published buffers. Specifies per supported type the layout, alignment, padding, safe-read area, offset encoding, byte order, metadata, notification, retain/release, and failure semantics. Also specifies the producer/consumer synchronization contract: publication state machine, acquire/release ordering, visibility of payload writes before metadata publication, readiness notification ordering, and rules for region reuse after release. Distinct from ClickHouse's internal column-storage implementation. |
 | **Adopted byte count** | The byte ranges retained by ClickHouse and reachable through adopted `IColumn` state. For each AC2 type, the adopted byte count covers the data buffers declared per the per-type buffer layout in [shm-block-stream spec — Wire interfaces](./shm-block-stream-spec.md#wire-interfaces), including required safe-read padding as defined by ClickHouse's column-storage contract (`PaddedPODArray<T>` contract). Control-plane metadata — the handshake region and per-block metadata — is *not* charged: it is small, fixed in size, untouched after attach and per-block publication respectively, and not part of the per-block working set that MemoryTracker limits should bound. Each byte range is charged exactly once on retain acquisition (refcount 0 to 1) and released exactly once on retain refcount return to zero. The implementation reports both logical payload bytes (data without padding) and charged adopted bytes (with padding) for observability. |
 | **Trust model** | Phase 1 assumes a local, non-malicious producer that conforms to the wire's [retain/release contract](./shm-block-stream-spec.md#wire-interfaces) — in particular, it does not truncate, unmap, or otherwise invalidate a backing region while consumer retains against that region are live. The consumer handles malformed metadata, bad layout declarations, premature stream termination (before end-of-stream), producer crash, and stall (bounded by [pollable-shm-source spec — I12 Stall is bounded](./pollable-source-spec.md#invariants)), all surfaced as typed exceptions through the control plane. Consumer-side robustness against retain-protocol violation by the producer (e.g. truncation under live retain) is out of scope; the wire's chosen SHM primitive is not required to be malicious-producer-proof. The retain protocol bounds that risk by contract. |
-| **Remote sink** | The PG-side consumer of ClickHouse query results: the `pg_auto_click` / `pg_clickhouse` FDW running inside a PostgreSQL backend process. In phase 1 the remote sink receives results over ClickHouse's existing Native or HTTP client protocol (per [result-transport-spec](./result-transport-spec.md)). |
+| **Remote sink** | The PG-side consumer of ClickHouse query results: the `streamed_table` / `pg_clickhouse` FDW running inside a PostgreSQL backend process. In phase 1 the remote sink receives results over ClickHouse's existing Native or HTTP client protocol (per [result-transport-spec](./result-transport-spec.md)). |
 
 ## Non-goals
 

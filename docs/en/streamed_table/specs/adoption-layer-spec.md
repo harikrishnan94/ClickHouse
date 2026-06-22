@@ -2,7 +2,7 @@
 description: 'Spec for the adoption layer component: zero-copy column construction from producer-published SHM buffers with retain semantics.'
 sidebar_label: 'SHM Adoption Layer Spec'
 sidebar_position: 203
-slug: /pg_auto_click/specs/adoption-layer-spec
+slug: /streamed_table/specs/adoption-layer-spec
 title: 'Adoption Layer — Zero-Copy Column Construction'
 doc_type: 'reference'
 ---

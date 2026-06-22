@@ -2,7 +2,7 @@
 description: 'Spec for the MemoryTracker integration component: RAII accounting of SHM adopted bytes, limit enforcement, and observability.'
 sidebar_label: 'SHM MemoryTracker Integration Spec'
 sidebar_position: 205
-slug: /pg_auto_click/specs/memory-tracker-spec
+slug: /streamed_table/specs/memory-tracker-spec
 title: 'MemoryTracker Integration — SHM Adopted-Byte Accounting'
 doc_type: 'reference'
 ---

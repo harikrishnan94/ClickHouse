@@ -2,7 +2,7 @@
 description: 'Spec for the pollable SHM source component: async executor integration, block ingestion, table function, cancellation, and producer-misbehaviour coverage.'
 sidebar_label: 'SHM Pollable Source Spec'
 sidebar_position: 204
-slug: /pg_auto_click/specs/pollable-source-spec
+slug: /streamed_table/specs/pollable-source-spec
 title: 'Pollable SHM Source — Async Executor Integration'
 doc_type: 'reference'
 ---

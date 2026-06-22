@@ -40,7 +40,7 @@ namespace
     constexpr size_t ROWS_PER_BLOCK = 64;
     constexpr uint32_t RING_DEPTH = 4;
 
-    /// SharedHeader that matches AC1 in `auto_click/specs/system.md`:
+    /// SharedHeader that matches AC1 in `streamed_table/specs/system.md`:
     /// (id UInt64, v1 UInt64, v2 UInt64, s1 String, s2 String). The first three
     /// columns exercise ColumnVector<UInt64> adoption; the last two exercise
     /// ColumnString (chars + offsets) adoption.
@@ -199,7 +199,7 @@ namespace
 }
 
 
-/// AC3 Adoption proof — `auto_click/specs/adoption-layer.md` §Acceptance criteria.
+/// AC3 Adoption proof — `streamed_table/specs/adoption-layer.md` §Acceptance criteria.
 ///
 /// Drives the InProcessProducer + PollableShmSource end-to-end via the same
 /// PullingPipelineExecutor that production queries use, for NUM_BLOCKS (>=100)

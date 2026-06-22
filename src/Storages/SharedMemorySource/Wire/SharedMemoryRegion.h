@@ -64,7 +64,7 @@ public:
     const String & name() const noexcept { return shm_name; }
 
     /// Exposed so the source can `poll(POLLHUP)` for producer-side unlink
-    /// detection per `auto_click/specs/pollable-shm-source.md` §Failure
+    /// detection per `streamed_table/specs/pollable-shm-source.md` §Failure
     /// classes row `producer-death-before-eos` (precondition 25).
     int fd() const noexcept { return shm_fd; }
 

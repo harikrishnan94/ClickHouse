@@ -375,13 +375,13 @@ public:
     /// destruction); both are RAII-released exactly once when the last reference to the
     /// adopted state drops (the COW clone path materialises a fully owned copy and does
     /// not propagate either handle — see [adoption-layer spec §Retain and charge handle
-    /// semantics](file:///home/hari/auto_click/specs/adoption-layer.md#interfaces--contracts)
+    /// semantics](file:///home/hari/streamed_table/specs/adoption-layer.md#interfaces--contracts)
     /// and system spec I5).
     ///
     /// Requirements on inputs (the caller — the adoption layer T3.1 — must enforce these
     /// via per-column descriptor validation before calling; createAdopted does not
     /// re-validate, the contract puts the burden on the producer ABI documentation per
-    /// [shm-block-stream spec §Per-type buffer layout](file:///home/hari/auto_click/specs/shm-block-stream.md#per-type-buffer-layout)):
+    /// [shm-block-stream spec §Per-type buffer layout](file:///home/hari/streamed_table/specs/shm-block-stream.md#per-type-buffer-layout)):
     ///   - adopted_chars[0 .. adopted_chars_size + PaddedPODArray<UInt8>::pad_right - 1]
     ///     is safely readable (column-storage trailing safe-read padding).
     ///   - adopted_offsets[0 .. adopted_rows - 1] is safely readable, plus
