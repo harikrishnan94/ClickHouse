@@ -26,7 +26,7 @@ The adoption seam is the only consumer-side party that turns data-plane bytes in
 ## Non-goals
 
 - The adoption layer does not own the on-wire byte layout, padding rules, sentinel-byte definitions, framing, or version negotiation. Those live in [shm-block-stream spec — Wire interfaces](./shm-block-stream-spec.md#wire-interfaces). This layer consumes a layout declared by the wire; it does not define one.
-- The adoption layer does not own fd lifetime, executor integration, or the `shm()` table-function call site. Those live in [pollable-shm-source spec — Interfaces & contracts](./pollable-source-spec.md#interfaces--contracts).
+- The adoption layer does not own fd lifetime, executor integration, or the `streamed_table()` table-function call site (legacy alias `shm()`). Those live in [pollable-shm-source spec — Interfaces & contracts](./pollable-source-spec.md#interfaces--contracts).
 - The adoption layer does not own memory-accounting policy, the limit-enforcement decision, or the slack model. It carries the charge handle supplied by the pollable source; accounting calls are issued by the source before adopt() is called, per [memory-tracker-integration spec — Interfaces & contracts](./memory-tracker-spec.md#interfaces--contracts).
 - The adoption layer does not extend type coverage in phase 1; the supported set is closed at `{UInt64, String}` per [AC2 Type coverage](#acceptance-criteria) and is not grown in phase 1.
 

@@ -1,5 +1,5 @@
 ---
-description: 'On-wire ABI between an external SHM producer and the ClickHouse shm() table function, version 1.'
+description: 'On-wire ABI between an external SHM producer and the ClickHouse streamed_table() table function, version 1.'
 sidebar_label: 'SHM Block-Stream ABI v1'
 sidebar_position: 200
 slug: /development/shm-block-stream-abi-v1
@@ -10,7 +10,7 @@ doc_type: 'reference'
 # SHM Block-Stream ABI (version 1)
 
 This document is the producer-facing reference for the wire ABI consumed by
-the experimental `shm()` table function. It is the human-readable companion
+the experimental `streamed_table()` table function (legacy alias `shm()`). It is the human-readable companion
 to the C++ source-of-truth header
 [`src/Storages/SharedMemorySource/Wire/Layout.h`](https://github.com/ClickHouse/ClickHouse/blob/master/src/Storages/SharedMemorySource/Wire/Layout.h).
 Together they constitute the AC8 versioned ABI artifact named in the
@@ -135,7 +135,7 @@ Total size: 128 bytes, 64-byte aligned.
 
 The schema lives in two places:
 
-- SQL-declared: the second argument to the `shm()` table function, parsed by
+- SQL-declared: the second argument to the `streamed_table()` table function, parsed by
   ClickHouse at query parse/resolve time. Types outside the phase-1
   supported set `{UInt64, String}` are rejected with `SHM_SCHEMA_MISMATCH`
   before any attach is attempted.
@@ -186,6 +186,51 @@ Single value buffer.
 
 `value_offset + value_count * 8 + value_padding` must not exceed
 `data_region_size` (precondition 14).
+
+### Fixed-width numeric and date/time types {#fixed-width-types}
+
+`UInt64` is one instance of a general fixed-width family. The following
+`WireColumnType` values (additive within ABI v1) all use the SAME single
+value-buffer layout as `ColumnVector<UInt64>` above; only the element width
+changes. The consumer adopts each as the matching ClickHouse column with zero
+copies.
+
+| `type` | value | element width / align (bytes) | adopted column |
+|---|---|---|---|
+| `Int8` | 3 | 1 | `ColumnVector<Int8>` |
+| `Int16` | 4 | 2 | `ColumnVector<Int16>` |
+| `Int32` | 5 | 4 | `ColumnVector<Int32>` |
+| `Int64` | 6 | 8 | `ColumnVector<Int64>` |
+| `UInt8` | 7 | 1 | `ColumnVector<UInt8>` |
+| `UInt16` | 8 | 2 | `ColumnVector<UInt16>` |
+| `UInt32` | 9 | 4 | `ColumnVector<UInt32>` |
+| `Float32` | 10 | 4 | `ColumnVector<Float32>` |
+| `Float64` | 11 | 8 | `ColumnVector<Float64>` |
+| `Date` | 12 | 2 | `ColumnVector<UInt16>` (days since 1970-01-01) |
+| `DateTime` | 13 | 4 | `ColumnVector<UInt32>` (seconds since 1970-01-01 UTC) |
+| `Date32` | 14 | 4 | `ColumnVector<Int32>` (days since 1970-01-01, signed) |
+
+For every fixed-width type:
+
+| Field | Meaning |
+|---|---|
+| `type` | one of the values above. |
+| `value_offset` | byte offset of the value buffer; must be a multiple of the element width (precondition 13). |
+| `value_count` | element count; must equal `SlotEntry::row_count` (preconditions 14, 26). |
+| `value_padding` | trailing safe-read padding; must be `>= PADDING_FOR_SIMD` (`= 64`) (precondition 15). |
+| `offsets_offset`, `offsets_count`, `offsets_padding` | unused; producer sets to 0. |
+
+`value_offset + value_count * width + value_padding` must not exceed
+`data_region_size` (precondition 14). All elements are little-endian. The
+helper `wireFixedWidthSize` in `Layout.h` is the source of truth for the
+per-type element width. `Date`/`DateTime`/`Date32` carry their own wire tag
+(distinct from their storage column's tag) so a per-block descriptor's `type`
+is unambiguous; the producer is responsible for rebasing any non-1970 epoch
+(e.g. a PostgreSQL `DATE`, whose epoch is 2000-01-01) before publishing.
+
+Appending further `WireColumnType` values is a backward-compatible, same-ABI-v1
+extension; older producers simply never emit the new tags and the consumer
+rejects any tag it does not recognise.
 
 ### `ColumnString`
 

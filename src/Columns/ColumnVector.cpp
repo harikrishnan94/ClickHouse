@@ -546,10 +546,19 @@ ColumnVector<T>::createAdopted(
     std::shared_ptr<void> retain_token,
     std::shared_ptr<void> charge_handle)
 {
-    if constexpr (!std::is_same_v<T, UInt64>)
+    /// SHM-adoption supports the fixed-width integer and float vector types. Date/DateTime/
+    /// Date32 are adopted through their storage columns (UInt16/UInt32/Int32), which are in
+    /// this set, so they need no separate entry here. Any other T (wide ints, UUID, IP, etc.)
+    /// is rejected so an unintended instantiation fails loudly rather than wrapping foreign
+    /// memory the wire ABI never validated.
+    if constexpr (!(
+        std::is_same_v<T, UInt8> || std::is_same_v<T, UInt16> || std::is_same_v<T, UInt32> || std::is_same_v<T, UInt64>
+        || std::is_same_v<T, Int8> || std::is_same_v<T, Int16> || std::is_same_v<T, Int32> || std::is_same_v<T, Int64>
+        || std::is_same_v<T, Float32> || std::is_same_v<T, Float64>))
     {
         throw Exception(ErrorCodes::BAD_ARGUMENTS,
-            "ColumnVector::createAdopted is only supported for UInt64 in this adoption phase; got {}",
+            "ColumnVector::createAdopted is not supported for type {} in the SHM-adoption ABI "
+            "(supported: fixed-width integers and floats)",
             TypeName<T>);
     }
     else

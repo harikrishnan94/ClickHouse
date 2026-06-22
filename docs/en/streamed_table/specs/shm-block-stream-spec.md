@@ -66,7 +66,7 @@ For `ColumnString` ([adoption-layer spec — Covered IColumn method surface](./a
 
 The schema (ordered list of `(column-name, column-type)` entries) is declared in two places and cross-validated on attach:
 
-1. **SQL site.** The `shm()` table function takes a schema spec as one of its arguments (exact signature owned by [pollable-shm-source spec — Interfaces & contracts](./pollable-source-spec.md#interfaces--contracts)). ClickHouse parses and resolves the schema from this spec at parse/resolve time, before executing the query. This is what fixes the chunk header structure downstream operators see.
+1. **SQL site.** The `streamed_table()` table function (legacy alias `shm()`) takes a schema spec as one of its arguments (exact signature owned by [pollable-shm-source spec — Interfaces & contracts](./pollable-source-spec.md#interfaces--contracts)). ClickHouse parses and resolves the schema from this spec at parse/resolve time, before executing the query. This is what fixes the chunk header structure downstream operators see.
 2. **Control plane.** The producer publishes its own copy of the schema as part of the attach-time handshake (see [ABI version negotiation](#abi-version-negotiation)), preceding any block publication. The producer commits to publishing blocks whose column count, order, and types match this declaration.
 
 On attach, the consumer cross-validates the SQL-declared schema against the producer-published schema. Any of {column-count mismatch, column-name mismatch, column-type mismatch, column-order mismatch} surfaces as a typed exception, raised by the source before any block adoption.

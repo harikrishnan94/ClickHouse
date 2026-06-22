@@ -76,11 +76,11 @@
     M(PageCacheReadBytes, "Number of bytes read from userspace page cache.", ValueType::Bytes) \
     M(MMappedFileCacheHits, "Number of times a file has been found in the MMap cache (for the 'mmap' read_method), so we didn't have to mmap it again.", ValueType::Number) \
     M(MMappedFileCacheMisses, "Number of times a file has not been found in the MMap cache (for the 'mmap' read_method), so we had to mmap it again.", ValueType::Number) \
-    M(ShmAdoptedBlocks, "Number of producer-published blocks adopted by the experimental shm() source (one increment per successful adopt() call).", ValueType::Number) \
-    M(ShmAdoptedBytesCharged, "Cumulative adopted bytes (including safe-read padding) charged to the active MemoryTracker chain across all shm() sources.", ValueType::Bytes) \
-    M(ShmAdoptedBytesLogical, "Cumulative logical payload bytes (excluding safe-read padding) adopted from producer shared memory across all shm() sources.", ValueType::Bytes) \
-    M(ShmRetainsAcquired, "Cumulative retain-token acquisitions (refcount 0->1) across all shm() sources.", ValueType::Number) \
-    M(ShmRetainsReleased, "Cumulative retain-token releases (refcount back to 0) across all shm() sources.", ValueType::Number) \
+    M(ShmAdoptedBlocks, "Number of producer-published blocks adopted by the experimental streamed_table() source (one increment per successful adopt() call).", ValueType::Number) \
+    M(ShmAdoptedBytesCharged, "Cumulative adopted bytes (including safe-read padding) charged to the active MemoryTracker chain across all streamed_table() sources.", ValueType::Bytes) \
+    M(ShmAdoptedBytesLogical, "Cumulative logical payload bytes (excluding safe-read padding) adopted from producer shared memory across all streamed_table() sources.", ValueType::Bytes) \
+    M(ShmRetainsAcquired, "Cumulative retain-token acquisitions (refcount 0->1) across all streamed_table() sources.", ValueType::Number) \
+    M(ShmRetainsReleased, "Cumulative retain-token releases (refcount back to 0) across all streamed_table() sources.", ValueType::Number) \
     M(OpenedFileCacheHits, "Number of times a file has been found in the opened file cache, so we didn't have to open it again.", ValueType::Number) \
     M(OpenedFileCacheMisses, "Number of times a file has been found in the opened file cache, so we had to open it again.", ValueType::Number) \
     M(OpenedFileCacheMicroseconds, "Amount of time spent executing OpenedFileCache methods.", ValueType::Microseconds) \

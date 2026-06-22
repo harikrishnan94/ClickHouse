@@ -12,6 +12,7 @@
 #include <Parsers/ASTFunction.h>
 #include <Storages/ColumnsDescription.h>
 #include <Storages/SharedMemorySource/Source/StorageShm.h>
+#include <Storages/SharedMemorySource/Wire/WireTypeMapping.h>
 #include <Storages/checkAndGetLiteralArgument.h>
 #include <Common/Exception.h>
 
@@ -30,7 +31,7 @@ namespace ErrorCodes
 
 namespace Setting
 {
-    extern const SettingsBool allow_experimental_shm_table_function;
+    extern const SettingsBool allow_experimental_streamed_table_function;
 }
 
 
@@ -39,12 +40,12 @@ void TableFunctionShm::parseArguments(const ASTPtr & ast_function, ContextPtr co
     const auto * function = ast_function->as<ASTFunction>();
     if (function == nullptr || function->arguments == nullptr)
         throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,
-            "Table function 'shm' requires 2 arguments: shm(name String, columns String)");
+            "Table function 'streamed_table' requires 2 arguments: streamed_table(name String, columns String)");
 
     auto & args = function->arguments->children;
     if (args.size() != 2)
         throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,
-            "Table function 'shm' requires exactly 2 arguments (got {}): shm(name String, columns String)",
+            "Table function 'streamed_table' requires exactly 2 arguments (got {}): streamed_table(name String, columns String)",
             args.size());
 
     shm_name = checkAndGetLiteralArgument<String>(
@@ -70,10 +71,10 @@ StoragePtr TableFunctionShm::executeImpl(
     /// `pollable-shm-source.md` AC9: gate at parse/resolve. We raise SUPPORT_IS_DISABLED
     /// (the `feature-gate-disabled` failure class per `pollable-shm-source.md` Failure
     /// classes table) when the experimental setting is off.
-    if (!context->getSettingsRef()[Setting::allow_experimental_shm_table_function])
+    if (!context->getSettingsRef()[Setting::allow_experimental_streamed_table_function])
         throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
-            "Table function 'shm' is experimental. "
-            "Set `allow_experimental_shm_table_function = 1` to enable it.");
+            "Table function 'streamed_table' is experimental. "
+            "Set `allow_experimental_streamed_table_function = 1` to enable it.");
 
     /// `pollable-shm-source.md` Producer-side preconditions enumerated row 6:
     /// SQL-side membership gate (BEFORE attach). Phase-1 set: {UInt64, String}.
@@ -81,12 +82,11 @@ StoragePtr TableFunctionShm::executeImpl(
     auto columns = getActualTableStructure(context, is_insert_query);
     for (const auto & col : columns)
     {
-        const auto type_id = col.type->getTypeId();
-        if (type_id != TypeIndex::UInt64 && type_id != TypeIndex::String)
+        if (!SharedMemoryWire::isSupportedShmType(col.type->getTypeId()))
             throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "Table function 'shm': column '{}' has type '{}' which is not in the supported set "
-                "{{UInt64, String}} for the phase-1 SHM-adoption ABI",
-                col.name, col.type->getName());
+                "Table function 'streamed_table': column '{}' has type '{}' which is not in the supported set "
+                "{} for the SHM-adoption ABI",
+                col.name, col.type->getName(), SharedMemoryWire::supportedShmTypeList());
     }
 
     auto storage = std::make_shared<StorageShm>(
@@ -102,14 +102,17 @@ void registerTableFunctionShm(TableFunctionFactory & factory)
     {
         .description = "Reads rows from a producer-published POSIX shared-memory block stream "
                        "via the zero-copy SHM-adoption ABI. Experimental: requires "
-                       "allow_experimental_shm_table_function = 1.",
+                       "allow_experimental_streamed_table_function = 1.",
         .examples = {
             {"basic",
-             "SELECT count() FROM shm('/my_shm', 'id UInt64, s String') "
-             "SETTINGS allow_experimental_shm_table_function = 1",
+             "SELECT count() FROM streamed_table('/my_shm', 'id UInt64, s String') "
+             "SETTINGS allow_experimental_streamed_table_function = 1",
              ""}},
         .category = FunctionDocumentation::Category::TableFunction
     });
+
+    /// Legacy alias: `shm(...)` continues to resolve to the same table function.
+    factory.registerAlias(TableFunctionShm::name_legacy, TableFunctionShm::name);
 }
 
 }

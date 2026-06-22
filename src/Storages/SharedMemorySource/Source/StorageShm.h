@@ -10,8 +10,8 @@
 namespace DB
 {
 
-/// IStorage facade over `PollableShmSource`. Reached from SQL via the `shm()` table
-/// function (T3.4); not registerable as a real storage engine in phase 1 (the
+/// IStorage facade over `PollableShmSource`. Reached from SQL via the `streamed_table()`
+/// table function (legacy alias `shm()`) (T3.4); not registerable as a real storage engine in phase 1 (the
 /// table function constructs a transient instance per query, the storage is
 /// dropped at query end).
 ///
@@ -27,7 +27,7 @@ namespace DB
 /// time per `shm-block-stream.md` §Schema declaration and negotiation.
 ///
 /// Spec authority: `system.md` §Component map (Source -> downstream pipeline);
-/// `pollable-shm-source.md` N11, §Interfaces & contracts (shm() table function);
+/// `pollable-shm-source.md` N11, §Interfaces & contracts (streamed_table() table function);
 /// `shm-block-stream.md` §Schema declaration and negotiation.
 class StorageShm final : public IStorage
 {

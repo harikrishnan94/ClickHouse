@@ -308,7 +308,7 @@
     M(PartsCompact, "Compact parts.") \
     M(MMappedFiles, "Total number of mmapped files.") \
     M(MMappedFileBytes, "Sum size of mmapped file regions.") \
-    M(ShmActiveRegions, "Number of currently attached producer shared-memory regions used by the experimental shm() table function.") \
+    M(ShmActiveRegions, "Number of currently attached producer shared-memory regions used by the experimental streamed_table() table function.") \
     M(ShmAdoptedBytesCurrent, "Number of bytes currently retained from producer shared-memory regions and charged to the active MemoryTracker chain by adopted columns (includes safe-read padding).") \
     M(ShmAdoptedBytesLogicalCurrent, "Number of logical payload bytes currently retained from producer shared-memory regions by adopted columns (excludes safe-read padding).") \
     M(AsynchronousReadWait, "Number of threads waiting for asynchronous read.") \

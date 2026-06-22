@@ -12,21 +12,25 @@
 namespace DB
 {
 
-/// `shm(name, columns)` — the SQL surface for the zero-copy SHM source feature.
+/// `streamed_table(name, columns)` — the SQL surface for the zero-copy SHM source
+/// feature. The legacy name `shm(...)` is kept as an alias.
 ///
-///   SELECT * FROM shm('/my_shm_object', 'id UInt64, v1 UInt64, s1 String')
+///   SELECT * FROM streamed_table('/my_shm_object', 'id UInt64, v1 UInt64, s1 String')
 ///
-/// Gated behind the experimental setting `allow_experimental_shm_table_function`
-/// (default false). Membership of every declared type in the supported set
-/// {UInt64, String} is checked at parse/resolve time as the SQL-side gate of
-/// `pollable-shm-source.md` Producer-side preconditions enumerated row 6.
+/// Gated behind the experimental setting `allow_experimental_streamed_table_function`
+/// (default false; legacy alias `allow_experimental_shm_table_function`). Membership
+/// of every declared type in the supported fixed-width / String set is checked at
+/// parse/resolve time as the SQL-side gate of `pollable-shm-source.md` Producer-side
+/// preconditions enumerated row 6.
 ///
-/// Spec authority: `pollable-shm-source.md` §shm() table function, AC9,
+/// Spec authority: `pollable-shm-source.md` §streamed_table() table function, AC9,
 /// §Attach-time observable failures (gate + schema-mismatch rows).
 class TableFunctionShm final : public ITableFunction
 {
 public:
-    static constexpr auto name = "shm";
+    static constexpr auto name = "streamed_table";
+    /// Legacy name registered as an alias for backward compatibility.
+    static constexpr auto name_legacy = "shm";
 
     std::string getName() const override { return name; }
 

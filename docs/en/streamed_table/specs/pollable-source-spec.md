@@ -9,7 +9,7 @@ doc_type: 'reference'
 
 # Pollable SHM Source — Async Executor Integration
 
-This spec defines component (b) — sub-deliverable B — of the zero-copy SHM source feature: a new `IProcessor` that consumes producer-published SHM blocks via ClickHouse's async/poll path and emits `Chunk`s of adopted columns, reached from SQL via a new `shm()` table function.
+This spec defines component (b) — sub-deliverable B — of the zero-copy SHM source feature: a new `IProcessor` that consumes producer-published SHM blocks via ClickHouse's async/poll path and emits `Chunk`s of adopted columns, reached from SQL via a new `streamed_table()` table function (legacy alias `shm()`).
 
 System mission, glossary, non-goals, cross-component invariants (I5, I10), and end-to-end ACs (AC1, AC7) are owned by [system spec](./system-spec.md). The producer-facing wire is owned by [shm-block-stream spec](./shm-block-stream-spec.md). Column construction is owned by [adoption-layer spec](./adoption-layer-spec.md). Memory accounting is owned by [memory-tracker-integration spec](./memory-tracker-spec.md).
 
@@ -19,7 +19,7 @@ Build a query-pipeline source that:
 
 - participates in ClickHouse's standard async/poll executor path — cooperative cancellation, fd lifetime ownership, bounded-time async-completion callback, level-triggered drain — so that a query reading from a producer-driven SHM stream waits, drains, and cancels exactly like any other async source;
 - consumes producer-published SHM blocks through the wire defined in [shm-block-stream spec — Wire interfaces](./shm-block-stream-spec.md#wire-interfaces), routing each block's declared byte ranges to the adoption layer and assembling the returned `IColumn`s into `Chunk`s;
-- exposes itself to SQL through a new table function, `shm()`, gated by an experimental setting;
+- exposes itself to SQL through a new table function, `streamed_table()`, gated by an experimental setting;
 - bounds cancellation regardless of producer state — a stalled, slow, or crashed producer cannot make cancellation unbounded;
 - surfaces every in-scope producer-misbehaviour case as a typed exception drawn from a named failure class, with no hang, no UB, and no reliance on signal handling. The phase-1 in-scope set and explicit exclusions are pinned in [Failure scope](#failure-scope).
 
@@ -41,7 +41,7 @@ System-level non-goals — full text in [system spec — Non-goals](./system-spe
 - Query cancellation reclaims every SHM resource the consumer holds within a bounded time, regardless of producer state. Authority: [I9](#invariants); upper-bound failure: [S4](#stop-conditions).
 - Producer stall is bounded by an observable, configurable timeout owned by the source. If no producer publication progress is observed within the configured budget while the source has no drainable block, no end-of-stream has been observed, and the query is not cancelled, the source surfaces a typed exception. "Publication progress" means the transition of any slot into the `published` state. Authority: [I12](#invariants).
 - The set of producer-side preconditions whose violation must be deterministically detectable on the consumer side is finite and bounded; if it cannot be, [S5](#stop-conditions) fires. The wire-side definition of those preconditions lives in [shm-block-stream spec — Wire interfaces](./shm-block-stream-spec.md#wire-interfaces); the *detection bound* is a property this component must uphold. The enumeration is given in [Producer-side preconditions enumerated](#producer-side-preconditions-enumerated) below.
-- The new `shm` table function is gated behind an explicit experimental setting, disabled by default. Authority: [AC9](#acceptance-criteria).
+- The new `streamed_table` table function is gated behind an explicit experimental setting, disabled by default. Authority: [AC9](#acceptance-criteria).
 - Producer death after a complete stream is *not* an error; the source drains remaining retained blocks. Producer death before end-of-stream, framing errors, mid-stream aborts, and stalls *are* errors, surfaced as typed exceptions. Authority: [shm-block-stream spec — I11 Producer death is detected through the control plane](./shm-block-stream-spec.md#invariants).
 - The source never relies on catching SIGBUS or SIGSEGV for normal error handling. Authority: [shm-block-stream spec — I11](./shm-block-stream-spec.md#invariants).
 - fd lifetime — the readiness fd is opened, registered, drained, and closed by the source, with the close/unregister occurring exactly once across the source's lifetime even on exception paths. Authority: [I6](#invariants) and [AC4](#acceptance-criteria).
@@ -112,10 +112,10 @@ The phase-1 boundary for typed-exception coverage:
 
 ## Interfaces & contracts
 
-**`shm()` table function — owed *to* SQL.** The new table function exposes this source with the positional signature:
+**`streamed_table()` table function — owed *to* SQL.** The new table function exposes this source with the positional signature:
 
 ```sql
-shm(name, columns)
+streamed_table(name, columns)
 ```
 
 - `name` (String): the SHM object name, suitable for the phase-1 SHM primitive (e.g. illustratively `'/clickhouse_shm_<id>'`). See [shm-block-stream spec — SHM primitive](./shm-block-stream-spec.md#shm-primitive).
@@ -125,7 +125,7 @@ The readiness notification fd and any auxiliary fds are not surfaced through the
 
 The function is gated by an experimental setting per [AC9](#acceptance-criteria); the gate is checked at parse/resolve time and surfaces a `feature-gate-disabled` class exception if disabled.
 
-**Attach-time observable failures — owed *to* SQL.** The user-visible outcomes of running `SELECT … FROM shm(name, columns)` against a bad or absent producer are enumerated below. Each surfaces a class from [Failure classes](#failure-classes); none hang, none yield UB.
+**Attach-time observable failures — owed *to* SQL.** The user-visible outcomes of running `SELECT … FROM streamed_table(name, columns)` against a bad or absent producer are enumerated below. Each surfaces a class from [Failure classes](#failure-classes); none hang, none yield UB.
 
 | Observable outcome | Failure class | Detection point |
 |---|---|---|
@@ -170,7 +170,7 @@ On success, ownership of both handles transfers into the adopted columns returne
 
 | Class | Triggered by | Detection point |
 |---|---|---|
-| `feature-gate-disabled` | [AC9](#acceptance-criteria) gate is off | SQL parse/resolve of `shm()` |
+| `feature-gate-disabled` | [AC9](#acceptance-criteria) gate is off | SQL parse/resolve of `streamed_table()` |
 | `attach-failed` | SHM object missing, inaccessible, or readiness-fd locator unresolvable | source attach |
 | `handshake-invalid` | preconditions 1–3, 7 | first acquire-read of handshake region |
 | `schema-mismatch` | preconditions 4–6 | SQL parse/resolve (membership) and handshake cross-validation (equality, order, count) |
@@ -233,7 +233,7 @@ The test asserts on the failure class, not on string content or generic exceptio
 
 A producer that violates the retain/release contract (e.g. truncates or unmaps a region while consumer retains against it are live) is out of scope per [system spec — Glossary](./system-spec.md#glossary), entry **Trust model**, and per [shm-block-stream spec — SHM primitive](./shm-block-stream-spec.md#shm-primitive)'s rationale; AC6 does not cover that case in phase 1.
 
-**AC9. Feature gate.** The new `shm` table function is exposed behind an experimental setting (Bool, default `false`). The gate is checked at parse/resolve time of any `shm()` reference; if the setting is `false`, parsing fails with a typed exception. Phase 1 does not claim production hardening or multi-tenant safety.
+**AC9. Feature gate.** The new `streamed_table` table function is exposed behind an experimental setting (Bool, default `false`). The gate is checked at parse/resolve time of any `streamed_table()` reference; if the setting is `false`, parsing fails with a typed exception. Phase 1 does not claim production hardening or multi-tenant safety.
 
 End-to-end and sibling acceptance criteria — full text in the spec named in each link:
 

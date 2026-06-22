@@ -16,10 +16,13 @@
 /// payload bytes are released BEFORE the metadata write that publishes the
 /// block.
 ///
-/// ABI compatibility: changes to the byte layout, the enum values, the magic,
-/// or the `SHM_ABI_VERSION_*` constants are explicit versioned bumps per
-/// `shm-block-stream.md` §I2. The static_asserts below catch silent layout
-/// drift at compile time.
+/// ABI compatibility: APPENDING new `WireColumnType` values is a
+/// backward-compatible, same-version (v1) extension — an older producer emits
+/// only the originally-defined tags, and the consumer rejects any tag it does
+/// not recognise. Changes to the byte layout of any struct, the magic, the
+/// numeric meaning of an EXISTING enum value, or the `SHM_ABI_VERSION_*`
+/// constants remain explicit versioned bumps per `shm-block-stream.md` §I2.
+/// The static_asserts below catch silent layout drift at compile time.
 
 #include <atomic>
 #include <cstddef>
@@ -95,13 +98,68 @@ enum class SlotState : uint32_t
 };
 
 /// Per-column descriptor type tag (`adoption-layer.md` §AC2 Type coverage).
-/// Phase-1 covers `ColumnVector<UInt64>` and `ColumnString` only; any other
-/// value is a buffer-layout-invalid class violation.
+/// Values 1-2 are the original phase-1 set. Values 3+ are the additive,
+/// same-version (v1) fixed-width extension: each adopts a `ColumnVector<T>`
+/// through the single value buffer, exactly like `UInt64` (see
+/// `ColumnDescriptor` and `wireFixedWidthSize` below). Any value the consumer
+/// does not recognise is a buffer-layout-invalid class violation.
 enum class WireColumnType : uint32_t
 {
     UInt64 = 1,
     String = 2,
+    /// Fixed-width integers / floats.
+    Int8 = 3,
+    Int16 = 4,
+    Int32 = 5,
+    Int64 = 6,
+    UInt8 = 7,
+    UInt16 = 8,
+    UInt32 = 9,
+    Float32 = 10,
+    Float64 = 11,
+    /// Date/time types map to their fixed-width storage column:
+    Date = 12,      ///< `ColumnVector<UInt16>` — days since 1970-01-01.
+    DateTime = 13,  ///< `ColumnVector<UInt32>` — seconds since 1970-01-01 UTC.
+    Date32 = 14,    ///< `ColumnVector<Int32>`  — days since 1970-01-01, signed.
 };
+
+/// Element byte width of a fixed-width wire column type, or 0 for `String` and
+/// for any unrecognised tag. The natural alignment of a fixed-width buffer
+/// equals its element width (1/2/4/8), so callers use the return value for both
+/// the per-element stride and the minimum buffer alignment (precondition 13).
+inline constexpr size_t wireFixedWidthSize(WireColumnType t) noexcept
+{
+    switch (t)
+    {
+        case WireColumnType::Int8:
+        case WireColumnType::UInt8:
+            return 1;
+        case WireColumnType::Int16:
+        case WireColumnType::UInt16:
+        case WireColumnType::Date:
+            return 2;
+        case WireColumnType::Int32:
+        case WireColumnType::UInt32:
+        case WireColumnType::Float32:
+        case WireColumnType::DateTime:
+        case WireColumnType::Date32:
+            return 4;
+        case WireColumnType::Int64:
+        case WireColumnType::UInt64:
+        case WireColumnType::Float64:
+            return 8;
+        case WireColumnType::String:
+            return 0;
+    }
+    return 0;
+}
+
+/// Overload for the raw on-wire `ColumnDescriptor::type` field. An out-of-range
+/// value maps to 0 (treated as "not a known fixed-width type").
+inline constexpr size_t wireFixedWidthSize(uint32_t t) noexcept
+{
+    return wireFixedWidthSize(static_cast<WireColumnType>(t));
+}
 
 /// Per-column descriptor — one entry per declared schema column in every
 /// block, located at `data_region_base + SlotEntry::per_column_descriptors_offset`.
@@ -110,14 +168,18 @@ enum class WireColumnType : uint32_t
 /// The two type variants share this struct; unused fields are zero. The
 /// per-type field meanings:
 ///
-/// - WireColumnType::UInt64:
+/// - Any fixed-width type (UInt64 and every value 3+ in WireColumnType):
 ///       value_offset  — byte offset (within data region) of the value buffer.
-///                       Must satisfy `UInt64` alignment (precondition 13).
+///                       Must satisfy the element's natural alignment, i.e. be
+///                       a multiple of `wireFixedWidthSize(type)` (precondition 13).
 ///       value_count   — element count; must equal SlotEntry::row_count
 ///                       (preconditions 14, 26).
 ///       value_padding — trailing safe-read padding bytes; must be
 ///                       >= PADDING_FOR_SIMD (precondition 15).
 ///       offsets_*     — unused; producer sets to 0.
+///   The buffer holds `value_count` little-endian elements each
+///   `wireFixedWidthSize(type)` bytes wide; the consumer adopts it as the
+///   matching `ColumnVector<T>` with zero copies.
 ///
 /// - WireColumnType::String:
 ///       value_offset   — `chars` byte offset; UInt8 alignment is trivial

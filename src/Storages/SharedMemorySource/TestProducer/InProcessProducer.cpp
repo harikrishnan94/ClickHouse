@@ -74,6 +74,29 @@ namespace
         const int saved_errno = errno;
         throw std::runtime_error(std::string(op) + " failed on '" + name + "': " + errnoToString(saved_errno));
     }
+
+    /// Map a simple CH type name to its wire tag. The test producer only ever uses the
+    /// canonical names of the supported set (no parametrized types), so a direct string
+    /// lookup keeps this scaffolding free of the DataTypeFactory dependency. The consumer
+    /// side's authoritative TypeIndex-based map lives in Wire/WireTypeMapping.h.
+    WireColumnType wireTagForTypeString(const std::string & t)
+    {
+        if (t == "UInt8") return WireColumnType::UInt8;
+        if (t == "UInt16") return WireColumnType::UInt16;
+        if (t == "UInt32") return WireColumnType::UInt32;
+        if (t == "UInt64") return WireColumnType::UInt64;
+        if (t == "Int8") return WireColumnType::Int8;
+        if (t == "Int16") return WireColumnType::Int16;
+        if (t == "Int32") return WireColumnType::Int32;
+        if (t == "Int64") return WireColumnType::Int64;
+        if (t == "Float32") return WireColumnType::Float32;
+        if (t == "Float64") return WireColumnType::Float64;
+        if (t == "Date") return WireColumnType::Date;
+        if (t == "DateTime") return WireColumnType::DateTime;
+        if (t == "Date32") return WireColumnType::Date32;
+        if (t == "String") return WireColumnType::String;
+        throw std::runtime_error("InProcessProducer: unsupported schema type '" + t + "'");
+    }
 }
 
 /// =====================================================================
@@ -440,9 +463,11 @@ void InProcessProducer::publishBlockImpl(
     {
         const auto & p = payloads[i];
         auto & d = desc_array[i];
-        const bool is_string = (config.schema[i].second == "String");
 
-        if (is_string)
+        /// Resolve the column's wire tag from its declared CH type name.
+        const WireColumnType wire_tag = wireTagForTypeString(config.schema[i].second);
+
+        if (wire_tag == WireColumnType::String)
         {
             d.type = static_cast<uint32_t>(WireColumnType::String);
 
@@ -471,8 +496,12 @@ void InProcessProducer::publishBlockImpl(
         }
         else
         {
-            d.type = static_cast<uint32_t>(WireColumnType::UInt64);
-            const size_t vbytes = is_eos ? 0 : p.value_count * sizeof(uint64_t);
+            /// Any fixed-width type: one value buffer of `value_count` elements, each
+            /// `elem_size` bytes. Offset is 8-aligned (a multiple of every supported
+            /// elem_size), satisfying the consumer's precondition-13 alignment check.
+            const size_t elem_size = SharedMemoryWire::wireFixedWidthSize(wire_tag);
+            d.type = static_cast<uint32_t>(wire_tag);
+            const size_t vbytes = is_eos ? 0 : p.value_count * elem_size;
             const size_t voff = reserve(vbytes + PADDING_FOR_SIMD, 8);
             if (!is_eos && p.value_bytes != nullptr && vbytes > 0)
                 std::memcpy(dataRegion() + voff, p.value_bytes, vbytes);

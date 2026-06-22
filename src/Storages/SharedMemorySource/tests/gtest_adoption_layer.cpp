@@ -9,6 +9,8 @@
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnsNumber.h>
 #include <Columns/IColumn.h>
+#include <DataTypes/DataTypeDate.h>
+#include <DataTypes/DataTypeDateTime.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Common/CurrentMetrics.h>
@@ -353,8 +355,11 @@ TEST(AdoptionLayer, UnsupportedSqlTypeStillSchemaMismatch)
     /// DescriptorWireTypeMismatchRejected pins the two cases apart explicitly so a
     /// future refactor cannot silently re-collapse them.
     AdoptFixture f;
+    /// UInt128 is outside the supported fixed-width set (the wire ABI covers widths up to 8
+    /// bytes), so it must hit the unsupported-type catch-all rather than any per-block
+    /// descriptor check.
     std::vector<std::pair<std::string, DataTypePtr>> schema_bad = {
-        {"id", std::make_shared<DataTypeInt32>()},
+        {"id", std::make_shared<DataTypeUInt128>()},
         {"s",  std::make_shared<DataTypeString>()}};
 
     try
@@ -425,6 +430,143 @@ TEST(AdoptionLayer, StringOffsetsOffsetTooSmallRejected)
     EXPECT_EQ(f.retain_witness, 1);
     EXPECT_EQ(f.charge_state->charged_current.load(), 0);
     EXPECT_EQ(f.charge_state->logical_current.load(), 0);
+}
+
+
+/// Fixture exercising the additive fixed-width type extension (Int32, Float64, Date=UInt16,
+/// DateTime=UInt32) through the real adopt() dispatch. Each column uses the single value
+/// buffer like UInt64; offsets are 8-aligned so every element alignment (2/4/8) is satisfied.
+struct MultiTypeFixture
+{
+    static constexpr size_t ROWS = 4;
+    static constexpr size_t REGION_SIZE = 4096;
+
+    alignas(64) std::vector<char> region;
+    int retain_witness = 0;
+    std::shared_ptr<AdoptedByteState> charge_state = std::make_shared<AdoptedByteState>();
+
+    std::vector<Int32> i32_values{-5, 0, 7, 123456};
+    std::vector<Float64> f64_values{1.5, -2.25, 0.0, 1e10};
+    std::vector<UInt16> date_values{0, 100, 20000, 65535};
+    std::vector<UInt32> dt_values{0, 1000, 1700000000u, 4000000000u};
+
+    static constexpr uint64_t I32_OFF = 0;
+    static constexpr uint64_t F64_OFF = 128;
+    static constexpr uint64_t DATE_OFF = 256;
+    static constexpr uint64_t DT_OFF = 320;
+
+    MultiTypeFixture()
+    {
+        region.assign(REGION_SIZE, 0);
+        std::memcpy(region.data() + I32_OFF, i32_values.data(), i32_values.size() * sizeof(Int32));
+        std::memcpy(region.data() + F64_OFF, f64_values.data(), f64_values.size() * sizeof(Float64));
+        std::memcpy(region.data() + DATE_OFF, date_values.data(), date_values.size() * sizeof(UInt16));
+        std::memcpy(region.data() + DT_OFF, dt_values.data(), dt_values.size() * sizeof(UInt32));
+    }
+
+    std::vector<std::pair<std::string, DataTypePtr>> schema() const
+    {
+        return {{"i32", std::make_shared<DataTypeInt32>()},
+                {"f64", std::make_shared<DataTypeFloat64>()},
+                {"d",   std::make_shared<DataTypeDate>()},
+                {"ts",  std::make_shared<DataTypeDateTime>()}};
+    }
+
+    std::vector<ColumnDescriptor> descriptors() const
+    {
+        std::vector<ColumnDescriptor> ds(4);
+        auto fixed = [](ColumnDescriptor & d, WireColumnType t, uint64_t off)
+        {
+            d.type = static_cast<uint32_t>(t);
+            d.value_offset = off;
+            d.value_count = ROWS;
+            d.value_padding = SHM::PADDING_FOR_SIMD;
+        };
+        fixed(ds[0], WireColumnType::Int32, I32_OFF);
+        fixed(ds[1], WireColumnType::Float64, F64_OFF);
+        fixed(ds[2], WireColumnType::Date, DATE_OFF);
+        fixed(ds[3], WireColumnType::DateTime, DT_OFF);
+        return ds;
+    }
+
+    RetainToken makeRetain() { return makeRetainToken([this]() noexcept { ++retain_witness; }); }
+    ChargeHandle makeCharge() const { return ChargeHandle{64, 64, charge_state}; }
+};
+
+
+TEST(AdoptionLayer, FixedWidthTypesAdoptedSuccessfully)
+{
+    MultiTypeFixture f;
+    Columns cols = adopt(f.descriptors(), f.schema(),
+                         f.region.data(), MultiTypeFixture::REGION_SIZE,
+                         MultiTypeFixture::ROWS, f.makeRetain(), f.makeCharge());
+
+    ASSERT_EQ(cols.size(), 4u);
+
+    const auto * c_i32 = typeid_cast<const ColumnInt32 *>(cols[0].get());
+    const auto * c_f64 = typeid_cast<const ColumnFloat64 *>(cols[1].get());
+    const auto * c_date = typeid_cast<const ColumnUInt16 *>(cols[2].get());
+    const auto * c_dt = typeid_cast<const ColumnUInt32 *>(cols[3].get());
+    ASSERT_NE(c_i32, nullptr);
+    ASSERT_NE(c_f64, nullptr);
+    ASSERT_NE(c_date, nullptr) << "Date adopts as ColumnVector<UInt16>";
+    ASSERT_NE(c_dt, nullptr) << "DateTime adopts as ColumnVector<UInt32>";
+
+    /// AC3 pointer-identity: each adopted buffer points into the producer region (zero copy).
+    EXPECT_EQ(reinterpret_cast<const char *>(c_i32->getData().data()), f.region.data() + f.I32_OFF);
+    EXPECT_EQ(reinterpret_cast<const char *>(c_f64->getData().data()), f.region.data() + f.F64_OFF);
+    EXPECT_EQ(reinterpret_cast<const char *>(c_date->getData().data()), f.region.data() + f.DATE_OFF);
+    EXPECT_EQ(reinterpret_cast<const char *>(c_dt->getData().data()), f.region.data() + f.DT_OFF);
+
+    for (size_t i = 0; i < MultiTypeFixture::ROWS; ++i)
+    {
+        EXPECT_EQ(c_i32->getData()[i], f.i32_values[i]) << "i32 row " << i;
+        EXPECT_EQ(c_f64->getData()[i], f.f64_values[i]) << "f64 row " << i;
+        EXPECT_EQ(c_date->getData()[i], f.date_values[i]) << "date row " << i;
+        EXPECT_EQ(c_dt->getData()[i], f.dt_values[i]) << "dt row " << i;
+    }
+}
+
+
+TEST(AdoptionLayer, MisalignedFixedWidthDescriptorRejected)
+{
+    MultiTypeFixture f;
+    auto ds = f.descriptors();
+    ds[1].value_offset = f.F64_OFF + 4; // 4-aligned but not 8-aligned → misaligned for Float64
+
+    try
+    {
+        adopt(ds, f.schema(), f.region.data(), MultiTypeFixture::REGION_SIZE,
+              MultiTypeFixture::ROWS, f.makeRetain(), f.makeCharge());
+        FAIL() << "expected DB::Exception with SHM_BUFFER_LAYOUT_INVALID for misaligned Float64";
+    }
+    catch (const DB::Exception & e)
+    {
+        EXPECT_EQ(e.code(), DB::ErrorCodes::SHM_BUFFER_LAYOUT_INVALID) << e.message();
+    }
+    EXPECT_EQ(f.retain_witness, 1);
+}
+
+
+TEST(AdoptionLayer, FixedWidthDescriptorWireTagMismatchRejected)
+{
+    /// A per-block descriptor declaring the wrong fixed-width tag (here UInt64 where the
+    /// schema says Int32) is a post-handshake descriptor inconsistency → buffer-layout-invalid.
+    MultiTypeFixture f;
+    auto ds = f.descriptors();
+    ds[0].type = static_cast<uint32_t>(WireColumnType::UInt64);
+
+    try
+    {
+        adopt(ds, f.schema(), f.region.data(), MultiTypeFixture::REGION_SIZE,
+              MultiTypeFixture::ROWS, f.makeRetain(), f.makeCharge());
+        FAIL() << "expected DB::Exception with SHM_BUFFER_LAYOUT_INVALID";
+    }
+    catch (const DB::Exception & e)
+    {
+        EXPECT_EQ(e.code(), DB::ErrorCodes::SHM_BUFFER_LAYOUT_INVALID) << e.message();
+    }
+    EXPECT_EQ(f.retain_witness, 1);
 }
 
 

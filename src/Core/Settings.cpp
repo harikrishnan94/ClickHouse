@@ -8215,11 +8215,11 @@ Experimental table engine for integration with YTsaurus.
     DECLARE(Bool, allow_experimental_ytsaurus_table_function, false, R"(
 Experimental table engine for integration with YTsaurus.
 )", EXPERIMENTAL) \
-    DECLARE(Bool, allow_experimental_shm_table_function, false, R"(
-Experimental zero-copy `shm()` table function that adopts column buffers from a producer-owned POSIX shared-memory region. See `docs/en/development/shm-block-stream-abi-v1.md` for the wire ABI.
-)", EXPERIMENTAL) \
+    DECLARE_WITH_ALIAS(Bool, allow_experimental_streamed_table_function, false, R"(
+Experimental zero-copy `streamed_table()` table function (also available under its legacy name `shm()`) that adopts column buffers from a producer-owned POSIX shared-memory region. See `docs/en/development/shm-block-stream-abi-v1.md` for the wire ABI.
+)", EXPERIMENTAL, allow_experimental_shm_table_function) \
     DECLARE(UInt64, shm_source_stall_timeout_ms, 30000, R"(
-Maximum time the `shm()` source waits without observing producer publication progress before raising `SHM_PRODUCER_STALL`. Bounds the consumer-side detection budget per the pollable-shm-source spec's stall invariant (I12).
+Maximum time the `streamed_table()` source waits without observing producer publication progress before raising `SHM_PRODUCER_STALL`. Bounds the consumer-side detection budget per the pollable-shm-source spec's stall invariant (I12).
 )", 0) \
 DECLARE(Bool, allow_experimental_ytsaurus_dictionary_source, false, R"(
     Experimental dictionary source for integration with YTsaurus.

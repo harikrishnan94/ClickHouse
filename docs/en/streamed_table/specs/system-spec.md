@@ -35,7 +35,7 @@ flowchart LR
         DataPlane["data plane: per-type buffer layout, alignment, padding, safe-read area"]
     end
     subgraph CH ["ClickHouse process"]
-        TableFn["shm() table function"]
+        TableFn["streamed_table() table function"]
         Source["B: Pollable SHM Source"]
         Adopt["A: Adoption Layer"]
         Tracker["C: MemoryTracker Integration"]
@@ -63,7 +63,7 @@ Thick edges are control-plane traffic; dashed edges are the data plane. The two 
 
 **Data plane ⇢ Adoption Layer.** The data plane is the byte source the adoption layer wraps. The source does not read payload bytes directly — it routes each block's declared byte ranges to the adoption layer, which is the only consumer-side party that turns those bytes into `IColumn`s.
 
-**`shm()` table function → Source.** The SQL entry point. A query that references the `shm()` table function instantiates the pollable source for that query; lifecycle of the source is the lifecycle of that query operator.
+**`streamed_table()` table function → Source.** The SQL entry point (legacy alias `shm()`). A query that references the `streamed_table()` table function instantiates the pollable source for that query; lifecycle of the source is the lifecycle of that query operator.
 
 **Source → Adoption Layer (per-block: acquire retain, acquire charge, then adopt).** For each published block the source first acquires the wire retain token (pinning the producer region), then acquires a charge handle from the memory-tracker-integration charge entry, then hands the adoption layer the producer-declared layout (buffer pointers, sizes, padding, sentinel-byte status), the retain token, and the charge handle, requesting construction of one `IColumn` per declared column.
 
@@ -178,7 +178,7 @@ SELECT
     sum(cityHash64(s2)),
     sum(length(s1)),
     sum(length(s2))
-FROM shm(…)
+FROM streamed_table(…)
 ```
 
 run through the new table function. Every output value must be bit-identical to the same query run against the same generated rows ingested via a reference path (e.g. `Values` or `Native`).

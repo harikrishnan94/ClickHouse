@@ -6,6 +6,7 @@
 #include <Storages/SharedMemorySource/Adoption/RetainToken.h>
 #include <Storages/SharedMemorySource/Wire/ControlSocket.h>
 #include <Storages/SharedMemorySource/Wire/Layout.h>
+#include <Storages/SharedMemorySource/Wire/WireTypeMapping.h>
 
 #include <Columns/ColumnString.h>
 #include <Columns/IColumn.h>
@@ -219,11 +220,11 @@ void PollableShmSource::ensureAttached()
         /// matching producer type therefore also passes — but we keep the check explicit
         /// so a future SQL gate regression doesn't silently widen the supported set.
         const auto producer_type_id = producer_type->getTypeId();
-        if (producer_type_id != TypeIndex::UInt64 && producer_type_id != TypeIndex::String)
+        if (!SharedMemoryWire::isSupportedShmType(producer_type_id))
             throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
                 "SHM '{}' column {}: handshake type='{}' is outside the supported set "
-                "{{UInt64, String}} (precondition 6)",
-                shm_name, i, producer_type->getName());
+                "{} (precondition 6)",
+                shm_name, i, producer_type->getName(), SharedMemoryWire::supportedShmTypeList());
     }
 
     /// Step 2b: build the projection index map. With the full schema validated above we
@@ -523,10 +524,12 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
         size_t logical_bytes = 0;
         for (const auto & d : descs_vec)
         {
-            if (d.type == static_cast<uint32_t>(SharedMemoryWire::WireColumnType::UInt64))
+            if (const size_t elem_size = SharedMemoryWire::wireFixedWidthSize(d.type))
             {
-                logical_bytes += d.value_count * sizeof(uint64_t);
-                adopted_bytes += d.value_count * sizeof(uint64_t) + d.value_padding;
+                /// Any fixed-width column (UInt64 and the numeric/date extension types):
+                /// one value buffer of `value_count` elements plus trailing safe-read pad.
+                logical_bytes += d.value_count * elem_size;
+                adopted_bytes += d.value_count * elem_size + d.value_padding;
             }
             else if (d.type == static_cast<uint32_t>(SharedMemoryWire::WireColumnType::String))
             {

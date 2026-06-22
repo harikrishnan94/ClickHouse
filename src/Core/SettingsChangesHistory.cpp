@@ -138,8 +138,8 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"allow_experimental_cleanup_old_data_files_compaction", false, false, "New setting"},
             {"iceberg_compaction_data_cleanup", 60 * 60 * 3, 60 * 60 * 3, "New setting"},
             {"allow_rank_dense_rank_arguments", true, false, "New setting. Before 26.5, the `RANK` and `DENSE_RANK` window functions silently ignored any provided arguments (equivalent to `allow_rank_dense_rank_arguments = 1`). From 26.5, they reject arguments by default with `NUMBER_OF_ARGUMENTS_DOESNT_MATCH` because per SQL standard these functions take zero arguments. Set this to `1` to restore the legacy behavior."},
-            {"allow_experimental_shm_table_function", false, false, "New setting to gate the experimental zero-copy shm() table function."},
-            {"shm_source_stall_timeout_ms", 30000, 30000, "New setting bounding the stall budget for the experimental shm() source."},
+            {"allow_experimental_streamed_table_function", false, false, "New setting to gate the experimental zero-copy streamed_table() table function (legacy alias: allow_experimental_shm_table_function)."},
+            {"shm_source_stall_timeout_ms", 30000, 30000, "New setting bounding the stall budget for the experimental streamed_table() source."},
         });
         addSettingsChanges(settings_changes_history, "26.4",
         {

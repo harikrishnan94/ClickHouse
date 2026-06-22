@@ -67,8 +67,9 @@ public:
     // ---------- T2.4b (publish API) ----------
 
     /// One column's payload for one block.
-    ///   - UInt64: value_bytes / value_count describe the raw value buffer (bytes == count*8).
-    ///     offset_bytes / offset_count are unused.
+    ///   - Fixed-width (UInt64 and every numeric/date wire type): value_bytes points at the
+    ///     raw element buffer and value_count is the ELEMENT count (byte size ==
+    ///     value_count * wireFixedWidthSize(type)). offset_bytes / offset_count are unused.
     ///   - String: value_bytes / value_count describe the concatenated chars (UInt8 buffer,
     ///     value_count == byte size). offset_bytes / offset_count describe the offsets
     ///     buffer (UInt64 buffer, offset_count == rows).

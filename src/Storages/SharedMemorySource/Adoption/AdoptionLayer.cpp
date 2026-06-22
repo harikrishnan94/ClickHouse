@@ -1,9 +1,11 @@
 #include <Storages/SharedMemorySource/Adoption/AdoptionLayer.h>
+#include <Storages/SharedMemorySource/Wire/WireTypeMapping.h>
 
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnsNumber.h>
 #include <Columns/IColumn.h>
+#include <Core/TypeId.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Common/Exception.h>
@@ -38,38 +40,75 @@ bool fitsInRegion(uint64_t off, uint64_t size, uint64_t padding, size_t region_s
     return sum2 <= region_size;
 }
 
-void validateUInt64Descriptor(
-    const SharedMemoryWire::ColumnDescriptor & d, UInt64 row_count, size_t region_size, size_t column_index)
+/// Validate the single value buffer of a fixed-width column (UInt64 and every
+/// numeric/date wire type). `elem_size` is the element byte width returned by
+/// `wireFixedWidthSize`; the natural alignment of such a buffer equals its
+/// element width, so the same value drives both the alignment and the byte math.
+void validateFixedWidthDescriptor(
+    const SharedMemoryWire::ColumnDescriptor & d, UInt64 row_count, size_t region_size,
+    size_t column_index, size_t elem_size)
 {
-    /// Precondition 13: declared value-buffer offset satisfies UInt64 alignment.
-    if ((d.value_offset % alignof(uint64_t)) != 0)
+    /// Precondition 13: declared value-buffer offset satisfies the element's natural alignment.
+    if ((d.value_offset % elem_size) != 0)
         throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
-            "column {} (UInt64): value_offset={} is not {}-aligned (precondition 13)",
-            column_index, d.value_offset, alignof(uint64_t));
+            "column {} (fixed-width {}B): value_offset={} is not {}-aligned (precondition 13)",
+            column_index, elem_size, d.value_offset, elem_size);
 
     /// Precondition 26 (block-framing): value_count must equal row_count.
     if (d.value_count != row_count)
         throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
-            "column {} (UInt64): value_count={} != row_count={} (precondition 26)",
-            column_index, d.value_count, row_count);
+            "column {} (fixed-width {}B): value_count={} != row_count={} (precondition 26)",
+            column_index, elem_size, d.value_count, row_count);
 
-    /// Precondition 14: value_count * sizeof(UInt64) + value_padding fits at value_offset.
-    const uint64_t bytes = d.value_count * sizeof(uint64_t);
-    if (d.value_count != 0 && bytes / sizeof(uint64_t) != d.value_count)
+    /// Precondition 14: value_count * elem_size + value_padding fits at value_offset.
+    const uint64_t bytes = d.value_count * elem_size;
+    if (d.value_count != 0 && bytes / elem_size != d.value_count)
         throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
-            "column {} (UInt64): value_count={} * sizeof(UInt64) overflows (precondition 14)",
-            column_index, d.value_count);
+            "column {} (fixed-width {}B): value_count={} * {} overflows (precondition 14)",
+            column_index, elem_size, d.value_count, elem_size);
     if (!fitsInRegion(d.value_offset, bytes, d.value_padding, region_size))
         throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
-            "column {} (UInt64): value buffer [offset={}, bytes={}, padding={}] "
+            "column {} (fixed-width {}B): value buffer [offset={}, bytes={}, padding={}] "
             "does not fit in data region of size {} (precondition 14)",
-            column_index, d.value_offset, bytes, d.value_padding, region_size);
+            column_index, elem_size, d.value_offset, bytes, d.value_padding, region_size);
 
     /// Precondition 15: value_padding >= PADDING_FOR_SIMD.
     if (d.value_padding < SharedMemoryWire::PADDING_FOR_SIMD)
         throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
-            "column {} (UInt64): value_padding={} < PADDING_FOR_SIMD={} (precondition 15)",
-            column_index, d.value_padding, SharedMemoryWire::PADDING_FOR_SIMD);
+            "column {} (fixed-width {}B): value_padding={} < PADDING_FOR_SIMD={} (precondition 15)",
+            column_index, elem_size, d.value_padding, SharedMemoryWire::PADDING_FOR_SIMD);
+}
+
+/// Adopt one fixed-width column as a `ColumnVector<T>` (zero copy). `expected_tag`
+/// is the wire tag the handshake-validated schema implies for this column; a
+/// per-block descriptor declaring a different tag is a post-handshake descriptor
+/// inconsistency (buffer-layout-invalid, not schema-mismatch — see the rationale
+/// in the original UInt64 branch).
+template <typename T>
+ColumnPtr adoptFixedWidthColumn(
+    const SharedMemoryWire::ColumnDescriptor & desc,
+    SharedMemoryWire::WireColumnType expected_tag,
+    UInt64 row_count,
+    const char * data_region_base,
+    size_t data_region_size,
+    size_t column_index,
+    const std::string & column_name,
+    const RetainToken & retain_token,
+    const std::shared_ptr<void> & charge_token)
+{
+    if (desc.type != static_cast<uint32_t>(expected_tag))
+        throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
+            "column {} ('{}'): per-block descriptor declares wire-tag {} but schema "
+            "(validated at handshake) expects {} — handshake-time schema equality is "
+            "precondition 6 (SHM_SCHEMA_MISMATCH); a per-block descriptor inconsistency "
+            "after the handshake passed is precondition-13/16-style buffer-layout-invalid",
+            column_index, column_name, desc.type, static_cast<uint32_t>(expected_tag));
+
+    validateFixedWidthDescriptor(desc, row_count, data_region_size, column_index, sizeof(T));
+
+    auto * data_ptr = reinterpret_cast<T *>(
+        const_cast<char *>(data_region_base) + desc.value_offset);
+    return ColumnVector<T>::createAdopted(data_ptr, desc.value_count, retain_token, charge_token);
 }
 
 void validateStringDescriptor(
@@ -211,37 +250,9 @@ Columns adopt(
         /// against a schema different from the one negotiated at handshake.
         const auto type_id = type->getTypeId();
 
-        if (type_id == TypeIndex::UInt64)
+        if (type_id == TypeIndex::String)
         {
-            /// Per-block descriptor's wire-tag must match the handshake-validated schema.
-            /// Precondition 6's schema-membership/equality gate fires at handshake; once
-            /// past that gate, an inconsistent per-block descriptor wire-tag is a producer
-            /// publishing a malformed descriptor (precondition-13/16-style buffer-layout
-            /// concern: the descriptor's `type` field is part of the per-column descriptor
-            /// layout, not the SQL/handshake schema), and so surfaces as
-            /// `SHM_BUFFER_LAYOUT_INVALID` rather than `SHM_SCHEMA_MISMATCH`.
-            if (desc.type != static_cast<uint32_t>(SharedMemoryWire::WireColumnType::UInt64))
-                throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
-                    "column {} ('{}'): per-block descriptor declares wire-tag {} but schema "
-                    "(validated at handshake) expects {} for UInt64 — handshake-time schema "
-                    "equality is precondition 6 (SHM_SCHEMA_MISMATCH); per-block descriptor "
-                    "inconsistency after the handshake passed is precondition-13/16-style "
-                    "buffer-layout-invalid",
-                    i, schema[i].first, desc.type,
-                    static_cast<uint32_t>(SharedMemoryWire::WireColumnType::UInt64));
-
-            validateUInt64Descriptor(desc, row_count, data_region_size, i);
-
-            auto * data_ptr = reinterpret_cast<UInt64 *>(
-                const_cast<char *>(data_region_base) + desc.value_offset);
-            auto col = ColumnVector<UInt64>::createAdopted(data_ptr, desc.value_count,
-                                                           retain_token, charge_token);
-            columns_local.emplace_back(std::move(col));
-        }
-        else if (type_id == TypeIndex::String)
-        {
-            /// See the UInt64 branch above for the precondition-class rationale: a
-            /// per-block descriptor wire-tag inconsistency once past the handshake-time
+            /// A per-block descriptor wire-tag inconsistency once past the handshake-time
             /// schema equality gate (precondition 6) is a buffer-layout/descriptor issue,
             /// not a schema-mismatch.
             if (desc.type != static_cast<uint32_t>(SharedMemoryWire::WireColumnType::String))
@@ -266,6 +277,39 @@ Columns adopt(
                 retain_token, charge_token);
             columns_local.emplace_back(std::move(col));
         }
+        else if (const auto wire_tag = SharedMemoryWire::tryWireColumnTypeForTypeIndex(type_id))
+        {
+            /// Fixed-width adoption. `wire_tag` is the tag the handshake-validated schema
+            /// implies; `adoptFixedWidthColumn` re-checks the per-block descriptor tag against
+            /// it and validates the single value buffer. The switch only selects the column
+            /// element type `T`; the validation/creation logic lives in the helper.
+            const auto tag = *wire_tag;
+            ColumnPtr col;
+            switch (type_id)
+            {
+                case TypeIndex::UInt8:    col = adoptFixedWidthColumn<UInt8>   (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::UInt16:   col = adoptFixedWidthColumn<UInt16>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::UInt32:   col = adoptFixedWidthColumn<UInt32>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::UInt64:   col = adoptFixedWidthColumn<UInt64>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Int8:     col = adoptFixedWidthColumn<Int8>    (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Int16:    col = adoptFixedWidthColumn<Int16>   (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Int32:    col = adoptFixedWidthColumn<Int32>   (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Int64:    col = adoptFixedWidthColumn<Int64>   (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Float32:  col = adoptFixedWidthColumn<Float32> (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Float64:  col = adoptFixedWidthColumn<Float64> (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                /// Date/DateTime/Date32 adopt through their fixed-width storage column.
+                case TypeIndex::Date:     col = adoptFixedWidthColumn<UInt16>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::DateTime: col = adoptFixedWidthColumn<UInt32>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Date32:   col = adoptFixedWidthColumn<Int32>   (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                default:
+                    /// Unreachable: `tryWireColumnTypeForTypeIndex` returned a fixed-width tag
+                    /// only for the cases above (String is handled in the branch before this).
+                    throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                        "column {} ('{}'): type '{}' has a wire tag but no adoption arm (orchestration bug)",
+                        i, schema[i].first, type->getName());
+            }
+            columns_local.emplace_back(std::move(col));
+        }
         else
         {
             /// Late catch for precondition 6 on the adoption side. Anything that escapes the
@@ -273,9 +317,8 @@ Columns adopt(
             /// the orchestration; we still raise the typed exception per `adoption-layer.md`
             /// §Unsupported types.
             throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "column {} ('{}'): unsupported type '{}' "
-                "(adoption-layer phase 1 supports {{UInt64, String}})",
-                i, schema[i].first, type->getName());
+                "column {} ('{}'): unsupported type '{}' (adoption-layer supports {})",
+                i, schema[i].first, type->getName(), SharedMemoryWire::supportedShmTypeList());
         }
     }
 

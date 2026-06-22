@@ -149,16 +149,34 @@ TEST(ColumnVectorAdopted, FactoryRejectsNullChargeHandle)
         DB::Exception);
 }
 
-TEST(ColumnVectorAdopted, FactoryRejectsNonUInt64)
+TEST(ColumnVectorAdopted, FactoryAcceptsSupportedFixedWidthTypes)
 {
+    /// The SHM-adoption factory supports the fixed-width integer/float set
+    /// (UInt8/16/32/64, Int8/16/32/64, Float32/64), not just UInt64: a supported
+    /// non-UInt64 type adopts successfully.
     constexpr size_t n = 4;
     std::vector<char> backing_buffer(n * sizeof(UInt32) + PaddedPODArray<UInt32>::pad_right, '\0');
     auto * data = reinterpret_cast<UInt32 *>(backing_buffer.data());
     auto retain = makeRetainToken([]() noexcept {});
     auto charge = makeRetainToken([]() noexcept {});
 
+    EXPECT_NO_THROW(
+        ColumnVector<UInt32>::createAdopted(data, n, std::move(retain), std::move(charge)));
+}
+
+TEST(ColumnVectorAdopted, FactoryRejectsUnsupportedWideType)
+{
+    /// A type outside the supported set (here the 16-byte UInt128) is rejected so
+    /// an unintended instantiation cannot wrap foreign memory the wire ABI never
+    /// validated.
+    constexpr size_t n = 4;
+    std::vector<char> backing_buffer(n * sizeof(UInt128) + PaddedPODArray<UInt128>::pad_right, '\0');
+    auto * data = reinterpret_cast<UInt128 *>(backing_buffer.data());
+    auto retain = makeRetainToken([]() noexcept {});
+    auto charge = makeRetainToken([]() noexcept {});
+
     EXPECT_THROW(
-        ColumnVector<UInt32>::createAdopted(data, n, std::move(retain), std::move(charge)),
+        ColumnVector<UInt128>::createAdopted(data, n, std::move(retain), std::move(charge)),
         DB::Exception);
 }
 
