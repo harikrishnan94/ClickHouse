@@ -27,6 +27,9 @@
 #include <base/sort.h>
 
 #include <algorithm>
+#include <memory>
+#include <type_traits>
+#include <utility>
 
 
 namespace DB
@@ -34,6 +37,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+    extern const int BAD_ARGUMENTS;
     extern const int PARAMETER_OUT_OF_BOUND;
     extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
     extern const int NOT_IMPLEMENTED;
@@ -54,6 +58,7 @@ TypeIndex ColumnDecimal<T>::getDataType() const
 template <is_decimal T>
 std::span<char> ColumnDecimal<T>::insertRawUninitialized(size_t count)
 {
+    assertOwnedForMutation("ColumnDecimal::insertRawUninitialized");
     size_t start = data.size();
     data.resize(start + count);
     return {reinterpret_cast<char *>(data.data() + start), count * sizeof(T)};
@@ -418,8 +423,41 @@ MutableColumnPtr ColumnDecimal<T>::cloneResized(size_t size) const
 }
 
 template <is_decimal T>
+typename COWHelper<IColumnHelper<ColumnDecimal<T>, ColumnFixedSizeHelper>, ColumnDecimal<T>>::MutablePtr
+ColumnDecimal<T>::createAdopted(
+    T * adopted_data, size_t adopted_n, UInt32 scale_,
+    std::shared_ptr<void> retain_token,
+    std::shared_ptr<void> charge_handle)
+{
+    /// SHM-adoption supports the fixed-width decimal set whose element width is <= 16 bytes:
+    /// Decimal32/64/128 and DateTime64 (a Decimal64). Decimal256 (32 bytes) and Time64 are
+    /// rejected so an unintended instantiation fails loudly rather than wrapping foreign
+    /// memory the wire ABI never validated. The scale is supplied by the caller (derived from
+    /// the cross-validated DataType), since it is not carried on the wire.
+    if constexpr (!(
+        std::is_same_v<T, Decimal32> || std::is_same_v<T, Decimal64>
+        || std::is_same_v<T, Decimal128> || std::is_same_v<T, DateTime64>))
+    {
+        throw Exception(ErrorCodes::BAD_ARGUMENTS,
+            "ColumnDecimal::createAdopted is not supported for type {} in the SHM-adoption ABI "
+            "(supported: Decimal32, Decimal64, Decimal128, DateTime64)",
+            TypeName<T>);
+    }
+    else
+    {
+        if (!retain_token || !charge_handle)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "ColumnDecimal::createAdopted requires non-null retain_token and charge_handle "
+                "(adoption-layer spec §Retain and charge handle semantics)");
+        auto holder = std::make_unique<AdoptionHolder>(std::move(retain_token), std::move(charge_handle));
+        return Self::create(adopted_data, adopted_n, scale_, std::move(holder));
+    }
+}
+
+template <is_decimal T>
 bool ColumnDecimal<T>::tryInsert(const Field & x)
 {
+    assertOwnedForMutation("ColumnDecimal::tryInsert");
     DecimalField<T> value;
     if (!x.tryGet<DecimalField<T>>(value))
         return false;
@@ -430,6 +468,7 @@ bool ColumnDecimal<T>::tryInsert(const Field & x)
 template <is_decimal T>
 void ColumnDecimal<T>::insertData(const char * src, size_t /*length*/)
 {
+    assertOwnedForMutation("ColumnDecimal::insertData");
     T tmp{};
     memcpy(&tmp, src, sizeof(T));
     data.emplace_back(tmp);
@@ -442,6 +481,7 @@ void ColumnDecimal<T>::insertRangeFrom(const IColumn & src, size_t start, size_t
 void ColumnDecimal<T>::doInsertRangeFrom(const IColumn & src, size_t start, size_t length)
 #endif
 {
+    assertOwnedForMutation("ColumnDecimal::insertRangeFrom");
     const ColumnDecimal & src_vec = assert_cast<const ColumnDecimal &>(src);
 
     if (start + length > src_vec.data.size())
@@ -521,6 +561,7 @@ ColumnPtr ColumnDecimal<T>::filter(const IColumn::Filter & filt, ssize_t result_
 template <is_decimal T>
 void ColumnDecimal<T>::filter(const IColumn::Filter & filt)
 {
+    assertOwnedForMutation("ColumnDecimal::filter");
     size_t size = data.size();
     if (size != filt.size())
         throw Exception(ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH, "Size of filter ({}) doesn't match size of column ({})", filt.size(), size);
@@ -581,6 +622,7 @@ void ColumnDecimal<T>::filter(const IColumn::Filter & filt)
 template <is_decimal T>
 void ColumnDecimal<T>::expand(const IColumn::Filter & mask, bool inverted)
 {
+    assertOwnedForMutation("ColumnDecimal::expand");
     expandDataByMask<T>(data, mask, inverted);
 }
 
@@ -674,6 +716,7 @@ void ColumnDecimal<T>::getExtremes(Field & min, Field & max, size_t start, size_
 template <is_decimal T>
 void ColumnDecimal<T>::updateAt(const IColumn & src, size_t dst_pos, size_t src_pos)
 {
+    assertOwnedForMutation("ColumnDecimal::updateAt");
     const auto & src_data = assert_cast<const Self &>(src).getData();
     data[dst_pos] = src_data[src_pos];
 }

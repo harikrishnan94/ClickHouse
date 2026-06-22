@@ -1,12 +1,14 @@
 #include <Storages/SharedMemorySource/Adoption/AdoptionLayer.h>
 #include <Storages/SharedMemorySource/Wire/WireTypeMapping.h>
 
+#include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnsNumber.h>
 #include <Columns/IColumn.h>
 #include <Core/TypeId.h>
 #include <DataTypes/DataTypeString.h>
+#include <DataTypes/DataTypesDecimal.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Common/Exception.h>
 
@@ -109,6 +111,40 @@ ColumnPtr adoptFixedWidthColumn(
     auto * data_ptr = reinterpret_cast<T *>(
         const_cast<char *>(data_region_base) + desc.value_offset);
     return ColumnVector<T>::createAdopted(data_ptr, desc.value_count, retain_token, charge_token);
+}
+
+/// Adopt one fixed-width decimal column as a `ColumnDecimal<T>` (zero copy). Same descriptor
+/// validation as `adoptFixedWidthColumn` — the width/alignment-parameterized
+/// `validateFixedWidthDescriptor` enforces the element's natural alignment, which is 16 bytes
+/// for `Decimal128`. The decimal `scale` is NOT on the wire; it is derived by the caller from
+/// the handshake-validated `DataType` (`getDecimalScale`) and threaded into the adopted column
+/// so reads reconstruct the exact `DecimalField` value.
+template <typename T>
+ColumnPtr adoptDecimalColumn(
+    const SharedMemoryWire::ColumnDescriptor & desc,
+    SharedMemoryWire::WireColumnType expected_tag,
+    UInt32 scale,
+    UInt64 row_count,
+    const char * data_region_base,
+    size_t data_region_size,
+    size_t column_index,
+    const std::string & column_name,
+    const RetainToken & retain_token,
+    const std::shared_ptr<void> & charge_token)
+{
+    if (desc.type != static_cast<uint32_t>(expected_tag))
+        throw Exception(ErrorCodes::SHM_BUFFER_LAYOUT_INVALID,
+            "column {} ('{}'): per-block descriptor declares wire-tag {} but schema "
+            "(validated at handshake) expects {} — handshake-time schema equality is "
+            "precondition 6 (SHM_SCHEMA_MISMATCH); a per-block descriptor inconsistency "
+            "after the handshake passed is precondition-13/16-style buffer-layout-invalid",
+            column_index, column_name, desc.type, static_cast<uint32_t>(expected_tag));
+
+    validateFixedWidthDescriptor(desc, row_count, data_region_size, column_index, sizeof(T));
+
+    auto * data_ptr = reinterpret_cast<T *>(
+        const_cast<char *>(data_region_base) + desc.value_offset);
+    return ColumnDecimal<T>::createAdopted(data_ptr, desc.value_count, scale, retain_token, charge_token);
 }
 
 void validateStringDescriptor(
@@ -301,6 +337,12 @@ Columns adopt(
                 case TypeIndex::Date:     col = adoptFixedWidthColumn<UInt16>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
                 case TypeIndex::DateTime: col = adoptFixedWidthColumn<UInt32>  (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
                 case TypeIndex::Date32:   col = adoptFixedWidthColumn<Int32>   (desc, tag, row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                /// Decimal32/64/128 and DateTime64 adopt into ColumnDecimal<T>; the scale rides
+                /// in from the handshake-validated DataType (it is not on the wire).
+                case TypeIndex::Decimal32:  col = adoptDecimalColumn<Decimal32> (desc, tag, getDecimalScale(*type), row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Decimal64:  col = adoptDecimalColumn<Decimal64> (desc, tag, getDecimalScale(*type), row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::Decimal128: col = adoptDecimalColumn<Decimal128>(desc, tag, getDecimalScale(*type), row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
+                case TypeIndex::DateTime64: col = adoptDecimalColumn<DateTime64>(desc, tag, getDecimalScale(*type), row_count, data_region_base, data_region_size, i, schema[i].first, retain_token, charge_token); break;
                 default:
                     /// Unreachable: `tryWireColumnTypeForTypeIndex` returned a fixed-width tag
                     /// only for the cases above (String is handled in the branch before this).

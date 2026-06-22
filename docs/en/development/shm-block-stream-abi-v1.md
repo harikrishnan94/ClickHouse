@@ -136,9 +136,10 @@ Total size: 128 bytes, 64-byte aligned.
 The schema lives in two places:
 
 - SQL-declared: the second argument to the `streamed_table()` table function, parsed by
-  ClickHouse at query parse/resolve time. Types outside the phase-1
-  supported set `{UInt64, String}` are rejected with `SHM_SCHEMA_MISMATCH`
-  before any attach is attempted.
+  ClickHouse at query parse/resolve time. Types outside the supported set
+  (the fixed-width types of §Fixed-width numeric, date/time, and decimal types
+  plus `String`) are rejected with `SHM_SCHEMA_MISMATCH` before any attach is
+  attempted.
 - Producer-declared: an array of `SchemaEntry[schema_count]` at byte offset
   `schema_table_offset`. Each entry is 128 bytes:
 
@@ -156,7 +157,9 @@ block adoption:
   at position `i`.
 - For each position `i`, `type_string[i]` must parse via
   `DataTypeFactory::get` and must equal the SQL-declared type at position
-  `i`; both must be in `{UInt64, String}`.
+  `i`; both must be in the supported set (the fixed-width types of
+  §Fixed-width numeric, date/time, and decimal types plus `String`). For
+  parametrized decimals this equality includes precision and scale.
 
 A mismatch in any of count, name, type, or order surfaces
 `SHM_SCHEMA_MISMATCH` before any block is read.
@@ -187,7 +190,7 @@ Single value buffer.
 `value_offset + value_count * 8 + value_padding` must not exceed
 `data_region_size` (precondition 14).
 
-### Fixed-width numeric and date/time types {#fixed-width-types}
+### Fixed-width numeric, date/time, and decimal types {#fixed-width-types}
 
 `UInt64` is one instance of a general fixed-width family. The following
 `WireColumnType` values (additive within ABI v1) all use the SAME single
@@ -209,6 +212,25 @@ copies.
 | `Date` | 12 | 2 | `ColumnVector<UInt16>` (days since 1970-01-01) |
 | `DateTime` | 13 | 4 | `ColumnVector<UInt32>` (seconds since 1970-01-01 UTC) |
 | `Date32` | 14 | 4 | `ColumnVector<Int32>` (days since 1970-01-01, signed) |
+| `Decimal32` | 15 | 4 | `ColumnDecimal<Decimal32>` (unscaled little-endian int) |
+| `Decimal64` | 16 | 8 | `ColumnDecimal<Decimal64>` (unscaled little-endian int) |
+| `Decimal128` | 17 | 16 | `ColumnDecimal<Decimal128>` (unscaled int; **16-byte aligned**) |
+| `DateTime64` | 18 | 8 | `ColumnDecimal<DateTime64>` (ticks at the type's subsecond precision) |
+
+The decimal tags (15-18) carry a SCALE that is **not on the wire**. Each value
+buffer holds `value_count` little-endian two's-complement unscaled integers of
+the element width above; the consumer derives the decimal scale from the
+SQL-declared / handshake `DataType` (`getDecimalScale`) and pairs it with the
+adopted buffer to reconstruct the exact `Decimal(P, S)` value. The producer and
+the SQL-declared type MUST therefore agree on the parametrized type — the
+consumer parses the producer's `type_string` (e.g. `"Decimal(18, 2)"`) via
+`DataTypeFactory::get` and `equals`-checks it against the SQL-declared type at
+handshake cross-validation; any divergence in precision or scale surfaces
+`SHM_SCHEMA_MISMATCH`. `Decimal128` is the only fixed-width type whose alignment
+(16 bytes) exceeds 8: its `value_offset` must be a multiple of 16. `Decimal256`
+is intentionally NOT part of the ABI — a `Decimal256` column is declined at the
+SQL gate so the offload fails closed rather than streaming a type the adopted
+column path does not cover.
 
 For every fixed-width type:
 

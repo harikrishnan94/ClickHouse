@@ -100,9 +100,10 @@ enum class SlotState : uint32_t
 /// Per-column descriptor type tag (`adoption-layer.md` §AC2 Type coverage).
 /// Values 1-2 are the original phase-1 set. Values 3+ are the additive,
 /// same-version (v1) fixed-width extension: each adopts a `ColumnVector<T>`
-/// through the single value buffer, exactly like `UInt64` (see
-/// `ColumnDescriptor` and `wireFixedWidthSize` below). Any value the consumer
-/// does not recognise is a buffer-layout-invalid class violation.
+/// (values 3-14) or a `ColumnDecimal<T>` (values 15-18) through the single
+/// value buffer, exactly like `UInt64` (see `ColumnDescriptor` and
+/// `wireFixedWidthSize` below). Any value the consumer does not recognise is a
+/// buffer-layout-invalid class violation.
 enum class WireColumnType : uint32_t
 {
     UInt64 = 1,
@@ -121,12 +122,24 @@ enum class WireColumnType : uint32_t
     Date = 12,      ///< `ColumnVector<UInt16>` — days since 1970-01-01.
     DateTime = 13,  ///< `ColumnVector<UInt32>` — seconds since 1970-01-01 UTC.
     Date32 = 14,    ///< `ColumnVector<Int32>`  — days since 1970-01-01, signed.
+    /// Fixed-width decimals. Each adopts a `ColumnDecimal<T>` over a single
+    /// value buffer of little-endian unscaled two's-complement integers. The
+    /// decimal SCALE is NOT on the wire: the consumer derives it from the
+    /// SQL/handshake `DataType` (`getDecimalScale`). The producer and the
+    /// SQL-declared type must therefore agree on `Decimal(P, S)`; the consumer
+    /// cross-validates the parsed type at attach (a mismatch is
+    /// `SHM_SCHEMA_MISMATCH`). `Decimal128` requires 16-byte buffer alignment.
+    Decimal32 = 15,   ///< `ColumnDecimal<Decimal32>`  — 4-byte unscaled int.
+    Decimal64 = 16,   ///< `ColumnDecimal<Decimal64>`  — 8-byte unscaled int.
+    Decimal128 = 17,  ///< `ColumnDecimal<Decimal128>` — 16-byte, 16-aligned.
+    DateTime64 = 18,  ///< `ColumnDecimal<DateTime64>` — 8-byte ticks; scale = subsecond precision.
 };
 
 /// Element byte width of a fixed-width wire column type, or 0 for `String` and
 /// for any unrecognised tag. The natural alignment of a fixed-width buffer
-/// equals its element width (1/2/4/8), so callers use the return value for both
-/// the per-element stride and the minimum buffer alignment (precondition 13).
+/// equals its element width (1/2/4/8/16), so callers use the return value for
+/// both the per-element stride and the minimum buffer alignment (precondition
+/// 13). `Decimal128` (width 16) is the only type whose alignment exceeds 8.
 inline constexpr size_t wireFixedWidthSize(WireColumnType t) noexcept
 {
     switch (t)
@@ -143,11 +156,16 @@ inline constexpr size_t wireFixedWidthSize(WireColumnType t) noexcept
         case WireColumnType::Float32:
         case WireColumnType::DateTime:
         case WireColumnType::Date32:
+        case WireColumnType::Decimal32:
             return 4;
         case WireColumnType::Int64:
         case WireColumnType::UInt64:
         case WireColumnType::Float64:
+        case WireColumnType::Decimal64:
+        case WireColumnType::DateTime64:
             return 8;
+        case WireColumnType::Decimal128:
+            return 16;
         case WireColumnType::String:
             return 0;
     }

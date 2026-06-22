@@ -5,6 +5,7 @@
 #include <Storages/SharedMemorySource/Tracker/ChargeHandle.h>
 #include <Storages/SharedMemorySource/Wire/Layout.h>
 
+#include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnsNumber.h>
@@ -12,6 +13,7 @@
 #include <DataTypes/DataTypeDate.h>
 #include <DataTypes/DataTypeDateTime.h>
 #include <DataTypes/DataTypeString.h>
+#include <DataTypes/DataTypesDecimal.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/Exception.h>
@@ -561,6 +563,127 @@ TEST(AdoptionLayer, FixedWidthDescriptorWireTagMismatchRejected)
         adopt(ds, f.schema(), f.region.data(), MultiTypeFixture::REGION_SIZE,
               MultiTypeFixture::ROWS, f.makeRetain(), f.makeCharge());
         FAIL() << "expected DB::Exception with SHM_BUFFER_LAYOUT_INVALID";
+    }
+    catch (const DB::Exception & e)
+    {
+        EXPECT_EQ(e.code(), DB::ErrorCodes::SHM_BUFFER_LAYOUT_INVALID) << e.message();
+    }
+    EXPECT_EQ(f.retain_witness, 1);
+}
+
+
+/// Fixture exercising the decimal adoption extension: Decimal32 (4B), Decimal64 (8B), and
+/// Decimal128 (16B, 16-aligned). Each adopts into `ColumnDecimal<T>` over the single value
+/// buffer of little-endian unscaled integers; the scale comes from the DataType, NOT the wire.
+struct DecimalFixture
+{
+    static constexpr size_t ROWS = 4;
+    static constexpr size_t REGION_SIZE = 4096;
+
+    alignas(64) std::vector<char> region;
+    int retain_witness = 0;
+    std::shared_ptr<AdoptedByteState> charge_state = std::make_shared<AdoptedByteState>();
+
+    /// Unscaled integers. d32 scale 2 -> 12345 == 123.45; d64 scale 4; d128 scale 6.
+    std::vector<Int32> d32_values{12345, -100, 0, 999999};
+    std::vector<Int64> d64_values{1234567890123LL, -5000, 0, 1};
+    std::vector<Int128> d128_values{Int128(1), Int128(-1), Int128(0), Int128(123456789012345LL)};
+
+    static constexpr uint64_t D32_OFF = 0;
+    static constexpr uint64_t D64_OFF = 64;
+    static constexpr uint64_t D128_OFF = 128; // 16-aligned
+
+    static constexpr UInt32 D32_SCALE = 2;
+    static constexpr UInt32 D64_SCALE = 4;
+    static constexpr UInt32 D128_SCALE = 6;
+
+    DecimalFixture()
+    {
+        region.assign(REGION_SIZE, 0);
+        std::memcpy(region.data() + D32_OFF, d32_values.data(), d32_values.size() * sizeof(Int32));
+        std::memcpy(region.data() + D64_OFF, d64_values.data(), d64_values.size() * sizeof(Int64));
+        for (size_t i = 0; i < ROWS; ++i)
+            std::memcpy(region.data() + D128_OFF + i * sizeof(Int128), &d128_values[i], sizeof(Int128));
+    }
+
+    std::vector<std::pair<std::string, DataTypePtr>> schema() const
+    {
+        return {{"d32",  std::make_shared<DataTypeDecimal<Decimal32>>(9, D32_SCALE)},
+                {"d64",  std::make_shared<DataTypeDecimal<Decimal64>>(18, D64_SCALE)},
+                {"d128", std::make_shared<DataTypeDecimal<Decimal128>>(38, D128_SCALE)}};
+    }
+
+    std::vector<ColumnDescriptor> descriptors() const
+    {
+        std::vector<ColumnDescriptor> ds(3);
+        auto fixed = [](ColumnDescriptor & d, WireColumnType t, uint64_t off)
+        {
+            d.type = static_cast<uint32_t>(t);
+            d.value_offset = off;
+            d.value_count = ROWS;
+            d.value_padding = SHM::PADDING_FOR_SIMD;
+        };
+        fixed(ds[0], WireColumnType::Decimal32, D32_OFF);
+        fixed(ds[1], WireColumnType::Decimal64, D64_OFF);
+        fixed(ds[2], WireColumnType::Decimal128, D128_OFF);
+        return ds;
+    }
+
+    RetainToken makeRetain() { return makeRetainToken([this]() noexcept { ++retain_witness; }); }
+    ChargeHandle makeCharge() const { return ChargeHandle{64, 64, charge_state}; }
+};
+
+
+TEST(AdoptionLayer, DecimalTypesAdoptedSuccessfully)
+{
+    DecimalFixture f;
+    Columns cols = adopt(f.descriptors(), f.schema(),
+                         f.region.data(), DecimalFixture::REGION_SIZE,
+                         DecimalFixture::ROWS, f.makeRetain(), f.makeCharge());
+
+    ASSERT_EQ(cols.size(), 3u);
+
+    const auto * c32 = typeid_cast<const ColumnDecimal<Decimal32> *>(cols[0].get());
+    const auto * c64 = typeid_cast<const ColumnDecimal<Decimal64> *>(cols[1].get());
+    const auto * c128 = typeid_cast<const ColumnDecimal<Decimal128> *>(cols[2].get());
+    ASSERT_NE(c32, nullptr);
+    ASSERT_NE(c64, nullptr);
+    ASSERT_NE(c128, nullptr) << "Decimal128 adopts into ColumnDecimal<Decimal128>";
+
+    /// Scale rides in from the DataType (not the wire).
+    EXPECT_EQ(c32->getScale(), DecimalFixture::D32_SCALE);
+    EXPECT_EQ(c64->getScale(), DecimalFixture::D64_SCALE);
+    EXPECT_EQ(c128->getScale(), DecimalFixture::D128_SCALE);
+
+    /// AC3 zero-copy pointer identity: each adopted buffer points into the producer region.
+    EXPECT_EQ(reinterpret_cast<const char *>(c32->getData().data()), f.region.data() + f.D32_OFF);
+    EXPECT_EQ(reinterpret_cast<const char *>(c64->getData().data()), f.region.data() + f.D64_OFF);
+    EXPECT_EQ(reinterpret_cast<const char *>(c128->getData().data()), f.region.data() + f.D128_OFF);
+
+    for (size_t i = 0; i < DecimalFixture::ROWS; ++i)
+    {
+        EXPECT_EQ(c32->getData()[i].value, f.d32_values[i]) << "d32 row " << i;
+        EXPECT_EQ(c64->getData()[i].value, f.d64_values[i]) << "d64 row " << i;
+        /// Int128 has no gtest ostream formatter; compare with operator==.
+        EXPECT_TRUE(c128->getData()[i].value == f.d128_values[i]) << "d128 row " << i;
+    }
+}
+
+
+TEST(AdoptionLayer, MisalignedDecimal128DescriptorRejected)
+{
+    /// Decimal128's element width is 16, so its value buffer must be 16-aligned (precondition
+    /// 13). An 8-aligned offset is rejected as SHM_BUFFER_LAYOUT_INVALID before any adopted
+    /// column is constructed; the retain releaser still runs exactly once (RAII rollback).
+    DecimalFixture f;
+    auto ds = f.descriptors();
+    ds[2].value_offset = f.D128_OFF + 8; // 8-aligned but not 16-aligned
+
+    try
+    {
+        adopt(ds, f.schema(), f.region.data(), DecimalFixture::REGION_SIZE,
+              DecimalFixture::ROWS, f.makeRetain(), f.makeCharge());
+        FAIL() << "expected DB::Exception with SHM_BUFFER_LAYOUT_INVALID for 8-aligned Decimal128";
     }
     catch (const DB::Exception & e)
     {

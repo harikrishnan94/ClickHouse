@@ -6,11 +6,13 @@
 #    include <Storages/SharedMemorySource/TestProducer/InProcessProducer.h>
 #    include <Storages/SharedMemorySource/Wire/Layout.h>
 
+#    include <Columns/ColumnDecimal.h>
 #    include <Columns/ColumnString.h>
 #    include <Columns/ColumnsNumber.h>
 #    include <Columns/IColumn.h>
 #    include <Core/Block.h>
 #    include <DataTypes/DataTypeString.h>
+#    include <DataTypes/DataTypesDecimal.h>
 #    include <DataTypes/DataTypesNumber.h>
 #    include <Processors/Chunk.h>
 #    include <Processors/Executors/PullingPipelineExecutor.h>
@@ -152,6 +154,74 @@ TEST(PollableShmSource, DrainsAllPublishedBlocks)
     producer_thread.join();
 
     ASSERT_EQ(chunks, n_blocks);
+}
+
+
+/// End-to-end decimal adoption through the real producer -> SHM -> consumer path, including
+/// the handshake schema cross-validation (the producer's `Decimal(P, S)` type strings are
+/// parsed by DataTypeFactory and equals-checked against the SQL DataTypes). Proves that
+/// `Decimal64` (8B) and `Decimal128` (16B, 16-aligned) adopt zero-copy into `ColumnDecimal<T>`
+/// with the scale taken from the DataType (it is not on the wire).
+TEST(PollableShmSource, AdoptsDecimalColumns)
+{
+    const std::string shm_name = uniqueShmName("decimal");
+    InProcessProducer producer({shm_name, 4, {{"amount", "Decimal(18, 2)"}, {"big", "Decimal(38, 6)"}}, 256 * 1024});
+    ASSERT_TRUE(producer.isReady());
+
+    /// Unscaled native integers (Decimal64 amount has scale 2, e.g. 12345 == 123.45).
+    const std::vector<Int64> amounts = {12345, -678, 0, 100000000};
+    const std::vector<Int128> bigs = {Int128(1), Int128(-2), Int128(0), Int128(987654321)};
+
+    std::thread producer_thread(
+        [&]()
+        {
+            InProcessProducer::ColumnPayload p_amount{amounts.data(), amounts.size(), nullptr, 0};
+            InProcessProducer::ColumnPayload p_big{bigs.data(), bigs.size(), nullptr, 0};
+            producer.publishBlock({p_amount, p_big}, amounts.size());
+            producer.signalEndOfStream();
+        });
+
+    auto t_amount = std::make_shared<DataTypeDecimal<Decimal64>>(18, 2);
+    auto t_big = std::make_shared<DataTypeDecimal<Decimal128>>(38, 6);
+    Block b;
+    b.insert({t_amount->createColumn(), t_amount, "amount"});
+    b.insert({t_big->createColumn(), t_big, "big"});
+    auto header = std::make_shared<const Block>(std::move(b));
+
+    auto src = std::make_shared<PollableShmSource>(
+        header, shm_name,
+        std::vector<DataTypePtr>{t_amount, t_big},
+        std::vector<String>{"amount", "big"},
+        std::vector<String>{"amount", "big"},
+        60'000);
+
+    QueryPipeline pipeline(src);
+    PullingPipelineExecutor executor(pipeline);
+
+    size_t rows_seen = 0;
+    Chunk chunk;
+    while (executor.pull(chunk))
+    {
+        if (!chunk.hasRows())
+            continue;
+        ASSERT_EQ(chunk.getNumColumns(), 2u);
+        const auto & cols = chunk.getColumns();
+        const auto * c_amount = typeid_cast<const ColumnDecimal<Decimal64> *>(cols[0].get());
+        const auto * c_big = typeid_cast<const ColumnDecimal<Decimal128> *>(cols[1].get());
+        ASSERT_NE(c_amount, nullptr);
+        ASSERT_NE(c_big, nullptr) << "Decimal(38, 6) adopts into ColumnDecimal<Decimal128>";
+        EXPECT_EQ(c_amount->getScale(), 2u);
+        EXPECT_EQ(c_big->getScale(), 6u);
+        ASSERT_EQ(chunk.getNumRows(), amounts.size());
+        for (size_t i = 0; i < amounts.size(); ++i)
+        {
+            EXPECT_EQ(c_amount->getData()[i].value, amounts[i]) << "amount row " << i;
+            EXPECT_TRUE(c_big->getData()[i].value == bigs[i]) << "big row " << i;
+        }
+        rows_seen += chunk.getNumRows();
+    }
+    producer_thread.join();
+    ASSERT_EQ(rows_seen, amounts.size());
 }
 
 

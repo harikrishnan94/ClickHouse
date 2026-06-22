@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -75,10 +76,12 @@ namespace
         throw std::runtime_error(std::string(op) + " failed on '" + name + "': " + errnoToString(saved_errno));
     }
 
-    /// Map a simple CH type name to its wire tag. The test producer only ever uses the
-    /// canonical names of the supported set (no parametrized types), so a direct string
-    /// lookup keeps this scaffolding free of the DataTypeFactory dependency. The consumer
-    /// side's authoritative TypeIndex-based map lives in Wire/WireTypeMapping.h.
+    /// Map a CH type name to its wire tag. The test producer uses the canonical names of the
+    /// supported set; the only parametrized types are the decimals and DateTime64, whose tag
+    /// depends only on element width (the scale, in parentheses, never reaches the wire — the
+    /// consumer derives it from the SQL/handshake DataType). A direct string lookup keeps this
+    /// scaffolding free of the DataTypeFactory dependency. The consumer side's authoritative
+    /// TypeIndex-based map lives in Wire/WireTypeMapping.h.
     WireColumnType wireTagForTypeString(const std::string & t)
     {
         if (t == "UInt8") return WireColumnType::UInt8;
@@ -95,6 +98,21 @@ namespace
         if (t == "DateTime") return WireColumnType::DateTime;
         if (t == "Date32") return WireColumnType::Date32;
         if (t == "String") return WireColumnType::String;
+        /// DateTime64(precision[, 'tz']) — 8-byte Decimal64 storage.
+        if (t.rfind("DateTime64", 0) == 0) return WireColumnType::DateTime64;
+        /// Explicit-width decimal forms Decimal32(S) / Decimal64(S) / Decimal128(S).
+        if (t.rfind("Decimal128", 0) == 0) return WireColumnType::Decimal128;
+        if (t.rfind("Decimal32", 0) == 0) return WireColumnType::Decimal32;
+        if (t.rfind("Decimal64", 0) == 0) return WireColumnType::Decimal64;
+        /// Generic Decimal(P, S): width chosen by precision P (matches ClickHouse's own choice).
+        if (t.rfind("Decimal(", 0) == 0)
+        {
+            const long precision = std::strtol(t.c_str() + std::string("Decimal(").size(), nullptr, 10);
+            if (precision >= 1 && precision <= 9) return WireColumnType::Decimal32;
+            if (precision <= 18) return WireColumnType::Decimal64;
+            if (precision <= 38) return WireColumnType::Decimal128;
+            throw std::runtime_error("InProcessProducer: Decimal precision out of adopted range in '" + t + "'");
+        }
         throw std::runtime_error("InProcessProducer: unsupported schema type '" + t + "'");
     }
 }
@@ -497,12 +515,14 @@ void InProcessProducer::publishBlockImpl(
         else
         {
             /// Any fixed-width type: one value buffer of `value_count` elements, each
-            /// `elem_size` bytes. Offset is 8-aligned (a multiple of every supported
-            /// elem_size), satisfying the consumer's precondition-13 alignment check.
+            /// `elem_size` bytes. Align the buffer to the element's natural alignment so the
+            /// consumer's precondition-13 check (`value_offset % elem_size == 0`) passes for
+            /// every width — including the 16-byte `Decimal128`. Smaller widths keep the
+            /// historical >=8 alignment.
             const size_t elem_size = SharedMemoryWire::wireFixedWidthSize(wire_tag);
             d.type = static_cast<uint32_t>(wire_tag);
             const size_t vbytes = is_eos ? 0 : p.value_count * elem_size;
-            const size_t voff = reserve(vbytes + PADDING_FOR_SIMD, 8);
+            const size_t voff = reserve(vbytes + PADDING_FOR_SIMD, elem_size > 8 ? elem_size : 8);
             if (!is_eos && p.value_bytes != nullptr && vbytes > 0)
                 std::memcpy(dataRegion() + voff, p.value_bytes, vbytes);
             d.value_offset = voff;
