@@ -4,6 +4,7 @@
 #include <Storages/SharedMemorySource/Tracker/ChargeHandle.h>
 
 #include <Common/CurrentMemoryTracker.h>
+#include <Common/CurrentMetrics.h>
 #include <Common/CurrentThread.h>
 #include <Common/Exception.h>
 #include <Common/MemoryTracker.h>
@@ -12,27 +13,67 @@
 
 #include <base/types.h>
 
+#include <exception>
 #include <utility>
 
 using namespace DB;
+
+namespace DB::ErrorCodes
+{
+    extern const int MEMORY_LIMIT_EXCEEDED;
+}
+
+namespace CurrentMetrics
+{
+    extern const Metric ShmAdoptedBytesCurrent;
+    extern const Metric ShmAdoptedBytesLogicalCurrent;
+}
+
+namespace
+{
+
+template <typename F>
+void expectMemoryLimitExceeded(const F & fn)
+{
+    try
+    {
+        fn();
+        FAIL() << "Expected MEMORY_LIMIT_EXCEEDED";
+    }
+    catch (const DB::Exception & e)
+    {
+        EXPECT_EQ(e.code(), DB::ErrorCodes::MEMORY_LIMIT_EXCEEDED) << e.message();
+    }
+    catch (const std::exception & e)
+    {
+        FAIL() << "Expected DB::Exception, got: " << e.what();
+    }
+}
+
+}
 
 
 TEST(AdoptedByteCharger, BalancedAcquireRelease)
 {
     /// Counter starts at zero, increments on each charge(), and returns to zero after the last
-    /// ChargeHandle is destroyed — the I7 "returns to zero on source destruction" invariant.
+    /// ChargeHandle issued by this charger is destroyed.
     AdoptedByteCharger charger;
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
     {
         auto h1 = charger.charge(4096);
         EXPECT_EQ(charger.currentChargedBytes(), 4096);
+        EXPECT_EQ(charger.currentLogicalBytes(), 4096);
         {
             auto h2 = charger.charge(1024);
             EXPECT_EQ(charger.currentChargedBytes(), 4096 + 1024);
+            EXPECT_EQ(charger.currentLogicalBytes(), 4096 + 1024);
         }
         EXPECT_EQ(charger.currentChargedBytes(), 4096);
+        EXPECT_EQ(charger.currentLogicalBytes(), 4096);
     }
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
 }
 
 
@@ -42,14 +83,45 @@ TEST(AdoptedByteCharger, ChargedVsLogical)
     /// padding); `logical_bytes` is reported separately via the handle's accessor and feeds the
     /// `ShmAdoptedBytesLogical` ProfileEvent. Distinction is from the system glossary entry
     /// "Adopted byte count".
+    const auto charged_metric_before = CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesCurrent);
+    const auto logical_metric_before = CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesLogicalCurrent);
     AdoptedByteCharger charger;
     {
         auto h = charger.charge(/*adopted_bytes=*/4096 + 15, /*logical_bytes=*/4096);
         EXPECT_EQ(charger.currentChargedBytes(), 4096 + 15);
+        EXPECT_EQ(charger.currentLogicalBytes(), 4096);
+        EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesCurrent), charged_metric_before + 4096 + 15);
+        EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesLogicalCurrent), logical_metric_before + 4096);
         EXPECT_EQ(h.bytes(), static_cast<size_t>(4096 + 15));
         EXPECT_EQ(h.logicalBytes(), 4096u);
     }
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
+    EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesCurrent), charged_metric_before);
+    EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesLogicalCurrent), logical_metric_before);
+}
+
+
+TEST(AdoptedByteCharger, HandleMayOutliveCharger)
+{
+    const auto charged_metric_before = CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesCurrent);
+    const auto logical_metric_before = CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesLogicalCurrent);
+
+    ChargeHandle handle;
+    {
+        AdoptedByteCharger charger;
+        handle = charger.charge(/*adopted_bytes=*/2048, /*logical_bytes=*/1536);
+        EXPECT_EQ(charger.currentChargedBytes(), 2048);
+        EXPECT_EQ(charger.currentLogicalBytes(), 1536);
+    }
+
+    EXPECT_TRUE(handle.isActive());
+    EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesCurrent), charged_metric_before + 2048);
+    EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesLogicalCurrent), logical_metric_before + 1536);
+
+    handle = ChargeHandle{};
+    EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesCurrent), charged_metric_before);
+    EXPECT_EQ(CurrentMetrics::get(CurrentMetrics::ShmAdoptedBytesLogicalCurrent), logical_metric_before);
 }
 
 
@@ -61,11 +133,13 @@ TEST(AdoptedByteCharger, MoveHandlePreservesAccounting)
     AdoptedByteCharger charger;
     auto h1 = charger.charge(2048);
     EXPECT_EQ(charger.currentChargedBytes(), 2048);
+    EXPECT_EQ(charger.currentLogicalBytes(), 2048);
 
     auto h2 = std::move(h1);
     EXPECT_FALSE(h1.isActive()); // NOLINT(bugprone-use-after-move)
     EXPECT_TRUE(h2.isActive());
     EXPECT_EQ(charger.currentChargedBytes(), 2048);
+    EXPECT_EQ(charger.currentLogicalBytes(), 2048);
 }
 
 
@@ -78,6 +152,7 @@ TEST(AdoptedByteCharger, ZeroByteChargeIsValid)
     AdoptedByteCharger charger;
     auto h = charger.charge(0);
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
     EXPECT_FALSE(h.isActive());
 }
 
@@ -112,14 +187,16 @@ TEST(AdoptedByteCharger, LimitFailureRollsBackCounter)
 
     AdoptedByteCharger charger;
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
 
     /// 16 MiB is comfortably above both the 1 KiB hard limit and the 4 MiB default
     /// untracked-memory cushion, so the alloc call is forced to consult (and reject at) the
     /// hard limit rather than being absorbed locally. The lambda absorbs the [[nodiscard]]
     /// return of `charge()` so that EXPECT_THROW does not trip the clang nodiscard warning.
     auto try_overflow = [&] { [[maybe_unused]] auto h = charger.charge(16 * 1024 * 1024); };
-    EXPECT_THROW(try_overflow(), DB::Exception);
+    expectMemoryLimitExceeded(try_overflow);
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
 }
 
 
@@ -159,12 +236,14 @@ TEST(AdoptedByteCharger, NoTransientCounterIncrementOnLimitFailure)
 
     AdoptedByteCharger charger;
     ASSERT_EQ(charger.currentChargedBytes(), 0);
+    ASSERT_EQ(charger.currentLogicalBytes(), 0);
 
     auto try_overflow = [&] { [[maybe_unused]] auto h = charger.charge(16 * 1024 * 1024); };
-    EXPECT_THROW(try_overflow(), DB::Exception);
+    expectMemoryLimitExceeded(try_overflow);
 
     /// Structurally, the counter was never incremented (the alloc threw before line 50
     /// of AdoptedByteCharger.cpp's `charge()`). This assertion catches a regression where
     /// the counter increment is moved BACK before the alloc call.
     EXPECT_EQ(charger.currentChargedBytes(), 0);
+    EXPECT_EQ(charger.currentLogicalBytes(), 0);
 }

@@ -66,8 +66,8 @@ namespace
     /// store SlotState::EMPTY into the slot. After this call the producer's reuse wait
     /// (`state == EMPTY`) is satisfied — without the state store, the producer would
     /// hang because Findings 1 + 3 changed the producer's wait condition.
-    /// Also bump `transition_counter` on the P→E edge to mirror the deleter's
-    /// precondition-24 protocol (Layout.h SlotEntry).
+    /// Also bump `transition_counter` on the P→E edge before the state store
+    /// to mirror the deleter's precondition-24 protocol (Layout.h SlotEntry).
     void simulateConsumerRelease(const SharedMemoryRegion & region, uint32_t i) noexcept
     {
         const auto * slot = consumerSlotAt(region, i);
@@ -152,6 +152,56 @@ TEST(InProcessProducer, AttachReceiveBytesReproduceContent)
 
     ::close(received_evfd);
     ::close(conn_fd);
+}
+
+TEST(InProcessProducer, PrunesClosedControlSocketsOnPublish)
+{
+    InProcessProducer producer(defaultConfig("prune_sockets"));
+    ASSERT_TRUE(producer.isReady());
+
+    int conn_fd = -1;
+    int received_evfd = ControlSocketClient::connectAndReceiveEventFd(
+        controlSocketPathForShmName(producer.shmName()), conn_fd);
+    ASSERT_GE(received_evfd, 0);
+    ASSERT_GE(conn_fd, 0);
+
+    for (size_t i = 0; i < 100 && producer.connectedSocketCountForTesting() == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_EQ(producer.connectedSocketCountForTesting(), 1u);
+
+    ::close(received_evfd);
+    ::close(conn_fd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const std::vector<uint64_t> ids = {1};
+    const std::vector<uint8_t> chars = {'x'};
+    const std::vector<uint64_t> offs = {1};
+    producer.publishBlock({uint64Payload(ids), stringPayload(chars, offs)}, 1);
+
+    EXPECT_EQ(producer.connectedSocketCountForTesting(), 0u);
+}
+
+TEST(InProcessProducer, PrunesClosedControlSocketsPeriodically)
+{
+    InProcessProducer producer(defaultConfig("periodic_prune_sockets"));
+    ASSERT_TRUE(producer.isReady());
+
+    int conn_fd = -1;
+    int received_evfd = ControlSocketClient::connectAndReceiveEventFd(
+        controlSocketPathForShmName(producer.shmName()), conn_fd);
+    ASSERT_GE(received_evfd, 0);
+    ASSERT_GE(conn_fd, 0);
+
+    for (size_t i = 0; i < 100 && producer.connectedSocketCountForTesting() == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_EQ(producer.connectedSocketCountForTesting(), 1u);
+
+    ::close(received_evfd);
+    ::close(conn_fd);
+
+    for (size_t i = 0; i < 100 && producer.connectedSocketCountForTesting() != 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_EQ(producer.connectedSocketCountForTesting(), 0u);
 }
 
 /// K=2; publish 2 blocks (ring full). The 3rd publish must block until the consumer

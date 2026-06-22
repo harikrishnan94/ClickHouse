@@ -10,7 +10,7 @@ namespace ErrorCodes
 {
     extern const int CANNOT_MPROTECT;
     extern const int CANNOT_ALLOCATE_MEMORY;
-    extern const int LOGICAL_ERROR;
+    extern const int READONLY;
 }
 
 namespace PODArrayDetails
@@ -31,7 +31,7 @@ void throw_alloc_error()
 
 void throwAdoptedMutation(const char * method)
 {
-    throw Exception(ErrorCodes::LOGICAL_ERROR,
+    throw Exception(ErrorCodes::READONLY,
         "PODArray method '{}' called on an adopted (externally-owned) array; adopted arrays "
         "are read-only. See adoption-layer spec I3 (Adopted memory is immutable).",
         method);

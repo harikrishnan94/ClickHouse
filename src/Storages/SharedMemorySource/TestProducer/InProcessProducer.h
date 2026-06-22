@@ -5,6 +5,7 @@
 #include <Storages/SharedMemorySource/Wire/Layout.h>
 
 #include <atomic>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <thread>
@@ -20,15 +21,15 @@ struct EventFD;
 /// In-process test producer for the zero-copy SHM source feature. Creates a POSIX shared memory
 /// region with `shm_open(O_RDWR|O_CREAT)`, populates the AC8 wire ABI (handshake region + slot
 /// table + schema table + data region), spawns a control-socket accept loop for the readiness
-/// fd, and exposes a thread-safe `publishBlock` API.
+/// fd plus a lightweight parked-socket prune loop, and exposes a thread-safe `publishBlock` API.
 ///
 /// Lifecycle:
 ///   - Construct: opens SHM, mmaps RW, writes handshake (with release-store on `magic` LAST),
-///     creates eventfd, binds Unix socket, starts accept-loop thread.
+///     creates eventfd, binds Unix socket, starts accept-loop and socket-prune threads.
 ///   - publishBlock / signalEndOfStream: synchronous; blocks if the ring is full (waits for
 ///     the consumer to drop its retain on the oldest slot).
-///   - Destruct: stops accept loop, closes socket, closes eventfd, unmaps, closes shm fd,
-///     unlinks shm name + socket path.
+///   - Destruct: stops accept/prune loops, closes socket, closes eventfd, unmaps,
+///     closes shm fd, unlinks shm name + socket path.
 ///
 /// Spec authority: shm-block-stream §Per-type buffer layout, §Schema declaration and negotiation,
 /// §Block framing, §Publication state machine, §Memory ordering, §End-of-stream, §Backpressure,
@@ -108,11 +109,18 @@ public:
     /// `publishBlock`.
     void setSlotStateForTesting(uint32_t slot_index, SharedMemoryWire::SlotState new_state) noexcept;
 
+    /// FOR TESTS ONLY — number of accepted consumer control sockets currently
+    /// parked by this in-process producer. Closed peers are pruned
+    /// opportunistically on accept/publish and by the lightweight periodic
+    /// prune loop.
+    size_t connectedSocketCountForTesting() const noexcept;
+
     /// Publish a single block whose slot is deliberately malformed per `kind`. AC6 tests.
     enum class Malformation
     {
         BadSequence,           ///< precondition 10: sequence not strictly greater
         BadSlotIdentity,       ///< precondition 9: slot identity != position
+        MisalignedDescriptorOffset, ///< precondition 12: descriptor array offset misaligned
         OffsetOverflow,        ///< preconditions 14/18/19: declared sizes overflow data region
         MisalignedColumn,      ///< preconditions 13/16/17: descriptor offset misaligned
         WrongRowCount,         ///< precondition 26: declared count != row_count
@@ -132,14 +140,16 @@ private:
 
     std::unique_ptr<ControlSocketServer> control_socket;
     std::thread accept_thread;
+    std::thread socket_prune_thread;
     std::atomic<bool> shutdown_requested{false};
 
-    /// Every accepted control-socket connection is parked here for the producer's lifetime.
+    /// Accepted control-socket connections are parked while the consumer is alive.
     /// Closing the accept-side fd immediately after `sendEventFd` would surface POLLHUP on
     /// the consumer's connection fd and trip `PollableShmSource::checkProducerDeath` while
     /// the producer is still alive (shm-block-stream.md I11 + pollable-shm-source.md
-    /// precondition 25). Only the dtor closes these fds, *after* `accept_thread` is joined
-    /// — so no concurrent writer races the dtor's read.
+    /// precondition 25). The test helper prunes peers that already hung up when accepting
+    /// new peers, when publishing blocks, periodically while idle, and during destruction.
+    mutable std::mutex connected_sockets_mutex;
     std::vector<int> connected_sockets;
 
     std::vector<uint64_t> next_sequence_per_slot;
@@ -158,6 +168,8 @@ private:
     static size_t computeTotalSize(const Config & cfg);
     void populateHandshake();
     void acceptLoop();
+    void pruneLoop() noexcept;
+    void pruneConnectedSockets() noexcept;
 
     void publishBlockImpl(const std::vector<ColumnPayload> & payloads, size_t row_count,
                           bool is_eos, Malformation * malformation);

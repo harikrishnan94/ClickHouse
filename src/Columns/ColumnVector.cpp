@@ -27,6 +27,7 @@
 
 #include <bit>
 #include <cstring>
+#include <type_traits>
 
 #include "config.h"
 
@@ -45,6 +46,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+    extern const int BAD_ARGUMENTS;
     extern const int PARAMETER_OUT_OF_BOUND;
     extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
     extern const int LOGICAL_ERROR;
@@ -544,12 +546,21 @@ ColumnVector<T>::createAdopted(
     std::shared_ptr<void> retain_token,
     std::shared_ptr<void> charge_handle)
 {
-    if (!retain_token || !charge_handle)
-        throw Exception(ErrorCodes::LOGICAL_ERROR,
-            "ColumnVector::createAdopted requires non-null retain_token and charge_handle "
-            "(adoption-layer spec §Retain and charge handle semantics)");
-    auto holder = std::make_unique<AdoptionHolder>(std::move(retain_token), std::move(charge_handle));
-    return Self::create(adopted_data, adopted_n, std::move(holder));
+    if constexpr (!std::is_same_v<T, UInt64>)
+    {
+        throw Exception(ErrorCodes::BAD_ARGUMENTS,
+            "ColumnVector::createAdopted is only supported for UInt64 in this adoption phase; got {}",
+            TypeName<T>);
+    }
+    else
+    {
+        if (!retain_token || !charge_handle)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "ColumnVector::createAdopted requires non-null retain_token and charge_handle "
+                "(adoption-layer spec §Retain and charge handle semantics)");
+        auto holder = std::make_unique<AdoptionHolder>(std::move(retain_token), std::move(charge_handle));
+        return Self::create(adopted_data, adopted_n, std::move(holder));
+    }
 }
 
 template <typename T>

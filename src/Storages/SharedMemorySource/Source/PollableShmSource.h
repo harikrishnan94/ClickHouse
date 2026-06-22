@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <vector>
 
 
@@ -37,9 +38,14 @@ namespace DB
 ///     `read(eventfd)` which the executor manages via epoll; `onCancel()` writes
 ///     to the eventfd to wake any pending wait, then sets the cancellation flag
 ///     that next `prepare()` reads. No producer cooperation is required.
-///   - I12 (Stall is bounded): `Stopwatch stall_timer` is reset on every
-///     observed publication progress AND on every `onAsyncJobReady()`; checked
-///     at the top of `prepare()` while async; exceeds → throw `SHM_PRODUCER_STALL`.
+///   - I12 (Stall is bounded): `Stopwatch stall_timer` is reset only when a
+///     slot reaches PUBLISHED or is actually drained, never merely because
+///     `onAsyncJobReady()` drained the readiness eventfd; checked at the top
+///     of `prepare()` while async; exceeds → throw `SHM_PRODUCER_STALL`.
+///     While async, a small source-owned wake bridge writes the readiness
+///     eventfd when the stall deadline or producer-death POLLHUP is reached
+///     so the executor re-enters `prepare()` even without producer
+///     notifications.
 ///   - Per-block adoption call (`pollable-shm-source.md` §Interfaces & contracts):
 ///     the source executes the 3-step RAII sequence retain → charge → adopt,
 ///     with on-throw rollback of intermediate handles.
@@ -72,9 +78,8 @@ namespace DB
 ///                arithmetic catches that as `expected_pos != obs_pos` and the
 ///                source raises `SHM_BLOCK_FRAMING_INVALID`. Monotonic-regression
 ///                (`obs_counter < last_observed`) is rejected by the same path
-///                (separate branch). The counter also doubles as a richer
-///                progress signal for the I12 stall timer (any positive delta
-///                evidences producer activity even when no slot reached PUBLISHED).
+///                (separate branch). The stall timer only treats observations
+///                that land in PUBLISHED as producer publication progress.
 ///   25         → `prepare()` POLLHUP check on control socket fd (T3.2b);
 ///                mid-publication crash (any slot in WRITING at HUP) is
 ///                surfaced as SHM_BLOCK_FRAMING_INVALID per `pollable-shm-source.md`
@@ -125,14 +130,14 @@ private:
     /// Iterates the K slots, validating preconditions 8–10 (state enumerator,
     /// slot identity, monotonic sequence) and precondition 24 (strict
     /// state-machine: counter delta walks the legal EMPTY→WRITING→PUBLISHED→
-    /// EMPTY cycle exactly to the observed state — see the precondition-24
+    /// EMPTY cycle exactly to the observed state after bounded retry for an
+    /// in-flight counter-before-state transition — see the precondition-24
     /// note in the class-level map). Returns the PUBLISHED slot with the
     /// lowest unconsumed sequence number, or nullptr if no slot is ready.
-    /// Sets `progress_observed` out-param to true when any slot's
-    /// `transition_counter` increased since the prior scan (used by the I12
-    /// stall timer to count producer activity broader than "reached
-    /// PUBLISHED").
-    SharedMemoryWire::SlotEntry * findNextReadySlot(bool & progress_observed);
+    /// Sets `published_transition_observed` out-param to true when a transition
+    /// observation lands in PUBLISHED. E→W and P→E transitions are not stall
+    /// progress by themselves.
+    SharedMemoryWire::SlotEntry * findNextReadySlot(bool & published_transition_observed);
 
     /// Per-block 3-step RAII sequence: retain → charge → adopt. Builds the
     /// returned Chunk, updates `last_consumed_sequence`, sets `eos_observed`
@@ -146,13 +151,23 @@ private:
     bool controlSocketPollHup() const noexcept;
 
     /// (T3.2b) If async-state and not cancelled/EOS, raise SHM_PRODUCER_STALL
-    /// when the stall budget has elapsed since the last observed progress
-    /// (publication or readiness wake).
+    /// when the stall budget has elapsed since the last publication progress.
     void checkStallBudget();
 
     /// (T3.2b) If POLLHUP observed before EOS, throw SHM_PRODUCER_DEATH_BEFORE_EOS.
     /// If POLLHUP observed after EOS, treat as clean shutdown (no throw).
     void checkProducerDeath();
+
+    /// Async wake bridge lifecycle. IProcessor can expose only one fd, so while
+    /// the source is async the bridge polls the control socket and stall budget,
+    /// then writes `ready_event_fd` to make the executor call back into
+    /// `prepare()`. It is stopped on readiness/cancel/destruction and owns no
+    /// permanent per-source thread.
+    void startAsyncWakeBridge();
+    void requestAsyncWakeBridgeStop() noexcept;
+    void joinAsyncWakeBridge() noexcept;
+    void asyncWakeBridgeLoop(uint64_t initial_timeout_ms) noexcept;
+    void wakeReadyEvent() const noexcept;
 
     String shm_name;
     /// Full producer schema (matches handshake exactly). Always passed wholesale into
@@ -185,6 +200,9 @@ private:
     /// already-open fd from the producer via SCM_RIGHTS and just store it.
     int control_socket_fd = -1;
     int ready_event_fd = -1;
+    int async_wake_stop_fd = -1;
+    std::atomic<bool> async_wake_bridge_stop{false};
+    std::thread async_wake_thread;
 
     AdoptedByteCharger charger;
 
@@ -195,8 +213,9 @@ private:
     /// Last observed `transition_counter` for each slot. Atomic-single-variable
     /// modification-order consistency makes this monotonic in time on the wire;
     /// a regression (`obs < prev`) is precondition-24's determinable violation.
-    /// A positive delta is producer-progress evidence used by the I12 stall
-    /// timer (richer than "saw PUBLISHED"). Same size as `last_consumed_sequence`.
+    /// Positive deltas are validated for state-machine consistency; only
+    /// observations that land in PUBLISHED reset the stall timer. Same size as
+    /// `last_consumed_sequence`.
     std::vector<uint64_t> last_observed_transition_counter;
 
     /// Last observed `state` value for each slot (initialised to EMPTY = 0,
@@ -214,9 +233,9 @@ private:
     std::atomic<bool> eos_observed{false};
     std::atomic<bool> cancelled{false};
 
-    /// (T3.2b) Stall budget timer. Reset on every observed publication progress
-    /// AND on every onAsyncJobReady. Checked at the top of prepare() while
-    /// async; if elapsedMilliseconds() > stall_timeout_ms, raise SHM_PRODUCER_STALL.
+    /// (T3.2b) Stall budget timer. Reset only when a slot reaches PUBLISHED or
+    /// the source drains a block. Checked at the top of prepare() while async;
+    /// if elapsedMilliseconds() > stall_timeout_ms, raise SHM_PRODUCER_STALL.
     Stopwatch stall_timer;
 };
 

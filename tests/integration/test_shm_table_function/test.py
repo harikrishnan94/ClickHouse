@@ -45,13 +45,16 @@ from helpers.cluster import ClickHouseCluster
 # ---------------------------------------------------------------------------
 ERR_MEMORY_LIMIT_EXCEEDED = 241
 ERR_SUPPORT_IS_DISABLED = 344
-ERR_SHM_ATTACH_FAILED = 772
-ERR_SHM_HANDSHAKE_INVALID = 773
-ERR_SHM_SCHEMA_MISMATCH = 774
-ERR_SHM_BLOCK_FRAMING_INVALID = 775
-ERR_SHM_BUFFER_LAYOUT_INVALID = 776
-ERR_SHM_PRODUCER_STALL = 777
-ERR_SHM_PRODUCER_DEATH_BEFORE_EOS = 778
+# NOTE: these must match the M(...) codes in src/Common/ErrorCodes.cpp. They were
+# renumbered from 772-778 to 776-782 when porting onto streamed_table because 772-775
+# were already taken on that branch.
+ERR_SHM_ATTACH_FAILED = 776
+ERR_SHM_HANDSHAKE_INVALID = 777
+ERR_SHM_SCHEMA_MISMATCH = 778
+ERR_SHM_BLOCK_FRAMING_INVALID = 779
+ERR_SHM_BUFFER_LAYOUT_INVALID = 780
+ERR_SHM_PRODUCER_STALL = 781
+ERR_SHM_PRODUCER_DEATH_BEFORE_EOS = 782
 
 # ---------------------------------------------------------------------------
 # Schema + AC1 query (system.md AC1).
@@ -84,8 +87,8 @@ def start_cluster():
             # AC1/AC4/AC5/AC6/AC7/AC10 suite. The binary is installed by
             # utils/shm-producer/CMakeLists.txt; if you see this in CI the
             # docker-compose mount in tests/integration/helpers/cluster.py
-            # (or the runner image) likely needs the same single-file bind
-            # the `clickhouse` binary gets.
+            # should bind-mount the built binary when present; otherwise the
+            # runner image/build output is missing the producer.
             pytest.fail(
                 f"'{PRODUCER_BIN}' is not on PATH in the test container; "
                 "install/build it before running this suite (see "
@@ -281,6 +284,21 @@ def _server_fd_count():
     return int(
         node.exec_in_container(
             ["bash", "-c", f"ls -1 /proc/{pid}/fd 2>/dev/null | wc -l"]
+        ).strip()
+    )
+
+
+def _server_uid():
+    """Numeric uid of the clickhouse-server process inside the container."""
+    pid = node.get_process_pid("clickhouse server")
+    assert pid is not None, "clickhouse-server is not running"
+    return int(
+        node.exec_in_container(
+            [
+                "bash",
+                "-c",
+                f"server_user=$(stat -c '%U' /proc/{pid}); id -u \"$server_user\"",
+            ]
         ).strip()
     )
 
@@ -607,39 +625,66 @@ def test_ac5_tracker_reflection(fresh_shm_name):
     Spec formula (memory-tracker-integration.md AC5):
         peak_charged - max_threads * max_untracked_memory <= tracker_peak
 
-    Implementation note on the peak_charged proxy: AC5 talks about the PEAK
-    instantaneous live charged-adopted-byte count -- the high-water mark of
-    the per-source feature-local counter. That counter is not exposed via any
-    system.* surface today (it lives behind the AdoptedByteCharger integration
-    boundary). As a pragmatic stand-in this assertion uses the cumulative
-    `ShmAdoptedBytesCharged` delta over the query lifetime as the peak_charged
-    value -- a CONSERVATIVE over-estimate (cumulative >= peak), which turns
-    the spec inequality into a STRICTLY STRONGER assertion than AC5 literally
-    requires. The true peak read via system.metrics ShmAdoptedBytesCurrent
-    would need a sampling thread; if this proxy proves too strict on real CI
-    workloads (cumulative >> peak on streaming-aggregation queries that
-    charge-then-release each block), switch to a sampler or wire a test-only
-    per-source-peak accessor through AdoptedByteCharger.
+    `peak_charged` is sampled from the live `ShmAdoptedBytesCurrent` metric
+    while the query is running. The query deliberately evaluates sleepEachRow()
+    so the source keeps adopted chunks live long enough for the sampler to
+    observe the high-water mark instead of falling back to cumulative events.
     """
-    _start_producer(fresh_shm_name, rows=10000, rows_per_block=512)
+    _start_producer(
+        fresh_shm_name, rows=20000, rows_per_block=256, ring_depth=1,
+    )
 
     # AC5 inputs we control: pin max_threads and max_untracked_memory so the
     # spec's slack term `max_threads * max_untracked_memory` is computable here
     # without re-reading either value from system.* surfaces.
     max_threads = 1
     max_untracked = 1
+    settings = {
+        "allow_experimental_shm_table_function": 1,
+        "max_untracked_memory": max_untracked,
+        "max_threads": max_threads,
+    }
 
-    before_charged = _shm_event_value("ShmAdoptedBytesCharged")
+    current_before = _shm_metric_value("ShmAdoptedBytesCurrent")
     query_id = f"shm_track_{uuid.uuid4().hex}"
-    _run_ac1_query(
-        fresh_shm_name,
-        settings={"max_untracked_memory": max_untracked, "max_threads": max_threads},
-        query_id=query_id,
+    sql = (
+        f"SELECT count(), sum(id), sum(sleepEachRow(0.00005)) "
+        f"FROM shm('{fresh_shm_name}', '{SCHEMA}')"
     )
-    after_charged = _shm_event_value("ShmAdoptedBytesCharged")
-    # cumulative-since-baseline proxy for peak_charged; see docstring.
-    peak_charged = after_charged - before_charged
-    assert peak_charged > 0, "Producer published zero adopted bytes; cannot test tracker."
+    holder = {}
+
+    def _runner():
+        try:
+            holder["result"] = node.query(sql, settings=settings, query_id=query_id)
+        except QueryRuntimeException as exc:
+            holder["err"] = exc
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+
+    samples = []
+    sample_deadline = time.time() + 60.0
+    while thread.is_alive() and time.time() < sample_deadline:
+        samples.append(_shm_metric_value("ShmAdoptedBytesCurrent"))
+        time.sleep(0.02)
+    if thread.is_alive():
+        try:
+            node.query(f"KILL QUERY WHERE query_id = '{query_id}' SYNC")
+        except QueryRuntimeException:
+            pass
+        thread.join(timeout=5.0)
+    assert not thread.is_alive(), "Tracker-reflection query did not finish within 60 s."
+
+    err = holder.get("err")
+    assert err is None, f"Tracker-reflection query failed: {err.stderr or err}"
+    assert holder.get("result", "").strip(), "Tracker-reflection query returned empty result."
+
+    sampled_peak_current = max(samples or [current_before])
+    peak_charged = max(0, sampled_peak_current - current_before)
+    assert peak_charged > 0, (
+        "Sampler did not observe any live adopted bytes; cannot test AC5 tracker reflection. "
+        f"samples={samples!r}, current_before={current_before}"
+    )
 
     _flush_logs()
     peak_text = node.query(
@@ -654,7 +699,8 @@ def test_ac5_tracker_reflection(fresh_shm_name):
     # Spec: peak_charged - max_threads * max_untracked_memory <= tracker_peak.
     assert peak_charged - slack <= tracker_peak, (
         f"AC5 tracker-reflection failed: "
-        f"peak_charged={peak_charged} B (cumulative ShmAdoptedBytesCharged delta over query lifetime), "
+        f"peak_charged={peak_charged} B (sampled ShmAdoptedBytesCurrent peak above baseline), "
+        f"sampled_peak_current={sampled_peak_current} B, baseline_current={current_before} B, "
         f"max_threads={max_threads}, max_untracked_memory={max_untracked} B, "
         f"slack={slack} B, tracker_peak={tracker_peak} B. "
         f"Spec: peak_charged - max_threads*max_untracked_memory <= tracker_peak."
@@ -1031,7 +1077,15 @@ def test_ac6_attach_inaccessible(fresh_shm_name):
     group). We chmod 000 it *after* the producer is ready so the consumer's
     subsequent shm_open hits EACCES; the producer's already-open fd is
     unaffected (mode checks only happen at open(2) time, not on existing fds).
+    Root can still open mode-000 files, so this test is meaningful only when
+    clickhouse-server runs as a non-root user.
     """
+    server_uid = _server_uid()
+    if server_uid == 0:
+        pytest.skip(
+            "clickhouse-server runs as root in this container; chmod 000 does not make SHM inaccessible"
+        )
+
     _start_producer(fresh_shm_name, rows=1000, rows_per_block=128)
     shm_path = _devshm_path(fresh_shm_name)
     node.exec_in_container(["bash", "-c", f"chmod 000 {shm_path}"])
@@ -1135,24 +1189,16 @@ def test_ac6_schema_mismatch_type(fresh_shm_name):
 
 
 def test_ac7_leak_audit(fresh_shm_name):
-    """system.md AC7: >=1000 iterations of the shm() query with stable resource counters.
+    """system.md AC7: >=1000 full shm() executions with stable resource counters.
 
-    Per AC7 we drive a single server process through 1000 queries and assert
-    stable fd count (clickhouse-server side), stable /dev/shm segment count,
-    stable ShmAdoptedBytesCurrent gauge, and balanced retain-acquire /
-    retain-release event deltas (system spec I5 + I10).
-
-    Note on per-iteration row counts: after the producer signals EOS, subsequent
-    consumer attaches see a fixed leftover slot-table state (the most-recent K
-    blocks plus the EOS marker). Each query drains those, finishes, and the
-    source destructs. We assert *no leaks*; per-iteration row counts are NOT
-    the focus of this test (system AC1 owns functional correctness).
+    Each iteration starts a fresh producer with a unique SHM name, runs a full
+    count query to EOS, then kills the producer and removes its SHM/socket
+    artifacts. This avoids the stale-EOS blind spot where repeated attaches to
+    one already-finished producer only exercise a fixed leftover slot table.
     """
-    rows = 1000
-    _start_producer(fresh_shm_name, rows=rows, rows_per_block=128, ring_depth=4)
-
     iterations = 1000
-    sql = f"SELECT count() FROM shm('{fresh_shm_name}', '{SCHEMA}')"
+    rows = 32
+    rows_per_block = 8
     settings = {"allow_experimental_shm_table_function": 1}
 
     fd_before = _server_fd_count()
@@ -1162,14 +1208,39 @@ def test_ac7_leak_audit(fresh_shm_name):
     releases_before = _shm_event_value("ShmRetainsReleased")
 
     for i in range(iterations):
-        node.query(sql, settings=settings)
-        # Periodic in-loop sanity check on the live gauge - catches a per-iteration
-        # leak early instead of waiting for the post-loop assertion to fail.
+        name = f"{fresh_shm_name}_{i}"
+        _kill_producers_for(name)
+        _cleanup_shm(name)
+        try:
+            _start_producer(
+                name, rows=rows, rows_per_block=rows_per_block, ring_depth=1,
+            )
+            observed = int(
+                node.query(
+                    f"SELECT count() FROM shm('{name}', '{SCHEMA}')",
+                    settings=settings,
+                ).strip()
+            )
+            assert observed == rows, (
+                f"AC7 iteration {i + 1}: count()={observed}, expected {rows}; "
+                "fresh producer execution did not drain to EOS."
+            )
+        finally:
+            _kill_producers_for(name)
+            _cleanup_shm(name)
+
+        # Periodic in-loop sanity check on the live gauge and SHM namespace -
+        # catches per-iteration leaks early while keeping the 1000-run loop cheap.
         if (i + 1) % 200 == 0:
-            observed = _shm_metric_value("ShmAdoptedBytesCurrent")
-            assert observed == current_before, (
+            observed_current = _shm_metric_value("ShmAdoptedBytesCurrent")
+            observed_shm = _devshm_count()
+            assert observed_current == current_before, (
                 f"ShmAdoptedBytesCurrent drifted at iter {i + 1}: "
-                f"baseline={current_before}, observed={observed}"
+                f"baseline={current_before}, observed={observed_current}"
+            )
+            assert abs(observed_shm - shm_before) <= 1, (
+                f"/dev/shm count drifted at iter {i + 1}: "
+                f"baseline={shm_before}, observed={observed_shm}"
             )
 
     fd_after = _server_fd_count()
@@ -1179,18 +1250,14 @@ def test_ac7_leak_audit(fresh_shm_name):
     releases_after = _shm_event_value("ShmRetainsReleased")
 
     # AC7: fd count stability. Allow some slack for housekeeping fds (log
-    # rotation, incidental connections, query-log flush threads). The bug we
-    # care about is the source forgetting to close its eventfd or control-
-    # socket fd per query; that would push the delta to ~iterations (here,
-    # ~2000), not single digits.
+    # rotation, incidental connections, query-log flush threads). A source-side
+    # fd leak would grow roughly with iterations, not single digits.
     assert abs(fd_after - fd_before) <= 32, (
-        f"fd count drifted by {fd_after - fd_before} across {iterations} iterations "
+        f"fd count drifted by {fd_after - fd_before} across {iterations} executions "
         f"(before={fd_before} after={fd_after}); the source likely leaks fds."
     )
 
-    # AC7: /dev/shm segment stability. The producer holds exactly one segment
-    # for its full lifetime; the source must not create or leak any. Allow +/-1
-    # slack for unrelated server-internal SHM use.
+    # AC7: /dev/shm segment stability after every fresh producer has been cleaned.
     assert abs(shm_after - shm_before) <= 1, (
         f"/dev/shm segment count drifted by {shm_after - shm_before} "
         f"(before={shm_before} after={shm_after}); SHM segment leak suspected."
@@ -1198,7 +1265,7 @@ def test_ac7_leak_audit(fresh_shm_name):
 
     # I7: feature-local current adopted bytes returns to baseline.
     assert current_after == current_before, (
-        f"ShmAdoptedBytesCurrent drifted across {iterations} iterations: "
+        f"ShmAdoptedBytesCurrent drifted across {iterations} executions: "
         f"before={current_before} after={current_after}"
     )
 
@@ -1206,12 +1273,12 @@ def test_ac7_leak_audit(fresh_shm_name):
     delta_retains = retains_after - retains_before
     delta_releases = releases_after - releases_before
     assert delta_retains == delta_releases, (
-        f"Retain/release pair leak across {iterations} iterations: "
+        f"Retain/release pair leak across {iterations} executions: "
         f"acquired={delta_retains} released={delta_releases}"
     )
-    assert delta_retains > 0, (
-        "No retains acquired across the leak-audit loop; the source did not "
-        "actually do any adoption work, so AC7's stability check is moot."
+    assert delta_retains >= iterations, (
+        f"Only {delta_retains} retains acquired across {iterations} full executions; "
+        "the leak-audit loop did not exercise adoption in each iteration."
     )
 
 

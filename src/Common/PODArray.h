@@ -8,7 +8,10 @@
 #include <Common/memcpySmall.h>
 
 #include <algorithm>
+#include <cassert>
+#include <climits>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
@@ -122,19 +125,46 @@ protected:
     static_assert(allocatorInitialBytes<TAllocator> == 0
                   || allocatorInitialBytes<TAllocator> == initial_bytes);
 
-    char * c_start          = null;    /// Does not include pad_left.
-    char * c_end            = null;
-    char * c_end_of_storage = null;    /// Does not include pad_right.
+    static constexpr uintptr_t adopted_end_of_storage_flag = uintptr_t{1} << (sizeof(uintptr_t) * CHAR_BIT - 1);
+    static_assert(sizeof(uintptr_t) == sizeof(char *), "PODArrayBase tags c_end_of_storage via uintptr_t");
 
-    /// When non-null, this PODArray points at memory owned by some external party
-    /// (e.g. an SHM producer). dealloc()/alloc()/realloc() must not free, allocate, or
-    /// grow the backing storage; mutating methods throw LOGICAL_ERROR (see adoption-layer
+    static uintptr_t packEndOfStorage(const char * end_of_storage, bool adopted)
+    {
+        const auto raw = reinterpret_cast<uintptr_t>(end_of_storage);
+        assert((raw & adopted_end_of_storage_flag) == 0);
+        return raw | (adopted ? adopted_end_of_storage_flag : 0);
+    }
+
+    static uintptr_t nullEndOfStorage() { return packEndOfStorage(null, false); }
+
+    char * c_start = null;    /// Does not include pad_left.
+    char * c_end = null;
+
+    /// Stores c_end_of_storage plus an adopted-state tag in the high bit. This preserves
+    /// PODArrayBase's pre-adoption footprint for ordinary arrays while still letting
+    /// adopted arrays make dealloc() a no-op and mutators throw READONLY (see adoption-layer
     /// spec I3 "Adopted memory is immutable" and §Materialization-on-mutation contract).
-    /// The pointer value is opaque to PODArray — it is a marker only. The external owner's
-    /// lifetime is managed by the column that wraps this PODArray (e.g. ColumnVector /
-    /// ColumnString retain_token added in T2.x).
-    void * external_owner = nullptr;
-    static_assert(sizeof(void *) == 8, "PODArrayBase::external_owner is sized assuming 8-byte pointers on this platform");
+    uintptr_t c_end_of_storage_tagged = nullEndOfStorage();    /// Pointer does not include pad_right.
+
+    char * endOfStorage() const
+    {
+        return reinterpret_cast<char *>(c_end_of_storage_tagged & ~adopted_end_of_storage_flag);
+    }
+
+    bool isAdopted() const
+    {
+        return (c_end_of_storage_tagged & adopted_end_of_storage_flag) != 0;
+    }
+
+    void setEndOfStorage(char * end_of_storage, bool adopted)
+    {
+        c_end_of_storage_tagged = packEndOfStorage(end_of_storage, adopted);
+    }
+
+    void setEndOfStorage(char * end_of_storage)
+    {
+        setEndOfStorage(end_of_storage, isAdopted());
+    }
 
     PODArrayBase() = default;
 
@@ -148,20 +178,19 @@ protected:
     /// Note: adopted mode does NOT initialise c_start[-pad_left .. -1]; ColumnString
     /// offsets that depend on the data[-1] == 0 trick must arrange equivalent semantics
     /// externally (handled by the String adoption layer in T2.2).
-    PODArrayBase(char * data_begin, char * data_end, char * data_storage_end, void * owner_marker)
+    PODArrayBase(char * data_begin, char * data_end, char * data_storage_end, [[maybe_unused]] void * owner_marker)
     {
         assert(owner_marker != nullptr);
         assert(data_begin <= data_end);
         assert(data_end <= data_storage_end);
         c_start = data_begin;
         c_end = data_end;
-        c_end_of_storage = data_storage_end;
-        external_owner = owner_marker;
+        setEndOfStorage(data_storage_end, true);
     }
 
     void alloc_for_num_elements(size_t num_elements) /// NOLINT
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("alloc_for_num_elements");
         alloc(PODArrayDetails::minimum_memory_for_elements(num_elements, ELEMENT_SIZE, pad_left, pad_right));
     }
@@ -169,14 +198,14 @@ protected:
     template <typename ... TAllocatorParams>
     void alloc(size_t bytes, TAllocatorParams &&... allocator_params)
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("alloc");
 
         char * allocated = reinterpret_cast<char *>(TAllocator::alloc(bytes, std::forward<TAllocatorParams>(allocator_params)...));
 
         c_start = allocated + pad_left;
         c_end = c_start;
-        c_end_of_storage = allocated + bytes - pad_right;
+        setEndOfStorage(allocated + bytes - pad_right, false);
 
         if (pad_left)
             memset(c_start - ELEMENT_SIZE, 0, ELEMENT_SIZE);
@@ -184,7 +213,7 @@ protected:
 
     void dealloc()
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
         {
             /// Producer owns this memory; the wrapping column's retain_token RAII handles
             /// release. See adoption-layer spec I3 / §Retain and charge handle semantics.
@@ -202,7 +231,7 @@ protected:
     template <typename ... TAllocatorParams>
     void realloc(size_t bytes, TAllocatorParams &&... allocator_params)
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("realloc");
 
         if (c_start == null)
@@ -220,12 +249,12 @@ protected:
 
         c_start = allocated + pad_left;
         c_end = c_start + end_diff;
-        c_end_of_storage = allocated + bytes - pad_right;
+        setEndOfStorage(allocated + bytes - pad_right, false);
     }
 
     bool isInitialized() const
     {
-        return (c_start != null) && (c_end != null) && (c_end_of_storage != null);
+        return (c_start != null) && (c_end != null) && (endOfStorage() != null);
     }
 
     bool isAllocatedFromStack() const
@@ -265,7 +294,7 @@ protected:
         static size_t PROTECT_PAGE_SIZE = ::getPageSize();
 
         char * left_rounded_up = reinterpret_cast<char *>((reinterpret_cast<intptr_t>(c_start) - pad_left + PROTECT_PAGE_SIZE - 1) / PROTECT_PAGE_SIZE * PROTECT_PAGE_SIZE);
-        char * right_rounded_down = reinterpret_cast<char *>((reinterpret_cast<intptr_t>(c_end_of_storage) + pad_right) / PROTECT_PAGE_SIZE * PROTECT_PAGE_SIZE);
+        char * right_rounded_down = reinterpret_cast<char *>((reinterpret_cast<intptr_t>(endOfStorage()) + pad_right) / PROTECT_PAGE_SIZE * PROTECT_PAGE_SIZE);
 
         if (right_rounded_down > left_rounded_up)
         {
@@ -281,14 +310,21 @@ protected:
 public:
     bool empty() const { return c_end == c_start; }
     size_t size() const { return (c_end - c_start) / ELEMENT_SIZE; }
-    size_t capacity() const { return (c_end_of_storage - c_start) / ELEMENT_SIZE; }
+    size_t capacity() const { return (endOfStorage() - c_start) / ELEMENT_SIZE; }
 
     /// This method is safe to use only for information about memory usage.
-    size_t allocated_bytes() const { return c_end_of_storage - c_start + pad_right + pad_left; } /// NOLINT
+    /// Adopted arrays expose producer-owned bytes; report only the logical adopted
+    /// footprint (values plus required readable right padding), not allocator padding.
+    size_t allocated_bytes() const /// NOLINT
+    {
+        if (isAdopted())
+            return c_end - c_start + pad_right;
+        return endOfStorage() - c_start + pad_right + pad_left;
+    }
 
     void clear()
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("clear");
         c_end = c_start;
     }
@@ -296,7 +332,7 @@ public:
     template <typename ... TAllocatorParams>
     ALWAYS_INLINE void reserve(size_t n, TAllocatorParams &&... allocator_params)
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("reserve");
         if (n > capacity())
             reallocPowerOfTwoElements(n, std::forward<TAllocatorParams>(allocator_params)...);
@@ -305,7 +341,7 @@ public:
     template <typename ... TAllocatorParams>
     void reserve_exact(size_t n, TAllocatorParams &&... allocator_params) /// NOLINT
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("reserve_exact");
         if (n > capacity())
             realloc(PODArrayDetails::minimum_memory_for_elements(n, ELEMENT_SIZE, pad_left, pad_right), std::forward<TAllocatorParams>(allocator_params)...);
@@ -314,7 +350,7 @@ public:
     template <typename ... TAllocatorParams>
     void resize(size_t n, TAllocatorParams &&... allocator_params)
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("resize");
         reserve(n, std::forward<TAllocatorParams>(allocator_params)...);
         resize_assume_reserved(n);
@@ -323,7 +359,7 @@ public:
     template <typename ... TAllocatorParams>
     void resize_exact(size_t n, TAllocatorParams &&... allocator_params) /// NOLINT
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("resize_exact");
         reserve_exact(n, std::forward<TAllocatorParams>(allocator_params)...);
         resize_assume_reserved(n);
@@ -332,14 +368,14 @@ public:
     template <typename ... TAllocatorParams>
     void shrink_to_fit(TAllocatorParams &&... allocator_params)
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("shrink_to_fit");
         realloc(PODArrayDetails::minimum_memory_for_elements(size(), ELEMENT_SIZE, pad_left, pad_right), std::forward<TAllocatorParams>(allocator_params)...);
     }
 
     void resize_assume_reserved(const size_t n) /// NOLINT
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("resize_assume_reserved");
         c_end = c_start + PODArrayDetails::byte_size(n, ELEMENT_SIZE);
     }
@@ -352,7 +388,7 @@ public:
     template <typename ... TAllocatorParams>
     void push_back_raw(const void * ptr, TAllocatorParams &&... allocator_params) /// NOLINT
     {
-        if (external_owner != nullptr)
+        if (isAdopted())
             PODArrayDetails::throwAdoptedMutation("push_back_raw");
         size_t required_capacity = size() + ELEMENT_SIZE;
         if (unlikely(required_capacity > capacity()))
@@ -365,6 +401,12 @@ public:
     void protect()
     {
 #ifndef NDEBUG
+        if (isAdopted())
+        {
+            /// Adopted storage is producer-owned and may share pages with unrelated
+            /// producer/control data; this debug-only guard must not mprotect it.
+            return;
+        }
         protectImpl(PROT_READ);
         mprotected = true;
 #endif
@@ -373,6 +415,11 @@ public:
     void unprotect()
     {
 #ifndef NDEBUG
+        if (isAdopted())
+        {
+            /// See protect(): we never changed protection on adopted storage.
+            return;
+        }
         if (mprotected)
             protectImpl(PROT_WRITE);
         mprotected = false;
@@ -466,7 +513,7 @@ public:
 
     PODArray(PODArray && other) noexcept
     {
-        /// Member-wise move (do NOT use swap()): swap() throws LOGICAL_ERROR on adopted
+        /// Member-wise move (do NOT use swap()): swap() throws READONLY on adopted
         /// PODArrays per the round-1 F3 adopted-mutator guards, and throwing from a
         /// noexcept function would call std::terminate. Member-wise move is safe
         /// regardless of either side's adopted state. The moved-from object is left
@@ -474,8 +521,7 @@ public:
         /// adopted), so ~PODArrayBase()/dealloc() takes its fast no-op path.
         this->c_start = std::exchange(other.c_start, Base::null);
         this->c_end = std::exchange(other.c_end, Base::null);
-        this->c_end_of_storage = std::exchange(other.c_end_of_storage, Base::null);
-        this->external_owner = std::exchange(other.external_owner, nullptr);
+        this->c_end_of_storage_tagged = std::exchange(other.c_end_of_storage_tagged, Base::nullEndOfStorage());
     }
 
     PODArray & operator=(PODArray && other) noexcept
@@ -488,8 +534,7 @@ public:
         /// Member-wise move (see move-ctor comment for why swap() must not be used).
         this->c_start = std::exchange(other.c_start, Base::null);
         this->c_end = std::exchange(other.c_end, Base::null);
-        this->c_end_of_storage = std::exchange(other.c_end_of_storage, Base::null);
-        this->external_owner = std::exchange(other.external_owner, nullptr);
+        this->c_end_of_storage_tagged = std::exchange(other.c_end_of_storage_tagged, Base::nullEndOfStorage());
         return *this;
     }
 
@@ -525,7 +570,7 @@ public:
     /// Same as resize, but zeroes new elements.
     void resize_fill(size_t n) /// NOLINT
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("resize_fill");
         size_t old_size = this->size();
         if (n > old_size)
@@ -538,7 +583,7 @@ public:
 
     void resize_fill(size_t n, const T & value) /// NOLINT
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("resize_fill");
         size_t old_size = this->size();
         if (n > old_size)
@@ -552,9 +597,9 @@ public:
     template <typename U, typename ... TAllocatorParams>
     void push_back(U && x, TAllocatorParams &&... allocator_params) /// NOLINT
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("push_back");
-        if (unlikely(this->c_end + sizeof(T) > this->c_end_of_storage))
+        if (unlikely(this->c_end + sizeof(T) > this->endOfStorage()))
             this->reserveForNextSize(std::forward<TAllocatorParams>(allocator_params)...);
         new (reinterpret_cast<void*>(t_end())) T(std::forward<U>(x));
         this->c_end += sizeof(T);
@@ -566,9 +611,9 @@ public:
     template <typename... Args>
     void emplace_back(Args &&... args) /// NOLINT
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("emplace_back");
-        if (unlikely(this->c_end + sizeof(T) > this->c_end_of_storage))
+        if (unlikely(this->c_end + sizeof(T) > this->endOfStorage()))
             this->reserveForNextSize();
 
         new (t_end()) T(std::forward<Args>(args)...);
@@ -577,7 +622,7 @@ public:
 
     void pop_back() /// NOLINT
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("pop_back");
         this->c_end -= sizeof(T);
     }
@@ -586,7 +631,7 @@ public:
     template <typename It1, typename It2, typename ... TAllocatorParams>
     void insertPrepare(It1 from_begin, It2 from_end, TAllocatorParams &&... allocator_params)
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insertPrepare");
         this->assertNotIntersects(from_begin, from_end);
         size_t required_capacity = this->size() + (from_end - from_begin);
@@ -598,7 +643,7 @@ public:
     template <typename It1, typename It2, typename ... TAllocatorParams>
     void insert(It1 from_begin, It2 from_end, TAllocatorParams &&... allocator_params)
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insert");
         insertPrepare(from_begin, from_end, std::forward<TAllocatorParams>(allocator_params)...);
         insert_assume_reserved(from_begin, from_end);
@@ -611,7 +656,7 @@ public:
     {
         static_assert(memcpy_can_be_used_for_assignment<std::decay_t<T>, std::decay_t<decltype(rhs.front())>>);
 
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insertByOffsets");
         chassert(from_end >= from_begin);
         chassert(from_end <= rhs.size());
@@ -634,7 +679,7 @@ public:
     {
         static_assert(pad_right_ >= PADDING_FOR_SIMD - 1);
         static_assert(sizeof(T) == sizeof(*from_begin));
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insertSmallAllowReadWriteOverflow15");
         insertPrepare(from_begin, from_end, std::forward<TAllocatorParams>(allocator_params)...);
         size_t bytes_to_copy = PODArrayDetails::byte_size(from_end - from_begin, sizeof(T));
@@ -648,7 +693,7 @@ public:
     {
         static_assert(memcpy_can_be_used_for_assignment<std::decay_t<T>, std::decay_t<decltype(*from_begin)>>);
 
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insert");
 
         size_t bytes_to_copy = PODArrayDetails::byte_size(from_end - from_begin, sizeof(T));
@@ -672,7 +717,7 @@ public:
     {
         static_assert(memcpy_can_be_used_for_assignment<std::decay_t<T>, std::decay_t<decltype(*from_begin)>>);
 
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insertFromItself");
 
         /// Convert iterators to indexes because reserve can invalidate iterators
@@ -699,7 +744,7 @@ public:
     void insert_assume_reserved(It1 from_begin, It2 from_end) /// NOLINT
     {
         static_assert(memcpy_can_be_used_for_assignment<std::decay_t<T>, std::decay_t<decltype(*from_begin)>>);
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("insert_assume_reserved");
         this->assertNotIntersects(from_begin, from_end);
 
@@ -714,7 +759,7 @@ public:
     template <typename... TAllocatorParams>
     void swap(PODArray & rhs, TAllocatorParams &&... allocator_params) /// NOLINT(performance-noexcept-swap)
     {
-        if (this->external_owner != nullptr || rhs.external_owner != nullptr)
+        if (this->isAdopted() || rhs.isAdopted())
             PODArrayDetails::throwAdoptedMutation("swap");
 
 #ifndef NDEBUG
@@ -738,7 +783,7 @@ public:
 
             /// arr1 takes ownership of the heap memory of arr2.
             arr1.c_start = arr2.c_start;
-            arr1.c_end_of_storage = arr1.c_start + heap_allocated - arr2.pad_right - arr2.pad_left;
+            arr1.setEndOfStorage(arr1.c_start + heap_allocated - arr2.pad_right - arr2.pad_left);
             arr1.c_end = arr1.c_start + PODArrayDetails::byte_size(heap_size, sizeof(T));
 
             /// Allocate stack space for arr2.
@@ -759,13 +804,13 @@ public:
 
                 src.c_start = Base::null;
                 src.c_end = Base::null;
-                src.c_end_of_storage = Base::null;
+                src.setEndOfStorage(Base::null, false);
             }
             else
             {
                 std::swap(dest.c_start, src.c_start);
                 std::swap(dest.c_end, src.c_end);
-                std::swap(dest.c_end_of_storage, src.c_end_of_storage);
+                std::swap(dest.c_end_of_storage_tagged, src.c_end_of_storage_tagged);
             }
         };
 
@@ -809,8 +854,8 @@ public:
             size_t rhs_size = rhs.size();
             size_t rhs_allocated = rhs.allocated_bytes();
 
-            this->c_end_of_storage = this->c_start + rhs_allocated - Base::pad_right - Base::pad_left;
-            rhs.c_end_of_storage = rhs.c_start + lhs_allocated - Base::pad_right - Base::pad_left;
+            this->setEndOfStorage(this->c_start + rhs_allocated - Base::pad_right - Base::pad_left);
+            rhs.setEndOfStorage(rhs.c_start + lhs_allocated - Base::pad_right - Base::pad_left);
 
             this->c_end = this->c_start + PODArrayDetails::byte_size(rhs_size, sizeof(T));
             rhs.c_end = rhs.c_start + PODArrayDetails::byte_size(lhs_size, sizeof(T));
@@ -827,14 +872,14 @@ public:
         {
             std::swap(this->c_start, rhs.c_start);
             std::swap(this->c_end, rhs.c_end);
-            std::swap(this->c_end_of_storage, rhs.c_end_of_storage);
+            std::swap(this->c_end_of_storage_tagged, rhs.c_end_of_storage_tagged);
         }
     }
 
     template <typename... TAllocatorParams>
     void assign(size_t n, const T & x, TAllocatorParams &&... allocator_params)
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("assign");
         this->resize_exact(n, std::forward<TAllocatorParams>(allocator_params)...);
         std::fill(begin(), end(), x);
@@ -844,7 +889,7 @@ public:
     void assign(It1 from_begin, It2 from_end, TAllocatorParams &&... allocator_params)
     {
         static_assert(memcpy_can_be_used_for_assignment<std::decay_t<T>, std::decay_t<decltype(*from_begin)>>);
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("assign");
         this->assertNotIntersects(from_begin, from_end);
 
@@ -867,7 +912,7 @@ public:
 
     void erase(const_iterator first, const_iterator last)
     {
-        if (this->external_owner != nullptr)
+        if (this->isAdopted())
             PODArrayDetails::throwAdoptedMutation("erase");
         iterator first_no_const = const_cast<iterator>(first);
         iterator last_no_const = const_cast<iterator>(last);

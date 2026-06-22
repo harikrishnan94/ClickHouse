@@ -91,7 +91,7 @@ public:
     ///     padding.
     /// Ownership of `retain_token` and `charge_handle` transfers into the returned column;
     /// both are released exactly once at adopted-state final drop (the last column reference
-    /// or COW alias). Both must be non-null; the factory throws LOGICAL_ERROR otherwise.
+    /// or COW alias). Both must be non-null; the factory throws BAD_ARGUMENTS otherwise.
     ///
     /// Spec authority: adoption-layer spec §Interfaces & contracts (Adopt entry point), I1,
     /// I3, I4; system spec I5, I10; memory-tracker-integration spec I7.

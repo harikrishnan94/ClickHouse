@@ -19,8 +19,14 @@ std::vector<char> makeBuffer(size_t n)
     return std::vector<char>(n * sizeof(UInt64) + PaddedPODArray<UInt64>::pad_right, 0);
 }
 
-UInt64 * asU64(std::vector<char> & buf) { return reinterpret_cast<UInt64 *>(buf.data()); }
-UInt64 * asU64(char * p) { return reinterpret_cast<UInt64 *>(p); }
+UInt64 * asU64(std::vector<char> & buf)
+{
+    return reinterpret_cast<UInt64 *>(buf.data());
+}
+UInt64 * asU64(char * p)
+{
+    return reinterpret_cast<UInt64 *>(p);
+}
 
 }
 
@@ -40,6 +46,15 @@ TEST(PaddedPODArrayAdopted, Construction)
         EXPECT_EQ(arr[i], i * 7);
 }
 
+TEST(PaddedPODArrayAdopted, AdoptedStateDoesNotWidenReleaseLayout)
+{
+#ifndef NDEBUG
+    EXPECT_LE(sizeof(PaddedPODArray<UInt64>), 4 * sizeof(void *));
+#else
+    EXPECT_EQ(sizeof(PaddedPODArray<UInt64>), 3 * sizeof(void *));
+#endif
+}
+
 TEST(PaddedPODArrayAdopted, SizeEmptyCapacity)
 {
     constexpr size_t n = 4;
@@ -49,15 +64,17 @@ TEST(PaddedPODArrayAdopted, SizeEmptyCapacity)
     PaddedPODArray<UInt64> arr(asU64(buf), n, &dummy_owner);
     EXPECT_FALSE(arr.empty());
     EXPECT_EQ(arr.size(), n);
-    /// capacity() == size() in adopted mode: c_end_of_storage = c_end (the trailing bytes
-    /// are reserved for safe-read padding, not for new elements).
-    EXPECT_EQ(arr.capacity(), n);
+    /// Adopted mode exposes the producer-provided trailing safe-read area via the usual
+    /// PODArrayBase capacity arithmetic. It is not writable (all mutators throw), so the
+    /// only contract here is that the readable logical size is correct and capacity covers
+    /// at least that many elements.
+    EXPECT_GE(arr.capacity(), n);
 
     auto buf0 = makeBuffer(0);
     PaddedPODArray<UInt64> arr0(asU64(buf0), 0, &dummy_owner);
     EXPECT_TRUE(arr0.empty());
     EXPECT_EQ(arr0.size(), 0u);
-    EXPECT_EQ(arr0.capacity(), 0u);
+    EXPECT_GE(arr0.capacity(), 0u);
 }
 
 TEST(PaddedPODArrayAdopted, DeallocIsNoOp)
@@ -74,6 +91,24 @@ TEST(PaddedPODArrayAdopted, DeallocIsNoOp)
     }
     asU64(buf.get())[0] = 42;
     EXPECT_EQ(asU64(buf.get())[0], 42u);
+}
+
+TEST(PaddedPODArrayAdopted, ProtectUnprotectAreNoOps)
+{
+    constexpr size_t n = 8192;
+    auto buf = makeBuffer(n);
+    int dummy_owner = 0;
+
+    PaddedPODArray<UInt64> arr(asU64(buf), n, &dummy_owner);
+    EXPECT_NO_THROW(arr.protect());
+
+    /// The external owner must remain able to write its buffer after PODArray::protect().
+    /// In debug builds, an adopted protect() that calls mprotect() can make producer-owned
+    /// pages read-only; this write exercises that it is a true no-op.
+    asU64(buf)[n / 2] = 99;
+    EXPECT_EQ(asU64(buf)[n / 2], 99u);
+
+    EXPECT_NO_THROW(arr.unprotect());
 }
 
 TEST(PaddedPODArrayAdopted, MutatorsThrow)
@@ -153,7 +188,7 @@ TEST(PaddedPODArrayAdopted, MoveCtorPreservesAdoptedState)
     /// Regression for F7: the PODArray move ctor must not delegate to swap(), because
     /// swap() throws on adopted arrays and the move ctor is noexcept (a throw there
     /// would call std::terminate). Member-wise move must transfer the adopted state
-    /// (pointers + external_owner) intact and leave `src` in a valid empty,
+    /// (pointers + adopted-state tag) intact and leave `src` in a valid empty,
     /// non-adopted state so that no buffer is freed when either object is destroyed.
     constexpr size_t n = 10;
     auto buf = makeBuffer(n);
@@ -236,8 +271,8 @@ TEST(PaddedPODArrayAdopted, MoveAssignOwnedToAdoptedNoTerminate)
 
 TEST(PaddedPODArrayAdopted, NormalArrayUnchanged)
 {
-    /// Regression: default-constructed PODArray must still behave normally now that
-    /// PODArrayBase has an extra `external_owner` member.
+    /// Regression: default-constructed PODArray must still behave normally with the
+    /// adopted-state tag packed into its end-of-storage word.
     PaddedPODArray<UInt64> normal;
     EXPECT_EQ(normal.size(), 0u);
     EXPECT_TRUE(normal.empty());

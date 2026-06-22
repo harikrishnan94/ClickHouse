@@ -21,7 +21,9 @@ namespace DB
 
 namespace ErrorCodes
 {
+    extern const int BAD_ARGUMENTS;
     extern const int PARAMETER_OUT_OF_BOUND;
+    extern const int READONLY;
     extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
     extern const int LOGICAL_ERROR;
     extern const int INCORRECT_DATA;
@@ -30,13 +32,13 @@ namespace ErrorCodes
 
 void ColumnString::throwAdoptedFactoryRequiresHandles()
 {
-    throw Exception(ErrorCodes::LOGICAL_ERROR,
+    throw Exception(ErrorCodes::BAD_ARGUMENTS,
         "ColumnString::createAdopted requires non-null retain_token and charge_handle");
 }
 
 void ColumnString::throwAdoptedAccessorWrite(const char * which)
 {
-    throw Exception(ErrorCodes::LOGICAL_ERROR,
+    throw Exception(ErrorCodes::READONLY,
         "Non-const ColumnString::{}() called on an adopted (zero-copy SHM) column; "
         "such columns are read-only. Call IColumn::mutate() first to COW-materialise "
         "a fully owned copy. See adoption-layer spec I3.", which);
@@ -830,8 +832,10 @@ int ColumnString::compareAtWithCollation(size_t n, size_t m, const IColumn & rhs
 
 void ColumnString::protect()
 {
-    getChars().protect();
-    getOffsets().protect();
+    if (adoption_)
+        return;
+    chars.protect();
+    offsets.protect();
 }
 
 void ColumnString::validate() const

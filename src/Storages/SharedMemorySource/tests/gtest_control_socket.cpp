@@ -6,11 +6,13 @@
 
 #include <Common/Exception.h>
 
+#include <fcntl.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -128,7 +130,7 @@ TEST_F(ControlSocketTest, ServerDestroyedBeforeAcceptingRaisesAttachFailed)
         try { DB::ControlSocketClient::connectAndReceiveEventFd(socket_path, client_conn_fd); }
         catch (const DB::Exception & e) { code = e.code(); }
     });
-    /// Well below the 5s socket timeout so scheduler jitter cannot flake.
+    /// Well below the attach budget so scheduler jitter cannot flake.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     server.reset();
     client_thread.join();
@@ -136,6 +138,43 @@ TEST_F(ControlSocketTest, ServerDestroyedBeforeAcceptingRaisesAttachFailed)
     ASSERT_TRUE(code.has_value());
     EXPECT_EQ(*code, DB::ErrorCodes::SHM_ATTACH_FAILED);
     EXPECT_EQ(client_conn_fd, -1);
+}
+
+TEST_F(ControlSocketTest, ReceiveWaitObservesCancellation)
+{
+    /// Server binds+listens but never accepts or sends. The client-side helper
+    /// must not sit in a long recvmsg timeout; it polls in short slices and
+    /// checks the cancellation callback.
+    DB::ControlSocketServer server(socket_path);
+    std::atomic<bool> cancel{false};
+    int client_conn_fd = -1;
+    std::optional<int> code;
+
+    std::thread client_thread([&]
+    {
+        try
+        {
+            DB::ControlSocketClient::connectAndReceiveEventFd(
+                socket_path,
+                client_conn_fd,
+                [&] { return cancel.load(std::memory_order_acquire); });
+        }
+        catch (const DB::Exception & e)
+        {
+            code = e.code();
+        }
+    });
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    cancel.store(true, std::memory_order_release);
+    client_thread.join();
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+
+    ASSERT_TRUE(code.has_value());
+    EXPECT_EQ(*code, DB::ErrorCodes::SHM_ATTACH_FAILED);
+    EXPECT_EQ(client_conn_fd, -1);
+    EXPECT_LT(elapsed_ms, 1'000);
 }
 
 TEST_F(ControlSocketTest, ShutdownUnblocksConcurrentAccept)
@@ -200,6 +239,43 @@ TEST_F(ControlSocketTest, ProducerSendsTwoFdsClientRejects)
 
     ::close(evfd1);
     ::close(evfd2);
+}
+
+TEST_F(ControlSocketTest, ReceivedFdNonblockingFailureRaisesAttachFailed)
+{
+    /// O_PATH fds can be passed with SCM_RIGHTS, F_GETFL succeeds, and
+    /// F_SETFL(O_NONBLOCK) fails. That exercises the attach-failure path that
+    /// must close both the connection fd and received fd instead of returning a
+    /// potentially blocking readiness fd to PollableShmSource.
+    DB::ControlSocketServer server(socket_path);
+    int opath_fd = ::open("/", O_PATH | O_CLOEXEC);
+    ASSERT_GE(opath_fd, 0);
+
+    int client_conn_fd = -1;
+    std::optional<int> code;
+
+    std::thread server_thread([&]
+    {
+        int peer = server.accept();
+        if (peer < 0)
+            return;
+        server.sendEventFd(peer, opath_fd);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        ::close(peer);
+    });
+    std::thread client_thread([&]
+    {
+        try { DB::ControlSocketClient::connectAndReceiveEventFd(socket_path, client_conn_fd); }
+        catch (const DB::Exception & e) { code = e.code(); }
+    });
+    server_thread.join();
+    client_thread.join();
+
+    ASSERT_TRUE(code.has_value());
+    EXPECT_EQ(*code, DB::ErrorCodes::SHM_ATTACH_FAILED);
+    EXPECT_EQ(client_conn_fd, -1);
+
+    ::close(opath_fd);
 }
 
 #endif

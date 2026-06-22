@@ -45,6 +45,7 @@ extern const int BAD_COLLATION;
 extern const int CANNOT_GET_SIZE_OF_FIELD;
 extern const int LOGICAL_ERROR;
 extern const int NOT_IMPLEMENTED;
+extern const int READONLY;
 }
 
 void throwCannotPopBack(size_t n, const std::string & column_name, size_t column_size)
@@ -59,7 +60,7 @@ void throwColumnConvertNotSupported(std::string_view type_name, const char * as_
 
 void throwAdoptedColumnAccessor(const char * accessor_name)
 {
-    throw Exception(ErrorCodes::LOGICAL_ERROR,
+    throw Exception(ErrorCodes::READONLY,
         "Non-const accessor {} called on an adopted (zero-copy SHM) column; such columns are "
         "read-only. Call IColumn::mutate() first to COW-materialize. "
         "See adoption-layer spec I3.",

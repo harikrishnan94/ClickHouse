@@ -149,6 +149,19 @@ TEST(ColumnVectorAdopted, FactoryRejectsNullChargeHandle)
         DB::Exception);
 }
 
+TEST(ColumnVectorAdopted, FactoryRejectsNonUInt64)
+{
+    constexpr size_t n = 4;
+    std::vector<char> backing_buffer(n * sizeof(UInt32) + PaddedPODArray<UInt32>::pad_right, '\0');
+    auto * data = reinterpret_cast<UInt32 *>(backing_buffer.data());
+    auto retain = makeRetainToken([]() noexcept {});
+    auto charge = makeRetainToken([]() noexcept {});
+
+    EXPECT_THROW(
+        ColumnVector<UInt32>::createAdopted(data, n, std::move(retain), std::move(charge)),
+        DB::Exception);
+}
+
 /// F3 round-2 coverage: every direct ColumnVector mutator on an adopted column must
 /// throw before touching producer-owned storage. Each test below builds a small owned
 /// source column where needed and asserts the corresponding adopted mutator throws.

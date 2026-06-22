@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 
 namespace DB
@@ -12,8 +13,8 @@ namespace DB
 
 /// Per-source-instance entry point that translates a per-block adopted-byte count into a
 /// MemoryTracker charge and hands back a `ChargeHandle` that releases the charge on destruction.
-/// Holds the feature-local exact counter required by I7 (per-source, test-visible, returns to
-/// zero on source destruction).
+/// Holds feature-local exact counters required by I7 (per-source, test-visible, returns to
+/// zero when every `ChargeHandle` issued by this charger is destroyed).
 ///
 /// Lifecycle:
 ///   - One `AdoptedByteCharger` is owned by the `PollableShmSource` (one per source instance).
@@ -21,20 +22,25 @@ namespace DB
 ///       on success — returns a `ChargeHandle` the source threads into the adopted columns;
 ///       on failure — throws `MEMORY_LIMIT_EXCEEDED` with the feature-local counter unchanged.
 ///   - The returned `ChargeHandle`'s destructor releases the tracker charge, decrements the
-///     feature-local counter, decrements `ShmAdoptedBytesCurrent`, and increments
+///     shared feature-local counters, decrements the current metrics, and increments
 ///     `ShmRetainsReleased` (release logic lives in `ChargeHandle::release()`).
 ///
 /// Concurrency: `charge()` is callable from a single thread (the source's executor thread). The
-/// counter itself is atomic so external observability (gauge, gtest) is safe under concurrent
+/// counters are atomic so external observability (gauge, gtest) is safe under concurrent
 /// reads, and the `ChargeHandle` destructor — which may run on a different thread once a Block
-/// has been handed downstream — uses atomic fetch_sub against the same counter.
+/// has been handed downstream — uses shared state that remains alive even if the source-owned
+/// charger is gone.
 ///
 /// Spec authority: memory-tracker-integration §Charge entry point + §Release semantics + I7 + I8;
 /// pollable-shm-source §Per-block adoption call.
 class AdoptedByteCharger
 {
 public:
-    AdoptedByteCharger() noexcept = default;
+    AdoptedByteCharger();
+    AdoptedByteCharger(const AdoptedByteCharger &) = delete;
+    AdoptedByteCharger & operator=(const AdoptedByteCharger &) = delete;
+    AdoptedByteCharger(AdoptedByteCharger &&) = delete;
+    AdoptedByteCharger & operator=(AdoptedByteCharger &&) = delete;
 
     /// Charge `adopted_bytes` of producer-owned memory against the active query MemoryTracker
     /// chain. `adopted_bytes` is the charged amount (includes safe-read padding per the system
@@ -42,15 +48,18 @@ public:
     /// (data without padding) reported through `ShmAdoptedBytesLogical`.
     ///
     /// Operation order (matters for AC5 "no charged-then-rolled-back transient"):
-    ///   1. Snapshot `CurrentThread::getMemoryTracker()` so the inverse release on the
-    ///      returned handle pins to the same tracker chain even if the handle is dropped
-    ///      on a different pipeline thread.
+    ///   1. Snapshot `CurrentThread::getGroup()` so the inverse release on the
+    ///      returned handle pins to the same query-level tracker even if the handle is
+    ///      dropped on a different pipeline thread.
     ///   2. `CurrentMemoryTracker::alloc(adopted_bytes)` — may throw `MEMORY_LIMIT_EXCEEDED`;
     ///      if it throws, the charger returns without touching any observable surface
     ///      (no counter increment to roll back, no metric/event to undo). This is the
     ///      structural enforcement of AC5.
-    ///   3. After the tracker accepts the charge: increment the feature-local counter by
-    ///      `adopted_bytes`, increment `CurrentMetrics::ShmAdoptedBytesCurrent`, and bump
+    ///   3. After the tracker accepts the charge: flush thread-local untracked memory when
+    ///      a query group was captured, making the query-level charge visible immediately
+    ///      and bounding the release path's untracked-cushion slack to zero for adopted bytes.
+    ///   4. Increment the feature-local counter by
+    ///      `adopted_bytes`, increment `logical_bytes`, update current metrics, and bump
     ///      `ProfileEvents::ShmAdoptedBytesCharged += adopted_bytes`,
     ///      `ShmAdoptedBytesLogical += logical_bytes`, `ShmAdoptedBlocks += 1`,
     ///      `ShmRetainsAcquired += 1`.
@@ -63,7 +72,8 @@ public:
     /// observe the in-flight pre-increment before the rollback ran).
     ///
     /// Returns a `ChargeHandle` whose destruction performs the inverse operations against
-    /// the snapshotted tracker chain (Finding 5: cross-thread-safe release).
+    /// the snapshotted query group (H2: cross-thread-safe release without retaining a raw
+    /// thread-tracker pointer).
     [[nodiscard]] ChargeHandle charge(size_t adopted_bytes, size_t logical_bytes);
 
     /// Convenience overload for the common case where logical == charged (no safe-read padding
@@ -72,16 +82,18 @@ public:
 
     /// Test-visible exact counter. Returns the sum of `charged_bytes` for every live
     /// `ChargeHandle` this charger has issued. Safe to call concurrently with `charge()` and
-    /// with handle destructors. Returns 0 when the source is freshly constructed and after the
-    /// source has dropped all handles.
+    /// with handle destructors. Returns 0 when the source is freshly constructed and after all
+    /// handles issued by this charger have been destroyed.
     ///
     /// Spec authority: memory-tracker-integration §Observability of the feature-local counter.
-    int64_t currentChargedBytes() const noexcept { return feature_local_counter_.load(std::memory_order_acquire); }
+    int64_t currentChargedBytes() const noexcept { return state_->charged_current.load(std::memory_order_acquire); }
+
+    /// Test-visible exact logical payload counter. Returns the sum of `logical_bytes` for
+    /// every live `ChargeHandle` this charger has issued.
+    int64_t currentLogicalBytes() const noexcept { return state_->logical_current.load(std::memory_order_acquire); }
 
 private:
-    /// Trailing underscore matches the ChargeHandle convention (project-wide
-    /// `readability-identifier-naming` is off; NOLINT silences the IDE-only warning).
-    std::atomic<int64_t> feature_local_counter_{0}; // NOLINT(readability-identifier-naming)
+    std::shared_ptr<AdoptedByteState> state_; // NOLINT(readability-identifier-naming)
 };
 
 }

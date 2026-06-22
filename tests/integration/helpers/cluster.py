@@ -101,6 +101,33 @@ def find_default_config_path():
         return path
     raise RuntimeError("Cannot find config.xml. Please set CLICKHOUSE_TESTS_BASE_CONFIG_DIR")
 
+
+def find_shm_producer_binary(server_bin_path):
+    candidates = []
+
+    env_path = os.environ.get("CLICKHOUSE_TESTS_SHM_PRODUCER_BIN_PATH")
+    if env_path:
+        candidates.append(env_path)
+
+    server_bin_dir = p.dirname(server_bin_path)
+    build_root = p.dirname(server_bin_dir)
+    candidates.extend(
+        [
+            p.join(server_bin_dir, "shm-producer"),
+            p.join(build_root, "utils/shm-producer/shm-producer"),
+            p.join(build_root, "programs/shm-producer"),
+            shutil.which("shm-producer"),
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate and p.isfile(candidate) and os.access(candidate, os.X_OK):
+            return p.realpath(candidate)
+
+    if env_path:
+        logging.warning("CLICKHOUSE_TESTS_SHM_PRODUCER_BIN_PATH is set but not executable: %s", env_path)
+    return None
+
 DEFAULT_BASE_CONFIG_DIR = find_default_config_path()
 
 DEFAULT_THREAD_FUZZER_SETTINGS = {
@@ -6390,12 +6417,19 @@ class ClickHouseInstance:
                 net_aliases = "aliases:"
                 net_alias1 = "- " + self.hostname
 
-        if self.cluster.with_dolor:
-            binary_volume = ""
-        elif not self.with_installed_binary:
-            binary_volume = "- " + self.server_bin_path + ":/usr/bin/clickhouse:ro"
-        else:
-            binary_volume = "- " + self.server_bin_path + ":/usr/share/clickhouse_fresh:ro"
+        binary_volumes = []
+        if not self.cluster.with_dolor:
+            if not self.with_installed_binary:
+                binary_volumes.append("- " + self.server_bin_path + ":/usr/bin/clickhouse:ro")
+            else:
+                binary_volumes.append("- " + self.server_bin_path + ":/usr/share/clickhouse_fresh:ro")
+
+            shm_producer_bin_path = find_shm_producer_binary(self.server_bin_path)
+            if shm_producer_bin_path:
+                binary_volumes.append("- " + shm_producer_bin_path + ":/usr/bin/shm-producer:ro")
+            else:
+                logging.info("shm-producer binary not found; not mounting it into the integration test container")
+        binary_volume = "\n            ".join(binary_volumes)
 
         external_dirs_volumes = ""
         if self.external_dirs:

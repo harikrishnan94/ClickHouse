@@ -20,6 +20,7 @@
 #include <base/types.h>
 
 #include <atomic>
+#include <functional>
 
 namespace DB
 {
@@ -36,13 +37,17 @@ public:
     /// for POLLHUP monitoring; the caller owns and must close both fds.
     /// `out_conn_fd` is set to -1 on every throw path.
     ///
-    /// SO_RCVTIMEO/SO_SNDTIMEO of 5s guards against a producer that bound
-    /// but never sends (AF_UNIX SOCK_STREAM connect itself never blocks).
+    /// The optional cancellation callback is checked during short nonblocking
+    /// poll slices so attach cannot sit in an uninterruptible recvmsg wait.
     ///
     /// Throws `SHM_ATTACH_FAILED` for: connect failure (ENOENT, ECONNREFUSED,
-    /// EACCES, timeout), recvmsg failure/timeout, peer-close before send, or
-    /// a cmsg that is non-SCM_RIGHTS or carries 0/multiple fds.
-    static int connectAndReceiveEventFd(const String & socket_path, int & out_conn_fd);
+    /// EACCES, timeout), recvmsg failure/timeout, peer-close before send,
+    /// nonblocking setup failure on the received fd, or a cmsg that is
+    /// non-SCM_RIGHTS or carries 0/multiple fds.
+    static int connectAndReceiveEventFd(
+        const String & socket_path,
+        int & out_conn_fd,
+        const std::function<bool()> & is_cancelled = {});
 };
 
 class ControlSocketServer

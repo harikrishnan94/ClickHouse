@@ -9,13 +9,16 @@
 #include <base/getPageSize.h>
 
 #include <sys/mman.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -47,6 +50,7 @@ namespace
     /// Sleep slice for both ring-full waits and AC10 retain-release waits. Small enough that
     /// tests don't visibly slow down; large enough not to spin a CPU.
     constexpr int WAIT_SLICE_USEC = 1000;
+    constexpr int CONNECTED_SOCKET_PRUNE_INTERVAL_MS = 50;
 
     size_t alignUp(size_t value, size_t alignment) noexcept
     {
@@ -141,10 +145,37 @@ void InProcessProducer::populateHandshake()
     hs->magic.store(SHM_MAGIC, std::memory_order_release);
 }
 
+void InProcessProducer::pruneConnectedSockets() noexcept
+{
+    std::lock_guard<std::mutex> lock(connected_sockets_mutex);
+    auto it = connected_sockets.begin();
+    while (it != connected_sockets.end())
+    {
+        pollfd pfd{};
+        pfd.fd = *it;
+        pfd.events = 0;
+        const int rc = ::poll(&pfd, 1, 0);
+        if (rc > 0 && (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)))
+        {
+            ::close(*it);
+            it = connected_sockets.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+size_t InProcessProducer::connectedSocketCountForTesting() const noexcept
+{
+    std::lock_guard<std::mutex> lock(connected_sockets_mutex);
+    return connected_sockets.size();
+}
+
 void InProcessProducer::acceptLoop()
 {
     while (!shutdown_requested.load(std::memory_order_acquire))
     {
+        pruneConnectedSockets();
         int conn = control_socket->accept();
         if (conn < 0)
             return;
@@ -160,12 +191,28 @@ void InProcessProducer::acceptLoop()
             ::close(conn);
             continue;
         }
-        /// Park the accepted fd for the producer's lifetime. Closing it now would make the
+        /// Park the accepted fd while the consumer is connected. Closing it now would make the
         /// consumer's matching connection fd report POLLHUP and trigger a false-positive
-        /// SHM_PRODUCER_DEATH_BEFORE_EOS (precondition 25). The dtor closes every parked fd
-        /// after `accept_thread` is joined, so the vector is touched single-threaded only.
-        connected_sockets.push_back(conn);
+        /// SHM_PRODUCER_DEATH_BEFORE_EOS (precondition 25).
+        pruneConnectedSockets();
+        {
+            std::lock_guard<std::mutex> lock(connected_sockets_mutex);
+            connected_sockets.push_back(conn);
+        }
     }
+}
+
+void InProcessProducer::pruneLoop() noexcept
+{
+    while (!shutdown_requested.load(std::memory_order_acquire))
+    {
+        pruneConnectedSockets();
+        for (int i = 0; i < CONNECTED_SOCKET_PRUNE_INTERVAL_MS
+             && !shutdown_requested.load(std::memory_order_acquire); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    pruneConnectedSockets();
 }
 
 /// =====================================================================
@@ -241,7 +288,22 @@ InProcessProducer::InProcessProducer(Config cfg)
     ready_event = std::make_unique<EventFD>();
     control_socket = std::make_unique<ControlSocketServer>(controlSocketPathForShmName(config.shm_name));
 
-    accept_thread = std::thread([this] { acceptLoop(); });
+    try
+    {
+        accept_thread = std::thread([this] { acceptLoop(); });
+        socket_prune_thread = std::thread([this] { pruneLoop(); });
+    }
+    catch (...)
+    {
+        shutdown_requested.store(true, std::memory_order_release);
+        if (control_socket)
+            control_socket->shutdown();
+        if (accept_thread.joinable())
+            accept_thread.join();
+        if (socket_prune_thread.joinable())
+            socket_prune_thread.join();
+        throw;
+    }
 
     ready.store(true, std::memory_order_release);
 }
@@ -257,14 +319,20 @@ InProcessProducer::~InProcessProducer()
         control_socket->shutdown();
     if (accept_thread.joinable())
         accept_thread.join();
+    if (socket_prune_thread.joinable())
+        socket_prune_thread.join();
 
-    /// Close every parked consumer-connection fd. `accept_thread.join()` above guarantees no
-    /// concurrent push into the vector, so this read is single-threaded. Closing here is
-    /// what surfaces POLLHUP on the consumer side, which is *correct* — at this point the
-    /// producer really is going away.
-    for (int fd : connected_sockets)
-        ::close(fd);
-    connected_sockets.clear();
+    /// Close every parked consumer-connection fd. Prune first so long-running tests that
+    /// dropped consumers earlier do not keep already-dead peers until process exit. Closing
+    /// any remaining live fd here surfaces POLLHUP on the consumer side, which is correct:
+    /// at this point the producer really is going away.
+    pruneConnectedSockets();
+    {
+        std::lock_guard<std::mutex> lock(connected_sockets_mutex);
+        for (int fd : connected_sockets)
+            ::close(fd);
+        connected_sockets.clear();
+    }
 
     control_socket.reset();
     ready_event.reset();
@@ -345,11 +413,11 @@ void InProcessProducer::publishBlockImpl(
 
     /// Step 2: EMPTY → WRITING. No need to drive PUBLISHED → EMPTY here anymore — that
     /// transition is the consumer's responsibility per the wire contract above.
-    /// Bump `transition_counter` BEFORE the state store, with release ordering, so the
-    /// consumer's monotonicity check (precondition 24, Layout.h `SlotEntry`) observes
-    /// the new counter value at or before observing the new state on any acquire-load.
+    /// Bump `transition_counter` BEFORE the state store, with release ordering. The
+    /// consumer's precondition-24 check handles the small window where the counter is
+    /// visible before the state store by retrying briefly for the state to catch up.
     slot->transition_counter.fetch_add(1, std::memory_order_release);
-    slot->state.store(static_cast<uint32_t>(SlotState::WRITING), std::memory_order_relaxed);
+    slot->state.store(static_cast<uint32_t>(SlotState::WRITING), std::memory_order_release);
 
     /// Step 3: per-slot layout (descriptors at offset 0, payload after).
     const size_t slot_data_base = static_cast<size_t>(slot_pos) * per_slot_data_capacity;
@@ -421,6 +489,8 @@ void InProcessProducer::publishBlockImpl(
         auto & d0 = desc_array[0];
         switch (*malformation)
         {
+            case Malformation::MisalignedDescriptorOffset:
+                break;
             case Malformation::OffsetOverflow:
                 d0.value_offset = config.data_region_size;
                 break;
@@ -454,6 +524,8 @@ void InProcessProducer::publishBlockImpl(
 
     /// Slot metadata.
     slot->per_column_descriptors_offset = slot_data_base;
+    if (malformation != nullptr && *malformation == Malformation::MisalignedDescriptorOffset)
+        slot->per_column_descriptors_offset = slot_data_base + 1;
     slot->row_count = row_count;
     slot->eos_marker.store(is_eos ? 1 : 0, std::memory_order_relaxed);
 
@@ -469,12 +541,16 @@ void InProcessProducer::publishBlockImpl(
     /// counter bump with this store too (W→P transition) per Layout.h's
     /// `transition_counter` protocol; both the counter bump and the state
     /// store use release ordering, and the counter happens-before the state.
+    /// PollableShmSource tolerates the resulting short counter-before-state
+    /// propagation window with a bounded retry before declaring
+    /// precondition-24 malformed.
     slot->transition_counter.fetch_add(1, std::memory_order_release);
     slot->state.store(static_cast<uint32_t>(SlotState::PUBLISHED), std::memory_order_release);
 
     /// Step 5: notification, ordered AFTER metadata publication.
     if (ready_event)
         ready_event->write();
+    pruneConnectedSockets();
 
     ++next_publish_slot;
 }
@@ -495,8 +571,9 @@ void InProcessProducer::setSlotStateForTesting(uint32_t slot_index, SlotState ne
 {
     /// Test-only escape hatch (AC6 mid-publication crash). Mirrors the
     /// precondition-24 protocol: bump `transition_counter` BEFORE the state
-    /// store, both with release ordering, so a consumer's monotonicity check
-    /// stays valid even when this helper bypasses the normal publish flow.
+    /// store, both with release ordering. PollableShmSource's bounded retry
+    /// handles the same counter-before-state visibility window as normal
+    /// publication.
     auto * slot = slotAt(slot_index);
     slot->transition_counter.fetch_add(1, std::memory_order_release);
     slot->state.store(static_cast<uint32_t>(new_state), std::memory_order_release);

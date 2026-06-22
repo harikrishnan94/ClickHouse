@@ -2,11 +2,11 @@
 
 #if defined(OS_LINUX)
 
-#include <TableFunctions/ITableFunction.h>
+#    include <TableFunctions/ITableFunction.h>
 
-#include <base/types.h>
+#    include <base/types.h>
 
-#include <string>
+#    include <string>
 
 
 namespace DB
@@ -43,7 +43,11 @@ private:
         ColumnsDescription cached_columns,
         bool is_insert_query) const override;
 
-    const char * getStorageEngineName() const override { return "Shm"; }
+    /// StorageShm is a transient storage constructed directly by executeImpl(),
+    /// not a StorageFactory-registered engine. Returning an empty engine name
+    /// keeps ITableFunction::checkSourceAccess() from querying StorageFactory
+    /// for an engine that intentionally does not exist.
+    const char * getStorageEngineName() const override { return ""; }
 
     String shm_name;
     String columns_str;

@@ -12,18 +12,23 @@
 #include <DataTypes/DataTypeFactory.h>
 
 #include <Common/CurrentMetrics.h>
+#include <Common/ErrnoException.h>
 #include <Common/Exception.h>
 
 #include <poll.h>
 #include <unistd.h>
+#include <sys/eventfd.h>
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 
 
@@ -41,6 +46,7 @@ namespace ErrorCodes
     extern const int SHM_BLOCK_FRAMING_INVALID;
     extern const int SHM_PRODUCER_STALL;
     extern const int SHM_PRODUCER_DEATH_BEFORE_EOS;
+    extern const int SHM_ATTACH_FAILED;
 }
 
 using SharedMemoryWire::SlotEntry;
@@ -61,6 +67,16 @@ namespace
     static_assert(static_cast<uint32_t>(SlotState::WRITING) == 1);
     static_assert(static_cast<uint32_t>(SlotState::PUBLISHED) == 2);
 
+    constexpr size_t TRANSITION_STATE_RETRY_ATTEMPTS = 16;
+    constexpr int TRANSITION_STATE_RETRY_BACKOFF_US = 50;
+
+    constexpr bool isValidSlotState(uint32_t s) noexcept
+    {
+        return s == static_cast<uint32_t>(SlotState::EMPTY)
+            || s == static_cast<uint32_t>(SlotState::WRITING)
+            || s == static_cast<uint32_t>(SlotState::PUBLISHED);
+    }
+
     constexpr const char * slotStateName(uint32_t s) noexcept
     {
         switch (s)
@@ -69,6 +85,23 @@ namespace
             case static_cast<uint32_t>(SlotState::WRITING):   return "WRITING";
             case static_cast<uint32_t>(SlotState::PUBLISHED): return "PUBLISHED";
             default:                                          return "<undefined>";
+        }
+    }
+
+    void drainEventFdNoexcept(int fd) noexcept
+    {
+        if (fd < 0)
+            return;
+
+        uint64_t value = 0;
+        while (true)
+        {
+            const ssize_t r = ::read(fd, &value, sizeof(value));
+            if (r == static_cast<ssize_t>(sizeof(value)))
+                continue;
+            if (r < 0 && errno == EINTR)
+                continue;
+            return;
         }
     }
 }
@@ -93,9 +126,14 @@ PollableShmSource::PollableShmSource(
 
 PollableShmSource::~PollableShmSource()
 {
+    requestAsyncWakeBridgeStop();
+    joinAsyncWakeBridge();
+
     /// RAII: region's destructor unmaps + closes the SHM fd. The control
     /// socket fd and the eventfd we hold raw need explicit close (eventfd was
     /// passed in via SCM_RIGHTS so we own it).
+    if (async_wake_stop_fd >= 0)
+        ::close(async_wake_stop_fd);
     if (ready_event_fd >= 0)
         ::close(ready_event_fd);
     if (control_socket_fd >= 0)
@@ -121,7 +159,7 @@ void PollableShmSource::ensureAttached()
     /// shared_ptr member; the explicit move makes the ownership transfer obvious.
     /// `attach` opens the SHM RW so the control-plane writes performed by
     /// `drainSlot` (retain_refcount++) and the RetainToken deleter
-    /// (state.store(EMPTY), transition_counter++) land in the mapping.
+    /// (transition_counter++, state.store(EMPTY)) land in the mapping.
     region = std::shared_ptr<SharedMemoryRegion>(SharedMemoryRegion::attach(shm_name));
 
     const auto & hs = region->handshake();
@@ -218,14 +256,20 @@ void PollableShmSource::ensureAttached()
     /// kept open for POLLHUP-based producer-death detection (precondition 25
     /// and `shm-block-stream.md` I11).
     ready_event_fd = ControlSocketClient::connectAndReceiveEventFd(
-        controlSocketPathForShmName(shm_name), control_socket_fd);
+        controlSocketPathForShmName(shm_name),
+        control_socket_fd,
+        [this] { return cancelled.load(std::memory_order_acquire) || isCancelled(); });
+
+    async_wake_stop_fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (async_wake_stop_fd < 0)
+        throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "eventfd() failed for SHM '{}' async wake bridge", shm_name);
 
     /// Step 4: per-slot bookkeeping; sequence numbers start at 0 (first publish
     /// stores sequence=1, which precondition 10 requires to be strictly greater).
-    /// Pair the precondition-24 trackers: `transition_counter` starts at 0 (any
-    /// positive observation counts as progress) and `last_observed_state` starts
-    /// at EMPTY (= 0). EMPTY matches the ftruncate-zeroed state of an unpublished
-    /// slot, so the cycle-position check `(prev_state + delta) % 3 == obs_state`
+    /// Pair the precondition-24 trackers: `transition_counter` starts at 0 and
+    /// `last_observed_state` starts at EMPTY (= 0). EMPTY matches the
+    /// ftruncate-zeroed state of an unpublished slot, so the cycle-position
+    /// check `(prev_state + delta) % 3 == obs_state`
     /// validates cleanly on the consumer's very first scan against a fresh
     /// producer SHM.
     last_consumed_sequence.assign(hs.ring_depth_k, 0);
@@ -244,10 +288,10 @@ void PollableShmSource::ensureAttached()
 }
 
 
-SlotEntry * PollableShmSource::findNextReadySlot(bool & progress_observed)
+SlotEntry * PollableShmSource::findNextReadySlot(bool & published_transition_observed)
 {
     chassert(attached);
-    progress_observed = false;
+    published_transition_observed = false;
     const auto & hs = region->handshake();
     auto * base = const_cast<char *>(static_cast<const char *>(region->data())) + hs.slot_table_offset;
 
@@ -261,15 +305,17 @@ SlotEntry * PollableShmSource::findNextReadySlot(bool & progress_observed)
         /// Precondition 8: the state value must be a defined enumerator. acquire-load
         /// gives us the memory-ordering contract the wire promises (the producer
         /// release-stores `state` after writing the slot's payload and metadata).
-        const uint32_t state = slot->state.load(std::memory_order_acquire);
-        if (state != static_cast<uint32_t>(SlotState::EMPTY)
-            && state != static_cast<uint32_t>(SlotState::WRITING)
-            && state != static_cast<uint32_t>(SlotState::PUBLISHED))
+        auto validate_state = [&](uint32_t value)
         {
-            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
-                "SHM '{}' slot {}: observed state={} is not a defined SlotState (precondition 8)",
-                shm_name, i, state);
-        }
+            if (!isValidSlotState(value))
+            {
+                throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                    "SHM '{}' slot {}: observed state={} is not a defined SlotState (precondition 8)",
+                    shm_name, i, value);
+            }
+        };
+        uint32_t observed_state = slot->state.load(std::memory_order_acquire);
+        validate_state(observed_state);
 
         /// Precondition 24 (`pollable-shm-source.md` row 24, F4): transitions
         /// follow the publication state machine in order. The wire's per-slot
@@ -291,7 +337,7 @@ SlotEntry * PollableShmSource::findNextReadySlot(bool & progress_observed)
         /// and the cyclic check `(prev_pos + delta) % 3 != obs_pos` catches
         /// it. The enum values pinned at file scope above make `state` itself
         /// the cycle position (no separate lookup table needed).
-        const uint64_t obs_counter = slot->transition_counter.load(std::memory_order_acquire);
+        uint64_t obs_counter = slot->transition_counter.load(std::memory_order_acquire);
         const uint64_t prev_counter = last_observed_transition_counter[i];
         if (obs_counter < prev_counter)
             throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
@@ -299,25 +345,46 @@ SlotEntry * PollableShmSource::findNextReadySlot(bool & progress_observed)
                 "last={}) — precondition 24 violation (atomic single-variable "
                 "consistency forbids non-monotonic observations)",
                 shm_name, i, obs_counter, prev_counter);
-        if (obs_counter > prev_counter)
-            progress_observed = true;
-
         const uint32_t prev_state = last_observed_state[i];
-        const uint64_t delta = obs_counter - prev_counter;
-        const uint64_t expected_pos =
+        uint64_t delta = obs_counter - prev_counter;
+        uint64_t expected_pos =
             (static_cast<uint64_t>(prev_state) + delta) % 3;
-        uint32_t observed_state = state;
         if (expected_pos != static_cast<uint64_t>(observed_state))
         {
-            /// The producer's E→W transition pairs a release counter
-            /// `fetch_add` with a relaxed `state.store` (InProcessProducer
-            /// E→W path), so under weak ordering we may catch the counter
-            /// store visible but the state store not yet propagated. Re-read
-            /// `state` with acquire ordering — if it has now caught up to
-            /// the expected position the check passes (a benign in-flight
-            /// transition); only a persistent mismatch indicates a real
-            /// skip-the-state violation.
-            observed_state = slot->state.load(std::memory_order_acquire);
+            /// The wire currently commits each transition by bumping
+            /// `transition_counter` before the release-store to `state`. A
+            /// consumer can therefore observe the counter's new value while the
+            /// matching state store is still propagating. Retry a bounded number
+            /// of times with a small backoff; if the state catches up to the
+            /// cycle position implied by the counter, this was a benign
+            /// in-flight transition. If it never catches up, strict
+            /// precondition-24 still reports real state skips such as
+            /// EMPTY→PUBLISHED with only a +1 counter delta.
+            for (size_t attempt = 0; expected_pos != static_cast<uint64_t>(observed_state)
+                 && attempt < TRANSITION_STATE_RETRY_ATTEMPTS; ++attempt)
+            {
+                if (attempt == 0)
+                    std::this_thread::yield();
+                else
+                    std::this_thread::sleep_for(std::chrono::microseconds(TRANSITION_STATE_RETRY_BACKOFF_US));
+
+                observed_state = slot->state.load(std::memory_order_acquire);
+                validate_state(observed_state);
+
+                const uint64_t reread_counter = slot->transition_counter.load(std::memory_order_acquire);
+                if (reread_counter < prev_counter)
+                    throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                        "SHM '{}' slot {}: transition_counter regressed during retry (observed={}, "
+                        "last={}) — precondition 24 violation",
+                        shm_name, i, reread_counter, prev_counter);
+                if (reread_counter != obs_counter)
+                {
+                    obs_counter = reread_counter;
+                    delta = obs_counter - prev_counter;
+                    expected_pos = (static_cast<uint64_t>(prev_state) + delta) % 3;
+                }
+            }
+
             if (expected_pos != static_cast<uint64_t>(observed_state))
                 throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
                     "SHM '{}' slot {}: state-machine violation (precondition 24) — "
@@ -329,6 +396,9 @@ SlotEntry * PollableShmSource::findNextReadySlot(bool & progress_observed)
         }
         last_observed_transition_counter[i] = obs_counter;
         last_observed_state[i] = observed_state;
+
+        if (delta > 0 && observed_state == static_cast<uint32_t>(SlotState::PUBLISHED))
+            published_transition_observed = true;
 
         if (observed_state != static_cast<uint32_t>(SlotState::PUBLISHED))
             continue;
@@ -406,7 +476,12 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
     {
         if (retain_owned_here)
         {
-            slot->retain_refcount.fetch_sub(1, std::memory_order_acq_rel);
+            if (slot->retain_refcount.fetch_sub(1, std::memory_order_acq_rel) == 1)
+            {
+                slot->transition_counter.fetch_add(1, std::memory_order_release);
+                slot->state.store(static_cast<uint32_t>(SlotState::EMPTY),
+                                  std::memory_order_release);
+            }
             retain_owned_here = false;
         }
     };
@@ -430,6 +505,13 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
                 "(precondition 12)",
                 shm_name, slot->slot_index, slot->per_column_descriptors_offset,
                 full_column_types.size(), sizeof(ColumnDescriptor), hs.data_region_size);
+        }
+        if (slot->per_column_descriptors_offset % alignof(ColumnDescriptor) != 0)
+        {
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "SHM '{}' slot {}: per_column_descriptors_offset={} is not aligned to alignof(ColumnDescriptor)={} "
+                "(precondition 12)",
+                shm_name, slot->slot_index, slot->per_column_descriptors_offset, alignof(ColumnDescriptor));
         }
 
         const auto * descs = reinterpret_cast<const ColumnDescriptor *>(
@@ -503,9 +585,10 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
                 ///
                 /// Pair the P→E state store with a `transition_counter` bump per the
                 /// precondition-24 protocol (Layout.h SlotEntry). The counter bump
-                /// happens BEFORE the state store, both with release ordering, so the
-                /// producer's subsequent acquire-load of `state == EMPTY` implies the
-                /// counter update is visible to anyone (consumer side included).
+                /// happens BEFORE the state store, both with release ordering. A
+                /// subsequent consumer scan handles the short counter-before-state
+                /// propagation window with the same bounded retry used for producer
+                /// transitions.
                 if (slot_capture->retain_refcount.fetch_sub(1, std::memory_order_acq_rel) == 1)
                 {
                     slot_capture->transition_counter.fetch_add(1, std::memory_order_release);
@@ -623,13 +706,12 @@ std::optional<Chunk> PollableShmSource::tryGenerate()
     if (!attached)
         ensureAttached();
 
-    bool progress_observed = false;
-    auto * slot = findNextReadySlot(progress_observed);
-    /// I12 + F5: any positive `transition_counter` delta is producer-progress
-    /// evidence, even when no slot reached PUBLISHED this scan. Reset the stall
-    /// timer here so a producer that is actively cycling slots (E→W→P→E→W ...)
-    /// against an in-flight retain alias doesn't appear stalled.
-    if (progress_observed)
+    bool published_transition_observed = false;
+    auto * slot = findNextReadySlot(published_transition_observed);
+    /// I12 + F2: only publication progress resets the stall timer. E→W means
+    /// the producer started writing, and P→E is consumer release; neither can
+    /// indefinitely extend the producer's stall budget.
+    if (published_transition_observed)
         stall_timer.restart();
     if (slot != nullptr)
     {
@@ -662,6 +744,7 @@ std::optional<Chunk> PollableShmSource::tryGenerate()
         return std::nullopt;
 
     is_async_state = true;
+    startAsyncWakeBridge();
     return Chunk{};
 }
 
@@ -692,10 +775,9 @@ void PollableShmSource::onAsyncJobReady()
     /// next prepare()/tryGenerate() will pick up cancellation, EOS, or
     /// producer-death classification.
     ///
-    /// F5: do NOT reset the stall timer here. Per spec I12, publication progress
-    /// is defined as a slot transitioning to PUBLISHED (with the `transition_counter`
-    /// delta picking up the broader "producer cycled a slot" case in
-    /// `findNextReadySlot`). A spurious wake — eventfd readability without a
+    /// F5/F2: do NOT reset the stall timer here. Per spec I12, publication
+    /// progress is a transition observation that lands in PUBLISHED or an
+    /// actual drain. A spurious wake — eventfd readability without a
     /// corresponding publication — must NOT count as progress, otherwise a
     /// pathological producer can spin the eventfd write indefinitely and the
     /// stall timer never trips.
@@ -710,6 +792,7 @@ void PollableShmSource::onAsyncJobReady()
         /// Non-blocking eventfd was already drained — benign no-op.
     }
 
+    requestAsyncWakeBridgeStop();
     is_async_state = false;
 }
 
@@ -732,9 +815,130 @@ void PollableShmSource::onCancel() noexcept
     /// `cancelled.store(true)` above, and the executor's next poll will see
     /// `prepare()` short-circuit on that flag without needing a wake.
     if (ready_event_fd >= 0)
+        wakeReadyEvent();
+    requestAsyncWakeBridgeStop();
+}
+
+
+void PollableShmSource::wakeReadyEvent() const noexcept
+{
+    if (ready_event_fd < 0)
+        return;
+
+    const uint64_t one = 1;
+    ssize_t w;
+    do
+    {
+        w = ::write(ready_event_fd, &one, sizeof(one));
+    } while (w < 0 && errno == EINTR);
+}
+
+
+void PollableShmSource::requestAsyncWakeBridgeStop() noexcept
+{
+    async_wake_bridge_stop.store(true, std::memory_order_release);
+
+    if (async_wake_stop_fd >= 0)
     {
         const uint64_t one = 1;
-        [[maybe_unused]] ssize_t w = ::write(ready_event_fd, &one, sizeof(one));
+        ssize_t w;
+        do
+        {
+            w = ::write(async_wake_stop_fd, &one, sizeof(one));
+        } while (w < 0 && errno == EINTR);
+    }
+}
+
+
+void PollableShmSource::joinAsyncWakeBridge() noexcept
+{
+    if (async_wake_thread.joinable())
+        async_wake_thread.join();
+}
+
+
+void PollableShmSource::startAsyncWakeBridge()
+{
+    requestAsyncWakeBridgeStop();
+    joinAsyncWakeBridge();
+
+    drainEventFdNoexcept(async_wake_stop_fd);
+    async_wake_bridge_stop.store(false, std::memory_order_release);
+
+    const uint64_t elapsed = stall_timer.elapsedMilliseconds();
+    const uint64_t initial_timeout_ms = elapsed >= stall_timeout_ms ? 0 : stall_timeout_ms - elapsed;
+    async_wake_thread = std::thread([this, initial_timeout_ms] { asyncWakeBridgeLoop(initial_timeout_ms); });
+}
+
+
+void PollableShmSource::asyncWakeBridgeLoop(uint64_t initial_timeout_ms) noexcept
+{
+    const int control_fd = control_socket_fd;
+    const int stop_fd = async_wake_stop_fd;
+    uint64_t remaining_ms = initial_timeout_ms;
+    auto last_check = std::chrono::steady_clock::now();
+
+    while (!async_wake_bridge_stop.load(std::memory_order_acquire))
+    {
+        if (remaining_ms == 0)
+        {
+            wakeReadyEvent();
+            return;
+        }
+
+        pollfd fds[2]{};
+        nfds_t nfds = 0;
+        if (control_fd >= 0)
+        {
+            fds[nfds].fd = control_fd;
+            fds[nfds].events = 0;
+            ++nfds;
+        }
+        if (stop_fd >= 0)
+        {
+            fds[nfds].fd = stop_fd;
+            fds[nfds].events = POLLIN;
+            ++nfds;
+        }
+
+        const int timeout_ms = remaining_ms > static_cast<uint64_t>(INT_MAX)
+            ? INT_MAX
+            : static_cast<int>(remaining_ms);
+
+        const int rc = ::poll(fds, nfds, timeout_ms);
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t elapsed_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_check).count());
+        last_check = now;
+        remaining_ms = elapsed_ms >= remaining_ms ? 0 : remaining_ms - elapsed_ms;
+
+        if (rc < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            wakeReadyEvent();
+            return;
+        }
+
+        if (rc == 0)
+        {
+            if (remaining_ms == 0)
+                wakeReadyEvent();
+            else
+                continue;
+            return;
+        }
+
+        for (nfds_t i = 0; i < nfds; ++i)
+        {
+            if (fds[i].fd == stop_fd && (fds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
+                return;
+            if (fds[i].fd == control_fd && (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)))
+            {
+                wakeReadyEvent();
+                return;
+            }
+        }
     }
 }
 

@@ -11,6 +11,7 @@
 #include <Columns/IColumn.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <Common/CurrentMetrics.h>
 #include <Common/Exception.h>
 
 #include <atomic>
@@ -32,6 +33,12 @@ namespace DB::ErrorCodes
     extern const int SHM_BUFFER_LAYOUT_INVALID;
 }
 
+namespace CurrentMetrics
+{
+    extern const Metric ShmAdoptedBytesCurrent;
+    extern const Metric ShmAdoptedBytesLogicalCurrent;
+}
+
 
 namespace
 {
@@ -51,7 +58,7 @@ struct AdoptFixture
     alignas(64) std::vector<char> region;
     int retain_witness = 0;
     int charge_witness_counter = 0; // counts ChargeHandle dtor invocations (release()).
-    std::atomic<int64_t> tracker_counter{0};
+    std::shared_ptr<AdoptedByteState> charge_state = std::make_shared<AdoptedByteState>();
 
     std::vector<UInt64> id_values{10, 20, 30, 40, 50};
     std::vector<std::string> str_values{"", "a", "bb", "ccc", "dddd"};
@@ -128,16 +135,18 @@ struct AdoptFixture
         return makeRetainToken([this]() noexcept { ++retain_witness; });
     }
 
-    ChargeHandle makeCharge()
+    ChargeHandle makeCharge() const
     {
-        /// Pre-bump the counter so the ChargeHandle's dtor decrements it back to zero.
-        /// (The dtor releases against the captured tracker — nullptr here, so it falls back
-        /// to CurrentMemoryTracker::free which is a no-op in a gtest binary without
-        /// MainThreadStatus — then atomically fetch_subs this counter.)
+        /// Pre-bump the counters so the ChargeHandle's dtor decrements them back to zero.
+        /// (There is no captured query group here, so the dtor falls back to
+        /// CurrentMemoryTracker::free which is a no-op in a gtest binary without
+        /// MainThreadStatus — then atomically fetch_subs this shared counter state.)
         constexpr int64_t bytes = 1024;
-        tracker_counter.fetch_add(bytes, std::memory_order_acq_rel);
-        return ChargeHandle{static_cast<size_t>(bytes), static_cast<size_t>(bytes),
-                            &tracker_counter, /*tracker_at_charge=*/nullptr};
+        charge_state->charged_current.fetch_add(bytes, std::memory_order_acq_rel);
+        charge_state->logical_current.fetch_add(bytes, std::memory_order_acq_rel);
+        CurrentMetrics::add(CurrentMetrics::ShmAdoptedBytesCurrent, bytes);
+        CurrentMetrics::add(CurrentMetrics::ShmAdoptedBytesLogicalCurrent, bytes);
+        return ChargeHandle{static_cast<size_t>(bytes), static_cast<size_t>(bytes), charge_state};
     }
 };
 
@@ -200,8 +209,9 @@ TEST(AdoptionLayer, RetainSharedAcrossAllColumns)
     EXPECT_EQ(f.retain_witness, 0);
     cols.clear();
     EXPECT_EQ(f.retain_witness, 1);
-    /// Charge counter is also released (ChargeHandle's dtor decremented tracker_counter).
-    EXPECT_EQ(f.tracker_counter.load(), 0);
+    /// Charge counters are also released (ChargeHandle's dtor decremented charge_state).
+    EXPECT_EQ(f.charge_state->charged_current.load(), 0);
+    EXPECT_EQ(f.charge_state->logical_current.load(), 0);
 }
 
 
@@ -218,7 +228,8 @@ TEST(AdoptionLayer, MisalignedUInt64DescriptorRejected)
         DB::Exception);
     /// Both handles released on the exception path (RAII rollback).
     EXPECT_EQ(f.retain_witness, 1);
-    EXPECT_EQ(f.tracker_counter.load(), 0);
+    EXPECT_EQ(f.charge_state->charged_current.load(), 0);
+    EXPECT_EQ(f.charge_state->logical_current.load(), 0);
 }
 
 
@@ -233,7 +244,8 @@ TEST(AdoptionLayer, MisalignedStringOffsetsRejected)
               AdoptFixture::ROWS, f.makeRetain(), f.makeCharge()),
         DB::Exception);
     EXPECT_EQ(f.retain_witness, 1);
-    EXPECT_EQ(f.tracker_counter.load(), 0);
+    EXPECT_EQ(f.charge_state->charged_current.load(), 0);
+    EXPECT_EQ(f.charge_state->logical_current.load(), 0);
 }
 
 
@@ -411,7 +423,8 @@ TEST(AdoptionLayer, StringOffsetsOffsetTooSmallRejected)
               AdoptFixture::ROWS, f.makeRetain(), f.makeCharge()),
         DB::Exception);
     EXPECT_EQ(f.retain_witness, 1);
-    EXPECT_EQ(f.tracker_counter.load(), 0);
+    EXPECT_EQ(f.charge_state->charged_current.load(), 0);
+    EXPECT_EQ(f.charge_state->logical_current.load(), 0);
 }
 
 
@@ -435,5 +448,6 @@ TEST(AdoptionLayer, StringSentinelNonZeroRejected)
               AdoptFixture::ROWS, f.makeRetain(), f.makeCharge()),
         DB::Exception);
     EXPECT_EQ(f.retain_witness, 1);
-    EXPECT_EQ(f.tracker_counter.load(), 0);
+    EXPECT_EQ(f.charge_state->charged_current.load(), 0);
+    EXPECT_EQ(f.charge_state->logical_current.load(), 0);
 }
