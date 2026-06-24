@@ -151,6 +151,15 @@ public:
 
     MutableColumnPtr cloneResized(size_t to_size) const override;
 
+    /// See IColumn::convertToFullColumnIfAdopted. Materialize an owned copy when this
+    /// column wraps zero-copy adopted SHM chars/offsets; otherwise return itself.
+    ColumnPtr convertToFullColumnIfAdopted() const override
+    {
+        if (adoption_)
+            return cloneResized(size());
+        return this->getPtr();
+    }
+
     Field operator[](size_t n) const override
     {
         chassert(n < size());

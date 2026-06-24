@@ -119,6 +119,44 @@ TEST(ColumnVectorAdopted, NonConstGetDataThrows)
     EXPECT_THROW(col->getData(), DB::Exception);
 }
 
+TEST(ColumnVectorAdopted, ConvertToFullColumnIfAdoptedMaterializesAtRefcountOne)
+{
+    AdoptedFixture f;
+    /// Regression for the JOIN-over-streamed_table() crash: the squashing accumulator
+    /// (Squashing.cpp) holds the ONLY reference to a freshly-detached chunk column
+    /// (refcount 1), where IColumn::mutate() is a no-op (COW::shallowMutate only clones
+    /// at use_count>1). convertToFullColumnIfAdopted() must still return an OWNED column
+    /// so the subsequent reserve()/insertRangeFrom() does not throw READONLY. (The
+    /// pre-existing CowMutateMaterializes test only covers refcount>=2.)
+    ColumnPtr adopted = f.makeColumn();
+    EXPECT_EQ(adopted->use_count(), 1u);
+
+    ColumnPtr full = adopted->convertToFullColumnIfAdopted();
+    const auto & cv = assert_cast<const ColumnVector<UInt64> &>(*full);
+    /// Distinct, heap-owned buffer (not the producer pointer); values preserved.
+    EXPECT_NE(cv.getData().data(), f.data_ptr);
+    EXPECT_EQ(cv.size(), AdoptedFixture::N);
+    for (size_t i = 0; i < AdoptedFixture::N; ++i)
+        EXPECT_EQ(cv.getElement(i), i * 31 + 7);
+
+    /// Mutable: reserve() (which threw READONLY in the bug) now succeeds.
+    auto mut = IColumn::mutate(std::move(full));
+    EXPECT_NO_THROW(mut->reserve(AdoptedFixture::N + 16));
+    EXPECT_NO_THROW(assert_cast<ColumnVector<UInt64> &>(*mut).getData().push_back(12345));
+}
+
+TEST(ColumnVectorAdopted, ConvertToFullColumnIfAdoptedIsNoOpForOwned)
+{
+    /// Non-adopted column: convertToFullColumnIfAdopted() returns the SAME object
+    /// (no copy), so non-SHM squashing pipelines are unaffected.
+    auto owned = ColumnVector<UInt64>::create();
+    owned->getData().push_back(1);
+    owned->getData().push_back(2);
+    ColumnPtr p = std::move(owned);
+    ColumnPtr full = p->convertToFullColumnIfAdopted();
+    EXPECT_EQ(full.get(), p.get());
+}
+
 TEST(ColumnVectorAdopted, DirectPodArrayMutationThrows)
 {
     /// Defense in depth: even if a caller reaches past the column-level guard via const_cast,

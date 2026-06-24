@@ -139,6 +139,16 @@ public:
     /// If column is ColumnReplicated, transforms it to full column.
     [[nodiscard]] virtual Ptr convertToFullColumnIfReplicated() const { return getPtr(); }
 
+    /// If the column wraps zero-copy adopted (producer-owned SHM) memory, return an
+    /// owned, heap-materialized copy; otherwise return itself. Needed before a column
+    /// is used as an in-place mutation TARGET (e.g. the squashing accumulator): an
+    /// adopted column is read-only, and IColumn::mutate() is a no-op at refcount 1, so
+    /// it would otherwise leave the adopted column in place and the next non-const
+    /// accessor (reserve/insertRangeFrom) would throw READONLY. No-op (returns itself)
+    /// for non-adopted columns, so non-SHM pipelines are unaffected. Overridden by the
+    /// adoptable column types (ColumnVector, ColumnDecimal, ColumnString).
+    [[nodiscard]] virtual Ptr convertToFullColumnIfAdopted() const { return getPtr(); }
+
     [[nodiscard]] virtual Ptr convertToFullIfNeeded() const
     {
         Ptr converted = convertToFullColumnIfConst()

@@ -335,7 +335,17 @@ Chunk Squashing::squash(ChunksWithOffsetsAndLengths && input_data)
         }
 
         for (auto & column : columns)
+        {
+            /// The first chunk's columns become the in-place squash accumulator. A
+            /// zero-copy adopted (read-only SHM) column cannot be mutated, and
+            /// IColumn::mutate() is a no-op at refcount 1, so it would leave the
+            /// adopted column in place and the prepareForSquashing()/insertRangeFrom()
+            /// below would throw READONLY. Materialize an owned copy first (no-op for
+            /// non-adopted columns). The appended source columns (chunks 1..N) are read
+            /// through const insertRangeFrom and need no materialization.
+            column = column->convertToFullColumnIfAdopted();
             mutable_columns.push_back(IColumn::mutate(std::move(column)));
+        }
     }
 
     size_t num_columns = mutable_columns.size();

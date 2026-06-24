@@ -169,6 +169,15 @@ public:
 
     MutableColumnPtr cloneResized(size_t size) const final;
 
+    /// See IColumn::convertToFullColumnIfAdopted. Materialize an owned copy when this
+    /// column wraps zero-copy adopted SHM memory; otherwise return itself.
+    ColumnPtr convertToFullColumnIfAdopted() const override
+    {
+        if (adoption_)
+            return cloneResized(data.size());
+        return this->getPtr();
+    }
+
     Field operator[](size_t n) const final { return DecimalField<ValueType>(data[n], scale); }
     void get(size_t n, Field & res) const final { res = (*this)[n]; }
     void getValueNameImpl(WriteBufferFromOwnString & name_buf, size_t n, const IColumn::Options &options) const final;

@@ -286,6 +286,15 @@ public:
 
     MutableColumnPtr cloneResized(size_t size) const override;
 
+    /// See IColumn::convertToFullColumnIfAdopted. cloneResized materializes a fully
+    /// owned (non-adopted) copy; a no-op clone is avoided for the common owned case.
+    ColumnPtr convertToFullColumnIfAdopted() const override
+    {
+        if (adoption_)
+            return cloneResized(data.size());
+        return this->getPtr();
+    }
+
     Field operator[](size_t n) const override
     {
         chassert(n < data.size()); /// This assert is more strict than the corresponding assert inside PODArray.
