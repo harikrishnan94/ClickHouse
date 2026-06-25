@@ -59,7 +59,12 @@ inline constexpr uint32_t IMPL_MAX_ROWS_PER_BLOCK = 1u << 20;
 
 /// Implementation-defined upper bound on `HandshakeRegion::schema_count`.
 /// Bounds the schema table footprint (`schema_count * sizeof(SchemaEntry)`).
-inline constexpr uint32_t IMPL_MAX_COLUMNS = 64;
+/// Raised 64->128 for wide projections (ClickBench Q24 `SELECT *` over the
+/// 105-column `hits`). Must match the producer's SHM_IMPL_MAX_COLS. Pure
+/// validation bound: the schema table and per-column descriptor arrays are sized
+/// dynamically by `schema_count`, never a fixed `[64]` array, so raising it is
+/// ABI-compatible (a 64-column stream still validates under a 128 cap).
+inline constexpr uint32_t IMPL_MAX_COLUMNS = 128;
 
 /// Safe-read padding required by ClickHouse's column-storage contract
 /// (`PaddedPODArray<T>` contract). This matches `PADDING_FOR_SIMD` defined in
