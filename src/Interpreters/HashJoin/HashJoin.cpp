@@ -115,6 +115,16 @@ Block materializeColumnsFromRightBlock(Block block, const Block & sample_block, 
                 column.type = removeLowCardinality(column.type);
             }
 
+            /// A zero-copy *adopted* column (e.g. a streamed_table() SHM source) aliases a
+            /// slot in a bounded producer ring. The hash join keeps right-side blocks for the
+            /// whole query, so retaining an adopted column here pins that ring slot until the
+            /// query ends. With a ring of only K slots the producer blocks on slot reuse once
+            /// the build outgrows the ring, and the query deadlocks (read_rows frozen ->
+            /// SHM_PRODUCER_STALL). Materialise an owned copy so the build side never holds an
+            /// SHM slot; the source releases the slot as soon as the next block is pulled. This
+            /// is a no-op for non-adopted columns. (The probe/left side stays zero-copy.)
+            actual_column = actual_column->convertToFullColumnIfAdopted();
+
             column.column = actual_column;
 
             if (sample_column.column->isNullable())

@@ -361,4 +361,118 @@ TEST(Ac3AdoptionProof, EveryColumnAdoptedAcrossManyBlocks)
     }
 }
 
+
+/// Build-side retention regression for the Q8/Q9/Q11/Q14 hash-join-build deadlock.
+///
+/// The hash join keeps its RIGHT (build) blocks for the lifetime of the query. If it
+/// retained the zero-copy *adopted* columns the source emits, each retained block would
+/// pin a slot in the producer's bounded K-slot ring; once the build outgrows the ring
+/// the producer blocks forever in publish_block waiting for an EMPTY slot and the query
+/// deadlocks (read_rows frozen -> SHM_PRODUCER_STALL). The fix
+/// (HashJoin::materializeColumnsFromRightBlock -> IColumn::convertToFullColumnIfAdopted)
+/// copies build-side adopted columns into owned memory so the ring slot is released as
+/// soon as the next block is pulled.
+///
+/// This test reproduces the BUILD pattern (retain every block, like the hash table)
+/// over a deliberately small K=4 ring with NUM_BLOCKS (=120) >> K. It proves that
+/// retaining the *materialised* columns drains the ring (the producer publishes all 120
+/// blocks and the producer thread joins -- it would block forever if a retained block
+/// pinned a slot), and that every retained column is OWNED (not adopted). A
+/// finite stall timeout on the source means a regression surfaces as a thrown
+/// SHM_PRODUCER_STALL rather than a silent hang. The complementary consume-and-release
+/// (probe) pattern is covered by EveryColumnAdoptedAcrossManyBlocks above; the end-to-end
+/// hash-join code path is covered by the TPC-H Q8/Q9/Q11/Q14 offload oracle.
+TEST(Ac3AdoptionProof, BuildSideRetainedAdoptedColumnsAreMaterializedAndDrainTheRing)
+{
+    const std::string shm_name = "test_ac3_build_" + std::to_string(::getpid());
+
+    InProcessProducer::Config cfg;
+    cfg.shm_name = shm_name;
+    cfg.ring_depth_k = RING_DEPTH;          // 4 slots — far smaller than NUM_BLOCKS (120)
+    cfg.schema = {{"id", "UInt64"}, {"v1", "UInt64"}, {"v2", "UInt64"},
+                  {"s1", "String"}, {"s2", "String"}};
+    cfg.data_region_size = 4 * 1024 * 1024;
+    InProcessProducer producer(std::move(cfg));
+    ASSERT_TRUE(producer.isReady());
+
+    std::thread producer_thread([&]
+    {
+        std::mt19937_64 rng(0xB011DEADBEEFULL); // NOLINT(cert-msc32-c, cert-msc51-cpp)
+        BlockBuffers bb;
+        for (size_t b = 0; b < NUM_BLOCKS; ++b)
+        {
+            fillRandomBlock(bb, b, rng);
+            producer.publishBlock(toPayloads(bb), ROWS_PER_BLOCK);
+        }
+        producer.signalEndOfStream();
+    });
+
+    auto source = std::make_shared<PollableShmSource>(
+        makeAc1Header(), shm_name,
+        std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(),
+                                  std::make_shared<DataTypeUInt64>(),
+                                  std::make_shared<DataTypeUInt64>(),
+                                  std::make_shared<DataTypeString>(),
+                                  std::make_shared<DataTypeString>()},
+        std::vector<String>{"id", "v1", "v2", "s1", "s2"},
+        std::vector<String>{"id", "v1", "v2", "s1", "s2"},
+        /*stall_timeout_ms=*/30'000);
+    QueryPipeline pipeline(source);
+    PullingPipelineExecutor executor(pipeline);
+
+    /// Emulate the hash-join build: keep every block for the whole "query", but
+    /// materialise adopted columns first (exactly what the fix does).
+    std::vector<Columns> retained_build_side;
+    size_t total_chunks = 0;
+    size_t total_rows = 0;
+
+    /// Scope the pulled chunk so the LAST block's (zero-copy) chunk is destroyed
+    /// before we assert on slot refcounts below — otherwise the in-scope `chunk`
+    /// would still pin its slot. The retained build side holds only materialised
+    /// (owned) columns, which alias no ring slot.
+    {
+        Chunk chunk;
+        while (executor.pull(chunk))
+        {
+            if (chunk.getNumRows() == 0)
+                continue;
+
+            Columns cols = chunk.getColumns();
+            Columns owned;
+            owned.reserve(cols.size());
+            for (const auto & col : cols)
+            {
+            /// Exactly what HashJoin::materializeColumnsFromRightBlock now does for the
+            /// build side: copy an adopted (SHM-backed) column into owned memory (no-op
+            /// for an already-owned column). If this fails to materialise, the retained
+            /// column keeps aliasing its ring slot; with K=4 slots and 120 blocks the
+            /// producer deadlocks and `executor.pull` below throws SHM_PRODUCER_STALL at
+            /// the source's 30s budget (i.e. a regression fails this test, never hangs it).
+                owned.push_back(col->convertToFullColumnIfAdopted());
+            }
+            retained_build_side.push_back(std::move(owned));
+            total_rows += chunk.getNumRows();
+            ++total_chunks;
+        }
+    }
+
+    /// The producer published all 120 blocks through a 4-slot ring and reached EOS —
+    /// only possible if the retained (materialised) build side released each slot.
+    producer_thread.join();
+    EXPECT_EQ(total_chunks, NUM_BLOCKS);
+    EXPECT_EQ(total_rows, NUM_BLOCKS * ROWS_PER_BLOCK);
+    EXPECT_EQ(retained_build_side.size(), NUM_BLOCKS);
+
+    /// All ring slots released despite the whole build side still being retained.
+    auto region_inspect = SharedMemoryRegion::attach(shm_name);
+    ASSERT_NE(region_inspect, nullptr);
+    const auto & hs = region_inspect->handshake();
+    for (uint32_t i = 0; i < hs.ring_depth_k; ++i)
+    {
+        const auto * slot = slotPtr(*region_inspect, i);
+        EXPECT_EQ(slot->retain_refcount.load(std::memory_order_acquire), 0u)
+            << "slot " << i << ": retain_refcount still held while build side retained";
+    }
+}
+
 #endif
