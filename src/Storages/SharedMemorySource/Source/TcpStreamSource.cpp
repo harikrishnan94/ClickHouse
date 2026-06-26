@@ -46,8 +46,8 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
-#include <sys/eventfd.h>
-#include <poll.h>
+#include <sys/epoll.h>
+#include <sys/timerfd.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -123,7 +123,9 @@ namespace
         return buffer;
     }
 
-    void drainEventFd(int fd) noexcept
+    /// Drain an 8-byte-counter fd (the timerfd) to clear its level-triggered readiness; idempotent
+    /// (returns EAGAIN when not fired). Branch C1: replaces drainEventFd (the readiness eventfd is gone).
+    void drainCounterFd(int fd) noexcept
     {
         if (fd < 0)
             return;
@@ -131,6 +133,10 @@ namespace
         ssize_t r;
         do { r = ::read(fd, &buf, sizeof(buf)); } while (r > 0 || (r < 0 && errno == EINTR));
     }
+
+    /// Branch C1 test-hook counters (H15): process-global; see TcpStreamSource.h for semantics.
+    std::atomic<uint64_t> g_async_wait_count{0};
+    std::atomic<uint64_t> g_threads_spawned{0};   /// bump at ANY std::thread ctor in this TU (post-C1: none)
 
 #if USE_ARROW
     /// Branch-A COPYING decode of one Arrow column into a freshly-allocated, owned ClickHouse column
@@ -332,19 +338,18 @@ TcpStreamSource::TcpStreamSource(
 
 TcpStreamSource::~TcpStreamSource()
 {
-    requestAsyncWakeBridgeStop();
-    joinAsyncWakeBridge();
     if (pending_buf != nullptr)
         freeAligned(pending_buf);
-    /// exchange(-1) before close so a concurrent onCancel() shutdown() cannot double-act on the fd.
-    /// (The bridge is already joined above, so only onCancel can still touch sock_fd here.)
+    /// Branch C1: no bridge thread to join. Close the epoll fd first (auto-removes its registrations),
+    /// then the timerfd, then the socket. exchange(-1) on sock_fd before close so a concurrent
+    /// onCancel() shutdown() (only sock_fd is touched cross-thread) cannot double-act on the fd.
+    if (epoll_fd >= 0)
+        ::close(epoll_fd);
+    if (timerfd >= 0)
+        ::close(timerfd);
     const int fd_to_close = sock_fd.exchange(-1, std::memory_order_acq_rel);
     if (fd_to_close >= 0)
         ::close(fd_to_close);
-    if (ready_event_fd >= 0)
-        ::close(ready_event_fd);
-    if (async_wake_stop_fd >= 0)
-        ::close(async_wake_stop_fd);
 }
 
 
@@ -504,17 +509,31 @@ void TcpStreamSource::ensureConnected()
 
     if (async)
     {
-        /// Switch to non-blocking for the resumable recv state machine, and create the readiness
-        /// eventfd (schedule() returns it) + the bridge stop eventfd.
+        /// Branch C1: switch to non-blocking for the resumable recv state machine, then build the
+        /// source-owned epoll fd that schedule() returns. Into it register the socket
+        /// (EPOLLIN|EPOLLRDHUP|EPOLLERR) and a one-shot timerfd (the stall-budget alarm). Both are
+        /// LEVEL-triggered (Epoll.cpp; no EPOLLET), so each wake must drain them (H2). No eventfd / thread.
         int flags = ::fcntl(fd, F_GETFL, 0);
         if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
             throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': fcntl(O_NONBLOCK) failed", host, port);
-        ready_event_fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-        if (ready_event_fd < 0)
-            throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': eventfd() failed", host, port);
-        async_wake_stop_fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-        if (async_wake_stop_fd < 0)
-            throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': stop eventfd() failed", host, port);
+
+        epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
+        if (epoll_fd < 0)
+            throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': epoll_create1() failed", host, port);
+        timerfd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        if (timerfd < 0)
+            throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': timerfd_create() failed", host, port);
+
+        epoll_event sev{};
+        sev.events = EPOLLIN | EPOLLRDHUP | EPOLLERR;
+        sev.data.fd = fd;
+        if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &sev) < 0)
+            throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': epoll_ctl(ADD sock) failed", host, port);
+        epoll_event tev{};
+        tev.events = EPOLLIN;
+        tev.data.fd = timerfd;
+        if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timerfd, &tev) < 0)
+            throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': epoll_ctl(ADD timer) failed", host, port);
     }
 
     connected = true;
@@ -1173,12 +1192,13 @@ std::optional<Chunk> TcpStreamSource::tryGenerate()
     /// path resets it (else prepare() below would keep returning Async forever). The single-threaded
     /// PullingPipelineExecutor runs work() directly on a ready async node and NEVER calls
     /// onAsyncJobReady (that is only the multi-threaded processAsyncTasks monitor's job), so we MUST
-    /// drain the readiness eventfd + stop the one-shot bridge here, or the level-triggered fd stays
-    /// readable and the executor hot-spins. Idempotent with onAsyncJobReady (the guard no-ops it).
+    /// drain the timerfd here to clear its level-triggered readiness in the epoll fd, or the epoll fd
+    /// stays readable and the executor hot-spins (H2). The recv loop below then drives the socket to
+    /// EAGAIN, clearing the socket's readiness too; only then may we re-arm + re-park. Idempotent with
+    /// onAsyncJobReady (drainCounterFd no-ops when the timerfd has not fired).
     if (is_async_state)
     {
-        drainEventFd(ready_event_fd);
-        requestAsyncWakeBridgeStop();
+        drainCounterFd(timerfd);
         is_async_state = false;
     }
 
@@ -1236,8 +1256,9 @@ std::optional<Chunk> TcpStreamSource::tryGenerate()
             host, port, stall_timer.elapsedMilliseconds(), stall_timeout_ms);
 
     is_async_state = true;
-    startAsyncWakeBridge();
-    return Chunk{};   /// non-EOS empty Chunk → ISource yields; prepare() will return Async
+    g_async_wait_count.fetch_add(1, std::memory_order_relaxed);   /// H15 test hook: an async park happened
+    armStallTimer();   /// re-arm the one-shot stall alarm; socket is already EAGAIN (drained above, H2)
+    return Chunk{};    /// non-EOS empty Chunk → ISource yields; prepare() will return Async
 }
 
 
@@ -1258,17 +1279,22 @@ ISource::Status TcpStreamSource::prepare()
 
 int TcpStreamSource::schedule()
 {
-    chassert(ready_event_fd >= 0);
-    return ready_event_fd;
+    /// Branch C1: the source-owned epoll fd aggregating {sock_fd, timerfd}. The executor registers it
+    /// LEVEL-triggered (Epoll.cpp; scheduleForEvent default {schedule(), EPOLLIN|EPOLLERR}); it is
+    /// EPOLLIN-readable whenever the socket has data/RDHUP/err OR the stall timerfd has fired. H2: the
+    /// wake handler (tryGenerate early-path / onAsyncJobReady) drains BOTH before re-returning Async.
+    chassert(epoll_fd >= 0);
+    return epoll_fd;
 }
 
 
 void TcpStreamSource::onAsyncJobReady()
 {
-    /// Drain the readiness eventfd and hand control back immediately; stop the (one-shot) bridge and
-    /// leave the async state so the next prepare() returns Ready → work() → tryGenerate() resumes recv.
-    drainEventFd(ready_event_fd);
-    requestAsyncWakeBridgeStop();
+    /// Multi-threaded executor wake hook (the single-threaded PullingPipelineExecutor never calls this —
+    /// tryGenerate's early-path does the equivalent). Clear the timerfd's level-triggered readiness and
+    /// leave the async state so the next prepare() returns Ready → work() → tryGenerate() drives recv to
+    /// EAGAIN (clearing the socket readiness). Idempotent with the tryGenerate early-path (H2).
+    drainCounterFd(timerfd);
     is_async_state = false;
 }
 
@@ -1276,115 +1302,40 @@ void TcpStreamSource::onAsyncJobReady()
 void TcpStreamSource::onCancel() noexcept
 {
     cancelled.store(true, std::memory_order_release);
-    /// Wake any executor wait on the readiness fd, stop the bridge, and unblock a pending blocking
-    /// handshake recv (SHUT_RDWR makes recv return promptly; the recv loops then observe `cancelled`).
-    wakeReadyEvent();
-    requestAsyncWakeBridgeStop();
+    /// Branch C1: cancellation is SOLELY `::shutdown(sock_fd, SHUT_RDWR)`. When async-parked the socket is
+    /// registered in the epoll fd, so shutdown makes it readable/RDHUP → the epoll fd fires → the executor
+    /// wakes → tryGenerate observes `cancelled` and finishes. During connect/handshake the executor is
+    /// inside ensureConnected (NOT parked on the epoll fd, which does not exist yet); shutdown makes the
+    /// blocking handshake recv return promptly and the connect/recv loops poll `cancelled` each slice.
     const int fd = sock_fd.load(std::memory_order_acquire);
     if (fd >= 0)
         ::shutdown(fd, SHUT_RDWR);
 }
 
 
-void TcpStreamSource::wakeReadyEvent() const noexcept
+void TcpStreamSource::armStallTimer() noexcept
 {
-    if (ready_event_fd < 0)
+    if (timerfd < 0)
         return;
-    const uint64_t one = 1;
-    ssize_t w;
-    do { w = ::write(ready_event_fd, &one, sizeof(one)); } while (w < 0 && errno == EINTR);
-}
-
-
-void TcpStreamSource::requestAsyncWakeBridgeStop() noexcept
-{
-    async_wake_bridge_stop.store(true, std::memory_order_release);
-    if (async_wake_stop_fd < 0)
-        return;
-    const uint64_t one = 1;
-    ssize_t w;
-    do { w = ::write(async_wake_stop_fd, &one, sizeof(one)); } while (w < 0 && errno == EINTR);
-}
-
-
-void TcpStreamSource::joinAsyncWakeBridge() noexcept
-{
-    if (async_wake_thread.joinable())
-        async_wake_thread.join();
-}
-
-
-void TcpStreamSource::startAsyncWakeBridge()
-{
-    /// Stop + join any previous (one-shot, likely already-returned) bridge, then arm a fresh one.
-    requestAsyncWakeBridgeStop();
-    joinAsyncWakeBridge();
-    drainEventFd(async_wake_stop_fd);
-    async_wake_bridge_stop.store(false, std::memory_order_release);
-
+    /// One-shot alarm at the remaining stall budget. We only reach here after tryGenerate's stall check
+    /// confirmed elapsed <= stall_timeout_ms, so remaining > 0; floor at 1ms so an all-zero itimerspec can
+    /// never DISARM the timer — which would leave the single-threaded executor's async_task_queue.wait(-1)
+    /// with no wakeup if the producer then stalls (a hang). it_interval stays 0 → one-shot.
     const uint64_t elapsed = stall_timer.elapsedMilliseconds();
-    const uint64_t remaining = elapsed >= stall_timeout_ms ? 0 : stall_timeout_ms - elapsed;
-    async_wake_thread = std::thread([this, remaining] { asyncWakeBridgeLoop(remaining); });
+    const uint64_t remaining = (elapsed >= stall_timeout_ms) ? 1 : (stall_timeout_ms - elapsed);
+    itimerspec its{};
+    its.it_value.tv_sec = static_cast<time_t>(remaining / 1000);
+    its.it_value.tv_nsec = static_cast<long>((remaining % 1000) * 1000000L);
+    (void) ::timerfd_settime(timerfd, 0, &its, nullptr);   /// failure is non-fatal: socket data still wakes us
 }
 
 
-void TcpStreamSource::asyncWakeBridgeLoop(uint64_t initial_timeout_ms) noexcept
+uint64_t TcpStreamSource::asyncWaitCount() noexcept { return g_async_wait_count.load(std::memory_order_relaxed); }
+uint64_t TcpStreamSource::threadsSpawned() noexcept { return g_threads_spawned.load(std::memory_order_relaxed); }
+void TcpStreamSource::resetAsyncCounters() noexcept
 {
-    /// One-shot: poll the socket fd (+ the stop eventfd) up to the remaining stall budget; on socket
-    /// readiness/error OR the stall deadline, write ready_event_fd so the executor re-enters
-    /// prepare()/work(); on stop, just return.
-    const int timeout = initial_timeout_ms > static_cast<uint64_t>(INT_MAX)
-        ? INT_MAX : static_cast<int>(initial_timeout_ms);
-    const int fd = sock_fd.load(std::memory_order_acquire);
-
-    while (!async_wake_bridge_stop.load(std::memory_order_acquire))
-    {
-        pollfd fds[2];
-        nfds_t nfds = 0;
-        int sock_idx = -1;
-        int stop_idx = -1;
-
-        if (fd >= 0)
-        {
-            fds[nfds].fd = fd;
-            fds[nfds].events = POLLIN | POLLHUP | POLLERR;
-            fds[nfds].revents = 0;
-            sock_idx = static_cast<int>(nfds++);
-        }
-        if (async_wake_stop_fd >= 0)
-        {
-            fds[nfds].fd = async_wake_stop_fd;
-            fds[nfds].events = POLLIN;
-            fds[nfds].revents = 0;
-            stop_idx = static_cast<int>(nfds++);
-        }
-
-        const int rc = ::poll(fds, nfds, timeout);
-        if (async_wake_bridge_stop.load(std::memory_order_acquire))
-            return;
-        if (rc < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            /// On a hard poll error, wake the executor so the main thread surfaces it via recv.
-            wakeReadyEvent();
-            return;
-        }
-        if (rc == 0)
-        {
-            /// Stall deadline reached with no socket activity: wake so prepare()/tryGenerate() raises
-            /// SHM_PRODUCER_STALL.
-            wakeReadyEvent();
-            return;
-        }
-        if (stop_idx >= 0 && (fds[stop_idx].revents & POLLIN))
-            return;
-        if (sock_idx >= 0 && (fds[sock_idx].revents & (POLLIN | POLLHUP | POLLERR)))
-        {
-            wakeReadyEvent();
-            return;
-        }
-    }
+    g_async_wait_count.store(0, std::memory_order_relaxed);
+    g_threads_spawned.store(0, std::memory_order_relaxed);
 }
 
 }

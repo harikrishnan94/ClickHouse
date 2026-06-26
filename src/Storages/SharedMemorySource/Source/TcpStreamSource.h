@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <vector>
 
 
@@ -31,9 +30,10 @@ namespace DB
 ///
 /// Two source modes, selected by the `async` ctor flag (CH setting `shm_tcp_source_async`):
 ///   * async (Branch 0 default): an IProcessor::Status::Async source mirroring `PollableShmSource`.
-///     `prepare()` returns Async while waiting for the socket; `schedule()` returns an epollable
-///     readiness eventfd; a source-owned wake bridge polls the socket fd + stall deadline and writes
-///     the eventfd so the executor calls back. Recv is a resumable non-blocking state machine, so a
+///     `prepare()` returns Async while waiting for the socket; `schedule()` returns a source-owned
+///     epoll fd aggregating {sock_fd, a stall-budget timerfd} that the executor epolls directly
+///     (Phase 3 Branch C1 / D-HC-0301 — no readiness eventfd, no per-async wake-bridge thread). Recv
+///     is a resumable non-blocking state machine, so a
 ///     partial frame straddling schedule cycles never blocks a pipeline thread — recv of block N+1
 ///     overlaps downstream processing of block N. This relaxes the Phase-1 blocking-source
 ///     deadlock invariant (`max_threads >= #blocking sources`): an async source no longer pins a
@@ -136,15 +136,24 @@ private:
     /// whole block to buildChunkFromArrowViaReader (body_buf untouched). Takes ownership of `body_buf`.
     Chunk buildChunkFromArrowLean(char * body_buf, int64_t body_len);
 
-    /// Async wake bridge (mirrors PollableShmSource): IProcessor exposes one fd, so while async the
-    /// bridge polls the socket fd (+ a stop eventfd) up to the remaining stall budget, then writes
-    /// `ready_event_fd` so the executor re-enters prepare()/work(). Stopped on readiness/cancel/dtor.
-    void startAsyncWakeBridge();
-    void requestAsyncWakeBridgeStop() noexcept;
-    void joinAsyncWakeBridge() noexcept;
-    void asyncWakeBridgeLoop(uint64_t initial_timeout_ms) noexcept;
-    void wakeReadyEvent() const noexcept;
+    /// Hot-Cold Phase 3 Branch C1 (D-HC-0301) — epoll-fd readiness. `schedule()` returns the source-owned
+    /// `epoll_fd` aggregating {sock_fd (EPOLLIN|EPOLLRDHUP|EPOLLERR), the one-shot `timerfd`}; the executor
+    /// epolls it directly. No bridge thread, no readiness eventfd. armStallTimer() re-arms the timerfd to
+    /// the remaining stall budget on each async entry; drainCounterFd(timerfd) clears its (level-triggered)
+    /// readiness on each wake (H2). Cancellation stays `::shutdown(sock_fd, SHUT_RDWR)`.
+    void armStallTimer() noexcept;
 
+public:
+    /// Branch C1 test hooks (H15). `asyncWaitCount` counts async parks (proves the resumable-recv async
+    /// path was actually exercised); `threadsSpawned` counts std::thread constructions in
+    /// TcpStreamSource.cpp (post-C1 there are ZERO such sites — the per-async wake-bridge thread is
+    /// deleted). The C1 gtest resets, runs a slow fragmented async drain, then asserts asyncWaitCount()>0
+    /// AND threadsSpawned()==0. Process-global (diagnostic only).
+    static uint64_t asyncWaitCount() noexcept;
+    static uint64_t threadsSpawned() noexcept;
+    static void resetAsyncCounters() noexcept;
+
+private:
     String host;
     UInt16 port;
     std::vector<DataTypePtr> full_column_types;
@@ -170,11 +179,11 @@ private:
     bool eos_observed = false;
     std::atomic<bool> cancelled{false};
 
-    /// Async-source machinery (async mode only).
-    int ready_event_fd = -1;       /// owned; schedule() returns it; bridge writes it
-    int async_wake_stop_fd = -1;   /// owned; wakes the bridge out of poll() on stop
-    std::atomic<bool> async_wake_bridge_stop{false};
-    std::thread async_wake_thread;
+    /// Async-source machinery (async mode only). Branch C1: an epoll fd (returned by schedule()) into
+    /// which sock_fd + timerfd are registered; the timerfd enforces the stall budget (it is the SOLE
+    /// stall wakeup in the single-threaded PullingPipelineExecutor's async_task_queue.wait(-1) path).
+    int epoll_fd = -1;             /// owned; schedule() returns it; aggregates {sock_fd, timerfd}
+    int timerfd = -1;              /// owned; one-shot, armed to the remaining stall budget while async
     bool is_async_state = false;
 
     /// Resumable recv state (async mode). recv_phase tracks header vs payload; recv_filled is how

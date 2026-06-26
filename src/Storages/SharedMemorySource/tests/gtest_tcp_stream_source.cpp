@@ -23,6 +23,9 @@
 #    include <sys/socket.h>
 #    include <unistd.h>
 
+#    include <atomic>
+#    include <cerrno>
+#    include <chrono>
 #    include <cstring>
 #    include <thread>
 #    include <vector>
@@ -30,6 +33,12 @@
 
 using namespace DB;
 using namespace DB::SharedMemoryWire;
+
+namespace DB::ErrorCodes
+{
+    extern const int SHM_PRODUCER_STALL;
+    extern const int SHM_PRODUCER_DEATH_BEFORE_EOS;
+}
 
 namespace
 {
@@ -217,6 +226,70 @@ void runDrainTest(bool async, bool slow)
     ASSERT_EQ(chunks, n_blocks);
 }
 
+
+/// --- Hot-Cold Phase 3 Branch C1 helpers (epoll-fd readiness) ---
+
+/// Bind+listen an ephemeral 127.0.0.1 socket; returns the listen fd and writes the chosen port.
+int bindLoopbackListener(uint16_t & port)
+{
+    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (lfd < 0) return -1;
+    int one = 1;
+    ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (::bind(lfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) { ::close(lfd); return -1; }
+    if (::listen(lfd, 4) != 0) { ::close(lfd); return -1; }
+    socklen_t alen = sizeof(addr);
+    ::getsockname(lfd, reinterpret_cast<sockaddr *>(&addr), &alen);
+    port = ntohs(addr.sin_port);
+    return lfd;
+}
+
+/// Send the (id UInt64, s String) bespoke handshake the consumer cross-validates.
+void sendHandshakeIdS(int conn)
+{
+    TcpHandshakeHeader hs{};
+    hs.magic = SHM_TCP_MAGIC;
+    hs.abi_version = SHM_TCP_ABI_VERSION_1;
+    hs.schema_count = 2;
+    sendAll(conn, &hs, sizeof(hs));
+    SchemaEntry se[2];
+    std::memset(se, 0, sizeof(se));
+    std::strcpy(se[0].name, "id");  std::strcpy(se[0].type_string, "UInt64");
+    std::strcpy(se[1].name, "s");   std::strcpy(se[1].type_string, "String");
+    sendAll(conn, se, sizeof(se));
+}
+
+/// Block on the connection until the peer (consumer) closes/shuts down its write side (recv → 0), then
+/// close. Lets a "stalling" producer thread exit promptly once the consumer cancels / tears down.
+void drainUntilPeerClose(int conn)
+{
+    char buf[256];
+    for (;;)
+    {
+        ssize_t r = ::recv(conn, buf, sizeof(buf), 0);
+        if (r > 0) continue;
+        if (r < 0 && errno == EINTR) continue;
+        break;   /// r==0 (peer FIN) or hard error
+    }
+    ::close(conn);
+}
+
+std::shared_ptr<TcpStreamSource> makeIdSSource(uint16_t port, UInt64 stall_ms)
+{
+    Block b;
+    b.insert({std::make_shared<DataTypeUInt64>()->createColumn(), std::make_shared<DataTypeUInt64>(), "id"});
+    b.insert({std::make_shared<DataTypeString>()->createColumn(), std::make_shared<DataTypeString>(), "s"});
+    auto header = std::make_shared<const Block>(std::move(b));
+    return std::make_shared<TcpStreamSource>(
+        header, "127.0.0.1", port,
+        std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(), std::make_shared<DataTypeString>()},
+        std::vector<String>{"id", "s"}, std::vector<String>{"id", "s"}, stall_ms, /*async=*/true);
+}
+
 }
 
 
@@ -297,6 +370,209 @@ TEST(TcpStreamSource, LoopbackThroughputMicrobench)
     RecordProperty("loopback_tcp_ns_per_byte", std::to_string(ns / total));
     std::cout << "[microbench] loopback TCP (" << (total / (1024 * 1024)) << " MiB, " << (chunk / (1024 * 1024))
               << " MiB chunks, 32 MiB bufs): " << gbps << " GB/s, " << (ns / total) << " ns/byte\n";
+}
+
+
+/// --- Hot-Cold Phase 3 Branch C1: epoll-fd readiness acceptance gtests ---
+
+/// H15 (thread elimination) + H2 (bounded work / no hot-spin). A SLOW fragmented producer forces the
+/// async source to park many times across schedule cycles. Post-C1 the source must: (1) spawn ZERO
+/// std::threads (the per-async wake-bridge thread is deleted) — proven by threadsSpawned()==0 while the
+/// async path is genuinely exercised (asyncWaitCount()>0); (2) NOT hot-spin on the level-triggered epoll
+/// fd — proven by a BOUNDED async-park count (a hot-spin would re-park without new data, exploding it).
+TEST(TcpStreamSource, C1AsyncEpollNoThreadsAndBounded)
+{
+    constexpr size_t n_blocks = 25;
+    uint16_t port = 0;
+    int listen_fd = bindLoopbackListener(port);
+    ASSERT_GE(listen_fd, 0);
+
+    std::thread producer([&]
+    {
+        int conn = ::accept(listen_fd, nullptr, nullptr);
+        if (conn < 0) return;
+        sendHandshakeIdS(conn);
+        for (size_t b = 0; b < n_blocks; ++b)
+        {
+            const std::vector<uint64_t> ids = {b, b + 100, b + 200};
+            const std::vector<uint8_t> chars = {'a', 'b', 'c'};
+            const std::vector<uint64_t> offs = {1, 2, 3};
+            auto frame = serializeBlock(ids, chars, offs, /*eos=*/false);
+            sendFragmented(conn, frame.data(), frame.size(), /*frag=*/17, /*delay_ms=*/2);
+        }
+        TcpBlockHeader eos_h{};
+        eos_h.eos_marker = 1;
+        sendAll(conn, &eos_h, sizeof(eos_h));
+        ::close(conn);
+    });
+
+    TcpStreamSource::resetAsyncCounters();
+    auto src = makeIdSSource(port, /*stall_ms=*/60'000);
+    QueryPipeline pipeline(src);
+    PullingPipelineExecutor executor(pipeline);
+    size_t chunks = 0;
+    Chunk chunk;
+    while (executor.pull(chunk))
+        if (chunk.hasRows()) ++chunks;
+    producer.join();
+    ::close(listen_fd);
+
+    ASSERT_EQ(chunks, n_blocks);
+    const uint64_t parks = TcpStreamSource::asyncWaitCount();
+    const uint64_t threads = TcpStreamSource::threadsSpawned();
+    RecordProperty("c1_async_parks", std::to_string(parks));
+    RecordProperty("c1_threads_spawned", std::to_string(threads));
+    EXPECT_EQ(threads, 0u) << "C1: streaming path must spawn zero std::threads (was 1 per async wait)";
+    EXPECT_GT(parks, 0u) << "C1: the async resumable-recv path must actually have been exercised";
+    /// Bounded-work (H2): each park corresponds to a real fragment gap (~tens of fragments per frame ×
+    /// n_blocks). A level-triggered hot-spin would re-park without new data, producing orders of
+    /// magnitude more. 100×n_blocks is a generous ceiling that still traps a true spin (≥1e5).
+    EXPECT_LT(parks, 100u * n_blocks) << "C1: async-park count too high — possible epoll hot-spin (H2)";
+}
+
+/// H3 (cancel during async-park): the producer handshakes then STALLS (no blocks, no EOS), so the source
+/// parks on the epoll fd with the timerfd armed to the 60s stall budget. A canceller thread calls
+/// executor.cancel() → onCancel() → ::shutdown(sock, SHUT_RDWR) → the socket becomes readable/RDHUP in
+/// the epoll fd → the parked single-threaded executor wakes → pull() returns false. The drain must exit
+/// FAR sooner than the 60s budget — proving shutdown() (not a readiness eventfd) is the cancel wake.
+TEST(TcpStreamSource, C1CancelViaShutdownWakesParkedEpoll)
+{
+    using clock = std::chrono::steady_clock;
+    uint16_t port = 0;
+    int listen_fd = bindLoopbackListener(port);
+    ASSERT_GE(listen_fd, 0);
+
+    std::thread producer([&]
+    {
+        int conn = ::accept(listen_fd, nullptr, nullptr);
+        if (conn < 0) return;
+        sendHandshakeIdS(conn);
+        drainUntilPeerClose(conn);   /// exits when the consumer shuts down / closes on cancel
+    });
+
+    auto src = makeIdSSource(port, /*stall_ms=*/60'000);
+    QueryPipeline pipeline(src);
+    PullingPipelineExecutor executor(pipeline);
+
+    std::thread canceller([&]
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        executor.cancel();
+    });
+
+    const auto t0 = clock::now();
+    Chunk chunk;
+    size_t rows = 0;
+    while (executor.pull(chunk))
+        rows += chunk.getNumRows();
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t0).count();
+
+    canceller.join();
+    producer.join();
+    ::close(listen_fd);
+
+    EXPECT_EQ(rows, 0u);
+    EXPECT_LT(elapsed_ms, 10'000) << "cancel via shutdown() did not promptly wake the parked epoll (hang)";
+    RecordProperty("c1_cancel_wake_ms", std::to_string(elapsed_ms));
+}
+
+/// Stall-timeout acceptance: the timerfd is the SOLE wakeup in the single-threaded executor's
+/// async_task_queue.wait(-1) path, so a stalled producer must still raise SHM_PRODUCER_STALL within the
+/// budget. Producer handshakes then stalls; consumer stall budget = 400ms; pull() must THROW
+/// SHM_PRODUCER_STALL at ~400ms (not hang, not spin).
+TEST(TcpStreamSource, C1StallTimeoutFires)
+{
+    using clock = std::chrono::steady_clock;
+    uint16_t port = 0;
+    int listen_fd = bindLoopbackListener(port);
+    ASSERT_GE(listen_fd, 0);
+
+    std::thread producer([&]
+    {
+        int conn = ::accept(listen_fd, nullptr, nullptr);
+        if (conn < 0) return;
+        sendHandshakeIdS(conn);
+        drainUntilPeerClose(conn);
+    });
+
+    auto src = makeIdSSource(port, /*stall_ms=*/400);
+    QueryPipeline pipeline(src);
+    PullingPipelineExecutor executor(pipeline);
+
+    const auto t0 = clock::now();
+    bool threw_stall = false;
+    try
+    {
+        Chunk chunk;
+        while (executor.pull(chunk)) {}
+    }
+    catch (const Exception & e)
+    {
+        threw_stall = (e.code() == ErrorCodes::SHM_PRODUCER_STALL);
+        if (!threw_stall) throw;
+    }
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t0).count();
+
+    producer.join();
+    ::close(listen_fd);
+
+    EXPECT_TRUE(threw_stall) << "expected SHM_PRODUCER_STALL from a stalled producer";
+    EXPECT_GE(elapsed_ms, 350) << "stall fired implausibly early (budget 400ms)";
+    EXPECT_LT(elapsed_ms, 5'000) << "stall fired far too late — timerfd may not be waking the wait(-1)";
+    RecordProperty("c1_stall_fire_ms", std::to_string(elapsed_ms));
+}
+
+/// Half-close before EOS (H2 terminal-event handling): the producer sends a few blocks then close()s the
+/// connection WITHOUT an EOS frame. EPOLLRDHUP on a half-closed peer is NOT clearable by reading, so the
+/// source must drive recv to a terminal SHM_PRODUCER_DEATH_BEFORE_EOS throw — NOT return Async on the
+/// RDHUP (which would permanently spin). Asserts the throw and a bounded async-park count.
+TEST(TcpStreamSource, C1HalfCloseBeforeEosThrows)
+{
+    constexpr size_t n_blocks = 4;
+    uint16_t port = 0;
+    int listen_fd = bindLoopbackListener(port);
+    ASSERT_GE(listen_fd, 0);
+
+    std::thread producer([&]
+    {
+        int conn = ::accept(listen_fd, nullptr, nullptr);
+        if (conn < 0) return;
+        sendHandshakeIdS(conn);
+        for (size_t b = 0; b < n_blocks; ++b)
+        {
+            const std::vector<uint64_t> ids = {b, b + 100, b + 200};
+            const std::vector<uint8_t> chars = {'a', 'b', 'c'};
+            const std::vector<uint64_t> offs = {1, 2, 3};
+            auto frame = serializeBlock(ids, chars, offs, /*eos=*/false);
+            sendAll(conn, frame.data(), frame.size());
+        }
+        ::close(conn);   /// no EOS frame — abrupt half-close
+    });
+
+    TcpStreamSource::resetAsyncCounters();
+    auto src = makeIdSSource(port, /*stall_ms=*/60'000);
+    QueryPipeline pipeline(src);
+    PullingPipelineExecutor executor(pipeline);
+
+    bool threw_death = false;
+    try
+    {
+        Chunk chunk;
+        while (executor.pull(chunk)) {}
+    }
+    catch (const Exception & e)
+    {
+        threw_death = (e.code() == ErrorCodes::SHM_PRODUCER_DEATH_BEFORE_EOS);
+        if (!threw_death) throw;
+    }
+
+    producer.join();
+    ::close(listen_fd);
+
+    EXPECT_TRUE(threw_death) << "expected SHM_PRODUCER_DEATH_BEFORE_EOS on producer half-close before EOS";
+    const uint64_t parks = TcpStreamSource::asyncWaitCount();
+    RecordProperty("c1_halfclose_parks", std::to_string(parks));
+    EXPECT_LT(parks, 100u * (n_blocks + 1)) << "C1: park count too high on RDHUP — possible spin (H2)";
 }
 
 #endif
