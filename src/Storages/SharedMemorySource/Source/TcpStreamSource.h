@@ -144,13 +144,13 @@ private:
     void armStallTimer() noexcept;
 
 public:
-    /// Branch C1 test hooks (H15). `asyncWaitCount` counts async parks (proves the resumable-recv async
-    /// path was actually exercised); `threadsSpawned` counts std::thread constructions in
-    /// TcpStreamSource.cpp (post-C1 there are ZERO such sites — the per-async wake-bridge thread is
-    /// deleted). The C1 gtest resets, runs a slow fragmented async drain, then asserts asyncWaitCount()>0
-    /// AND threadsSpawned()==0. Process-global (diagnostic only).
+    /// Branch C1 test hook (H15). `asyncWaitCount` counts async parks — it proves the resumable-recv async
+    /// path was actually exercised (a slow fragmented drain parks hundreds of times). The C1 gtest resets,
+    /// runs that drain, then asserts asyncWaitCount()>0 AND a bounded park count (no hot-spin) AND samples
+    /// /proc/self/task to assert the source adds NO live thread. The "zero std::thread" invariant is also
+    /// structural: there is no std::thread construction anywhere in TcpStreamSource.cpp (grep-checkable).
+    /// Process-global (diagnostic only).
     static uint64_t asyncWaitCount() noexcept;
-    static uint64_t threadsSpawned() noexcept;
     static void resetAsyncCounters() noexcept;
 
 private:

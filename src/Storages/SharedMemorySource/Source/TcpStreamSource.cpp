@@ -134,9 +134,12 @@ namespace
         do { r = ::read(fd, &buf, sizeof(buf)); } while (r > 0 || (r < 0 && errno == EINTR));
     }
 
-    /// Branch C1 test-hook counters (H15): process-global; see TcpStreamSource.h for semantics.
+    /// Branch C1 test hook: counts async parks (proves the resumable-recv async path was exercised). The
+    /// "zero streaming-path threads" proof is structural — there is NO std::thread construction anywhere in
+    /// this TU (grep-checkable) — plus the gtest's /proc/self/task peak sampler. We intentionally do NOT
+    /// keep a thread-spawn counter: with the bridge deleted it would be a dead, always-zero (tautological)
+    /// assertion (adversarial review C1, PERF angle).
     std::atomic<uint64_t> g_async_wait_count{0};
-    std::atomic<uint64_t> g_threads_spawned{0};   /// bump at ANY std::thread ctor in this TU (post-C1: none)
 
 #if USE_ARROW
     /// Branch-A COPYING decode of one Arrow column into a freshly-allocated, owned ClickHouse column
@@ -1248,7 +1251,7 @@ std::optional<Chunk> TcpStreamSource::tryGenerate()
         return {};
     }
 
-    /// WouldBlock: no full frame available yet. Enforce the stall budget here (the bridge wakes us on
+    /// WouldBlock: no full frame available yet. Enforce the stall budget here (the timerfd wakes us at
     /// the stall deadline; if we still have no progress, fail). Otherwise yield async.
     if (stall_timer.elapsedMilliseconds() > stall_timeout_ms)
         throw Exception(ErrorCodes::SHM_PRODUCER_STALL,
@@ -1256,7 +1259,7 @@ std::optional<Chunk> TcpStreamSource::tryGenerate()
             host, port, stall_timer.elapsedMilliseconds(), stall_timeout_ms);
 
     is_async_state = true;
-    g_async_wait_count.fetch_add(1, std::memory_order_relaxed);   /// H15 test hook: an async park happened
+    g_async_wait_count.fetch_add(1, std::memory_order_relaxed);   /// test hook: an async park happened
     armStallTimer();   /// re-arm the one-shot stall alarm; socket is already EAGAIN (drained above, H2)
     return Chunk{};    /// non-EOS empty Chunk → ISource yields; prepare() will return Async
 }
@@ -1331,11 +1334,9 @@ void TcpStreamSource::armStallTimer() noexcept
 
 
 uint64_t TcpStreamSource::asyncWaitCount() noexcept { return g_async_wait_count.load(std::memory_order_relaxed); }
-uint64_t TcpStreamSource::threadsSpawned() noexcept { return g_threads_spawned.load(std::memory_order_relaxed); }
 void TcpStreamSource::resetAsyncCounters() noexcept
 {
     g_async_wait_count.store(0, std::memory_order_relaxed);
-    g_threads_spawned.store(0, std::memory_order_relaxed);
 }
 
 }
