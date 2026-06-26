@@ -116,7 +116,9 @@ private:
     UInt64 stall_timeout_ms;
     const bool async;
 
-    int sock_fd = -1;
+    /// Atomic so onCancel() (callable from an arbitrary thread, noexcept) and the dtor cannot
+    /// double-close / torn-read it; dtor exchange(-1)s before close. (Adversarial review B0 #1.)
+    std::atomic<int> sock_fd{-1};
     bool connected = false;
     bool eos_observed = false;
     std::atomic<bool> cancelled{false};

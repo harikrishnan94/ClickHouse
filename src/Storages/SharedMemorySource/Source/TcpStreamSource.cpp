@@ -115,8 +115,11 @@ TcpStreamSource::~TcpStreamSource()
     joinAsyncWakeBridge();
     if (pending_buf != nullptr)
         freeAligned(pending_buf);
-    if (sock_fd >= 0)
-        ::close(sock_fd);
+    /// exchange(-1) before close so a concurrent onCancel() shutdown() cannot double-act on the fd.
+    /// (The bridge is already joined above, so only onCancel can still touch sock_fd here.)
+    const int fd_to_close = sock_fd.exchange(-1, std::memory_order_acq_rel);
+    if (fd_to_close >= 0)
+        ::close(fd_to_close);
     if (ready_event_fd >= 0)
         ::close(ready_event_fd);
     if (async_wake_stop_fd >= 0)
@@ -128,12 +131,13 @@ void TcpStreamSource::recvAll(void * dst, size_t n)
 {
     auto * p = static_cast<uint8_t *>(dst);
     size_t left = n;
+    const int fd = sock_fd.load(std::memory_order_acquire);
     while (left > 0)
     {
         if (cancelled.load(std::memory_order_acquire) || isCancelled())
             throw Exception(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}' recv cancelled", host, port);
 
-        const ssize_t r = ::recv(sock_fd, p, left, 0);
+        const ssize_t r = ::recv(fd, p, left, 0);
         if (r > 0)
         {
             p += r;
@@ -171,15 +175,18 @@ void TcpStreamSource::recvAll(void * dst, size_t n)
 
 void TcpStreamSource::ensureConnected()
 {
-    sock_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (sock_fd < 0)
+    /// Build the socket in a local fd, then publish it to the atomic member so onCancel() can
+    /// shutdown() it during connect/handshake; `fd` and `sock_fd` are the same value for this call.
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
         throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "socket() failed for TCP stream '{}:{}'", host, port);
+    sock_fd.store(fd, std::memory_order_release);
 
     /// Size the receive buffer to several blocks so the producer can run ahead (the TCP analog of
     /// the SHM ring's K in-flight slots). Set BEFORE connect so window scaling negotiates the large
     /// window. Capped by net.core.rmem_max (see 10-REPRODUCTION).
     const int rcvbuf = 32 * 1024 * 1024;
-    ::setsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -192,7 +199,7 @@ void TcpStreamSource::ensureConnected()
     {
         if (cancelled.load(std::memory_order_acquire) || isCancelled())
             throw Exception(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}' cancelled during connect", host, port);
-        if (::connect(sock_fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0)
+        if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0)
             break;
         const int e = errno;
         if ((e == ECONNREFUSED || e == EAGAIN || e == EINTR)
@@ -207,9 +214,9 @@ void TcpStreamSource::ensureConnected()
     /// Handshake reads use blocking recv with SO_RCVTIMEO slices (one-shot, small frames); the async
     /// streaming phase switches to O_NONBLOCK below.
     timeval tv{.tv_sec = RECV_SLICE_MS / 1000, .tv_usec = (RECV_SLICE_MS % 1000) * 1000};
-    ::setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     const int one = 1;
-    ::setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     stall_timer.restart();
 
@@ -280,8 +287,8 @@ void TcpStreamSource::ensureConnected()
     {
         /// Switch to non-blocking for the resumable recv state machine, and create the readiness
         /// eventfd (schedule() returns it) + the bridge stop eventfd.
-        int flags = ::fcntl(sock_fd, F_GETFL, 0);
-        if (flags < 0 || ::fcntl(sock_fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        int flags = ::fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
             throw ErrnoException(ErrorCodes::SHM_ATTACH_FAILED, "TCP stream '{}:{}': fcntl(O_NONBLOCK) failed", host, port);
         ready_event_fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         if (ready_event_fd < 0)
@@ -426,10 +433,11 @@ Chunk TcpStreamSource::recvBlockBlocking()
 TcpStreamSource::RecvInto TcpStreamSource::tryRecvInto(void * dst, size_t need, size_t & filled)
 {
     auto * p = static_cast<uint8_t *>(dst);
+    const int fd = sock_fd.load(std::memory_order_acquire);
     Stopwatch recv_timer;
     while (filled < need)
     {
-        const ssize_t r = ::recv(sock_fd, p + filled, need - filled, 0);
+        const ssize_t r = ::recv(fd, p + filled, need - filled, 0);
         if (r > 0)
         {
             filled += static_cast<size_t>(r);
@@ -593,8 +601,9 @@ void TcpStreamSource::onCancel() noexcept
     /// handshake recv (SHUT_RDWR makes recv return promptly; the recv loops then observe `cancelled`).
     wakeReadyEvent();
     requestAsyncWakeBridgeStop();
-    if (sock_fd >= 0)
-        ::shutdown(sock_fd, SHUT_RDWR);
+    const int fd = sock_fd.load(std::memory_order_acquire);
+    if (fd >= 0)
+        ::shutdown(fd, SHUT_RDWR);
 }
 
 
@@ -647,6 +656,7 @@ void TcpStreamSource::asyncWakeBridgeLoop(uint64_t initial_timeout_ms) noexcept
     /// prepare()/work(); on stop, just return.
     const int timeout = initial_timeout_ms > static_cast<uint64_t>(INT_MAX)
         ? INT_MAX : static_cast<int>(initial_timeout_ms);
+    const int fd = sock_fd.load(std::memory_order_acquire);
 
     while (!async_wake_bridge_stop.load(std::memory_order_acquire))
     {
@@ -655,9 +665,9 @@ void TcpStreamSource::asyncWakeBridgeLoop(uint64_t initial_timeout_ms) noexcept
         int sock_idx = -1;
         int stop_idx = -1;
 
-        if (sock_fd >= 0)
+        if (fd >= 0)
         {
-            fds[nfds].fd = sock_fd;
+            fds[nfds].fd = fd;
             fds[nfds].events = POLLIN | POLLHUP | POLLERR;
             fds[nfds].revents = 0;
             sock_idx = static_cast<int>(nfds++);
