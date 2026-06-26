@@ -129,7 +129,7 @@ void sendFragmented(int fd, const void * buf, size_t n, size_t frag, int delay_m
 /// TcpStreamSource(wire=Arrow) connects, decodes via the COPYING Branch-A path, and emits the columns.
 /// Drains through a REAL PullingPipelineExecutor so the async Status::Async/schedule/onAsyncJobReady
 /// contract + the resumable 3-phase Arrow recv are exercised. `slow` fragments the stream with delays.
-void runArrowDrainTest(bool async, bool slow)
+void runArrowDrainTest(bool async, bool slow, bool zero_copy = true)
 {
     constexpr size_t n_blocks = 25;
     const std::vector<uint8_t> stream = buildArrowStream(n_blocks);
@@ -171,7 +171,7 @@ void runArrowDrainTest(bool async, bool slow)
         std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(), std::make_shared<DataTypeString>(),
                                  std::make_shared<DataTypeDate>()},
         std::vector<String>{"id", "s", "d"}, std::vector<String>{"id", "s", "d"}, 60'000, async,
-        TcpStreamSource::WireFormat::Arrow);
+        TcpStreamSource::WireFormat::Arrow, zero_copy);
 
     QueryPipeline pipeline(src);
     PullingPipelineExecutor executor(pipeline);
@@ -207,10 +207,23 @@ void runArrowDrainTest(bool async, bool slow)
 }
 
 
-/// Async source, fast producer: whole Arrow IPC stream buffered, mostly fast-path recv.
+/// Async source, fast producer, ZERO-COPY adoption (Branch B default): whole stream buffered.
 TEST(ArrowStreamSource, DrainsSchemaAndBatches)
 {
-    runArrowDrainTest(/*async=*/true, /*slow=*/false);
+    runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/true);
+}
+
+/// Branch-A COPYING decode (shm_arrow_zero_copy=0) still drains correctly (the A/B baseline).
+TEST(ArrowStreamSource, DrainsCopyingDecode)
+{
+    runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/false);
+}
+
+/// ZERO-COPY adoption across the SLOW fragmented stream — adopted columns alias a body buffer
+/// reassembled across schedule cycles; proves the adopt path + resumable recv compose correctly.
+TEST(ArrowStreamSource, ZeroCopyResumesAcrossPartialMessages)
+{
+    runArrowDrainTest(/*async=*/true, /*slow=*/true, /*zero_copy=*/true);
 }
 
 /// Blocking source (A/B baseline): the Arrow path drains correctly with SO_RCVTIMEO slicing too.

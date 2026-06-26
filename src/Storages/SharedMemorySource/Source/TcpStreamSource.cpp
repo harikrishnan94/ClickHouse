@@ -15,6 +15,7 @@
 #include <Columns/ColumnDecimal.h>
 #include <Columns/IColumn.h>
 #include <DataTypes/DataTypeFactory.h>
+#include <DataTypes/DataTypesDecimal.h>
 #include <DataTypes/IDataType.h>
 
 #if USE_ARROW
@@ -201,6 +202,74 @@ namespace
 #undef PGCH_COPY_FIXED
         return mut;
     }
+
+    /// Branch-B ZERO-COPY adoption of one Arrow column: the returned CH column ALIASES the Arrow
+    /// buffers (slices of the recv body), sharing `retain`/`charge`. Returns nullptr if the column
+    /// cannot be adopted at the required alignment / layout (Decimal128 needs 16-byte alignment the
+    /// 8-byte-padded IPC body may not give; a sliced array; a violated String leading-0 sentinel) —
+    /// the caller then copy-falls-back. The +PADDING_FOR_SIMD over-read is memory-safe (the whole recv
+    /// body is 64-byte slacked; a mid-body over-read lands in an adjacent in-allocation buffer).
+    ColumnPtr adoptArrowColumnToCH(const arrow::Array & arr, const DataTypePtr & type,
+                                   const std::shared_ptr<void> & retain, const std::shared_ptr<void> & charge)
+    {
+        const size_t n = static_cast<size_t>(arr.length());
+        if (n == 0 || arr.offset() != 0)
+            return nullptr;   /// empty (copy is trivial) or sliced (aliasing assumptions break)
+
+        if (type->getTypeId() == TypeIndex::String)
+        {
+            const auto & bin = assert_cast<const arrow::LargeBinaryArray &>(arr);
+            const int64_t * offs = bin.raw_value_offsets();
+            if (offs == nullptr || offs[0] != 0)   /// leading-0 sentinel (D-HC-0201/0207) MUST hold
+                return nullptr;
+            const auto & data_buf = bin.value_data();
+            const size_t chars_size = static_cast<size_t>(offs[n]);
+            /// CH offsets = &arrow_offsets[1]; CH offsets[-1] reads arrow_offsets[0]==0 (validated).
+            auto * ch_offsets = reinterpret_cast<UInt64 *>(const_cast<int64_t *>(offs)) + 1;
+            /// chars may be null only when chars_size==0; give createAdopted a non-null in-allocation
+            /// stand-in (the offsets buffer) so its pad-right slack stays within body_buf.
+            UInt8 * chars = (data_buf && data_buf->data())
+                ? reinterpret_cast<UInt8 *>(const_cast<uint8_t *>(data_buf->data()))
+                : reinterpret_cast<UInt8 *>(ch_offsets);
+            if (chars_size != 0 && (!data_buf || !data_buf->data()))
+                return nullptr;
+            return ColumnString::createAdopted(chars, chars_size, ch_offsets, n, retain, charge);
+        }
+
+        const auto & data = arr.data();
+        if (data->buffers.size() < 2 || !data->buffers[1])
+            return nullptr;
+        auto * raw = const_cast<uint8_t *>(data->buffers[1]->data());
+        const size_t width = type->getSizeOfValueInMemory();
+        if (width >= 16 && (reinterpret_cast<uintptr_t>(raw) % 16) != 0)
+            return nullptr;   /// Decimal128 16-byte alignment not met by the 8-byte IPC body → copy fallback
+
+        switch (type->getTypeId())
+        {
+#define PGCH_ADOPT_VEC(TI, T) case TypeIndex::TI: return ColumnVector<T>::createAdopted(reinterpret_cast<T *>(raw), n, retain, charge);
+#define PGCH_ADOPT_DEC(TI, T) case TypeIndex::TI: return ColumnDecimal<T>::createAdopted(reinterpret_cast<T *>(raw), n, getDecimalScale(*type), retain, charge);
+            PGCH_ADOPT_VEC(UInt8, UInt8)
+            PGCH_ADOPT_VEC(UInt16, UInt16)
+            PGCH_ADOPT_VEC(UInt32, UInt32)
+            PGCH_ADOPT_VEC(UInt64, UInt64)
+            PGCH_ADOPT_VEC(Int8, Int8)
+            PGCH_ADOPT_VEC(Int16, Int16)
+            PGCH_ADOPT_VEC(Int32, Int32)
+            PGCH_ADOPT_VEC(Int64, Int64)
+            PGCH_ADOPT_VEC(Float32, Float32)
+            PGCH_ADOPT_VEC(Float64, Float64)
+            PGCH_ADOPT_VEC(Date, UInt16)
+            PGCH_ADOPT_VEC(DateTime, UInt32)
+            PGCH_ADOPT_VEC(Date32, Int32)
+            PGCH_ADOPT_DEC(DateTime64, DateTime64)
+            PGCH_ADOPT_DEC(Decimal32, Decimal32)
+            PGCH_ADOPT_DEC(Decimal64, Decimal64)
+            PGCH_ADOPT_DEC(Decimal128, Decimal128)
+#undef PGCH_ADOPT_VEC
+#undef PGCH_ADOPT_DEC
+            default: return nullptr;
+        }
+    }
 #endif
 }
 
@@ -214,7 +283,8 @@ TcpStreamSource::TcpStreamSource(
     std::vector<String> requested_column_names_,
     UInt64 stall_timeout_ms_,
     bool async_,
-    WireFormat wire_)
+    WireFormat wire_,
+    bool arrow_zero_copy_)
     : ISource(std::move(header))
     , host(std::move(host_))
     , port(port_)
@@ -224,6 +294,7 @@ TcpStreamSource::TcpStreamSource(
     , stall_timeout_ms(stall_timeout_ms_)
     , async(async_)
     , wire(wire_)
+    , arrow_zero_copy(arrow_zero_copy_)
 {
     chassert(full_column_types.size() == full_column_names.size());
     if (wire == WireFormat::Arrow)
@@ -685,6 +756,7 @@ TcpStreamSource::RecvResult TcpStreamSource::tryRecvArrowMessage(Chunk & out_chu
 Chunk TcpStreamSource::buildChunkFromArrow(char * body_buf, int64_t body_len)
 {
 #if USE_ARROW
+    bool body_owned_here = true;   /// false once a RetainToken takes ownership of body_buf (adopt path)
     try
     {
         auto & st = *arrow_state;
@@ -711,34 +783,68 @@ Chunk TcpStreamSource::buildChunkFromArrow(char * body_buf, int64_t body_len)
             throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
                 "TCP stream '{}:{}': Arrow batch has {} columns but schema {}", host, port, batch->num_columns(), n_cols);
         const size_t n_rows = static_cast<size_t>(batch->num_rows());
-
-        /// COPYING decode (Branch A): each Arrow column → an owned CH column of the SQL type.
         Columns full_cols(n_cols);
-        size_t logical_bytes = 0;
+
+        if (!arrow_zero_copy)
+        {
+            /// Branch A — COPYING decode: each Arrow column → an owned CH column of the SQL type.
+            size_t logical_bytes = 0;
+            for (size_t i = 0; i < n_cols; ++i)
+            {
+                full_cols[i] = copyArrowColumnToCH(*batch->column(static_cast<int>(i)), full_column_types[i], host, port);
+                logical_bytes += full_cols[i]->byteSize();
+            }
+            batch.reset();   /// drop the arrays that view body_buf BEFORE freeing it below
+            ChargeHandle charge_handle = charger.charge(logical_bytes, logical_bytes, /*copied=*/true);
+            ProfileEvents::increment(ProfileEvents::ShmCopiedBytesLogical, logical_bytes);
+
+            Columns emitted_copy;
+            emitted_copy.reserve(projection_indices.size());
+            for (size_t idx : projection_indices)
+                emitted_copy.push_back(full_cols[idx]);
+            stall_timer.restart();
+            freeAligned(body_buf);
+            return Chunk(std::move(emitted_copy), n_rows);
+        }
+
+        /// Branch B — ZERO-COPY adoption: the CH columns ALIAS the Arrow buffers (slices of body_buf),
+        /// held alive by a single RetainToken (deleter frees body_buf on last-drop) shared across the
+        /// adopted columns + a shared ChargeHandle. body_buf is NOT freed here — the token owns it (it
+        /// drops at function end iff no column adopted, i.e. all copy-fell-back, freeing body_buf then).
+        /// Decimal128 / a misaligned buffer falls back to a per-column copy (it does not hold the token).
+        char * body_capture = body_buf;
+        body_owned_here = false;
+        RetainToken retain_token = makeRetainToken([body_capture]() noexcept { freeAligned(body_capture); });
+        ChargeHandle charge_handle = charger.charge(static_cast<size_t>(body_len), static_cast<size_t>(body_len), /*copied=*/true);
+        ProfileEvents::increment(ProfileEvents::ShmCopiedBytesLogical, static_cast<size_t>(body_len));
+        auto charge_shared = std::make_shared<ChargeHandle>(std::move(charge_handle));
+        std::shared_ptr<void> charge_token = charge_shared;
+
         for (size_t i = 0; i < n_cols; ++i)
         {
-            full_cols[i] = copyArrowColumnToCH(*batch->column(static_cast<int>(i)), full_column_types[i], host, port);
-            logical_bytes += full_cols[i]->byteSize();
+            const auto & col = *batch->column(static_cast<int>(i));
+            ColumnPtr c = adoptArrowColumnToCH(col, full_column_types[i], retain_token, charge_token);
+            if (!c)   /// not adoptable at the required alignment (e.g. Decimal128) → copy fallback
+                c = copyArrowColumnToCH(col, full_column_types[i], host, port);
+            full_cols[i] = std::move(c);
         }
-        batch.reset();   /// drop the arrays that view body_buf BEFORE freeing it below
-
-        /// Charge copied=true → bumps ShmCopiedBlocks (offload oracle). The owned copies are tracked
-        /// by the normal allocator; this transient charge is released at scope end.
-        ChargeHandle charge_handle = charger.charge(logical_bytes, logical_bytes, /*copied=*/true);
-        ProfileEvents::increment(ProfileEvents::ShmCopiedBytesLogical, logical_bytes);
+        batch.reset();   /// arrow arrays were non-owning views of body_buf; adopted CH cols alias it via retain_token
 
         Columns emitted_cols;
         emitted_cols.reserve(projection_indices.size());
         for (size_t idx : projection_indices)
             emitted_cols.push_back(full_cols[idx]);
+        for (const auto & ec : emitted_cols)
+            if (const auto * cs = typeid_cast<const ColumnString *>(ec.get()))
+                cs->validateAdoptedOffsets();
 
         stall_timer.restart();
-        freeAligned(body_buf);
         return Chunk(std::move(emitted_cols), n_rows);
     }
     catch (...)
     {
-        freeAligned(body_buf);
+        if (body_owned_here)
+            freeAligned(body_buf);
         throw;
     }
 #else

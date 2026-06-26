@@ -8224,6 +8224,9 @@ Maximum time the `streamed_table()` source waits without observing producer publ
     DECLARE(Bool, shm_tcp_source_async, true, R"(
 For the `streamed_table()` TCP transport (Hot-Cold Phase 2, Branch 0), use the async source that overlaps socket recv with downstream processing (IProcessor::Status::Async + an epollable readiness eventfd) instead of a blocking leaf source. Default on; set to 0 to select the Phase-1 blocking source (for A/B measurement). No effect on the SHM transports.
 )", 0) \
+DECLARE(Bool, shm_arrow_zero_copy, true, R"(
+For the `streamed_table()` `arrow:` transport (Hot-Cold Phase 2, Branch B), adopt the received Apache Arrow IPC buffers directly into ClickHouse columns with no per-column data copy (the column aliases the recv buffer, held by a RetainToken) instead of the Branch-A copying decode. Default on; set to 0 to select the Branch-A copying decode (for A/B measurement). Decimal128 (which needs 16-byte buffer alignment the 8-byte-padded IPC body does not guarantee) always falls back to a per-column copy. No effect on the bespoke `tcp:` or the SHM transports.
+)", 0) \
 DECLARE(Bool, allow_experimental_ytsaurus_dictionary_source, false, R"(
     Experimental dictionary source for integration with YTsaurus.
     )", EXPERIMENTAL) \

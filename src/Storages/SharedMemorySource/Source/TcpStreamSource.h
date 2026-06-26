@@ -58,7 +58,8 @@ public:
         std::vector<String> requested_column_names_,
         UInt64 stall_timeout_ms_,
         bool async_ = true,
-        WireFormat wire_ = WireFormat::Bespoke);
+        WireFormat wire_ = WireFormat::Bespoke,
+        bool arrow_zero_copy_ = true);
 
     ~TcpStreamSource() override;
 
@@ -118,7 +119,10 @@ private:
     /// metadata → body). The 0-length-metadata continuation is the stream EOS. Reuses tryRecvInto.
     RecvResult tryRecvArrowMessage(Chunk & out_chunk);
     /// Decode a fully-received RecordBatch (metadata in arrow_state, `body_buf`/`body_len` the body)
-    /// into the emitted Chunk via the COPYING decode (Branch A). Takes ownership of `body_buf`.
+    /// into the emitted Chunk. Branch A (arrow_zero_copy=false): COPYING decode, frees `body_buf`.
+    /// Branch B (arrow_zero_copy=true): ZERO-COPY adoption — columns alias `body_buf`, kept alive by a
+    /// RetainToken whose deleter frees it on last-drop (Decimal128 / misaligned buffers fall back to a
+    /// per-column copy). Takes ownership of `body_buf` either way.
     Chunk buildChunkFromArrow(char * body_buf, int64_t body_len);
 
     /// Async wake bridge (mirrors PollableShmSource): IProcessor exposes one fd, so while async the
@@ -139,6 +143,7 @@ private:
     UInt64 stall_timeout_ms;
     const bool async;
     const WireFormat wire;
+    const bool arrow_zero_copy;   /// Branch B: adopt the Arrow buffers zero-copy (vs the Branch-A copy)
 
     /// Arrow IPC recv/decode state (pimpl: keeps arrow headers out of this header). Non-null iff
     /// wire == WireFormat::Arrow; holds the decoded arrow::Schema + the resumable message-recv state.

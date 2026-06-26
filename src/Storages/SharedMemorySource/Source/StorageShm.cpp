@@ -25,6 +25,7 @@ namespace Setting
 {
     extern const SettingsUInt64 shm_source_stall_timeout_ms;
     extern const SettingsBool shm_tcp_source_async;
+    extern const SettingsBool shm_arrow_zero_copy;
 }
 
 
@@ -97,7 +98,8 @@ Pipe StorageShm::read(
             context->getSettingsRef()[Setting::shm_tcp_source_async],
             transport_mode == ShmTransportMode::ArrowTcp
                 ? TcpStreamSource::WireFormat::Arrow
-                : TcpStreamSource::WireFormat::Bespoke));
+                : TcpStreamSource::WireFormat::Bespoke,
+            context->getSettingsRef()[Setting::shm_arrow_zero_copy]));
 
     return Pipe(std::make_shared<PollableShmSource>(
         std::move(shared_header), shm_name,
