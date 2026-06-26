@@ -3,6 +3,7 @@
 #if defined(OS_LINUX)
 
 #include <Storages/IStorage.h>
+#include <Storages/SharedMemorySource/Source/TransportMode.h>
 
 #include <base/types.h>
 
@@ -32,7 +33,9 @@ namespace DB
 class StorageShm final : public IStorage
 {
 public:
-    StorageShm(const StorageID & id, const ColumnsDescription & cols, const String & shm_name_);
+    StorageShm(const StorageID & id, const ColumnsDescription & cols, const String & shm_name_,
+               ShmTransportMode transport_mode_ = ShmTransportMode::Adopt,
+               String tcp_host_ = {}, UInt16 tcp_port_ = 0);
 
     String getName() const override { return "Shm"; }
     bool isRemote() const override { return false; }
@@ -52,6 +55,9 @@ public:
 
 private:
     String shm_name;
+    ShmTransportMode transport_mode;
+    String tcp_host;     /// only for ShmTransportMode::Tcp
+    UInt16 tcp_port;     /// only for ShmTransportMode::Tcp
 };
 
 }

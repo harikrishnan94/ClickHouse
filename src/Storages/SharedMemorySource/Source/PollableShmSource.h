@@ -6,6 +6,7 @@
 #include <DataTypes/IDataType.h>
 #include <Processors/Chunk.h>
 #include <Processors/ISource.h>
+#include <Storages/SharedMemorySource/Source/TransportMode.h>
 #include <Storages/SharedMemorySource/Tracker/AdoptedByteCharger.h>
 #include <Storages/SharedMemorySource/Wire/Layout.h>
 #include <Storages/SharedMemorySource/Wire/SharedMemoryRegion.h>
@@ -102,7 +103,8 @@ public:
         std::vector<DataTypePtr> full_column_types_,
         std::vector<String> full_column_names_,
         std::vector<String> requested_column_names_,
-        UInt64 stall_timeout_ms_);
+        UInt64 stall_timeout_ms_,
+        ShmTransportMode transport_mode_ = ShmTransportMode::Adopt);
 
     ~PollableShmSource() override;
 
@@ -176,6 +178,9 @@ private:
     std::vector<String> full_column_names;
     /// Requested subset in downstream emit order. May be empty (degenerate `SELECT count()`).
     std::vector<String> requested_column_names;
+    /// Consumer transport mode (D-HC-0001/0003). Adopt = zero-copy out of the ring (default);
+    /// Copy/Tcp = materialise an owned copy of each block in drainSlot and release the slot early.
+    ShmTransportMode transport_mode = ShmTransportMode::Adopt;
     /// Map from emit position k → index into the full schema. Computed once in
     /// ensureAttached() after handshake cross-validation has confirmed the full schema
     /// matches the producer. Same size as `requested_column_names`; empty when the query

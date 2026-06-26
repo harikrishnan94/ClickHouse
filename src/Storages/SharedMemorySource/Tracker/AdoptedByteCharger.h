@@ -74,11 +74,19 @@ public:
     /// Returns a `ChargeHandle` whose destruction performs the inverse operations against
     /// the snapshotted query group (H2: cross-thread-safe release without retaining a raw
     /// thread-tracker pointer).
-    [[nodiscard]] ChargeHandle charge(size_t adopted_bytes, size_t logical_bytes);
+    /// `copied` selects which transport the block is accounted to (Hot-Cold D-HC-0004): when
+    /// false (zero-copy adopt) it bumps ShmAdoptedBlocks / ShmAdoptedBytesCharged /
+    /// ShmAdoptedBytesLogical; when true (copy / tcp transport) it bumps ShmCopiedBlocks /
+    /// ShmCopiedBytesCharged instead (the actual copied logical bytes are reported separately at
+    /// the consumer copy site via ShmCopiedBytesLogical). The MemoryTracker charge, the
+    /// feature-local counters, the current-bytes gauges, and ShmRetainsAcquired are identical in
+    /// both modes — only the cumulative block/charged ProfileEvent labels differ, so the offload
+    /// oracle can prove which transport actually ran.
+    [[nodiscard]] ChargeHandle charge(size_t adopted_bytes, size_t logical_bytes, bool copied = false);
 
     /// Convenience overload for the common case where logical == charged (no safe-read padding
     /// to subtract; e.g. fixed-width primitive columns).
-    [[nodiscard]] ChargeHandle charge(size_t adopted_bytes) { return charge(adopted_bytes, adopted_bytes); }
+    [[nodiscard]] ChargeHandle charge(size_t adopted_bytes) { return charge(adopted_bytes, adopted_bytes, false); }
 
     /// Test-visible exact counter. Returns the sum of `charged_bytes` for every live
     /// `ChargeHandle` this charger has issued. Safe to call concurrently with `charge()` and

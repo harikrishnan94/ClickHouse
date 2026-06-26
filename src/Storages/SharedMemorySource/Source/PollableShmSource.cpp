@@ -15,6 +15,8 @@
 #include <Common/CurrentMetrics.h>
 #include <Common/ErrnoException.h>
 #include <Common/Exception.h>
+#include <Common/ProfileEvents.h>
+#include <Common/Stopwatch.h>
 
 #include <poll.h>
 #include <unistd.h>
@@ -36,6 +38,12 @@
 namespace CurrentMetrics
 {
     extern const Metric ShmActiveRegions;
+}
+
+namespace ProfileEvents
+{
+    extern const Event ShmCopiedBytesLogical;
+    extern const Event ShmCopyTimeMicroseconds;
 }
 
 namespace DB
@@ -114,12 +122,14 @@ PollableShmSource::PollableShmSource(
     std::vector<DataTypePtr> full_column_types_,
     std::vector<String> full_column_names_,
     std::vector<String> requested_column_names_,
-    UInt64 stall_timeout_ms_)
+    UInt64 stall_timeout_ms_,
+    ShmTransportMode transport_mode_)
     : ISource(std::move(header))
     , shm_name(shm_name_)
     , full_column_types(std::move(full_column_types_))
     , full_column_names(std::move(full_column_names_))
     , requested_column_names(std::move(requested_column_names_))
+    , transport_mode(transport_mode_)
     , stall_timeout_ms(stall_timeout_ms_)
 {
     chassert(full_column_types.size() == full_column_names.size());
@@ -456,10 +466,26 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
     ///
     /// On any throw between step 1 and step 3 we must release the retain manually
     /// (the lambda `release_retain_if_local` below); after step 3 the RetainToken's
-    /// destructor handles it. After step 4's success, no rollback is needed.
+    /// destructor handles it. After step 4's success, no MANUAL rollback is needed —
+    /// `release_retain_if_local()` is already a no-op (the local guard cleared at step 3).
+    /// Note the copy/tcp transport adds a post-step-4 stage (the convertToFullColumnIfAdopted
+    /// loop) that CAN throw; its exception safety is by column-destructor RAII, not the
+    /// manual lambda: an un-converted `emitted_cols` entry still holds the shared retain_token
+    /// + charge handle, so stack unwind drops it, fires the RetainToken deleter (slot→EMPTY),
+    /// and runs the ChargeHandle destructor (reverses the MemoryTracker charge). No leak.
 
     const uint64_t this_seq = slot->sequence.load(std::memory_order_acquire);
     const auto & hs = region->handshake();
+
+    /// Capture the per-block scalar fields from the slot up front, BEFORE any path that may
+    /// release the slot back to the producer. In copy/tcp transport mode the slot is
+    /// transitioned to EMPTY *inside* this function (the adopted aliases drop right after the
+    /// per-block copy), after which the producer may reuse the slot and overwrite these SHM
+    /// fields — reading them post-release would be a data race. In adopt mode the slot is held
+    /// until chunk-drop, so this is simply a harmless early read.
+    const uint32_t slot_index_local = slot->slot_index;
+    const UInt64 row_count_local = slot->row_count;
+    const uint64_t eos_marker_local = slot->eos_marker.load(std::memory_order_acquire);
 
     /// Precondition 11: row_count must fit the implementation cap. Acquire-load is
     /// implied by the previous acquire on `slot->state == PUBLISHED` from
@@ -553,7 +579,8 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
             /// inflate the MemoryTracker before the error fires.
         }
 
-        ChargeHandle charge_handle = charger.charge(adopted_bytes, logical_bytes);
+        ChargeHandle charge_handle = charger.charge(
+            adopted_bytes, logical_bytes, /*copied=*/transport_mode != ShmTransportMode::Adopt);
 
         /// Step 3: build the RetainToken. From this point on, releasing the retain is
         /// the RetainToken's responsibility — so we clear the local guard flag
@@ -618,7 +645,7 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
             schema.emplace_back(full_column_names[i], full_column_types[i]);
 
         Columns full_cols = adopt(descs_vec, schema, data_region, hs.data_region_size,
-                                  slot->row_count, std::move(retain_token), std::move(charge_handle));
+                                  row_count_local, std::move(retain_token), std::move(charge_handle));
 
         /// Step 5: project down to the requested subset (Finding 4). The columns we drop
         /// release their RetainToken / ChargeHandle aliases here; the remaining columns
@@ -645,23 +672,50 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
                 cs->validateAdoptedOffsets();
         }
 
+        /// Copy / TCP transport mode (D-HC-0003): materialise consumer-owned copies of the
+        /// emitted columns out of shared memory, then drop the adopted aliases so the producer's
+        /// ring slot is released back to EMPTY *immediately* — within this drainSlot call —
+        /// rather than at downstream chunk-drop (adopt mode).
+        ///
+        /// convertToFullColumnIfAdopted() is a deep cloneResized() for an adopted column (the
+        /// per-block memcpy of its logical payload into owned ClickHouse memory) and a no-op for
+        /// an already-owned column. Reassigning every emitted column drops the last adopted
+        /// alias each held; combined with the `full_cols.clear()` above (which dropped the
+        /// non-emitted adopted columns), no holder of `retain_token` / the charge token remains
+        /// after this loop, so the RetainToken deleter runs HERE and transitions the slot EMPTY
+        /// via the SAME transition_counter-bump + release-store the adopt path performs at
+        /// chunk-drop. The state machine is byte-identical; only the timing moves earlier. The
+        /// owned copies carry no SHM alias, so a producer reusing the slot cannot corrupt them.
+        if (transport_mode != ShmTransportMode::Adopt)
+        {
+            Stopwatch copy_timer;
+            size_t copied_logical_bytes = 0;
+            for (auto & col : emitted_cols)
+            {
+                col = col->convertToFullColumnIfAdopted();
+                copied_logical_bytes += col->byteSize();
+            }
+            ProfileEvents::increment(ProfileEvents::ShmCopiedBytesLogical, copied_logical_bytes);
+            ProfileEvents::increment(ProfileEvents::ShmCopyTimeMicroseconds, copy_timer.elapsedMicroseconds());
+        }
+
         /// Record this seq as consumed so the next findNextReadySlot() round
         /// doesn't re-pick this slot before the producer republishes (the
         /// `seq == last_consumed[i]` skip branch handles the in-flight case).
-        last_consumed_sequence[slot->slot_index] = this_seq;
+        last_consumed_sequence[slot_index_local] = this_seq;
 
         /// EOS detection per `shm-block-stream.md` §End-of-stream. Setting
         /// `eos_observed` here arms the precondition-23 check in tryGenerate: any
         /// PUBLISHED slot subsequently observed by the consumer will throw
         /// SHM_BLOCK_FRAMING_INVALID rather than be silently drained.
-        if (slot->eos_marker.load(std::memory_order_acquire) != 0)
+        if (eos_marker_local != 0)
             eos_observed.store(true, std::memory_order_release);
 
         /// Successful drain: progress observed → reset stall timer.
         stall_timer.restart();
         is_async_state = false;
 
-        return Chunk(std::move(emitted_cols), slot->row_count);
+        return Chunk(std::move(emitted_cols), row_count_local);
     }
     catch (...)
     {

@@ -2,6 +2,7 @@
 
 #if defined(OS_LINUX)
 
+#    include <Storages/SharedMemorySource/Source/TransportMode.h>
 #    include <TableFunctions/ITableFunction.h>
 
 #    include <base/types.h>
@@ -55,6 +56,8 @@ private:
 
     String shm_name;
     String columns_str;
+    /// Optional 3rd literal arg (D-HC-0001); absent => zero-copy adopt (default).
+    ShmTransportSpec transport_spec;
 };
 
 }

@@ -2,6 +2,7 @@
 
 #include <Storages/SharedMemorySource/Source/StorageShm.h>
 #include <Storages/SharedMemorySource/Source/PollableShmSource.h>
+#include <Storages/SharedMemorySource/Source/TcpStreamSource.h>
 
 #include <Core/Block.h>
 #include <Core/Settings.h>
@@ -26,9 +27,13 @@ namespace Setting
 }
 
 
-StorageShm::StorageShm(const StorageID & id, const ColumnsDescription & cols, const String & shm_name_)
+StorageShm::StorageShm(const StorageID & id, const ColumnsDescription & cols, const String & shm_name_,
+                       ShmTransportMode transport_mode_, String tcp_host_, UInt16 tcp_port_)
     : IStorage(id)
     , shm_name(shm_name_)
+    , transport_mode(transport_mode_)
+    , tcp_host(std::move(tcp_host_))
+    , tcp_port(tcp_port_)
 {
     StorageInMemoryMetadata storage_metadata;
     storage_metadata.setColumns(cols);
@@ -78,11 +83,18 @@ Pipe StorageShm::read(
     auto shared_header = std::make_shared<const Block>(std::move(header));
     const UInt64 stall_ms = context->getSettingsRef()[Setting::shm_source_stall_timeout_ms];
 
-    /// N11: exactly one source per `read()` call.
+    /// N11: exactly one source per `read()` call. TCP transport (Phase 1) connects to the producer's
+    /// per-stream listener; SHM transport (adopt/copy) attaches the ring.
+    if (transport_mode == ShmTransportMode::Tcp)
+        return Pipe(std::make_shared<TcpStreamSource>(
+            std::move(shared_header), tcp_host, tcp_port,
+            std::move(full_column_types), std::move(full_column_names),
+            std::move(requested_names), stall_ms));
+
     return Pipe(std::make_shared<PollableShmSource>(
         std::move(shared_header), shm_name,
         std::move(full_column_types), std::move(full_column_names),
-        std::move(requested_names), stall_ms));
+        std::move(requested_names), stall_ms, transport_mode));
 }
 
 }

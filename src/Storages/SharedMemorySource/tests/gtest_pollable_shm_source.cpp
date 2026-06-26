@@ -5,6 +5,7 @@
 #    include <Storages/SharedMemorySource/Source/PollableShmSource.h>
 #    include <Storages/SharedMemorySource/TestProducer/InProcessProducer.h>
 #    include <Storages/SharedMemorySource/Wire/Layout.h>
+#    include <Storages/SharedMemorySource/Wire/SharedMemoryRegion.h>
 
 #    include <Columns/ColumnDecimal.h>
 #    include <Columns/ColumnString.h>
@@ -36,6 +37,7 @@
 #    include <chrono>
 #    include <cstdint>
 #    include <exception>
+#    include <iostream>
 #    include <memory>
 #    include <string>
 #    include <string_view>
@@ -1197,6 +1199,193 @@ TEST(PollableShmSource, MisalignedDescriptorOffsetThrowsBlockFramingInvalid)
                                              << observed_msg;
     EXPECT_NE(observed_msg.find("per_column_descriptors_offset"), std::string::npos) << observed_msg;
     EXPECT_NE(observed_msg.find("alignof(ColumnDescriptor)"), std::string::npos) << observed_msg;
+}
+
+
+/// Hot-Cold Phase 0 (decision D-HC-0003): the COPY transport materialises each block into
+/// consumer-OWNED columns inside drainSlot and releases the producer ring slot IMMEDIATELY
+/// (within drainSlot), not at downstream chunk-drop like the zero-copy adopt path.
+///
+/// Proof of early release: RETAIN every emitted chunk for the entire drain over a K=4 ring
+/// with 40 blocks (40 >> 4). If copy mode failed to materialise (i.e. emitted columns still
+/// aliased SHM), each retained chunk would pin its slot, the K=4 ring would fill, and the
+/// producer would block in publish_block until the source's 30s stall budget fired
+/// SHM_PRODUCER_STALL through executor.pull(). Because copy mode emits owned columns that
+/// alias no slot, the producer publishes all 40 blocks and joins, the data is correct, and
+/// every slot's retain_refcount is 0 at the end EVEN THOUGH all 40 chunks are still held.
+///
+/// (The per-mode ProfileEvents — ShmCopiedBlocks / ShmCopiedBytesLogical /
+/// ShmCopyTimeMicroseconds, and ShmAdoptedBlocks==0 — are proven on the live server via
+/// system.query_log in test/shm/verify_offload.sh + the W-sweep oracle; the unit layer here
+/// proves the early-release + ownership mechanism that the counter rests on.)
+TEST(PollableShmSource, CopyModeMaterializesAndReleasesSlotEarly)
+{
+    constexpr size_t n_blocks = 40;
+    InProcessProducer producer(defaultConfig("copymode", /*k=*/4));
+    ASSERT_TRUE(producer.isReady());
+
+    std::thread producer_thread(
+        [&]()
+        {
+            for (size_t b = 0; b < n_blocks; ++b)
+            {
+                const std::vector<uint64_t> ids = {b, b + 100, b + 200};
+                const std::vector<uint8_t> chars = {'a', 'b', 'c'};
+                const std::vector<uint64_t> offs = {1, 2, 3};
+                producer.publishBlock({uint64Payload(ids), stringPayload(chars, offs)}, ids.size());
+            }
+            producer.signalEndOfStream();
+        });
+
+    auto src = std::make_shared<PollableShmSource>(
+        makeHeader(),
+        producer.shmName(),
+        std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(), std::make_shared<DataTypeString>()},
+        std::vector<String>{"id", "s"},
+        std::vector<String>{"id", "s"},
+        /*stall_timeout_ms=*/30'000,
+        ShmTransportMode::Copy);
+    QueryPipeline pipeline(src);
+    PullingPipelineExecutor executor(pipeline);
+
+    /// Hold EVERY emitted chunk for the whole drain (worst case — emulates a hash-join build
+    /// that keeps all right-side blocks). In adopt mode this pattern is exactly what the K=4
+    /// ring deadlocked on before the build-side materialisation fix; copy mode must NOT pin.
+    std::vector<Columns> retained;
+    size_t chunks = 0;
+    {
+        Chunk chunk;
+        while (executor.pull(chunk))
+        {
+            if (!chunk.hasRows())
+                continue;
+            ASSERT_EQ(chunk.getNumRows(), 3u) << "block " << chunks;
+            ASSERT_EQ(chunk.getNumColumns(), 2u);
+            const auto & cols = chunk.getColumns();
+            const auto * id_col = typeid_cast<const ColumnUInt64 *>(cols[0].get());
+            ASSERT_NE(id_col, nullptr);
+            EXPECT_EQ(id_col->getData()[0], chunks);
+            EXPECT_EQ(id_col->getData()[1], chunks + 100);
+            EXPECT_EQ(id_col->getData()[2], chunks + 200);
+            retained.push_back(cols);
+            ++chunks;
+        }
+    }
+
+    /// Reaching here without a thrown SHM_PRODUCER_STALL already proves slots were freed.
+    producer_thread.join();
+    EXPECT_EQ(chunks, n_blocks);
+    EXPECT_EQ(retained.size(), n_blocks);
+
+    /// Every ring slot released to refcount 0 despite the entire emitted stream still held —
+    /// the copy released each slot inside drainSlot, not at chunk-drop.
+    auto region_inspect = SharedMemoryRegion::attach(producer.shmName());
+    ASSERT_NE(region_inspect, nullptr);
+    const auto & hs = region_inspect->handshake();
+    const char * slot_base = static_cast<const char *>(region_inspect->data()) + hs.slot_table_offset;
+    for (uint32_t i = 0; i < hs.ring_depth_k; ++i)
+    {
+        const auto * slot = reinterpret_cast<const SlotEntry *>(slot_base + i * hs.slot_table_stride);
+        EXPECT_EQ(slot->retain_refcount.load(std::memory_order_acquire), 0u)
+            << "slot " << i << ": retain_refcount still held while copy-mode chunks are all retained";
+    }
+}
+
+
+/// Hot-Cold Phase 0 pre-registration instrument #6 (isolated microbenchmark): fix the
+/// per-byte cost of the copy-mode materialisation with NO scan/visibility/consumer noise.
+/// convertToFullColumnIfAdopted() is cloneResized() for an adopted column — a single
+/// allocate+memcpy of the column's logical payload — so cloneResized() on an owned column
+/// of representative size measures the identical work. Reports ns/byte and GB/s for
+/// ColumnVector<UInt64> and ColumnString via RecordProperty + stdout. Not a pass/fail gate.
+TEST(PollableShmSource, CopyRateConvertNsPerByteMicrobench)
+{
+    using clock = std::chrono::steady_clock;
+    constexpr size_t rows = 65536;
+    constexpr int iters = 500;
+
+    {
+        auto col = ColumnUInt64::create();
+        auto & data = col->getData();
+        data.resize(rows);
+        for (size_t i = 0; i < rows; ++i)
+            data[i] = i * 2654435761ULL;
+        ColumnPtr base = std::move(col);
+
+        volatile size_t sink = 0;
+        const auto t0 = clock::now();
+        for (int it = 0; it < iters; ++it)
+        {
+            auto copy = base->cloneResized(base->size());
+            sink += copy->byteSize();
+        }
+        const auto t1 = clock::now();
+        const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        const double bytes = static_cast<double>(rows) * 8.0 * iters;
+        RecordProperty("uint64_ns_per_byte", std::to_string(ns / bytes));
+        RecordProperty("uint64_GBps", std::to_string(bytes / ns));
+        std::cout << "[microbench] ColumnVector<UInt64> cloneResized: " << (ns / bytes)
+                  << " ns/byte, " << (bytes / ns) << " GB/s (sink=" << sink << ")\n";
+    }
+
+    {
+        auto col = ColumnString::create();
+        const std::string sval(16, 'x');
+        for (size_t i = 0; i < rows; ++i)
+            col->insertData(sval.data(), sval.size());
+        ColumnPtr base = std::move(col);
+        const double logical = static_cast<double>(base->byteSize());
+
+        volatile size_t sink = 0;
+        const auto t0 = clock::now();
+        for (int it = 0; it < iters; ++it)
+        {
+            auto copy = base->cloneResized(base->size());
+            sink += copy->byteSize();
+        }
+        const auto t1 = clock::now();
+        const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        const double bytes = logical * iters;
+        RecordProperty("string_ns_per_byte", std::to_string(ns / bytes));
+        RecordProperty("string_GBps", std::to_string(bytes / ns));
+        std::cout << "[microbench] ColumnString cloneResized (" << logical << " logical bytes): "
+                  << (ns / bytes) << " ns/byte, " << (bytes / ns) << " GB/s (sink=" << sink << ")\n";
+    }
+
+    // Cache-COLD variant: many distinct UInt64 columns totalling >> last-level cache, each
+    // copied exactly ONCE, so the source is not cache-resident — this matches the in-query
+    // case where the copy reads block payload the producer/scan just wrote (not a hot buffer
+    // reused 500x). The cache-hot number above is only an upper bound; this is the realistic
+    // per-byte rate the copy-vs-adopt overhead prediction should use.
+    {
+        constexpr size_t ncols = 96;   // 96 * 65536 * 8 B = 48 MiB >> LLC
+        std::vector<ColumnPtr> srcs;
+        srcs.reserve(ncols);
+        for (size_t c = 0; c < ncols; ++c)
+        {
+            auto col = ColumnUInt64::create();
+            auto & d = col->getData();
+            d.resize(rows);
+            for (size_t i = 0; i < rows; ++i)
+                d[i] = (c * 1099511628211ULL) ^ (i * 2654435761ULL);
+            srcs.push_back(std::move(col));
+        }
+        volatile size_t sink = 0;
+        const auto t0 = clock::now();
+        for (size_t c = 0; c < ncols; ++c)
+        {
+            auto copy = srcs[c]->cloneResized(srcs[c]->size());
+            sink += copy->byteSize();
+        }
+        const auto t1 = clock::now();
+        const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        const double bytes = static_cast<double>(rows) * 8.0 * ncols;
+        RecordProperty("uint64_cold_ns_per_byte", std::to_string(ns / bytes));
+        RecordProperty("uint64_cold_GBps", std::to_string(bytes / ns));
+        std::cout << "[microbench] ColumnVector<UInt64> cloneResized COLD ("
+                  << (ncols * rows * 8 / (1024 * 1024)) << " MiB working set, single pass): "
+                  << (ns / bytes) << " ns/byte, " << (bytes / ns) << " GB/s (sink=" << sink << ")\n";
+    }
 }
 
 #endif

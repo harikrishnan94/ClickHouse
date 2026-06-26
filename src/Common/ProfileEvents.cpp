@@ -81,6 +81,10 @@
     M(ShmAdoptedBytesLogical, "Cumulative logical payload bytes (excluding safe-read padding) adopted from producer shared memory across all streamed_table() sources.", ValueType::Bytes) \
     M(ShmRetainsAcquired, "Cumulative retain-token acquisitions (refcount 0->1) across all streamed_table() sources.", ValueType::Number) \
     M(ShmRetainsReleased, "Cumulative retain-token releases (refcount back to 0) across all streamed_table() sources.", ValueType::Number) \
+    M(ShmCopiedBlocks, "Number of producer-published blocks COPIED out of shared memory (or received over TCP) by the experimental streamed_table() source in copy/tcp transport mode (one increment per block; mutually exclusive with ShmAdoptedBlocks for a given block, so it proves which transport ran).", ValueType::Number) \
+    M(ShmCopiedBytesCharged, "Cumulative charged bytes (full producer block incl. safe-read padding) accounted in copy/tcp transport mode across all streamed_table() sources (mirror of ShmAdoptedBytesCharged for the same blocks).", ValueType::Bytes) \
+    M(ShmCopiedBytesLogical, "Cumulative logical payload bytes actually materialised into consumer-owned columns by copy/tcp transport mode (the bytes the per-block memcpy moved; emitted/projected columns only).", ValueType::Bytes) \
+    M(ShmCopyTimeMicroseconds, "Cumulative wall time spent materialising consumer-owned copies of adopted blocks (convertToFullColumnIfAdopted) in copy/tcp transport mode.", ValueType::Microseconds) \
     M(OpenedFileCacheHits, "Number of times a file has been found in the opened file cache, so we didn't have to open it again.", ValueType::Number) \
     M(OpenedFileCacheMisses, "Number of times a file has been found in the opened file cache, so we had to open it again.", ValueType::Number) \
     M(OpenedFileCacheMicroseconds, "Amount of time spent executing OpenedFileCache methods.", ValueType::Microseconds) \

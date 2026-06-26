@@ -22,6 +22,8 @@ namespace ProfileEvents
     extern const Event ShmAdoptedBytesCharged;
     extern const Event ShmAdoptedBytesLogical;
     extern const Event ShmRetainsAcquired;
+    extern const Event ShmCopiedBlocks;
+    extern const Event ShmCopiedBytesCharged;
 }
 
 
@@ -33,7 +35,7 @@ AdoptedByteCharger::AdoptedByteCharger()
 {
 }
 
-ChargeHandle AdoptedByteCharger::charge(size_t adopted_bytes, size_t logical_bytes)
+ChargeHandle AdoptedByteCharger::charge(size_t adopted_bytes, size_t logical_bytes, bool copied)
 {
     /// Snapshot the calling thread's query group BEFORE we charge against it. The returned
     /// ChargeHandle keeps this group alive and releases against its query-level tracker even
@@ -65,9 +67,20 @@ ChargeHandle AdoptedByteCharger::charge(size_t adopted_bytes, size_t logical_byt
     state_->logical_current.fetch_add(static_cast<int64_t>(logical_bytes), std::memory_order_acq_rel);
     CurrentMetrics::add(CurrentMetrics::ShmAdoptedBytesCurrent, static_cast<CurrentMetrics::Value>(adopted_bytes));
     CurrentMetrics::add(CurrentMetrics::ShmAdoptedBytesLogicalCurrent, static_cast<CurrentMetrics::Value>(logical_bytes));
-    ProfileEvents::increment(ProfileEvents::ShmAdoptedBytesCharged, adopted_bytes);
-    ProfileEvents::increment(ProfileEvents::ShmAdoptedBytesLogical, logical_bytes);
-    ProfileEvents::increment(ProfileEvents::ShmAdoptedBlocks);
+    if (copied)
+    {
+        /// Copy / TCP transport (D-HC-0004): the same block, charged identically against the
+        /// MemoryTracker, but labelled to the copy transport. The actual bytes the per-block
+        /// memcpy moves are reported at the consumer copy site (ShmCopiedBytesLogical), not here.
+        ProfileEvents::increment(ProfileEvents::ShmCopiedBytesCharged, adopted_bytes);
+        ProfileEvents::increment(ProfileEvents::ShmCopiedBlocks);
+    }
+    else
+    {
+        ProfileEvents::increment(ProfileEvents::ShmAdoptedBytesCharged, adopted_bytes);
+        ProfileEvents::increment(ProfileEvents::ShmAdoptedBytesLogical, logical_bytes);
+        ProfileEvents::increment(ProfileEvents::ShmAdoptedBlocks);
+    }
     ProfileEvents::increment(ProfileEvents::ShmRetainsAcquired);
 
     return ChargeHandle(adopted_bytes, logical_bytes, state_, std::move(query_group_at_charge));
