@@ -215,6 +215,21 @@ public:
     const ColumnPtr & getNestedColumnPtr() const { return nested_column; }
     ColumnPtr & getNestedColumnPtr() { return nested_column; }
 
+    /// See IColumn::convertToFullColumnIfAdopted. The default IColumn implementation does NOT recurse,
+    /// so a Nullable wrapping an adopted nested column (e.g. a future Arrow producer that emits Nullable;
+    /// the current PG producer emits non-Nullable) would never materialize and would throw READONLY in
+    /// the mutating callers (Squashing.cpp:346, HashJoin.cpp:126). Recurse: materialize the nested column;
+    /// if it changed (was adopted), rebuild an owned Nullable around the materialized nested + the existing
+    /// null_map (the validity-bitmap->byte-map transform already produces an OWNED null_map). Hot-Cold
+    /// Phase 2 D-HC-0206.
+    ColumnPtr convertToFullColumnIfAdopted() const override
+    {
+        ColumnPtr full_nested = nested_column->convertToFullColumnIfAdopted();
+        if (full_nested.get() == nested_column.get())
+            return getPtr();   /// nested was not adopted -> nothing to materialize
+        return ColumnNullable::create(full_nested, null_map);
+    }
+
     /// Return the column that represents the byte map.
     const ColumnPtr & getNullMapColumnPtr() const { return null_map; }
     ColumnPtr & getNullMapColumnPtr() { return null_map; }
