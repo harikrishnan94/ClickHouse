@@ -129,7 +129,7 @@ void sendFragmented(int fd, const void * buf, size_t n, size_t frag, int delay_m
 /// TcpStreamSource(wire=Arrow) connects, decodes via the COPYING Branch-A path, and emits the columns.
 /// Drains through a REAL PullingPipelineExecutor so the async Status::Async/schedule/onAsyncJobReady
 /// contract + the resumable 3-phase Arrow recv are exercised. `slow` fragments the stream with delays.
-void runArrowDrainTest(bool async, bool slow, bool zero_copy = true, bool lean = true)
+void runArrowDrainTest(bool async, bool slow, bool zero_copy = true, bool lean = true, bool validate_offsets = false)
 {
     constexpr size_t n_blocks = 25;
     const std::vector<uint8_t> stream = buildArrowStream(n_blocks);
@@ -171,7 +171,7 @@ void runArrowDrainTest(bool async, bool slow, bool zero_copy = true, bool lean =
         std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(), std::make_shared<DataTypeString>(),
                                  std::make_shared<DataTypeDate>()},
         std::vector<String>{"id", "s", "d"}, std::vector<String>{"id", "s", "d"}, 60'000, async,
-        TcpStreamSource::WireFormat::Arrow, zero_copy, lean);
+        TcpStreamSource::WireFormat::Arrow, zero_copy, lean, validate_offsets);
 
     QueryPipeline pipeline(src);
     PullingPipelineExecutor executor(pipeline);
@@ -252,6 +252,13 @@ TEST(ArrowStreamSource, DrainsBlocking)
 TEST(ArrowStreamSource, DrainsBlockingReadRecordBatchAdopt)
 {
     runArrowDrainTest(/*async=*/false, /*slow=*/false, /*zero_copy=*/true, /*lean=*/false);
+}
+
+/// B-it5: the adopted-offsets monotonicity scan re-enabled (shm_adopt_validate_offsets=1) still drains
+/// the lean adopt path correctly (the gate is on; valid offsets pass the scan as a no-op).
+TEST(ArrowStreamSource, DrainsWithOffsetValidationEnabled)
+{
+    runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/true, /*lean=*/true, /*validate_offsets=*/true);
 }
 
 /// Async source, SLOW fragmented stream: forces non-blocking recv to hit EAGAIN mid-message, so the

@@ -123,13 +123,15 @@ PollableShmSource::PollableShmSource(
     std::vector<String> full_column_names_,
     std::vector<String> requested_column_names_,
     UInt64 stall_timeout_ms_,
-    ShmTransportMode transport_mode_)
+    ShmTransportMode transport_mode_,
+    bool validate_adopted_offsets_)
     : ISource(std::move(header))
     , shm_name(shm_name_)
     , full_column_types(std::move(full_column_types_))
     , full_column_names(std::move(full_column_names_))
     , requested_column_names(std::move(requested_column_names_))
     , transport_mode(transport_mode_)
+    , validate_adopted_offsets(validate_adopted_offsets_)
     , stall_timeout_ms(stall_timeout_ms_)
 {
     chassert(full_column_types.size() == full_column_names.size());
@@ -666,11 +668,12 @@ Chunk PollableShmSource::drainSlot(SlotEntry * slot)
         /// ColumnString. We only validate columns we actually emit — preconditions 21/22
         /// are "lazy; performed only if a downstream read would be invalidated by
         /// violation", and we never expose the dropped columns to a downstream reader.
-        for (const auto & col : emitted_cols)
-        {
-            if (const auto * cs = typeid_cast<const ColumnString *>(col.get()))
-                cs->validateAdoptedOffsets();
-        }
+        if (validate_adopted_offsets)
+            for (const auto & col : emitted_cols)
+            {
+                if (const auto * cs = typeid_cast<const ColumnString *>(col.get()))
+                    cs->validateAdoptedOffsets();
+            }
 
         /// Copy / TCP transport mode (D-HC-0003): materialise consumer-owned copies of the
         /// emitted columns out of shared memory, then drop the adopted aliases so the producer's

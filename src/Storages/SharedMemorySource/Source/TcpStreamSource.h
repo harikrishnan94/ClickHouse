@@ -60,7 +60,8 @@ public:
         bool async_ = true,
         WireFormat wire_ = WireFormat::Bespoke,
         bool arrow_zero_copy_ = true,
-        bool arrow_lean_extract_ = true);
+        bool arrow_lean_extract_ = true,
+        bool validate_adopted_offsets_ = false);
 
     ~TcpStreamSource() override;
 
@@ -155,6 +156,7 @@ private:
     const WireFormat wire;
     const bool arrow_zero_copy;   /// Branch B: adopt the Arrow buffers zero-copy (vs the Branch-A copy)
     const bool arrow_lean_extract;   /// Branch B it3: lean direct-flatbuffer extraction (vs ReadRecordBatch)
+    const bool validate_adopted_offsets;   /// Branch B it5: run the O(n) adopted-offsets monotonicity scan (default off; D-HC-0209)
 
     /// Arrow IPC recv/decode state (pimpl: keeps arrow headers out of this header). Non-null iff
     /// wire == WireFormat::Arrow; holds the decoded arrow::Schema + the resumable message-recv state.

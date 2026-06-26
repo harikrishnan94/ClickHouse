@@ -104,7 +104,8 @@ public:
         std::vector<String> full_column_names_,
         std::vector<String> requested_column_names_,
         UInt64 stall_timeout_ms_,
-        ShmTransportMode transport_mode_ = ShmTransportMode::Adopt);
+        ShmTransportMode transport_mode_ = ShmTransportMode::Adopt,
+        bool validate_adopted_offsets_ = false);
 
     ~PollableShmSource() override;
 
@@ -181,6 +182,8 @@ private:
     /// Consumer transport mode (D-HC-0001/0003). Adopt = zero-copy out of the ring (default);
     /// Copy/Tcp = materialise an owned copy of each block in drainSlot and release the slot early.
     ShmTransportMode transport_mode = ShmTransportMode::Adopt;
+    /// Branch B it5: run the O(n) adopted-offsets monotonicity scan (default off; D-HC-0209).
+    bool validate_adopted_offsets = false;
     /// Map from emit position k → index into the full schema. Computed once in
     /// ensureAttached() after handshake cross-validation has confirmed the full schema
     /// matches the producer. Same size as `requested_column_names`; empty when the query

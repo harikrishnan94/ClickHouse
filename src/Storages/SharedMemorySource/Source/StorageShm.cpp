@@ -27,6 +27,7 @@ namespace Setting
     extern const SettingsBool shm_tcp_source_async;
     extern const SettingsBool shm_arrow_zero_copy;
     extern const SettingsBool shm_arrow_lean_extract;
+    extern const SettingsBool shm_adopt_validate_offsets;
 }
 
 
@@ -85,6 +86,7 @@ Pipe StorageShm::read(
 
     auto shared_header = std::make_shared<const Block>(std::move(header));
     const UInt64 stall_ms = context->getSettingsRef()[Setting::shm_source_stall_timeout_ms];
+    const bool validate_offsets = context->getSettingsRef()[Setting::shm_adopt_validate_offsets];
 
     /// N11: exactly one source per `read()` call. The socket transports connect to the producer's
     /// per-stream listener -- bespoke TcpFrame.h block bytes (Tcp) or a standard Apache Arrow IPC
@@ -101,12 +103,13 @@ Pipe StorageShm::read(
                 ? TcpStreamSource::WireFormat::Arrow
                 : TcpStreamSource::WireFormat::Bespoke,
             context->getSettingsRef()[Setting::shm_arrow_zero_copy],
-            context->getSettingsRef()[Setting::shm_arrow_lean_extract]));
+            context->getSettingsRef()[Setting::shm_arrow_lean_extract],
+            validate_offsets));
 
     return Pipe(std::make_shared<PollableShmSource>(
         std::move(shared_header), shm_name,
         std::move(full_column_types), std::move(full_column_names),
-        std::move(requested_names), stall_ms, transport_mode));
+        std::move(requested_names), stall_ms, transport_mode, validate_offsets));
 }
 
 }

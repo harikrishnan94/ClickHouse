@@ -310,7 +310,8 @@ TcpStreamSource::TcpStreamSource(
     bool async_,
     WireFormat wire_,
     bool arrow_zero_copy_,
-    bool arrow_lean_extract_)
+    bool arrow_lean_extract_,
+    bool validate_adopted_offsets_)
     : ISource(std::move(header))
     , host(std::move(host_))
     , port(port_)
@@ -322,6 +323,7 @@ TcpStreamSource::TcpStreamSource(
     , wire(wire_)
     , arrow_zero_copy(arrow_zero_copy_)
     , arrow_lean_extract(arrow_lean_extract_)
+    , validate_adopted_offsets(validate_adopted_offsets_)
 {
     chassert(full_column_types.size() == full_column_names.size());
     if (wire == WireFormat::Arrow)
@@ -573,9 +575,10 @@ Chunk TcpStreamSource::buildChunkFromPayload(char * buffer, const TcpBlockHeader
             emitted_cols.push_back(full_cols[idx]);
         full_cols.clear();
 
-        for (const auto & col : emitted_cols)
-            if (const auto * cs = typeid_cast<const ColumnString *>(col.get()))
-                cs->validateAdoptedOffsets();
+        if (validate_adopted_offsets)
+            for (const auto & col : emitted_cols)
+                if (const auto * cs = typeid_cast<const ColumnString *>(col.get()))
+                    cs->validateAdoptedOffsets();
 
         if (bh.eos_marker != 0)
             eos_observed = true;
@@ -878,9 +881,10 @@ Chunk TcpStreamSource::buildChunkFromArrowViaReader(char * body_buf, int64_t bod
         emitted_cols.reserve(projection_indices.size());
         for (size_t idx : projection_indices)
             emitted_cols.push_back(full_cols[idx]);
-        for (const auto & ec : emitted_cols)
-            if (const auto * cs = typeid_cast<const ColumnString *>(ec.get()))
-                cs->validateAdoptedOffsets();
+        if (validate_adopted_offsets)
+            for (const auto & ec : emitted_cols)
+                if (const auto * cs = typeid_cast<const ColumnString *>(ec.get()))
+                    cs->validateAdoptedOffsets();
 
         stall_timer.restart();
         return Chunk(std::move(emitted_cols), n_rows);
@@ -1010,9 +1014,10 @@ Chunk TcpStreamSource::buildChunkFromArrowLean(char * body_buf, int64_t body_len
     emitted_cols.reserve(projection_indices.size());
     for (size_t idx : projection_indices)
         emitted_cols.push_back(full_cols[idx]);
-    for (const auto & ec : emitted_cols)
-        if (const auto * cs = typeid_cast<const ColumnString *>(ec.get()))
-            cs->validateAdoptedOffsets();
+    if (validate_adopted_offsets)
+        for (const auto & ec : emitted_cols)
+            if (const auto * cs = typeid_cast<const ColumnString *>(ec.get()))
+                cs->validateAdoptedOffsets();
 
     stall_timer.restart();
     return Chunk(std::move(emitted_cols), n);
