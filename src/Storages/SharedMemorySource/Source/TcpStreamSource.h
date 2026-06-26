@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -42,6 +43,12 @@ namespace DB
 class TcpStreamSource final : public ISource
 {
 public:
+    /// Wire format on the socket. Bespoke = the SHM-derived TcpFrame.h blocks (Phase 1). Arrow =
+    /// a standard Apache Arrow IPC stream (Schema message, then one RecordBatch message per block,
+    /// then the EOS marker) — Phase 2 Branch A (D-HC-0205/0207). The async recv/wake/lifetime
+    /// machinery is wire-agnostic; only the framing (tryRecv*) and decode (buildChunkFrom*) differ.
+    enum class WireFormat : uint8_t { Bespoke, Arrow };
+
     TcpStreamSource(
         SharedHeader header,
         String host_,
@@ -50,7 +57,8 @@ public:
         std::vector<String> full_column_names_,
         std::vector<String> requested_column_names_,
         UInt64 stall_timeout_ms_,
-        bool async_ = true);
+        bool async_ = true,
+        WireFormat wire_ = WireFormat::Bespoke);
 
     ~TcpStreamSource() override;
 
@@ -75,6 +83,10 @@ private:
     /// after the (blocking, one-shot) handshake. Lazy on first tryGenerate().
     void ensureConnected();
 
+    /// Build the projection map (requested subset → full-schema index, emit order = request order).
+    /// Shared by the bespoke handshake and the Arrow schema path.
+    void buildProjectionIndices();
+
     /// Build the emitted Chunk from a fully-received frame-relative payload buffer `buffer`
     /// (`bh.payload_len` bytes; descriptors at `bh.descriptors_offset`). Takes ownership of
     /// `buffer`: on success a RetainToken frees it on last-alias drop; on throw it is freed here.
@@ -98,6 +110,17 @@ private:
     enum class RecvInto : uint8_t { Complete, WouldBlock, PeerClosed };
     RecvInto tryRecvInto(void * dst, size_t need, size_t & filled);
 
+    /// --- Apache Arrow IPC wire (Branch A; only when wire == WireFormat::Arrow) ---
+    /// Blocking, one-shot read of the leading Schema message (replaces the bespoke handshake);
+    /// builds + cross-validates the arrow::Schema and the projection map. Called by ensureConnected.
+    void readArrowSchema();
+    /// Async-mode resumable recv of one Arrow IPC encapsulated message (3 phases: 8-byte prefix →
+    /// metadata → body). The 0-length-metadata continuation is the stream EOS. Reuses tryRecvInto.
+    RecvResult tryRecvArrowMessage(Chunk & out_chunk);
+    /// Decode a fully-received RecordBatch (metadata in arrow_state, `body_buf`/`body_len` the body)
+    /// into the emitted Chunk via the COPYING decode (Branch A). Takes ownership of `body_buf`.
+    Chunk buildChunkFromArrow(char * body_buf, int64_t body_len);
+
     /// Async wake bridge (mirrors PollableShmSource): IProcessor exposes one fd, so while async the
     /// bridge polls the socket fd (+ a stop eventfd) up to the remaining stall budget, then writes
     /// `ready_event_fd` so the executor re-enters prepare()/work(). Stopped on readiness/cancel/dtor.
@@ -115,6 +138,12 @@ private:
     std::vector<size_t> projection_indices;
     UInt64 stall_timeout_ms;
     const bool async;
+    const WireFormat wire;
+
+    /// Arrow IPC recv/decode state (pimpl: keeps arrow headers out of this header). Non-null iff
+    /// wire == WireFormat::Arrow; holds the decoded arrow::Schema + the resumable message-recv state.
+    struct ArrowRecvState;
+    std::unique_ptr<ArrowRecvState> arrow_state;
 
     /// Atomic so onCancel() (callable from an arbitrary thread, noexcept) and the dtor cannot
     /// double-close / torn-read it; dtor exchange(-1)s before close. (Adversarial review B0 #1.)

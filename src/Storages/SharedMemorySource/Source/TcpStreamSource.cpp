@@ -2,6 +2,8 @@
 
 #include <Storages/SharedMemorySource/Source/TcpStreamSource.h>
 
+#include "config.h"   /// USE_ARROW
+
 #include <Storages/SharedMemorySource/Adoption/AdoptionLayer.h>
 #include <Storages/SharedMemorySource/Adoption/RetainToken.h>
 #include <Storages/SharedMemorySource/Wire/Layout.h>
@@ -9,13 +11,30 @@
 #include <Storages/SharedMemorySource/Wire/WireTypeMapping.h>
 
 #include <Columns/ColumnString.h>
+#include <Columns/ColumnsNumber.h>
+#include <Columns/ColumnDecimal.h>
 #include <Columns/IColumn.h>
 #include <DataTypes/DataTypeFactory.h>
+#include <DataTypes/IDataType.h>
+
+#if USE_ARROW
+#include <arrow/array.h>
+#include <arrow/buffer.h>
+#include <arrow/record_batch.h>
+#include <arrow/result.h>
+#include <arrow/type.h>
+#include <arrow/ipc/dictionary.h>
+#include <arrow/ipc/message.h>
+#include <arrow/ipc/options.h>
+#include <arrow/ipc/reader.h>
+#endif
 
 #include <Common/Exception.h>
 #include <Common/ErrnoException.h>
 #include <Common/ProfileEvents.h>
 #include <Common/Stopwatch.h>
+#include <Common/assert_cast.h>
+#include <Core/Types.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -58,6 +77,27 @@ using SharedMemoryWire::TcpHandshakeHeader;
 using SharedMemoryWire::TcpBlockHeader;
 using SharedMemoryWire::IMPL_MAX_ROWS_PER_BLOCK;
 
+#if USE_ARROW
+/// Resumable Arrow IPC recv + decode state (Branch A). Lives behind the pimpl so arrow headers
+/// stay out of TcpStreamSource.h. One encapsulated message = an 8-byte prefix (continuation
+/// 0xFFFFFFFF + int32 metadata size), then `metadata_size` flatbuffer bytes, then `body_len` body
+/// bytes; a 0 metadata size after the continuation is the stream EOS marker.
+struct TcpStreamSource::ArrowRecvState
+{
+    std::shared_ptr<arrow::Schema> schema;
+    arrow::ipc::IpcReadOptions read_options = arrow::ipc::IpcReadOptions::Defaults();
+
+    enum class Phase : uint8_t { Prefix, Metadata, Body };
+    Phase phase = Phase::Prefix;
+    uint8_t prefix[8] = {};
+    std::vector<uint8_t> metadata;   /// metadata_size bytes (grown as needed)
+    uint32_t metadata_size = 0;
+    int64_t body_len = 0;
+};
+#else
+struct TcpStreamSource::ArrowRecvState {};   /// ArrowTcp path errors before use when built w/o Arrow
+#endif
+
 namespace
 {
     constexpr int RECV_SLICE_MS = 200;          /// SO_RCVTIMEO slice (blocking mode + handshake).
@@ -85,6 +125,83 @@ namespace
         ssize_t r;
         do { r = ::read(fd, &buf, sizeof(buf)); } while (r > 0 || (r < 0 && errno == EINTR));
     }
+
+#if USE_ARROW
+    /// Branch-A COPYING decode of one Arrow column into a freshly-allocated, owned ClickHouse column
+    /// of the SQL-declared type `type` (the authority — Date/DateTime/DateTime64/Decimal ship as raw
+    /// integers / FixedSizeBinary(16), D-HC-0203/0207, so the Arrow logical type is not consulted).
+    /// Fixed-width: bulk memcpy of the contiguous LE data buffer (bytes identical to CH storage).
+    /// String (Arrow LargeBinary): copy the chars buffer + the N END offsets (arrow_offsets[1..N];
+    /// arrow_offsets[0]==0 is CH's offsets[-1] sentinel). Branch B replaces this copy with adoption.
+    ColumnPtr copyArrowColumnToCH(const arrow::Array & arr, const DataTypePtr & type,
+                                  const String & host, UInt16 port)
+    {
+        const size_t n = static_cast<size_t>(arr.length());
+
+        if (type->getTypeId() == TypeIndex::String)
+        {
+            const auto & bin = assert_cast<const arrow::LargeBinaryArray &>(arr);
+            const int64_t * offs = bin.raw_value_offsets();   /// length+1 int64, already includes arr.offset()
+            auto col = ColumnString::create();
+            auto & chars = col->getChars();
+            auto & coffs = col->getOffsets();
+            const int64_t base = n ? offs[0] : 0;
+            const int64_t total = n ? offs[n] - base : 0;
+            chars.resize(static_cast<size_t>(total));
+            if (total > 0)
+                ::memcpy(chars.data(), bin.value_data()->data() + base, static_cast<size_t>(total));
+            coffs.resize(n);
+            for (size_t i = 0; i < n; ++i)
+                coffs[i] = static_cast<UInt64>(offs[i + 1] - base);
+            return col;
+        }
+
+        /// Fixed-width: the data buffer (buffer index 1) is a contiguous LE array == CH PODArray.
+        const auto & data = arr.data();
+        if (data->buffers.size() < 2 || !data->buffers[1])
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': Arrow column '{}' missing data buffer", host, port, type->getName());
+
+        MutableColumnPtr mut = type->createColumn();
+        const uint8_t * raw = data->buffers[1]->data();
+
+#define PGCH_COPY_FIXED(TINDEX, COLT)                                                               \
+        case TypeIndex::TINDEX:                                                                     \
+        {                                                                                           \
+            auto & c = assert_cast<COLT &>(*mut);                                                   \
+            using Elem = std::decay_t<decltype(c.getData()[0])>;                                    \
+            c.getData().resize(n);                                                                  \
+            if (n) ::memcpy(c.getData().data(), raw + arr.offset() * sizeof(Elem), n * sizeof(Elem)); \
+            break;                                                                                  \
+        }
+
+        switch (type->getTypeId())
+        {
+            PGCH_COPY_FIXED(UInt8, ColumnUInt8)
+            PGCH_COPY_FIXED(UInt16, ColumnUInt16)
+            PGCH_COPY_FIXED(UInt32, ColumnUInt32)
+            PGCH_COPY_FIXED(UInt64, ColumnUInt64)
+            PGCH_COPY_FIXED(Int8, ColumnInt8)
+            PGCH_COPY_FIXED(Int16, ColumnInt16)
+            PGCH_COPY_FIXED(Int32, ColumnInt32)
+            PGCH_COPY_FIXED(Int64, ColumnInt64)
+            PGCH_COPY_FIXED(Float32, ColumnFloat32)
+            PGCH_COPY_FIXED(Float64, ColumnFloat64)
+            PGCH_COPY_FIXED(Date, ColumnUInt16)
+            PGCH_COPY_FIXED(DateTime, ColumnUInt32)
+            PGCH_COPY_FIXED(Date32, ColumnInt32)
+            PGCH_COPY_FIXED(DateTime64, ColumnDecimal<DateTime64>)
+            PGCH_COPY_FIXED(Decimal32, ColumnDecimal<Decimal32>)
+            PGCH_COPY_FIXED(Decimal64, ColumnDecimal<Decimal64>)
+            PGCH_COPY_FIXED(Decimal128, ColumnDecimal<Decimal128>)
+            default:
+                throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                    "TCP stream '{}:{}': Arrow decode unsupported CH type '{}'", host, port, type->getName());
+        }
+#undef PGCH_COPY_FIXED
+        return mut;
+    }
+#endif
 }
 
 
@@ -96,7 +213,8 @@ TcpStreamSource::TcpStreamSource(
     std::vector<String> full_column_names_,
     std::vector<String> requested_column_names_,
     UInt64 stall_timeout_ms_,
-    bool async_)
+    bool async_,
+    WireFormat wire_)
     : ISource(std::move(header))
     , host(std::move(host_))
     , port(port_)
@@ -105,8 +223,11 @@ TcpStreamSource::TcpStreamSource(
     , requested_column_names(std::move(requested_column_names_))
     , stall_timeout_ms(stall_timeout_ms_)
     , async(async_)
+    , wire(wire_)
 {
     chassert(full_column_types.size() == full_column_names.size());
+    if (wire == WireFormat::Arrow)
+        arrow_state = std::make_unique<ArrowRecvState>();
 }
 
 TcpStreamSource::~TcpStreamSource()
@@ -220,67 +341,65 @@ void TcpStreamSource::ensureConnected()
 
     stall_timer.restart();
 
-    /// Handshake: header + SchemaEntry[schema_count]; cross-validate against the SQL-declared schema.
-    TcpHandshakeHeader hs{};
-    recvAll(&hs, sizeof(hs));
-    if (hs.magic != SharedMemoryWire::SHM_TCP_MAGIC)
-        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
-            "TCP stream '{}:{}': bad handshake magic {:#x}", host, port, hs.magic);
-    if (hs.abi_version != SharedMemoryWire::SHM_TCP_ABI_VERSION_1)
-        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
-            "TCP stream '{}:{}': unsupported abi_version {}", host, port, hs.abi_version);
-    if (hs.schema_count != full_column_names.size())
-        throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-            "TCP stream '{}:{}': handshake schema_count={} but SQL columns={}",
-            host, port, hs.schema_count, full_column_names.size());
-
-    std::vector<SchemaEntry> schema(hs.schema_count);
-    recvAll(schema.data(), schema.size() * sizeof(SchemaEntry));
-
-    auto & type_factory = DataTypeFactory::instance();
-    for (size_t i = 0; i < full_column_names.size(); ++i)
+    if (wire == WireFormat::Arrow)
     {
-        const size_t name_len = ::strnlen(schema[i].name, SharedMemoryWire::SCHEMA_ENTRY_STR_MAX);
-        const String producer_name(schema[i].name, name_len);
-        if (producer_name != full_column_names[i])
-            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "TCP stream '{}:{}' column {}: handshake name='{}' but SQL name='{}'",
-                host, port, i, producer_name, full_column_names[i]);
-
-        const size_t type_len = ::strnlen(schema[i].type_string, SharedMemoryWire::SCHEMA_ENTRY_STR_MAX);
-        const String producer_type_str(schema[i].type_string, type_len);
-        DataTypePtr producer_type;
-        try
-        {
-            producer_type = type_factory.get(producer_type_str);
-        }
-        catch (const Exception & e)
-        {
-            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "TCP stream '{}:{}' column {}: handshake type='{}' does not parse: {}",
-                host, port, i, producer_type_str, e.message());
-        }
-        if (!producer_type->equals(*full_column_types[i]))
-            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "TCP stream '{}:{}' column {}: handshake type='{}' but SQL type='{}'",
-                host, port, i, producer_type->getName(), full_column_types[i]->getName());
-        if (!SharedMemoryWire::isSupportedShmType(producer_type->getTypeId()))
-            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "TCP stream '{}:{}' column {}: type '{}' outside supported set {}",
-                host, port, i, producer_type->getName(), SharedMemoryWire::supportedShmTypeList());
+        /// Arrow wire (D-HC-0207): no bespoke handshake — read the leading Arrow IPC Schema message,
+        /// cross-validate the field count, and build the projection map.
+        readArrowSchema();
     }
-
-    /// Projection map: requested subset → index into the full schema (emit order = request order).
-    projection_indices.clear();
-    projection_indices.reserve(requested_column_names.size());
-    for (const auto & requested : requested_column_names)
+    else
     {
-        bool found = false;
-        for (size_t j = 0; j < full_column_names.size(); ++j)
-            if (full_column_names[j] == requested) { projection_indices.push_back(j); found = true; break; }
-        if (!found)
+        /// Bespoke handshake: header + SchemaEntry[schema_count]; cross-validate vs the SQL schema.
+        TcpHandshakeHeader hs{};
+        recvAll(&hs, sizeof(hs));
+        if (hs.magic != SharedMemoryWire::SHM_TCP_MAGIC)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': bad handshake magic {:#x}", host, port, hs.magic);
+        if (hs.abi_version != SharedMemoryWire::SHM_TCP_ABI_VERSION_1)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': unsupported abi_version {}", host, port, hs.abi_version);
+        if (hs.schema_count != full_column_names.size())
             throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
-                "TCP stream '{}:{}': requested column '{}' not in producer schema", host, port, requested);
+                "TCP stream '{}:{}': handshake schema_count={} but SQL columns={}",
+                host, port, hs.schema_count, full_column_names.size());
+
+        std::vector<SchemaEntry> schema(hs.schema_count);
+        recvAll(schema.data(), schema.size() * sizeof(SchemaEntry));
+
+        auto & type_factory = DataTypeFactory::instance();
+        for (size_t i = 0; i < full_column_names.size(); ++i)
+        {
+            const size_t name_len = ::strnlen(schema[i].name, SharedMemoryWire::SCHEMA_ENTRY_STR_MAX);
+            const String producer_name(schema[i].name, name_len);
+            if (producer_name != full_column_names[i])
+                throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                    "TCP stream '{}:{}' column {}: handshake name='{}' but SQL name='{}'",
+                    host, port, i, producer_name, full_column_names[i]);
+
+            const size_t type_len = ::strnlen(schema[i].type_string, SharedMemoryWire::SCHEMA_ENTRY_STR_MAX);
+            const String producer_type_str(schema[i].type_string, type_len);
+            DataTypePtr producer_type;
+            try
+            {
+                producer_type = type_factory.get(producer_type_str);
+            }
+            catch (const Exception & e)
+            {
+                throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                    "TCP stream '{}:{}' column {}: handshake type='{}' does not parse: {}",
+                    host, port, i, producer_type_str, e.message());
+            }
+            if (!producer_type->equals(*full_column_types[i]))
+                throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                    "TCP stream '{}:{}' column {}: handshake type='{}' but SQL type='{}'",
+                    host, port, i, producer_type->getName(), full_column_types[i]->getName());
+            if (!SharedMemoryWire::isSupportedShmType(producer_type->getTypeId()))
+                throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                    "TCP stream '{}:{}' column {}: type '{}' outside supported set {}",
+                    host, port, i, producer_type->getName(), SharedMemoryWire::supportedShmTypeList());
+        }
+
+        buildProjectionIndices();
     }
 
     if (async)
@@ -372,6 +491,232 @@ Chunk TcpStreamSource::buildChunkFromPayload(char * buffer, const TcpBlockHeader
             freeAligned(buffer);
         throw;
     }
+}
+
+
+void TcpStreamSource::buildProjectionIndices()
+{
+    /// requested subset → index into the full schema (emit order = request order).
+    projection_indices.clear();
+    projection_indices.reserve(requested_column_names.size());
+    for (const auto & requested : requested_column_names)
+    {
+        bool found = false;
+        for (size_t j = 0; j < full_column_names.size(); ++j)
+            if (full_column_names[j] == requested) { projection_indices.push_back(j); found = true; break; }
+        if (!found)
+            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                "TCP stream '{}:{}': requested column '{}' not in producer schema", host, port, requested);
+    }
+}
+
+
+void TcpStreamSource::readArrowSchema()
+{
+#if USE_ARROW
+    /// Read the leading Arrow IPC encapsulated Schema message (blocking, one-shot): 8-byte prefix
+    /// (continuation 0xFFFFFFFF + int32 metadata size), then metadata; Schema messages carry no body.
+    uint8_t prefix[8];
+    recvAll(prefix, sizeof(prefix));
+    uint32_t cont = 0, msize = 0;
+    ::memcpy(&cont, prefix, 4);
+    ::memcpy(&msize, prefix + 4, 4);
+    if (cont != 0xFFFFFFFFu)
+        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+            "TCP stream '{}:{}': bad Arrow continuation {:#x}", host, port, cont);
+    if (msize == 0)
+        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+            "TCP stream '{}:{}': empty Arrow stream (EOS before Schema)", host, port);
+
+    std::vector<uint8_t> meta(msize);
+    recvAll(meta.data(), msize);
+    auto meta_buf = std::make_shared<arrow::Buffer>(meta.data(), msize);
+    auto msg_res = arrow::ipc::Message::Open(meta_buf, nullptr);
+    if (!msg_res.ok())
+        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+            "TCP stream '{}:{}': Arrow Schema Message::Open failed: {}", host, port, msg_res.status().ToString());
+    auto msg = std::move(msg_res).ValueOrDie();
+    if (msg->type() != arrow::ipc::MessageType::SCHEMA)
+        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+            "TCP stream '{}:{}': expected Arrow Schema message, got type {}", host, port, static_cast<int>(msg->type()));
+    if (msg->body_length() > 0)   /// defensive: keep the stream aligned if a body ever appears
+    {
+        std::vector<uint8_t> dump(static_cast<size_t>(msg->body_length()));
+        recvAll(dump.data(), dump.size());
+    }
+
+    auto schema_res = arrow::ipc::ReadSchema(*msg, nullptr);
+    if (!schema_res.ok())
+        throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+            "TCP stream '{}:{}': Arrow ReadSchema failed: {}", host, port, schema_res.status().ToString());
+    arrow_state->schema = std::move(schema_res).ValueOrDie();
+
+    if (static_cast<size_t>(arrow_state->schema->num_fields()) != full_column_names.size())
+        throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+            "TCP stream '{}:{}': Arrow schema has {} fields but SQL columns={}",
+            host, port, arrow_state->schema->num_fields(), full_column_names.size());
+
+    buildProjectionIndices();
+#else
+    throw Exception(ErrorCodes::SHM_ATTACH_FAILED,
+        "TCP stream '{}:{}': arrow transport requires a ClickHouse built with Arrow", host, port);
+#endif
+}
+
+
+TcpStreamSource::RecvResult TcpStreamSource::tryRecvArrowMessage(Chunk & out_chunk)
+{
+#if USE_ARROW
+    auto & st = *arrow_state;
+
+    if (st.phase == ArrowRecvState::Phase::Prefix)
+    {
+        const RecvInto r = tryRecvInto(st.prefix, sizeof(st.prefix), recv_filled);
+        if (r == RecvInto::WouldBlock)
+            return RecvResult::WouldBlock;
+        if (r == RecvInto::PeerClosed)
+            throw Exception(ErrorCodes::SHM_PRODUCER_DEATH_BEFORE_EOS,
+                "TCP stream '{}:{}': producer closed before end-of-stream (peer EOF reading the Arrow "
+                "message prefix, {} of 8 bytes)", host, port, recv_filled);
+        recv_filled = 0;
+
+        uint32_t cont = 0;
+        ::memcpy(&cont, st.prefix, 4);
+        ::memcpy(&st.metadata_size, st.prefix + 4, 4);
+        if (cont != 0xFFFFFFFFu)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': bad Arrow continuation {:#x}", host, port, cont);
+        if (st.metadata_size == 0)
+            return RecvResult::Eos;   /// the stream EOS marker (continuation + 0 length)
+        if (st.metadata_size > SharedMemoryWire::TCP_MAX_BLOCK_PAYLOAD)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': Arrow metadata size {} exceeds cap", host, port, st.metadata_size);
+        st.metadata.resize(st.metadata_size);
+        st.phase = ArrowRecvState::Phase::Metadata;
+    }
+
+    if (st.phase == ArrowRecvState::Phase::Metadata)
+    {
+        const RecvInto r = tryRecvInto(st.metadata.data(), st.metadata_size, recv_filled);
+        if (r == RecvInto::WouldBlock)
+            return RecvResult::WouldBlock;
+        if (r == RecvInto::PeerClosed)
+            throw Exception(ErrorCodes::SHM_PRODUCER_DEATH_BEFORE_EOS,
+                "TCP stream '{}:{}': producer closed before end-of-stream (peer EOF reading Arrow "
+                "metadata, {} of {} bytes)", host, port, recv_filled, st.metadata_size);
+        recv_filled = 0;
+
+        auto meta_buf = std::make_shared<arrow::Buffer>(st.metadata.data(), st.metadata_size);
+        auto msg_res = arrow::ipc::Message::Open(meta_buf, nullptr);
+        if (!msg_res.ok())
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': Arrow Message::Open failed: {}", host, port, msg_res.status().ToString());
+        st.body_len = std::move(msg_res).ValueOrDie()->body_length();
+        if (st.body_len < 0 || static_cast<UInt64>(st.body_len) > SharedMemoryWire::TCP_MAX_BLOCK_PAYLOAD)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': Arrow bodyLength {} out of range", host, port, st.body_len);
+
+        if (st.body_len == 0)
+        {
+            char * empty = allocFrameBuffer(0, host, port);
+            st.phase = ArrowRecvState::Phase::Prefix;
+            out_chunk = buildChunkFromArrow(empty, 0);
+            return RecvResult::BlockReady;
+        }
+        pending_payload_len = static_cast<size_t>(st.body_len);
+        pending_buf = allocFrameBuffer(pending_payload_len, host, port);
+        st.phase = ArrowRecvState::Phase::Body;
+    }
+
+    /// Body phase.
+    const RecvInto r = tryRecvInto(pending_buf, pending_payload_len, recv_filled);
+    if (r == RecvInto::WouldBlock)
+        return RecvResult::WouldBlock;
+    if (r == RecvInto::PeerClosed)
+        throw Exception(ErrorCodes::SHM_PRODUCER_DEATH_BEFORE_EOS,
+            "TCP stream '{}:{}': producer closed before end-of-stream (peer EOF reading Arrow body, "
+            "{} of {} bytes)", host, port, recv_filled, pending_payload_len);
+
+    char * buf = pending_buf;
+    pending_buf = nullptr;
+    const int64_t blen = st.body_len;
+    st.phase = ArrowRecvState::Phase::Prefix;
+    recv_filled = 0;
+    out_chunk = buildChunkFromArrow(buf, blen);
+    return RecvResult::BlockReady;
+#else
+    (void) out_chunk;
+    throw Exception(ErrorCodes::SHM_ATTACH_FAILED,
+        "TCP stream '{}:{}': arrow transport requires a ClickHouse built with Arrow", host, port);
+#endif
+}
+
+
+Chunk TcpStreamSource::buildChunkFromArrow(char * body_buf, int64_t body_len)
+{
+#if USE_ARROW
+    try
+    {
+        auto & st = *arrow_state;
+        auto meta_buf = std::make_shared<arrow::Buffer>(st.metadata.data(), st.metadata_size);
+        auto body_buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t *>(body_buf), body_len);
+
+        auto msg_res = arrow::ipc::Message::Open(meta_buf, body_buffer);
+        if (!msg_res.ok())
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': Arrow Message::Open(body) failed: {}", host, port, msg_res.status().ToString());
+        auto msg = std::move(msg_res).ValueOrDie();
+        if (msg->type() != arrow::ipc::MessageType::RECORD_BATCH)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': expected Arrow RecordBatch, got type {}", host, port, static_cast<int>(msg->type()));
+
+        auto batch_res = arrow::ipc::ReadRecordBatch(*msg, st.schema, /*dictionary_memo=*/nullptr, st.read_options);
+        if (!batch_res.ok())
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': Arrow ReadRecordBatch failed: {}", host, port, batch_res.status().ToString());
+        auto batch = std::move(batch_res).ValueOrDie();
+
+        const size_t n_cols = full_column_types.size();
+        if (static_cast<size_t>(batch->num_columns()) != n_cols)
+            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                "TCP stream '{}:{}': Arrow batch has {} columns but schema {}", host, port, batch->num_columns(), n_cols);
+        const size_t n_rows = static_cast<size_t>(batch->num_rows());
+
+        /// COPYING decode (Branch A): each Arrow column → an owned CH column of the SQL type.
+        Columns full_cols(n_cols);
+        size_t logical_bytes = 0;
+        for (size_t i = 0; i < n_cols; ++i)
+        {
+            full_cols[i] = copyArrowColumnToCH(*batch->column(static_cast<int>(i)), full_column_types[i], host, port);
+            logical_bytes += full_cols[i]->byteSize();
+        }
+        batch.reset();   /// drop the arrays that view body_buf BEFORE freeing it below
+
+        /// Charge copied=true → bumps ShmCopiedBlocks (offload oracle). The owned copies are tracked
+        /// by the normal allocator; this transient charge is released at scope end.
+        ChargeHandle charge_handle = charger.charge(logical_bytes, logical_bytes, /*copied=*/true);
+        ProfileEvents::increment(ProfileEvents::ShmCopiedBytesLogical, logical_bytes);
+
+        Columns emitted_cols;
+        emitted_cols.reserve(projection_indices.size());
+        for (size_t idx : projection_indices)
+            emitted_cols.push_back(full_cols[idx]);
+
+        stall_timer.restart();
+        freeAligned(body_buf);
+        return Chunk(std::move(emitted_cols), n_rows);
+    }
+    catch (...)
+    {
+        freeAligned(body_buf);
+        throw;
+    }
+#else
+    (void) body_len;
+    freeAligned(body_buf);
+    throw Exception(ErrorCodes::SHM_ATTACH_FAILED,
+        "TCP stream '{}:{}': arrow transport requires a ClickHouse built with Arrow", host, port);
+#endif
 }
 
 
@@ -532,6 +877,30 @@ std::optional<Chunk> TcpStreamSource::tryGenerate()
 
     if (!async)
     {
+        if (wire == WireFormat::Arrow)
+        {
+            /// Blocking Arrow: the socket has SO_RCVTIMEO slices (no O_NONBLOCK), so tryRecvInto may
+            /// report WouldBlock on a timeout slice with no data — loop, honouring cancel + the stall
+            /// budget, until a full message or EOS.
+            Chunk c;
+            for (;;)
+            {
+                const RecvResult r = tryRecvArrowMessage(c);
+                if (r == RecvResult::BlockReady)
+                    return c;
+                if (r == RecvResult::Eos)
+                {
+                    eos_observed = true;
+                    return {};
+                }
+                if (cancelled.load(std::memory_order_acquire) || isCancelled())
+                    return {};
+                if (stall_timer.elapsedMilliseconds() > stall_timeout_ms)
+                    throw Exception(ErrorCodes::SHM_PRODUCER_STALL,
+                        "TCP stream '{}:{}': no producer progress for {}ms (stall_timeout_ms={})",
+                        host, port, stall_timer.elapsedMilliseconds(), stall_timeout_ms);
+            }
+        }
         Chunk c = recvBlockBlocking();
         if (!c)
             return {};   /// EOS frame (empty Chunk) → ISource marks finished
@@ -540,7 +909,7 @@ std::optional<Chunk> TcpStreamSource::tryGenerate()
 
     /// Async: resumable non-blocking recv. A full block → emit it; partial → go async; EOS → finish.
     Chunk c;
-    const RecvResult r = tryRecvBlock(c);
+    const RecvResult r = (wire == WireFormat::Arrow) ? tryRecvArrowMessage(c) : tryRecvBlock(c);
     if (r == RecvResult::BlockReady)
         return c;
     if (r == RecvResult::Eos)
