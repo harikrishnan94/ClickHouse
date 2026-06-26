@@ -556,6 +556,36 @@ void TcpStreamSource::readArrowSchema()
             "TCP stream '{}:{}': Arrow schema has {} fields but SQL columns={}",
             host, port, arrow_state->schema->num_fields(), full_column_names.size());
 
+    /// Per-field layout cross-validation (D-HC-0207). The decode trusts the SQL type (the Arrow type
+    /// is intentionally non-semantic for Date/Decimal), so we must confirm the Arrow field's PHYSICAL
+    /// layout matches what copyArrowColumnToCH will read: String <-> a variable binary field; every
+    /// other (fixed-width) SQL type <-> a fixed-width Arrow field of the SAME byte width. This both
+    /// honours the decision and forecloses a width-mismatch heap over-read in the bulk memcpy.
+    for (size_t i = 0; i < full_column_types.size(); ++i)
+    {
+        const auto & arrow_type = arrow_state->schema->field(static_cast<int>(i))->type();
+        const bool sql_is_string = full_column_types[i]->getTypeId() == TypeIndex::String;
+        const bool arrow_is_binary = arrow_type->id() == arrow::Type::LARGE_BINARY
+                                  || arrow_type->id() == arrow::Type::BINARY
+                                  || arrow_type->id() == arrow::Type::LARGE_STRING
+                                  || arrow_type->id() == arrow::Type::STRING;
+        if (sql_is_string != arrow_is_binary)
+            throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                "TCP stream '{}:{}' column {} '{}': SQL type '{}' vs Arrow type '{}' "
+                "(string/binary mismatch)", host, port, i, full_column_names[i],
+                full_column_types[i]->getName(), arrow_type->ToString());
+        if (!sql_is_string)
+        {
+            const auto fw = std::dynamic_pointer_cast<arrow::FixedWidthType>(arrow_type);
+            const size_t sql_width = full_column_types[i]->getSizeOfValueInMemory();
+            if (!fw || static_cast<size_t>(fw->bit_width()) != sql_width * 8)
+                throw Exception(ErrorCodes::SHM_SCHEMA_MISMATCH,
+                    "TCP stream '{}:{}' column {} '{}': SQL type '{}' ({} bytes) vs Arrow type '{}' "
+                    "(width mismatch)", host, port, i, full_column_names[i],
+                    full_column_types[i]->getName(), sql_width, arrow_type->ToString());
+        }
+    }
+
     buildProjectionIndices();
 #else
     throw Exception(ErrorCodes::SHM_ATTACH_FAILED,
