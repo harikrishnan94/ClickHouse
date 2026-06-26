@@ -24,6 +24,7 @@ namespace DB
 namespace Setting
 {
     extern const SettingsUInt64 shm_source_stall_timeout_ms;
+    extern const SettingsBool shm_tcp_source_async;
 }
 
 
@@ -84,12 +85,15 @@ Pipe StorageShm::read(
     const UInt64 stall_ms = context->getSettingsRef()[Setting::shm_source_stall_timeout_ms];
 
     /// N11: exactly one source per `read()` call. TCP transport (Phase 1) connects to the producer's
-    /// per-stream listener; SHM transport (adopt/copy) attaches the ring.
+    /// per-stream listener; SHM transport (adopt/copy) attaches the ring. The TCP source is async by
+    /// default (Branch 0; overlaps recv with downstream processing); `shm_tcp_source_async=0` selects
+    /// the Phase-1 blocking source for A/B measurement.
     if (transport_mode == ShmTransportMode::Tcp)
         return Pipe(std::make_shared<TcpStreamSource>(
             std::move(shared_header), tcp_host, tcp_port,
             std::move(full_column_types), std::move(full_column_names),
-            std::move(requested_names), stall_ms));
+            std::move(requested_names), stall_ms,
+            context->getSettingsRef()[Setting::shm_tcp_source_async]));
 
     return Pipe(std::make_shared<PollableShmSource>(
         std::move(shared_header), shm_name,

@@ -106,13 +106,29 @@ void sendAll(int fd, const void * buf, size_t n)
     }
 }
 
+/// Send `n` bytes in <=`frag` chunks with a `delay_ms` pause between fragments. Forces the consumer's
+/// non-blocking recv to hit EAGAIN mid-frame so the ASYNC source's resumable recv + wake bridge are
+/// exercised (a frame straddling schedule cycles). With delay_ms==0 / frag>=n this is a plain sendAll.
+void sendFragmented(int fd, const void * buf, size_t n, size_t frag, int delay_ms)
+{
+    const auto * p = static_cast<const char *>(buf);
+    while (n)
+    {
+        const size_t step = std::min(frag, n);
+        sendAll(fd, p, step);
+        p += step; n -= step;
+        if (n && delay_ms > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    }
 }
 
-
-/// End-to-end consumer test: a reference TCP producer thread serves the handshake + N blocks + EOS;
+/// End-to-end consumer drain: a reference TCP producer thread serves the handshake + N blocks + EOS;
 /// TcpStreamSource connects, reconstructs the columns via the unchanged adopt(), and emits them in
-/// order. Proves the framing + the recv-buffer adopt path (the consumer half of Phase 1).
-TEST(TcpStreamSource, DrainsHandshakeAndBlocks)
+/// order. Runs through a REAL PullingPipelineExecutor, so the async source's Status::Async / schedule()
+/// / onAsyncJobReady() contract is exercised by the actual executor. `async` selects the source mode;
+/// `slow` fragments each frame with delays so the async resumable-recv path is forced (not just the
+/// fast path where whole frames are already buffered).
+void runDrainTest(bool async, bool slow)
 {
     constexpr size_t n_blocks = 25;
 
@@ -152,14 +168,15 @@ TEST(TcpStreamSource, DrainsHandshakeAndBlocks)
             const std::vector<uint8_t> chars = {'a', 'b', 'c'};   // 3 one-char strings
             const std::vector<uint64_t> offs = {1, 2, 3};
             auto frame = serializeBlock(ids, chars, offs, /*eos=*/false);
-            sendAll(conn, frame.data(), frame.size());
+            if (slow)
+                sendFragmented(conn, frame.data(), frame.size(), /*frag=*/17, /*delay_ms=*/2);
+            else
+                sendAll(conn, frame.data(), frame.size());
         }
-        auto eos = serializeBlock({}, {}, {}, /*eos=*/true);
         // EOS frame must carry payload_len==0 for the source's EOS branch.
         TcpBlockHeader eos_h{};
         eos_h.eos_marker = 1;
         sendAll(conn, &eos_h, sizeof(eos_h));
-        (void)eos;
         ::close(conn);
     });
 
@@ -171,7 +188,7 @@ TEST(TcpStreamSource, DrainsHandshakeAndBlocks)
     auto src = std::make_shared<TcpStreamSource>(
         header, "127.0.0.1", port,
         std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(), std::make_shared<DataTypeString>()},
-        std::vector<String>{"id", "s"}, std::vector<String>{"id", "s"}, 60'000);
+        std::vector<String>{"id", "s"}, std::vector<String>{"id", "s"}, 60'000, async);
 
     QueryPipeline pipeline(src);
     PullingPipelineExecutor executor(pipeline);
@@ -198,6 +215,29 @@ TEST(TcpStreamSource, DrainsHandshakeAndBlocks)
     producer.join();
     ::close(listen_fd);
     ASSERT_EQ(chunks, n_blocks);
+}
+
+}
+
+
+/// Async source (Branch-0 default), fast producer: whole frames already buffered, mostly fast-path recv.
+TEST(TcpStreamSource, DrainsHandshakeAndBlocks)
+{
+    runDrainTest(/*async=*/true, /*slow=*/false);
+}
+
+/// Blocking source (A/B baseline, shm_tcp_source_async=0): the Phase-1 leaf source still drains correctly.
+TEST(TcpStreamSource, DrainsHandshakeAndBlocksBlocking)
+{
+    runDrainTest(/*async=*/false, /*slow=*/false);
+}
+
+/// Async source, SLOW fragmented producer: forces the consumer's non-blocking recv to hit EAGAIN
+/// mid-frame, exercising the resumable recv state machine + the async wake bridge across schedule
+/// cycles. Proves a partial Arrow/bespoke frame straddling schedule cycles reassembles correctly.
+TEST(TcpStreamSource, AsyncResumesAcrossPartialFrames)
+{
+    runDrainTest(/*async=*/true, /*slow=*/true);
 }
 
 

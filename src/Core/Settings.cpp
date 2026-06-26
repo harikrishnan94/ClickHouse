@@ -8221,6 +8221,9 @@ Experimental zero-copy `streamed_table()` table function (also available under i
     DECLARE(UInt64, shm_source_stall_timeout_ms, 30000, R"(
 Maximum time the `streamed_table()` source waits without observing producer publication progress before raising `SHM_PRODUCER_STALL`. Bounds the consumer-side detection budget per the pollable-shm-source spec's stall invariant (I12).
 )", 0) \
+    DECLARE(Bool, shm_tcp_source_async, true, R"(
+For the `streamed_table()` TCP transport (Hot-Cold Phase 2, Branch 0), use the async source that overlaps socket recv with downstream processing (IProcessor::Status::Async + an epollable readiness eventfd) instead of a blocking leaf source. Default on; set to 0 to select the Phase-1 blocking source (for A/B measurement). No effect on the SHM transports.
+)", 0) \
 DECLARE(Bool, allow_experimental_ytsaurus_dictionary_source, false, R"(
     Experimental dictionary source for integration with YTsaurus.
     )", EXPERIMENTAL) \
