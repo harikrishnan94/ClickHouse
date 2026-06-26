@@ -129,7 +129,7 @@ void sendFragmented(int fd, const void * buf, size_t n, size_t frag, int delay_m
 /// TcpStreamSource(wire=Arrow) connects, decodes via the COPYING Branch-A path, and emits the columns.
 /// Drains through a REAL PullingPipelineExecutor so the async Status::Async/schedule/onAsyncJobReady
 /// contract + the resumable 3-phase Arrow recv are exercised. `slow` fragments the stream with delays.
-void runArrowDrainTest(bool async, bool slow, bool zero_copy = true)
+void runArrowDrainTest(bool async, bool slow, bool zero_copy = true, bool lean = true)
 {
     constexpr size_t n_blocks = 25;
     const std::vector<uint8_t> stream = buildArrowStream(n_blocks);
@@ -171,7 +171,7 @@ void runArrowDrainTest(bool async, bool slow, bool zero_copy = true)
         std::vector<DataTypePtr>{std::make_shared<DataTypeUInt64>(), std::make_shared<DataTypeString>(),
                                  std::make_shared<DataTypeDate>()},
         std::vector<String>{"id", "s", "d"}, std::vector<String>{"id", "s", "d"}, 60'000, async,
-        TcpStreamSource::WireFormat::Arrow, zero_copy);
+        TcpStreamSource::WireFormat::Arrow, zero_copy, lean);
 
     QueryPipeline pipeline(src);
     PullingPipelineExecutor executor(pipeline);
@@ -207,29 +207,51 @@ void runArrowDrainTest(bool async, bool slow, bool zero_copy = true)
 }
 
 
-/// Async source, fast producer, ZERO-COPY adoption (Branch B default): whole stream buffered.
+/// Async source, fast producer, ZERO-COPY adoption via the LEAN direct-flatbuffer extraction (Branch B
+/// iteration 3 default: shm_arrow_zero_copy=1, shm_arrow_lean_extract=1): whole stream buffered.
 TEST(ArrowStreamSource, DrainsSchemaAndBatches)
 {
-    runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/true);
+    runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/true, /*lean=*/true);
 }
 
-/// Branch-A COPYING decode (shm_arrow_zero_copy=0) still drains correctly (the A/B baseline).
+/// Branch-B iteration 2 ZERO-COPY adoption via arrow::ipc::ReadRecordBatch (shm_arrow_lean_extract=0):
+/// the A/B baseline the lean path is measured against; also guards the adoptArrowColumnToCH refactor.
+TEST(ArrowStreamSource, DrainsReadRecordBatchAdopt)
+{
+    runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/true, /*lean=*/false);
+}
+
+/// Branch-A COPYING decode (shm_arrow_zero_copy=0) still drains correctly (the A/B baseline). lean is
+/// irrelevant when zero_copy=0 (the dispatcher always takes the ReadRecordBatch copy path).
 TEST(ArrowStreamSource, DrainsCopyingDecode)
 {
     runArrowDrainTest(/*async=*/true, /*slow=*/false, /*zero_copy=*/false);
 }
 
-/// ZERO-COPY adoption across the SLOW fragmented stream — adopted columns alias a body buffer
-/// reassembled across schedule cycles; proves the adopt path + resumable recv compose correctly.
+/// LEAN zero-copy adoption across the SLOW fragmented stream — adopted columns alias a body buffer
+/// reassembled across schedule cycles; proves the lean adopt path + resumable recv compose correctly.
 TEST(ArrowStreamSource, ZeroCopyResumesAcrossPartialMessages)
 {
-    runArrowDrainTest(/*async=*/true, /*slow=*/true, /*zero_copy=*/true);
+    runArrowDrainTest(/*async=*/true, /*slow=*/true, /*zero_copy=*/true, /*lean=*/true);
 }
 
-/// Blocking source (A/B baseline): the Arrow path drains correctly with SO_RCVTIMEO slicing too.
+/// The iteration-2 ReadRecordBatch adopt path across the SLOW fragmented stream (lean off) — keeps it2
+/// covered under fragmentation after the refactor.
+TEST(ArrowStreamSource, ReadRecordBatchAdoptResumesAcrossPartialMessages)
+{
+    runArrowDrainTest(/*async=*/true, /*slow=*/true, /*zero_copy=*/true, /*lean=*/false);
+}
+
+/// Blocking source (A/B baseline): the LEAN Arrow path drains correctly with SO_RCVTIMEO slicing too.
 TEST(ArrowStreamSource, DrainsBlocking)
 {
-    runArrowDrainTest(/*async=*/false, /*slow=*/false);
+    runArrowDrainTest(/*async=*/false, /*slow=*/false, /*zero_copy=*/true, /*lean=*/true);
+}
+
+/// Blocking source, iteration-2 ReadRecordBatch adopt path (lean off).
+TEST(ArrowStreamSource, DrainsBlockingReadRecordBatchAdopt)
+{
+    runArrowDrainTest(/*async=*/false, /*slow=*/false, /*zero_copy=*/true, /*lean=*/false);
 }
 
 /// Async source, SLOW fragmented stream: forces non-blocking recv to hit EAGAIN mid-message, so the

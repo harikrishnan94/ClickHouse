@@ -59,7 +59,8 @@ public:
         UInt64 stall_timeout_ms_,
         bool async_ = true,
         WireFormat wire_ = WireFormat::Bespoke,
-        bool arrow_zero_copy_ = true);
+        bool arrow_zero_copy_ = true,
+        bool arrow_lean_extract_ = true);
 
     ~TcpStreamSource() override;
 
@@ -119,11 +120,20 @@ private:
     /// metadata → body). The 0-length-metadata continuation is the stream EOS. Reuses tryRecvInto.
     RecvResult tryRecvArrowMessage(Chunk & out_chunk);
     /// Decode a fully-received RecordBatch (metadata in arrow_state, `body_buf`/`body_len` the body)
-    /// into the emitted Chunk. Branch A (arrow_zero_copy=false): COPYING decode, frees `body_buf`.
-    /// Branch B (arrow_zero_copy=true): ZERO-COPY adoption — columns alias `body_buf`, kept alive by a
-    /// RetainToken whose deleter frees it on last-drop (Decimal128 / misaligned buffers fall back to a
-    /// per-column copy). Takes ownership of `body_buf` either way.
+    /// into the emitted Chunk. Dispatches: Branch B iteration 3 (arrow_zero_copy && arrow_lean_extract)
+    /// → buildChunkFromArrowLean; otherwise → buildChunkFromArrowViaReader. Takes ownership of `body_buf`.
     Chunk buildChunkFromArrow(char * body_buf, int64_t body_len);
+    /// Iteration-2 decode via arrow::ipc::ReadRecordBatch. Branch A (arrow_zero_copy=false): COPYING decode,
+    /// frees `body_buf`. Branch B (arrow_zero_copy=true): ZERO-COPY adoption — columns alias `body_buf`, kept
+    /// alive by a RetainToken whose deleter frees it on last-drop (Decimal128 / misaligned buffers fall back
+    /// to a per-column copy). Takes ownership of `body_buf` either way.
+    Chunk buildChunkFromArrowViaReader(char * body_buf, int64_t body_len);
+    /// Iteration-3 LEAN zero-copy decode (arrow_zero_copy && arrow_lean_extract): parse the RecordBatch
+    /// flatbuffer in arrow_state.metadata directly and adopt each buffer at `body_buf + Buffer.offset()`,
+    /// skipping the per-block arrow::Array/ArrayData/Buffer-slice construction. Any non-adoptable column
+    /// (Decimal128 alignment, sliced/empty/sentinel-violating batch, out-of-bounds buffer) → delegates the
+    /// whole block to buildChunkFromArrowViaReader (body_buf untouched). Takes ownership of `body_buf`.
+    Chunk buildChunkFromArrowLean(char * body_buf, int64_t body_len);
 
     /// Async wake bridge (mirrors PollableShmSource): IProcessor exposes one fd, so while async the
     /// bridge polls the socket fd (+ a stop eventfd) up to the remaining stall budget, then writes
@@ -144,6 +154,7 @@ private:
     const bool async;
     const WireFormat wire;
     const bool arrow_zero_copy;   /// Branch B: adopt the Arrow buffers zero-copy (vs the Branch-A copy)
+    const bool arrow_lean_extract;   /// Branch B it3: lean direct-flatbuffer extraction (vs ReadRecordBatch)
 
     /// Arrow IPC recv/decode state (pimpl: keeps arrow headers out of this header). Non-null iff
     /// wire == WireFormat::Arrow; holds the decoded arrow::Schema + the resumable message-recv state.

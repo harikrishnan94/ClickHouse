@@ -8227,6 +8227,9 @@ For the `streamed_table()` TCP transport (Hot-Cold Phase 2, Branch 0), use the a
 DECLARE(Bool, shm_arrow_zero_copy, true, R"(
 For the `streamed_table()` `arrow:` transport (Hot-Cold Phase 2, Branch B), adopt the received Apache Arrow IPC buffers directly into ClickHouse columns with no per-column data copy (the column aliases the recv buffer, held by a RetainToken) instead of the Branch-A copying decode. Default on; set to 0 to select the Branch-A copying decode (for A/B measurement). Decimal128 (which needs 16-byte buffer alignment the 8-byte-padded IPC body does not guarantee) always falls back to a per-column copy. No effect on the bespoke `tcp:` or the SHM transports.
 )", 0) \
+DECLARE(Bool, shm_arrow_lean_extract, true, R"(
+For the `streamed_table()` `arrow:` transport with `shm_arrow_zero_copy=1` (Hot-Cold Phase 2, Branch B iteration 3), decode each received Arrow IPC RecordBatch by parsing its flatbuffer metadata directly and adopting each buffer at `body + Buffer.offset()`, skipping `arrow::ipc::ReadRecordBatch`'s per-block `arrow::Array`/`ArrayData`/`Buffer`-slice construction (hundreds of small allocations per block on wide `SELECT *` cells). Default on; set to 0 to select the iteration-2 `ReadRecordBatch`-based adoption (for A/B measurement). A column that cannot be adopted at the required alignment/layout (Decimal128, a sliced/empty/sentinel-violating batch, or any out-of-bounds buffer) makes the whole block fall back to the `ReadRecordBatch` adopt path (which keeps the per-column copy-fallback). No effect when `shm_arrow_zero_copy=0`, on the bespoke `tcp:`, or on the SHM transports.
+)", 0) \
 DECLARE(Bool, allow_experimental_ytsaurus_dictionary_source, false, R"(
     Experimental dictionary source for integration with YTsaurus.
     )", EXPERIMENTAL) \

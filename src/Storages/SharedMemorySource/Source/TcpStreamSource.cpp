@@ -28,6 +28,11 @@
 #include <arrow/ipc/message.h>
 #include <arrow/ipc/options.h>
 #include <arrow/ipc/reader.h>
+/// Branch-B iteration 3 (lean extraction): the arrow-internal flatbuffer-generated headers. This is the
+/// same header arrow's own ipc/reader.cc uses to walk a RecordBatch's `buffers()`/`nodes()`; it resolves
+/// via the _arrow target's PUBLIC include dir (contrib/arrow/cpp/src) and pulls in generated/Message_generated.h
+/// + generated/Schema_generated.h + flatbuffers. We only read the flatbuffer accessors (no arrow::Array build).
+#include <arrow/ipc/metadata_internal.h>
 #endif
 
 #include <Common/Exception.h>
@@ -203,43 +208,16 @@ namespace
         return mut;
     }
 
-    /// Branch-B ZERO-COPY adoption of one Arrow column: the returned CH column ALIASES the Arrow
-    /// buffers (slices of the recv body), sharing `retain`/`charge`. Returns nullptr if the column
-    /// cannot be adopted at the required alignment / layout (Decimal128 needs 16-byte alignment the
-    /// 8-byte-padded IPC body may not give; a sliced array; a violated String leading-0 sentinel) —
-    /// the caller then copy-falls-back. The +PADDING_FOR_SIMD over-read is memory-safe (the whole recv
-    /// body is 64-byte slacked; a mid-body over-read lands in an adjacent in-allocation buffer).
-    ColumnPtr adoptArrowColumnToCH(const arrow::Array & arr, const DataTypePtr & type,
-                                   const std::shared_ptr<void> & retain, const std::shared_ptr<void> & charge)
+    /// Adopt a FIXED-WIDTH column from a raw contiguous little-endian data pointer `raw` (n elements) into
+    /// a CH column that ALIASES it, sharing `retain`/`charge`. Returns nullptr if not adoptable: a
+    /// Decimal128 16-byte-alignment miss (the 8-byte-padded IPC body may not give it), or a CH type outside
+    /// the supported fixed-width set. SHARED by the ReadRecordBatch adopt path (adoptArrowColumnToCH) and
+    /// the lean direct-flatbuffer extraction (buildChunkFromArrowLean) — one source of truth for the switch.
+    /// The +PADDING_FOR_SIMD over-read is memory-safe (the recv body is 64-byte slacked; a mid-body over-read
+    /// lands in an adjacent in-allocation buffer).
+    ColumnPtr adoptFixedRaw(const DataTypePtr & type, uint8_t * raw, size_t n,
+                            const std::shared_ptr<void> & retain, const std::shared_ptr<void> & charge)
     {
-        const size_t n = static_cast<size_t>(arr.length());
-        if (n == 0 || arr.offset() != 0)
-            return nullptr;   /// empty (copy is trivial) or sliced (aliasing assumptions break)
-
-        if (type->getTypeId() == TypeIndex::String)
-        {
-            const auto & bin = assert_cast<const arrow::LargeBinaryArray &>(arr);
-            const int64_t * offs = bin.raw_value_offsets();
-            if (offs == nullptr || offs[0] != 0)   /// leading-0 sentinel (D-HC-0201/0207) MUST hold
-                return nullptr;
-            const auto & data_buf = bin.value_data();
-            const size_t chars_size = static_cast<size_t>(offs[n]);
-            /// CH offsets = &arrow_offsets[1]; CH offsets[-1] reads arrow_offsets[0]==0 (validated).
-            auto * ch_offsets = reinterpret_cast<UInt64 *>(const_cast<int64_t *>(offs)) + 1;
-            /// chars may be null only when chars_size==0; give createAdopted a non-null in-allocation
-            /// stand-in (the offsets buffer) so its pad-right slack stays within body_buf.
-            UInt8 * chars = (data_buf && data_buf->data())
-                ? reinterpret_cast<UInt8 *>(const_cast<uint8_t *>(data_buf->data()))
-                : reinterpret_cast<UInt8 *>(ch_offsets);
-            if (chars_size != 0 && (!data_buf || !data_buf->data()))
-                return nullptr;
-            return ColumnString::createAdopted(chars, chars_size, ch_offsets, n, retain, charge);
-        }
-
-        const auto & data = arr.data();
-        if (data->buffers.size() < 2 || !data->buffers[1])
-            return nullptr;
-        auto * raw = const_cast<uint8_t *>(data->buffers[1]->data());
         const size_t width = type->getSizeOfValueInMemory();
         if (width >= 16 && (reinterpret_cast<uintptr_t>(raw) % 16) != 0)
             return nullptr;   /// Decimal128 16-byte alignment not met by the 8-byte IPC body → copy fallback
@@ -270,6 +248,53 @@ namespace
             default: return nullptr;
         }
     }
+
+    /// Adopt a STRING column from raw LargeBinary buffers: `offs` = the int64 offsets buffer (length n+1,
+    /// MUST begin with the 0 sentinel that becomes CH `offsets[-1]`); `chars_data` = the values buffer (may
+    /// be null only when the column is all-empty). Returns nullptr if the leading-0 sentinel is violated or
+    /// chars is unexpectedly null. SHARED by adoptArrowColumnToCH and buildChunkFromArrowLean.
+    ColumnPtr adoptStringRaw(const int64_t * offs, const uint8_t * chars_data, size_t n,
+                             const std::shared_ptr<void> & retain, const std::shared_ptr<void> & charge)
+    {
+        if (offs == nullptr || offs[0] != 0)   /// leading-0 sentinel (D-HC-0201/0207) MUST hold
+            return nullptr;
+        const size_t chars_size = static_cast<size_t>(offs[n]);
+        /// CH offsets = &arrow_offsets[1]; CH offsets[-1] reads arrow_offsets[0]==0 (validated).
+        auto * ch_offsets = reinterpret_cast<UInt64 *>(const_cast<int64_t *>(offs)) + 1;
+        /// chars may be null only when chars_size==0; give createAdopted a non-null in-allocation stand-in
+        /// (the offsets buffer) so its pad-right slack stays within the recv body.
+        UInt8 * chars = (chars_data != nullptr)
+            ? reinterpret_cast<UInt8 *>(const_cast<uint8_t *>(chars_data))
+            : reinterpret_cast<UInt8 *>(ch_offsets);
+        if (chars_size != 0 && chars_data == nullptr)
+            return nullptr;
+        return ColumnString::createAdopted(chars, chars_size, ch_offsets, n, retain, charge);
+    }
+
+    /// Branch-B ZERO-COPY adoption of one Arrow column (the ReadRecordBatch path): extract the buffer
+    /// pointers from `arr` and adopt via adoptFixedRaw/adoptStringRaw (the returned CH column ALIASES the
+    /// recv body). Returns nullptr (→ caller copy-falls-back) for an empty/sliced array or a non-adoptable
+    /// buffer (Decimal128 alignment, a violated String leading-0 sentinel).
+    ColumnPtr adoptArrowColumnToCH(const arrow::Array & arr, const DataTypePtr & type,
+                                   const std::shared_ptr<void> & retain, const std::shared_ptr<void> & charge)
+    {
+        const size_t n = static_cast<size_t>(arr.length());
+        if (n == 0 || arr.offset() != 0)
+            return nullptr;   /// empty (copy is trivial) or sliced (aliasing assumptions break)
+
+        if (type->getTypeId() == TypeIndex::String)
+        {
+            const auto & bin = assert_cast<const arrow::LargeBinaryArray &>(arr);
+            const auto & data_buf = bin.value_data();
+            const uint8_t * chars_data = (data_buf && data_buf->data()) ? data_buf->data() : nullptr;
+            return adoptStringRaw(bin.raw_value_offsets(), chars_data, n, retain, charge);
+        }
+
+        const auto & data = arr.data();
+        if (data->buffers.size() < 2 || !data->buffers[1])
+            return nullptr;
+        return adoptFixedRaw(type, const_cast<uint8_t *>(data->buffers[1]->data()), n, retain, charge);
+    }
 #endif
 }
 
@@ -284,7 +309,8 @@ TcpStreamSource::TcpStreamSource(
     UInt64 stall_timeout_ms_,
     bool async_,
     WireFormat wire_,
-    bool arrow_zero_copy_)
+    bool arrow_zero_copy_,
+    bool arrow_lean_extract_)
     : ISource(std::move(header))
     , host(std::move(host_))
     , port(port_)
@@ -295,6 +321,7 @@ TcpStreamSource::TcpStreamSource(
     , async(async_)
     , wire(wire_)
     , arrow_zero_copy(arrow_zero_copy_)
+    , arrow_lean_extract(arrow_lean_extract_)
 {
     chassert(full_column_types.size() == full_column_names.size());
     if (wire == WireFormat::Arrow)
@@ -756,6 +783,23 @@ TcpStreamSource::RecvResult TcpStreamSource::tryRecvArrowMessage(Chunk & out_chu
 Chunk TcpStreamSource::buildChunkFromArrow(char * body_buf, int64_t body_len)
 {
 #if USE_ARROW
+    /// Branch B iteration 3: the lean direct-flatbuffer extraction handles the common all-adoptable
+    /// zero-copy case and delegates anything it cannot adopt back to the ReadRecordBatch path below.
+    if (arrow_zero_copy && arrow_lean_extract)
+        return buildChunkFromArrowLean(body_buf, body_len);
+    return buildChunkFromArrowViaReader(body_buf, body_len);
+#else
+    (void) body_len;
+    freeAligned(body_buf);
+    throw Exception(ErrorCodes::SHM_ATTACH_FAILED,
+        "TCP stream '{}:{}': arrow transport requires a ClickHouse built with Arrow", host, port);
+#endif
+}
+
+
+Chunk TcpStreamSource::buildChunkFromArrowViaReader(char * body_buf, int64_t body_len)
+{
+#if USE_ARROW
     bool body_owned_here = true;   /// false once a RetainToken takes ownership of body_buf (adopt path)
     try
     {
@@ -847,6 +891,131 @@ Chunk TcpStreamSource::buildChunkFromArrow(char * body_buf, int64_t body_len)
             freeAligned(body_buf);
         throw;
     }
+#else
+    (void) body_len;
+    freeAligned(body_buf);
+    throw Exception(ErrorCodes::SHM_ATTACH_FAILED,
+        "TCP stream '{}:{}': arrow transport requires a ClickHouse built with Arrow", host, port);
+#endif
+}
+
+
+Chunk TcpStreamSource::buildChunkFromArrowLean(char * body_buf, int64_t body_len)
+{
+#if USE_ARROW
+    /// Branch B iteration 3 — LEAN extraction. The metadata flatbuffer (`arrow_state.metadata`) was already
+    /// recv'd AND validated by the metadata-phase arrow::ipc::Message::Open (tryRecvArrowMessage), so we
+    /// parse it directly here and adopt each buffer at `body_buf + flatbuf::Buffer.offset()` — NO second
+    /// Message::Open, NO arrow::ipc::ReadRecordBatch, NO per-column arrow::Array/ArrayData/Buffer-slice
+    /// objects. The buffer-tree walk mirrors arrow's own ipc/reader.cc ArrayLoader exactly for our FLAT,
+    /// non-Nullable, primitive/LargeBinary schema: a fixed-width field consumes [validity, data] (advance 2),
+    /// a LargeBinary field consumes [validity, offsets, data] (advance 3). ANY column we cannot adopt
+    /// (Decimal128 alignment, a sliced/empty/sentinel-violating batch, an out-of-bounds buffer, an
+    /// unexpected layout) makes the WHOLE block fall back to the ReadRecordBatch path (body_buf untouched
+    /// until we commit), which keeps the per-column copy-fallback — so correctness is never lost.
+    namespace flatbuf = org::apache::arrow::flatbuf;
+    auto & st = *arrow_state;
+    const size_t n_cols = full_column_types.size();
+
+    const flatbuf::Message * msg = flatbuf::GetMessage(st.metadata.data());
+    const flatbuf::RecordBatch * rb = msg ? msg->header_as_RecordBatch() : nullptr;
+    if (rb == nullptr)
+        return buildChunkFromArrowViaReader(body_buf, body_len);   /// not a RecordBatch → safe path
+    const auto * fb_buffers = rb->buffers();
+    const auto * fb_nodes = rb->nodes();
+    if (fb_buffers == nullptr || fb_nodes == nullptr || static_cast<size_t>(fb_nodes->size()) != n_cols)
+        return buildChunkFromArrowViaReader(body_buf, body_len);
+    const int64_t n_rows64 = rb->length();
+    if (n_rows64 <= 0)
+        return buildChunkFromArrowViaReader(body_buf, body_len);   /// empty batch → reader builds empty cols
+    const size_t n = static_cast<size_t>(n_rows64);
+    const size_t nbuf = static_cast<size_t>(fb_buffers->size());
+
+    /// Pass 1: compute each column's raw pointers from the flatbuffer + check adoptability + bounds.
+    /// Bail to the ReadRecordBatch path on ANY non-adoptable / structurally-suspicious column — BEFORE we
+    /// take ownership of body_buf, so the delegate gets an untouched buffer.
+    struct ColPtrs { bool is_string; uint8_t * data; const int64_t * offs; };
+    std::vector<ColPtrs> cols(n_cols);
+    int bi = 0;
+    for (size_t i = 0; i < n_cols; ++i)
+    {
+        if (static_cast<int64_t>(fb_nodes->Get(static_cast<flatbuffers::uoffset_t>(i))->length()) != n_rows64)
+            return buildChunkFromArrowViaReader(body_buf, body_len);   /// per-field row count disagrees → suspicious
+
+        const auto & type = full_column_types[i];
+        if (type->getTypeId() == TypeIndex::String)
+        {
+            if (static_cast<size_t>(bi) + 3 > nbuf)
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            const flatbuf::Buffer * offs_b = fb_buffers->Get(static_cast<flatbuffers::uoffset_t>(bi + 1));
+            const flatbuf::Buffer * data_b = fb_buffers->Get(static_cast<flatbuffers::uoffset_t>(bi + 2));
+            bi += 3;
+            const int64_t off_o = offs_b->offset(), len_o = offs_b->length();
+            const int64_t off_d = data_b->offset(), len_d = data_b->length();
+            if (off_o < 0 || len_o < static_cast<int64_t>((n + 1) * sizeof(int64_t)) || off_o + len_o > body_len)
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            const int64_t * offs = reinterpret_cast<const int64_t *>(body_buf + off_o);
+            if (offs[0] != 0)   /// leading-0 sentinel (D-HC-0201/0207) MUST hold for the &offs[1] alias
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            const int64_t chars_size = offs[n];
+            if (chars_size < 0)
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            uint8_t * chars = (len_d > 0) ? reinterpret_cast<uint8_t *>(body_buf + off_d) : nullptr;
+            if (chars_size != 0 && (chars == nullptr || off_d < 0 || off_d + chars_size > body_len))
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            cols[i] = ColPtrs{true, chars, offs};
+        }
+        else
+        {
+            if (static_cast<size_t>(bi) + 2 > nbuf)
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            const flatbuf::Buffer * data_b = fb_buffers->Get(static_cast<flatbuffers::uoffset_t>(bi + 1));
+            bi += 2;
+            const int64_t off_d = data_b->offset(), len_d = data_b->length();
+            const size_t width = type->getSizeOfValueInMemory();
+            if (off_d < 0 || off_d + len_d > body_len || len_d < static_cast<int64_t>(n * width))
+                return buildChunkFromArrowViaReader(body_buf, body_len);
+            uint8_t * raw = reinterpret_cast<uint8_t *>(body_buf + off_d);
+            if (width >= 16 && (reinterpret_cast<uintptr_t>(raw) % 16) != 0)
+                return buildChunkFromArrowViaReader(body_buf, body_len);   /// Decimal128 misaligned → reader copy-fallback
+            cols[i] = ColPtrs{false, raw, nullptr};
+        }
+    }
+
+    /// Pass 2: all columns adoptable. Take ownership of body_buf via one RetainToken (deleter frees it on
+    /// last-drop) shared across the adopted columns + a shared ChargeHandle, then adopt each in place.
+    char * body_capture = body_buf;
+    RetainToken retain_token = makeRetainToken([body_capture]() noexcept { freeAligned(body_capture); });
+    ChargeHandle charge_handle = charger.charge(static_cast<size_t>(body_len), static_cast<size_t>(body_len), /*copied=*/true);
+    ProfileEvents::increment(ProfileEvents::ShmCopiedBytesLogical, static_cast<size_t>(body_len));
+    auto charge_shared = std::make_shared<ChargeHandle>(std::move(charge_handle));
+    std::shared_ptr<void> charge_token = charge_shared;
+
+    Columns full_cols(n_cols);
+    for (size_t i = 0; i < n_cols; ++i)
+    {
+        ColumnPtr c = cols[i].is_string
+            ? adoptStringRaw(cols[i].offs, cols[i].data, n, retain_token, charge_token)
+            : adoptFixedRaw(full_column_types[i], cols[i].data, n, retain_token, charge_token);
+        /// Pass 1 already proved every column adoptable, so this is unreachable in practice; defend anyway
+        /// (RAII-safe: retain_token + any adopted cols unwind on throw, freeing body_buf exactly once).
+        if (!c)
+            throw Exception(ErrorCodes::SHM_BLOCK_FRAMING_INVALID,
+                "TCP stream '{}:{}': lean Arrow extraction could not adopt column {} ('{}')",
+                host, port, i, full_column_types[i]->getName());
+        full_cols[i] = std::move(c);
+    }
+
+    Columns emitted_cols;
+    emitted_cols.reserve(projection_indices.size());
+    for (size_t idx : projection_indices)
+        emitted_cols.push_back(full_cols[idx]);
+    for (const auto & ec : emitted_cols)
+        if (const auto * cs = typeid_cast<const ColumnString *>(ec.get()))
+            cs->validateAdoptedOffsets();
+
+    stall_timer.restart();
+    return Chunk(std::move(emitted_cols), n);
 #else
     (void) body_len;
     freeAligned(body_buf);

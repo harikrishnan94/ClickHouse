@@ -694,6 +694,12 @@ endif ()
 
 if (TARGET ch_contrib::parquet)
     target_link_libraries(dbms PRIVATE ch_contrib::parquet)
+    # Hot-Cold Phase 2 Branch B (it3): the streamed_table() lean Arrow extraction
+    # (Storages/SharedMemorySource) reaches arrow's internal generated flatbuffer headers
+    # (arrow/ipc/metadata_internal.h -> generated/Message_generated.h), which include
+    # <flatbuffers/flatbuffers.h>. flatbuffers is a PRIVATE dep of _arrow, so expose its
+    # (header-only) include dir to dbms; arrow's own PUBLIC includes already reach dbms via parquet.
+    target_include_directories(dbms SYSTEM BEFORE PRIVATE "${ClickHouse_SOURCE_DIR}/contrib/flatbuffers/include")
 endif ()
 
 if (TARGET ch_contrib::avrocpp)

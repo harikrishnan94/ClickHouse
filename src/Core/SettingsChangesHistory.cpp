@@ -142,6 +142,7 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"shm_source_stall_timeout_ms", 30000, 30000, "New setting bounding the stall budget for the experimental streamed_table() source."},
             {"shm_tcp_source_async", true, true, "New setting selecting the async (recv/process-overlapping) streamed_table() TCP source over the Phase-1 blocking source."},
             {"shm_arrow_zero_copy", true, true, "New setting selecting zero-copy adoption of the streamed_table() arrow: transport's Arrow IPC buffers (Branch B) over the Branch-A copying decode."},
+            {"shm_arrow_lean_extract", true, true, "New setting selecting lean direct-flatbuffer Arrow RecordBatch buffer-extraction (Branch B iteration 3) over the iteration-2 ReadRecordBatch-based adoption for the streamed_table() arrow: transport."},
         });
         addSettingsChanges(settings_changes_history, "26.4",
         {
