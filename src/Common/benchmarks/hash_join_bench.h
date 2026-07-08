@@ -48,6 +48,7 @@ struct JoinStats
     double build_sec = 0;
     double probe_sec = 0;
     size_t matches = 0;
+    UInt64 fingerprint = 0; /// order-independent digest of the output rows (0 unless verified)
 
     double total() const { return build_sec + probe_sec; }
 };
@@ -64,12 +65,18 @@ public:
     virtual void build(const std::vector<Block> & blocks) = 0;
 
     /// Join the probe (left) side, materializing real output Blocks (dropped after counting).
-    /// Returns the number of output rows.
-    virtual size_t probe(const std::vector<Block> & blocks) = 0;
+    /// Returns the number of output rows. If `fingerprint` is non-null, additionally
+    /// accumulates an order-independent digest of all output rows into it (adds overhead
+    /// to the probe timing).
+    virtual size_t probe(const std::vector<Block> & blocks, UInt64 * fingerprint) = 0;
 
     /// Optional sub-phase timing details for reporting.
     virtual std::string phaseBreakdown() const { return {}; }
 };
+
+/// Order-independent digest of a Block's rows: commutative over rows (any output order) and
+/// over columns (values are bound to column names), but sensitive to cross-column row pairing.
+UInt64 blockFingerprint(const Block & block);
 
 /// A partition holds a list of scattered column chunks.
 struct Chunk
@@ -79,20 +86,29 @@ struct Chunk
 };
 using ChunkList = std::vector<Chunk>;
 
+/// Per-pass fanout cap of the SWWC scatter: staging (fanout x 64 B) plus cursors must stay
+/// within the private cache budget. Single pass for any realistic partition count.
+constexpr size_t MAX_FANOUT_PER_PASS = 8192;
+
 /// Splits log2(p_star) partition bits into passes of at most log2(f_max) bits each.
 std::vector<size_t> computePassBits(size_t p_star, size_t f_max);
 
-/// Multi-pass radix scatter of one side by the hash of its first (key) column: this is the
-/// partitioning code the radix join runs, also used to measure the scatter bandwidth term.
+/// Radix scatter of one side by the CRC32C of its first (key) column: this is the partitioning
+/// code the radix join runs, also used to measure the scatter bandwidth term. Uses histogram +
+/// prefix sum + exact one-shot allocation with direct placement, column-major loop order, and
+/// software write-combining with non-temporal stores at fanout >= 256 (single pass up to the
+/// full partition count; multiple passes only as a fallback). All UInt64 columns.
 std::vector<ChunkList> scatterSide(WorkerPool & pool, const std::vector<Block> & blocks, const std::vector<size_t> & pass_bits);
 
 /// Shared setup of the join metadata: INNER ALL join on the first column of each side.
 std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header);
 
 /// Materializes all output blocks of one join result, returns the number of output rows.
-size_t drainJoinResult(JoinResultPtr result);
+/// If `fingerprint` is non-null, accumulates the order-independent digest of the output rows.
+size_t drainJoinResult(JoinResultPtr result, UInt64 * fingerprint = nullptr);
 
 /// The driver: times the two phases of a join implementation through the common interface.
-JoinStats driveJoin(IJoinBench & join, const std::vector<Block> & build_blocks, const std::vector<Block> & probe_blocks);
+/// With `verify`, the probe additionally computes the output fingerprint (JoinStats::fingerprint).
+JoinStats driveJoin(IJoinBench & join, const std::vector<Block> & build_blocks, const std::vector<Block> & probe_blocks, bool verify = false);
 
 }

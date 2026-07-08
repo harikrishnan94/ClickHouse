@@ -61,7 +61,7 @@ void RadixHashJoinBench::build(const std::vector<Block> & blocks)
     });
 }
 
-size_t RadixHashJoinBench::probe(const std::vector<Block> & blocks)
+size_t RadixHashJoinBench::probe(const std::vector<Block> & blocks, UInt64 * fingerprint)
 {
     const size_t threads = pool.size();
 
@@ -70,13 +70,16 @@ size_t RadixHashJoinBench::probe(const std::vector<Block> & blocks)
     probe_scatter_sec = scatter_watch.elapsedSeconds();
 
     std::atomic<size_t> rows{0};
+    std::atomic<UInt64> digest{0};
     pool.run([&](size_t tid)
     {
         size_t local_rows = 0;
+        UInt64 local_digest = 0;
         for (size_t p = tid; p < probe_parts.size(); p += threads)
         {
             for (const auto & chunk : probe_parts[p])
-                local_rows += drainJoinResult(partition_joins[p]->joinBlock(toBlock(chunk, left_header)));
+                local_rows += drainJoinResult(
+                    partition_joins[p]->joinBlock(toBlock(chunk, left_header)), fingerprint ? &local_digest : nullptr);
 
             /// Free the partition's data before moving to the next one.
             probe_parts[p].clear();
@@ -84,7 +87,10 @@ size_t RadixHashJoinBench::probe(const std::vector<Block> & blocks)
         }
         g_sink += local_rows;
         rows += local_rows;
+        digest += local_digest;
     });
+    if (fingerprint)
+        *fingerprint += digest;
     return rows;
 }
 

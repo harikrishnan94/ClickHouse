@@ -28,18 +28,23 @@ void ConcurrentHashJoinBench::build(const std::vector<Block> & blocks)
     join->onBuildPhaseFinish();
 }
 
-size_t ConcurrentHashJoinBench::probe(const std::vector<Block> & blocks)
+size_t ConcurrentHashJoinBench::probe(const std::vector<Block> & blocks, UInt64 * fingerprint)
 {
     const size_t threads = pool.size();
     std::atomic<size_t> rows{0};
+    std::atomic<UInt64> digest{0};
     pool.run([&](size_t tid)
     {
         size_t local_rows = 0;
+        UInt64 local_digest = 0;
         for (size_t b = tid; b < blocks.size(); b += threads)
-            local_rows += drainJoinResult(join->joinBlock(blocks[b]));
+            local_rows += drainJoinResult(join->joinBlock(blocks[b]), fingerprint ? &local_digest : nullptr);
         g_sink += local_rows;
         rows += local_rows;
+        digest += local_digest;
     });
+    if (fingerprint)
+        *fingerprint += digest;
     return rows;
 }
 

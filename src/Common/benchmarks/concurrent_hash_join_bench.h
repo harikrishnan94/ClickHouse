@@ -22,7 +22,7 @@ public:
 
     std::string name() const override { return "ConcurrentHashJoin"; }
     void build(const std::vector<Block> & blocks) override;
-    size_t probe(const std::vector<Block> & blocks) override;
+    size_t probe(const std::vector<Block> & blocks, UInt64 * fingerprint) override;
 
 private:
     WorkerPool & pool;

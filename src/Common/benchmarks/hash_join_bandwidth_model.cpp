@@ -125,10 +125,25 @@ namespace
 
 static_assert(sizeof(HashMapCell<UInt64, UInt64, DefaultHash<UInt64>>) == 16);
 
-/// Bijective scrambling so that generated keys are not consecutive integers.
-UInt64 permuteKey(UInt64 x)
+/// Deterministic bijection on [0, n): a bijective mix on the covering power-of-two domain,
+/// cycle-walked back into [0, n). Used to shuffle insertion/probe order over a sequential
+/// key space (key values stay dense 0..n-1, like auto-increment ids).
+UInt64 shuffledIndex(UInt64 x, UInt64 n)
 {
-    return x * 0x9E3779B97F4A7C15ULL;
+    if (n <= 1)
+        return 0;
+    const UInt32 k = 64 - static_cast<UInt32>(std::countl_zero(n - 1));
+    const UInt64 mask = (k >= 64) ? ~UInt64(0) : ((UInt64(1) << k) - 1);
+    const UInt32 s = k / 2 + 1;
+    UInt64 y = x;
+    do
+    {
+        y ^= y >> s;
+        y = (y * 0x9E3779B97F4A7C15ULL) & mask;
+        y ^= y >> s;
+        y = (y * 0xC2B2AE3D27D4EB4FULL) & mask;
+    } while (y >= n);
+    return y;
 }
 
 UInt64 packRowRef(size_t block, size_t row)
@@ -156,6 +171,7 @@ struct Config
     size_t validation_max_rows = 1ULL << 26;
     size_t runs = 3;
     bool quick = false;
+    bool verify = false;
     UInt64 seed = 0x8899AABBCCDDEEFFULL;
 
     size_t buildRowWidth() const { return 8 * (1 + build_payload_columns); }
@@ -336,34 +352,35 @@ size_t totalRows(const std::vector<Block> & blocks)
     return rows;
 }
 
-KeyGenerator uniqueKeys()
+/// Build-side keys: the sequential key space [0, n), each value exactly once, in shuffled order.
+KeyGenerator uniqueKeys(size_t n)
 {
-    return [](size_t block_idx, size_t row_in_block, size_t /*local_row*/, pcg64_fast &)
+    return [n](size_t block_idx, size_t row_in_block, size_t /*local_row*/, pcg64_fast &)
     {
-        return permuteKey(block_idx * DEFAULT_BLOCK_SIZE + row_in_block);
+        return shuffledIndex(block_idx * DEFAULT_BLOCK_SIZE + row_in_block, n);
     };
 }
 
-/// Build-side keys: one global keyspace of `distinct` values, fully covered by the first
-/// `distinct` rows, random duplicates afterwards.
+/// Build-side keys: one global sequential keyspace of `distinct` values, fully covered (in
+/// shuffled order) by the first `distinct` rows, random duplicates afterwards.
 KeyGenerator globalDomainKeys(size_t distinct)
 {
     return [distinct](size_t block_idx, size_t row_in_block, size_t /*local_row*/, pcg64_fast & rng)
     {
         const UInt64 global_row = block_idx * DEFAULT_BLOCK_SIZE + row_in_block;
-        return permuteKey(global_row < distinct ? global_row : rng() % distinct);
+        return global_row < distinct ? shuffledIndex(global_row, distinct) : rng() % distinct;
     };
 }
 
-/// Build-side keys: thread-private keyspace of `distinct` values, fully covered by the first
-/// `distinct` rows of each thread, random duplicates afterwards.
+/// Build-side keys: thread-private sequential keyspace of `distinct` values, fully covered
+/// (in shuffled order) by the first `distinct` rows of each thread, random duplicates afterwards.
 KeyGenerator perThreadDomainKeys(size_t distinct, size_t threads)
 {
     return [distinct, threads](size_t block_idx, size_t /*row_in_block*/, size_t local_row, pcg64_fast & rng)
     {
         const UInt64 offset = (block_idx % threads) * KEY_DOMAIN_STRIDE;
-        const UInt64 raw = local_row < distinct ? local_row : rng() % distinct;
-        return permuteKey(offset + raw);
+        const UInt64 raw = local_row < distinct ? shuffledIndex(local_row, distinct) : rng() % distinct;
+        return offset + raw;
     };
 }
 
@@ -380,7 +397,26 @@ KeyGenerator probeKeys(size_t distinct, size_t threads, double hit_rate, bool pe
         const UInt64 offset = per_thread_domain ? (block_idx % threads) * KEY_DOMAIN_STRIDE : 0;
         const bool hit = rng() <= hit_threshold;
         const UInt64 raw = rng() % distinct + (hit ? 0 : distinct);
-        return permuteKey(offset + raw);
+        return offset + raw;
+    };
+}
+
+/// Probe-side keys for the join runs: an exact permutation of the build key space [0, n_b) —
+/// with N_p = r * n_b every build key appears exactly r times (+-1 when not divisible), in
+/// shuffled order. With hit_rate < 1, a random subset of rows is redirected to the disjoint
+/// range [n_b, 2*n_b) instead (no longer an exact permutation).
+KeyGenerator probePermutationKeys(size_t n_b, size_t n_p, double hit_rate)
+{
+    const UInt64 hit_threshold = hit_rate >= 1.0
+        ? std::numeric_limits<UInt64>::max()
+        : static_cast<UInt64>(hit_rate * static_cast<double>(std::numeric_limits<UInt64>::max()));
+
+    return [n_b, n_p, hit_threshold](size_t block_idx, size_t row_in_block, size_t /*local_row*/, pcg64_fast & rng)
+    {
+        const UInt64 global_row = block_idx * DEFAULT_BLOCK_SIZE + row_in_block;
+        const UInt64 key = shuffledIndex(global_row, n_p) % n_b;
+        const bool hit = hit_threshold == std::numeric_limits<UInt64>::max() || rng() <= hit_threshold;
+        return hit ? key : key + n_b;
     };
 }
 
@@ -740,7 +776,7 @@ Curve runProbeKernelNP(const Config & cfg, WorkerPool & pool)
             bench.build(build_blocks);
 
             Stopwatch watch;
-            size_t rows = bench.probe(probe_blocks);
+            size_t rows = bench.probe(probe_blocks, nullptr);
             double elapsed = watch.elapsedSeconds();
             g_sink += rows;
             return elapsed;
@@ -771,7 +807,7 @@ Curve runGatherKernel(const Config & cfg, WorkerPool & pool, const std::vector<B
 
     const size_t stored_block_count = std::max<size_t>(1, cfg.gather_bytes / cfg.buildRowWidth() / DEFAULT_BLOCK_SIZE);
     const size_t stored_rows = stored_block_count * DEFAULT_BLOCK_SIZE;
-    auto stored_blocks = generateBlocks(pool, stored_rows, cfg.build_payload_columns, "b_", uniqueKeys(), cfg.seed + 12345);
+    auto stored_blocks = generateBlocks(pool, stored_rows, cfg.build_payload_columns, "b_", uniqueKeys(stored_rows), cfg.seed + 12345);
     const size_t stored_block_bytes = DEFAULT_BLOCK_SIZE * cfg.buildRowWidth();
     const size_t build_columns = stored_blocks.front().columns();
 
@@ -946,8 +982,11 @@ Prediction predict(const ModelInputs & m, double n_b, double n_p, double distinc
         return p;
     }
 
+    /// Pass split mirrors what the radix join actually executes (computePassBits with the
+    /// SWWC scatter's per-pass fanout cap); the scatter cost uses the measured bandwidth at
+    /// the per-pass fanout.
     const size_t total_bits = static_cast<size_t>(std::countr_zero(p_star));
-    const size_t f_bits = std::max<size_t>(1, static_cast<size_t>(std::bit_width(std::bit_floor(m.f_max)) - 1));
+    const size_t f_bits = static_cast<size_t>(std::countr_zero(MAX_FANOUT_PER_PASS));
     p.n_pass = (total_bits + f_bits - 1) / f_bits;
     const size_t per_pass_bits = (total_bits + p.n_pass - 1) / p.n_pass;
     const size_t per_pass_fanout = 1ULL << per_pass_bits;
@@ -1064,22 +1103,14 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
     if (p_star > 1)
         p_star = std::min(std::max(p_star, std::bit_ceil(cfg.threads)), std::bit_ceil(cfg.max_partitions));
     p_star = std::max<size_t>(2, p_star);
-    const size_t f_max = 8; /// typical measured knee of the scatter fanout curve
+    const size_t f_max = MAX_FANOUT_PER_PASS;
 
     fmt::print("\n=== single join: N_b = {}, N_p = {}, unique keys, hit rate {}, HT = {}, P* = {} ===\n",
         n_b, n_p, cfg.hit_rate, formatBytes(table_bytes), p_star);
 
-    auto build_blocks = generateBlocks(pool, n_b, cfg.build_payload_columns, "b_", uniqueKeys(), cfg.seed + n_b);
-    const UInt64 hit_threshold = cfg.hit_rate >= 1.0
-        ? std::numeric_limits<UInt64>::max()
-        : static_cast<UInt64>(cfg.hit_rate * static_cast<double>(std::numeric_limits<UInt64>::max()));
-    auto probe_keygen = [n_b, hit_threshold](size_t, size_t, size_t, pcg64_fast & rng)
-    {
-        const bool hit = rng() <= hit_threshold;
-        const UInt64 raw = rng() % n_b;
-        return hit ? permuteKey(raw) : permuteKey(raw + KEY_DOMAIN_STRIDE);
-    };
-    auto probe_blocks = generateBlocks(pool, n_p, cfg.probe_payload_columns, "p_", probe_keygen, cfg.seed + n_b + 1);
+    auto build_blocks = generateBlocks(pool, n_b, cfg.build_payload_columns, "b_", uniqueKeys(n_b), cfg.seed + n_b);
+    auto probe_blocks = generateBlocks(pool, n_p, cfg.probe_payload_columns, "p_",
+                                       probePermutationKeys(n_b, n_p, cfg.hit_rate), cfg.seed + n_b + 1);
 
     const Block left_header = probe_blocks.front().cloneEmpty();
     const Block right_header = build_blocks.front().cloneEmpty();
@@ -1089,22 +1120,28 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
         JoinStats np;
         {
             ConcurrentHashJoinBench bench(pool, left_header, right_header);
-            np = driveJoin(bench, build_blocks, probe_blocks);
+            np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
         }
 
         JoinStats rp;
         std::string rp_detail;
         {
             RadixHashJoinBench bench(pool, left_header, right_header, p_star, f_max);
-            rp = driveJoin(bench, build_blocks, probe_blocks);
+            rp = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
             rp_detail = bench.phaseBreakdown();
         }
 
+        std::string result_check;
+        if (cfg.verify)
+            result_check = np.fingerprint == rp.fingerprint
+                ? fmt::format(", results equal (fingerprint {:x})", np.fingerprint)
+                : fmt::format(", RESULTS DIFFER (fingerprints {:x} vs {:x})", np.fingerprint, rp.fingerprint);
+
         fmt::print("  run {}: NPHJ total {:.2f} ms (build {:.2f} ms, probe+gather {:.2f} ms); "
-                   "RPHJ total {:.2f} ms (build {:.2f} ms, probe {:.2f} ms; {}); matches {}{}\n",
+                   "RPHJ total {:.2f} ms (build {:.2f} ms, probe {:.2f} ms; {}); matches {}{}{}\n",
             run, np.total() * 1e3, np.build_sec * 1e3, np.probe_sec * 1e3,
             rp.total() * 1e3, rp.build_sec * 1e3, rp.probe_sec * 1e3, rp_detail,
-            np.matches, np.matches == rp.matches ? "" : " MISMATCH");
+            np.matches, np.matches == rp.matches ? "" : " MISMATCH", result_check);
     }
 }
 
@@ -1149,18 +1186,9 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
             auto pred = predict(model, static_cast<double>(n_b), static_cast<double>(n_p), static_cast<double>(n_b));
             const size_t p_star = std::max<size_t>(2, pred.p_star);
 
-            auto build_blocks = generateBlocks(pool, n_b, cfg.build_payload_columns, "b_", uniqueKeys(), cfg.seed + n_b);
-            /// Probe keys drawn from the whole build keyspace (global domain).
-            const UInt64 hit_threshold = cfg.hit_rate >= 1.0
-                ? std::numeric_limits<UInt64>::max()
-                : static_cast<UInt64>(cfg.hit_rate * static_cast<double>(std::numeric_limits<UInt64>::max()));
-            auto probe_keygen = [n_b, hit_threshold](size_t, size_t, size_t, pcg64_fast & rng)
-            {
-                const bool hit = rng() <= hit_threshold;
-                const UInt64 raw = rng() % n_b;
-                return hit ? permuteKey(raw) : permuteKey(raw + KEY_DOMAIN_STRIDE);
-            };
-            auto probe_blocks = generateBlocks(pool, n_p, cfg.probe_payload_columns, "p_", probe_keygen, cfg.seed + n_b + 1);
+            auto build_blocks = generateBlocks(pool, n_b, cfg.build_payload_columns, "b_", uniqueKeys(n_b), cfg.seed + n_b);
+            auto probe_blocks = generateBlocks(pool, n_p, cfg.probe_payload_columns, "p_",
+                                               probePermutationKeys(n_b, n_p, cfg.hit_rate), cfg.seed + n_b + 1);
 
             const Block left_header = probe_blocks.front().cloneEmpty();
             const Block right_header = build_blocks.front().cloneEmpty();
@@ -1168,20 +1196,22 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
             JoinStats np;
             {
                 ConcurrentHashJoinBench bench(pool, left_header, right_header);
-                np = driveJoin(bench, build_blocks, probe_blocks);
+                np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
             }
 
             JoinStats rp;
             std::string rp_detail;
             {
-                RadixHashJoinBench bench(pool, left_header, right_header, p_star, model.f_max);
-                rp = driveJoin(bench, build_blocks, probe_blocks);
+                RadixHashJoinBench bench(pool, left_header, right_header, p_star, MAX_FANOUT_PER_PASS);
+                rp = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
                 rp_detail = bench.phaseBreakdown();
             }
 
             const char * pred_win = pred.rpTotal() < pred.npTotal() ? "radix" : "non-part";
             const char * meas_win = rp.total() < np.total() ? "radix" : "non-part";
-            const char * match_check = np.matches == rp.matches ? "ok" : "MISMATCH";
+            const bool counts_ok = np.matches == rp.matches;
+            const bool results_ok = !cfg.verify || np.fingerprint == rp.fingerprint;
+            const char * match_check = !counts_ok ? "MISMATCH" : (!results_ok ? "DIFFER" : "ok");
 
             fmt::print("{:>12}{:>8}{:>13.2f}{:>13.2f}{:>13.2f}{:>13.2f}{:>12}{:>12}{:>10}\n",
                 n_b, p_star, pred.npTotal() * 1e3, np.total() * 1e3, pred.rpTotal() * 1e3, rp.total() * 1e3,
@@ -1225,6 +1255,7 @@ int main(int argc, char ** argv)
         ("llc", po::value<size_t>(), "override detected total LLC size in bytes")
         ("seed", po::value<UInt64>(&cfg.seed), "random seed")
         ("quick", po::bool_switch(&cfg.quick), "skip the validation joins")
+        ("verify", po::bool_switch(&cfg.verify), "compare NPHJ and RPHJ outputs via order-independent row fingerprints (adds overhead to probe timings)")
         ("join-nb", po::value<size_t>()->default_value(0), "run only the real joins at this exact build-side row count (skips all kernels)")
         ("join-np", po::value<size_t>()->default_value(0), "probe-side row count for --join-nb (default: same as --join-nb)");
 
@@ -1280,7 +1311,7 @@ int main(int argc, char ** argv)
     }
 
     fmt::print("\ngenerating input blocks...\n");
-    auto build_work = generateBlocks(pool, cfg.tuples, cfg.build_payload_columns, "b_", uniqueKeys(), cfg.seed);
+    auto build_work = generateBlocks(pool, cfg.tuples, cfg.build_payload_columns, "b_", uniqueKeys(cfg.tuples), cfg.seed);
     auto probe_work = generateBlocks(pool, cfg.tuples, cfg.probe_payload_columns, "p_",
                                      probeKeys(cfg.tuples, cfg.threads, cfg.hit_rate, /*per_thread_domain=*/ false), cfg.seed + 1);
 
