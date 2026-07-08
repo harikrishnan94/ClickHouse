@@ -27,3 +27,12 @@ clickhouse_add_executable(profile_events profile_events.cpp)
 target_link_libraries (profile_events PRIVATE
     ch_contrib::gbenchmark_all
     dbms)
+
+clickhouse_add_executable(hash_join_bandwidth_model
+    hash_join_bandwidth_model.cpp
+    hash_join_bench.cpp
+    concurrent_hash_join_bench.cpp
+    radix_hash_join_bench.cpp)
+target_link_libraries (hash_join_bandwidth_model PRIVATE
+    dbms
+    boost::program_options)
