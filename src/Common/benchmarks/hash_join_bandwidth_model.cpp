@@ -372,18 +372,6 @@ KeyGenerator globalDomainKeys(size_t distinct)
     };
 }
 
-/// Build-side keys: thread-private sequential keyspace of `distinct` values, fully covered
-/// (in shuffled order) by the first `distinct` rows of each thread, random duplicates afterwards.
-KeyGenerator perThreadDomainKeys(size_t distinct, size_t threads)
-{
-    return [distinct, threads](size_t block_idx, size_t /*row_in_block*/, size_t local_row, pcg64_fast & rng)
-    {
-        const UInt64 offset = (block_idx % threads) * KEY_DOMAIN_STRIDE;
-        const UInt64 raw = local_row < distinct ? shuffledIndex(local_row, distinct) : rng() % distinct;
-        return offset + raw;
-    };
-}
-
 /// Probe-side keys against a keyspace of `distinct` values: hits with probability hit_rate,
 /// misses drawn from a disjoint keyspace.
 KeyGenerator probeKeys(size_t distinct, size_t threads, double hit_rate, bool per_thread_domain)
@@ -579,9 +567,51 @@ Block makeHeader(const std::string & prefix, size_t payload_columns)
     return header;
 }
 
+/// Per-thread build inputs for the radix per-partition kernels: for every thread, blocks holding
+/// exactly `distinct` rows covering the thread's disjoint key domain
+/// (tid * KEY_DOMAIN_STRIDE + [0, distinct)) once each, in shuffled order. Unlike striping one
+/// shared block list over threads (which at block granularity leaves most threads without data
+/// for small `distinct`), this guarantees every thread an identical, duplicate-free build side.
+std::vector<std::vector<Block>> generatePerThreadBuildBlocks(WorkerPool & pool, size_t distinct, size_t payload_columns)
+{
+    const size_t threads = pool.size();
+    std::vector<std::vector<Block>> result(threads);
+    auto type = std::make_shared<DataTypeUInt64>();
+
+    pool.run([&](size_t tid)
+    {
+        const UInt64 offset = tid * KEY_DOMAIN_STRIDE;
+        auto & blocks = result[tid];
+        for (size_t begin = 0; begin < distinct; begin += DEFAULT_BLOCK_SIZE)
+        {
+            const size_t n = std::min<size_t>(DEFAULT_BLOCK_SIZE, distinct - begin);
+            Block block;
+
+            auto key_col = ColumnUInt64::create(n);
+            auto & key_data = key_col->getData();
+            for (size_t i = 0; i < n; ++i)
+                key_data[i] = offset + shuffledIndex(begin + i, distinct);
+            block.insert(ColumnWithTypeAndName(std::move(key_col), type, "b_key"));
+
+            for (size_t c = 0; c < payload_columns; ++c)
+            {
+                auto col = ColumnUInt64::create(n);
+                auto & data = col->getData();
+                for (size_t i = 0; i < n; ++i)
+                    data[i] = begin + i;
+                block.insert(ColumnWithTypeAndName(std::move(col), type, fmt::format("b_p{}", c)));
+            }
+
+            blocks.push_back(std::move(block));
+        }
+    });
+
+    return result;
+}
+
 /// ---------------------------------------------------------------------------------------------
-/// Kernel 3a: radix per-partition build. Each thread builds a private real HashJoin (the same
-/// class and code path the radix join uses per partition) over its share of the input blocks;
+/// Kernel 3a: radix per-partition build. Each thread builds `reps` private real HashJoins in
+/// sequence (the radix join's per-partition builds) from its own duplicate-free build input;
 /// join construction, map growth and stored-block saving are inside the timed region.
 /// Sweep the number of distinct keys (i.e. table size).
 /// ---------------------------------------------------------------------------------------------
@@ -591,7 +621,7 @@ Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool)
     Curve curve;
 
     fmt::print("\n=== HT build, radix per-partition (real HashJoin, size sweep) ===\n");
-    fmt::print("{:>12}{:>14}{:>12}{:>14}\n", "distinct", "table", "ns/row", "Mrows/s");
+    fmt::print("{:>12}{:>14}{:>6}{:>12}{:>14}\n", "distinct", "table", "reps", "ns/row", "Mrows/s");
 
     const Block left_header = makeHeader("p_", cfg.probe_payload_columns);
     const Block right_header = makeHeader("b_", cfg.build_payload_columns);
@@ -600,26 +630,32 @@ Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool)
 
     for (size_t distinct : tableSweepDistincts(cfg))
     {
-        const size_t rows_per_thread = std::max(cfg.tuples / threads, distinct);
-        const size_t rows = rows_per_thread * threads;
-        auto blocks = generateBlocks(pool, rows, cfg.build_payload_columns, "b_",
-                                     perThreadDomainKeys(distinct, threads), cfg.seed + distinct);
-        const size_t actual_rows = totalRows(blocks);
+        auto per_thread_blocks = generatePerThreadBuildBlocks(pool, distinct, cfg.build_payload_columns);
+
+        /// Enough sequential per-partition builds per thread to make the timing meaningful at
+        /// small table sizes — mirroring a radix join where each worker builds many partitions.
+        const size_t reps = std::max<size_t>(1, cfg.tuples / threads / distinct);
+        const size_t actual_rows = distinct * threads * reps;
 
         double seconds = medianTime(cfg.runs, [&]
         {
-            std::vector<std::shared_ptr<HashJoin>> joins(threads);
+            std::vector<std::vector<std::shared_ptr<HashJoin>>> joins(threads);
             double elapsed = pool.run([&](size_t tid)
             {
-                joins[tid] = std::make_shared<HashJoin>(
-                    table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ 0,
-                    fmt::format("bench{}", tid), /*use_two_level_maps*/ false);
-                for (size_t b = tid; b < blocks.size(); b += threads)
-                    joins[tid]->addBlockToJoin(blocks[b], /*check_limits*/ false);
-                joins[tid]->onBuildPhaseFinish();
+                auto & my_joins = joins[tid];
+                my_joins.resize(reps);
+                for (size_t r = 0; r < reps; ++r)
+                {
+                    my_joins[r] = std::make_shared<HashJoin>(
+                        table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ 0,
+                        fmt::format("bench{}_{}", tid, r), /*use_two_level_maps*/ false);
+                    for (const auto & block : per_thread_blocks[tid])
+                        my_joins[r]->addBlockToJoin(block, /*check_limits*/ false);
+                    my_joins[r]->onBuildPhaseFinish();
+                }
             });
             /// Untimed: fresh joins per iteration, destroyed in parallel after timing.
-            pool.run([&](size_t tid) { joins[tid].reset(); });
+            pool.run([&](size_t tid) { joins[tid].clear(); });
             return elapsed;
         });
 
@@ -627,7 +663,7 @@ Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool)
         const double ns_per_row = seconds * 1e9 / static_cast<double>(actual_rows);
         curve.points.emplace_back(bytes, ns_per_row);
 
-        fmt::print("{:>12}{:>14}{:>12.3f}{:>14.1f}\n", distinct, formatBytes(bytes), ns_per_row, 1000.0 / ns_per_row);
+        fmt::print("{:>12}{:>14}{:>6}{:>12.3f}{:>14.1f}\n", distinct, formatBytes(bytes), reps, ns_per_row, 1000.0 / ns_per_row);
     }
 
     return curve;
@@ -697,10 +733,10 @@ Curve runProbeKernelRP(const Config & cfg, WorkerPool & pool)
 
     for (size_t distinct : tableSweepDistincts(cfg))
     {
-        /// Build sides are duplicate-free (rows == distinct keys), so the INNER ALL output is
-        /// exactly one row per matching probe row, as the model assumes.
-        auto build_blocks = generateBlocks(pool, distinct * threads, cfg.build_payload_columns, "b_",
-                                           perThreadDomainKeys(distinct, threads), cfg.seed + distinct);
+        /// Each thread gets its own duplicate-free build side covering its disjoint key domain
+        /// exactly once, so every thread has a fully populated private table and the INNER ALL
+        /// output is exactly one row per matching probe row, as the model assumes.
+        auto build_blocks = generatePerThreadBuildBlocks(pool, distinct, cfg.build_payload_columns);
         auto probe_blocks = generateBlocks(pool, cfg.tuples, cfg.probe_payload_columns, "p_",
                                            probeKeys(distinct, threads, cfg.hit_rate, /*per_thread_domain=*/ true),
                                            cfg.seed + distinct + 1);
@@ -715,8 +751,8 @@ Curve runProbeKernelRP(const Config & cfg, WorkerPool & pool)
                 joins[tid] = std::make_shared<HashJoin>(
                     table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ 0,
                     fmt::format("bench{}", tid), /*use_two_level_maps*/ false);
-                for (size_t b = tid; b < build_blocks.size(); b += threads)
-                    joins[tid]->addBlockToJoin(build_blocks[b], /*check_limits*/ false);
+                for (const auto & block : build_blocks[tid])
+                    joins[tid]->addBlockToJoin(block, /*check_limits*/ false);
                 joins[tid]->onBuildPhaseFinish();
             });
         };

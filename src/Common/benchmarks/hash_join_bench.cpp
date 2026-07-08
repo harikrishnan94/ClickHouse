@@ -422,7 +422,11 @@ std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block 
     table_join->addDisjunct();
     table_join->getClauses().back().addKey(
         left_header.getByPosition(0).name, right_header.getByPosition(0).name, /*null_safe_comparison*/ false);
+
+    /// Pin the production defaults this benchmark depends on.
     chassert(table_join->enableSoftwarePrefetchInJoin());
+    chassert(table_join->enableColumnsLazyReplication());
+    chassert(table_join->maxJoinedBlockRows() == DEFAULT_BLOCK_SIZE);
 
     NamesAndTypesList left_columns;
     NamesAndTypesList right_columns;
@@ -454,7 +458,9 @@ UInt64 blockFingerprint(const Block & block)
     for (const auto & col : block)
     {
         const UInt64 name_hash = std::hash<std::string_view>{}(col.name);
-        const auto & data = assert_cast<const ColumnUInt64 &>(*col.column).getData();
+        /// With lazy columns replication the join may emit ColumnReplicated (column + indexes).
+        const auto full_column = col.column->convertToFullColumnIfReplicated();
+        const auto & data = assert_cast<const ColumnUInt64 &>(*full_column).getData();
         for (size_t i = 0; i < rows; ++i)
             acc[i] += intHashCRC32(data[i] ^ name_hash);
     }
