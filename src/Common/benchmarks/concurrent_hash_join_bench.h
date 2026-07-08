@@ -17,7 +17,11 @@ namespace DB::JoinBench
 class ConcurrentHashJoinBench : public IJoinBench
 {
 public:
-    ConcurrentHashJoinBench(WorkerPool & pool_, const Block & left_header, const Block & right_header);
+    /// With a non-zero `stats_key`, hash table size statistics are collected into the
+    /// process-global cache on destruction and used to preallocate the maps of subsequent
+    /// instances built with the same key (the steady state of repeated real queries, driven
+    /// by `collect_hash_table_stats_during_joins`). The first build with a given key is cold.
+    ConcurrentHashJoinBench(WorkerPool & pool_, const Block & left_header, const Block & right_header, UInt64 stats_key = 0);
     ~ConcurrentHashJoinBench() override;
 
     std::string name() const override { return "ConcurrentHashJoin"; }

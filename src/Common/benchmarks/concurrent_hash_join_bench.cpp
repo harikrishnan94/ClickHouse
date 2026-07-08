@@ -7,11 +7,14 @@
 namespace DB::JoinBench
 {
 
-ConcurrentHashJoinBench::ConcurrentHashJoinBench(WorkerPool & pool_, const Block & left_header, const Block & right_header)
+ConcurrentHashJoinBench::ConcurrentHashJoinBench(WorkerPool & pool_, const Block & left_header, const Block & right_header, UInt64 stats_key)
     : pool(pool_)
     , table_join(makeTableJoin(left_header, right_header))
     , join(std::make_shared<ConcurrentHashJoin>(
-          table_join, pool_.size(), std::make_shared<const Block>(right_header), StatsCollectingParams{}))
+          table_join, pool_.size(), std::make_shared<const Block>(right_header),
+          /// Limits mirror the query defaults `max_entries_for_hash_table_stats` and
+          /// `max_size_to_preallocate_for_joins`.
+          StatsCollectingParams(stats_key, stats_key != 0, /*max_entries_for_hash_table_stats*/ 10'000, /*max_size_to_preallocate*/ 1'000'000'000'000ULL)))
 {
 }
 

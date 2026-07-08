@@ -657,7 +657,9 @@ Curve runBuildKernelNP(const Config & cfg, WorkerPool & pool)
 
         double seconds = medianTime(cfg.runs, [&]
         {
-            ConcurrentHashJoinBench bench(pool, left_header, right_header);
+            /// Size-hint statistics keyed by the sweep point: the warmup iteration populates the
+            /// cache, so all timed builds preallocate like the steady state of repeated queries.
+            ConcurrentHashJoinBench bench(pool, left_header, right_header, /*stats_key*/ intHash64(0xB0 + distinct));
             Stopwatch watch;
             bench.build(blocks);
             return watch.elapsedSeconds();
@@ -772,7 +774,7 @@ Curve runProbeKernelNP(const Config & cfg, WorkerPool & pool)
         double seconds = medianTime(cfg.runs, [&]
         {
             /// Untimed: fresh join built for every iteration.
-            ConcurrentHashJoinBench bench(pool, left_header, right_header);
+            ConcurrentHashJoinBench bench(pool, left_header, right_header, /*stats_key*/ intHash64(0xF0 + distinct));
             bench.build(build_blocks);
 
             Stopwatch watch;
@@ -1115,11 +1117,15 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
     const Block left_header = probe_blocks.front().cloneEmpty();
     const Block right_header = build_blocks.front().cloneEmpty();
 
+    /// Size-hint statistics keyed by the shape: run 0 builds cold and populates the cache,
+    /// later runs preallocate the maps (steady state of repeated queries).
+    const UInt64 stats_key = intHash64(n_b * 1000003 + n_p);
+
     for (size_t run = 0; run < cfg.runs; ++run)
     {
         JoinStats np;
         {
-            ConcurrentHashJoinBench bench(pool, left_header, right_header);
+            ConcurrentHashJoinBench bench(pool, left_header, right_header, stats_key);
             np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
         }
 
@@ -1195,7 +1201,7 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
 
             JoinStats np;
             {
-                ConcurrentHashJoinBench bench(pool, left_header, right_header);
+                ConcurrentHashJoinBench bench(pool, left_header, right_header, /*stats_key*/ intHash64(n_b * 1000003 + n_p));
                 np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
             }
 
