@@ -12,6 +12,7 @@
 
 #include <Columns/ColumnsNumber.h>
 #include <Core/Defines.h>
+#include <Core/Settings.h>
 #include <Interpreters/TableJoin.h>
 #include <QueryPipeline/SizeLimits.h>
 #include <Common/CurrentMetrics.h>
@@ -406,14 +407,22 @@ std::vector<ChunkList> scatterSide(WorkerPool & pool, const std::vector<Block> &
 
 std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header)
 {
+    /// Construct from default query Settings so that all behavior flags match a real query —
+    /// notably `enable_software_prefetch_in_join` (default true; the bare StorageJoin-style
+    /// constructor leaves it false, silently disabling the join's software prefetching).
+    ///
     /// INNER ALL. Note: ClickHouse ANY INNER marks right rows used-once (one output row per
     /// distinct matched right key), which does not match the model's one-match-per-probe-row
     /// assumption; benchmarks therefore use ALL with duplicate-free build keys where the output
     /// size must equal the probe side.
-    auto table_join = std::make_shared<TableJoin>(
-        SizeLimits{}, /*use_nulls*/ false, JoinKind::Inner, JoinStrictness::All,
-        Names{right_header.getByPosition(0).name});
-    table_join->setLeftKeys({left_header.getByPosition(0).name});
+    static const Settings default_settings;
+    auto table_join = std::make_shared<TableJoin>(default_settings, /*tmp_volume*/ nullptr, /*tmp_data*/ nullptr);
+    table_join->setKind(JoinKind::Inner);
+    table_join->getTableJoin().strictness = JoinStrictness::All;
+    table_join->addDisjunct();
+    table_join->getClauses().back().addKey(
+        left_header.getByPosition(0).name, right_header.getByPosition(0).name, /*null_safe_comparison*/ false);
+    chassert(table_join->enableSoftwarePrefetchInJoin());
 
     NamesAndTypesList left_columns;
     NamesAndTypesList right_columns;
