@@ -56,6 +56,11 @@ public:
     /// memory tracks the live working set, not the sum of all passes. No-op for nullptr. Thread-safe.
     void release(void * base) noexcept;
 
+    /// Release a batch of blocks in ONE pass over the block list (`release` scans the whole list per
+    /// call, so releasing a leaf group's up-to-thousands of record arrays one by one would be
+    /// quadratic). Null entries are skipped. Thread-safe.
+    void releaseMany(const std::vector<void *> & bases) noexcept;
+
     size_t blockCount() const;
     size_t bytesReserved() const;
 

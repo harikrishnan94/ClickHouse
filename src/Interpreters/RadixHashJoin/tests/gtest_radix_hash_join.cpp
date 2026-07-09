@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <exception>
@@ -26,6 +27,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using namespace DB;
@@ -776,6 +778,145 @@ TEST(RadixHashJoin, GroupedLeavesLoadInvariant)
         }
         EXPECT_GE(UInt64{1} << bits, max_rows * 2) << "group " << gpos;
     }
+}
+
+TEST(RadixHashJoin, LazyGroupBuildExactlyOnceUnderConcurrentProbes)
+{
+    /// D-0004: leaf tables are built lazily at GROUP granularity, exactly once per touched non-empty
+    /// group, by the first prober that touches the group (contenders spin until READY). 16 threads
+    /// concurrently probe 120 key blocks against a prepared-but-unbuilt `LeafTables`, mirroring the
+    /// production probe pre-pass (route -> touched-group bitmap -> ensure -> collect). Asserts:
+    ///   - `prepareLeafTables` builds nothing (every group's LeafHT is empty);
+    ///   - `ensureLeafGroupBuilt` returns true exactly once per non-empty group (the exactly-once gate);
+    ///   - every spin-waiter proceeds against a READY group and the merged match set equals the
+    ///     eager-built (`buildLeafTables`) reference.
+    constexpr size_t key_width = 8;
+    constexpr size_t probe_threads = 16;
+    constexpr size_t chunk_rows = 500;
+
+    auto plan = PartitionPlan::choose(50000, 512, 8192);
+    ASSERT_EQ(plan.num_leaves, 4096u);
+    ASSERT_GT(plan.total_bits, MAX_GROUP_BITS);
+
+    std::vector<UInt64> build_keys;
+    std::mt19937 rng(31337); // NOLINT(bugprone-random-generator-seed, cert-msc32-c, cert-msc51-cpp)
+    for (size_t i = 0; i < 40000; ++i)
+        build_keys.push_back(rng() % 3000); /// duplicate-heavy: exercises RowRefList emission too
+
+    std::vector<UInt64> probe_keys(build_keys); /// every non-empty group is touched
+    for (UInt64 i = 0; i < 20000; ++i)
+        probe_keys.push_back(0x9000000000000000ULL + i); /// misses (may route to rowless groups)
+    std::shuffle(probe_keys.begin(), probe_keys.end(), rng);
+
+    BuildSide build_side(plan, {0}, {key_width}, 4);
+    build_side.add(makeU64Block(build_keys, "k0"), 0);
+    build_side.finishBuild();
+    const ParallelFor parallel_for = makeParallelFor(4);
+
+    using Match = std::tuple<UInt64, UInt32, UInt32>; /// (global probe row, block_no, row_no)
+
+    /// Eager-built reference over the same probe keys. The match SET is insertion-order independent,
+    /// so sorted triples compare exactly.
+    std::vector<Match> reference;
+    size_t non_empty_groups = 0;
+    {
+        LeafArrays leaves_ref = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
+        LeafTables tables_ref = buildLeafTables(leaves_ref, build_side.totalRows(), key_width, 4, parallel_for);
+        for (const LeafHT & group : tables_ref.grouped.groups)
+            non_empty_groups += !group.empty();
+        std::vector<UInt32> out_rows;
+        std::vector<RowRef> out_refs;
+        collectMatchesTest(
+            key_width, tables_ref.grouped, plan.leaf_shift, plan.total_bits,
+            probe_keys.data(), probe_keys.size(), tables_ref.max_bucket_bits <= 31, out_rows, out_refs);
+        for (size_t m = 0; m < out_rows.size(); ++m)
+            reference.emplace_back(out_rows[m], out_refs[m].blockNo(), out_refs[m].rowNo());
+    }
+    ASSERT_GT(non_empty_groups, 1u); /// the exactly-once claim needs more than one group to mean anything
+
+    /// Lazy path: prepare only, then concurrent probes drive the group builds.
+    LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 4, /*estimate_distinct_keys=*/true);
+    LeafTables tables = prepareLeafTables(leaves, build_side.totalRows(), key_width, 4);
+    const size_t num_groups = tables.grouped.groups.size();
+    for (const LeafHT & group : tables.grouped.groups)
+        EXPECT_TRUE(group.empty()); /// nothing is built at prepare time
+    EXPECT_EQ(tables.cell_alloc_count, 0u);
+
+    /// The winning toucher fills the group's leaves through this (2-worker) ParallelFor — worker ids
+    /// stay within the prepared 4-worker arena space, and `ensureLeafGroupBuilt` serializes builds.
+    const ParallelFor fill_parallel_for = makeParallelFor(2);
+
+    std::atomic<size_t> builds_performed{0};
+    std::atomic<size_t> next_chunk{0};
+    const size_t num_chunks = (probe_keys.size() + chunk_rows - 1) / chunk_rows;
+    std::vector<std::vector<Match>> per_thread(probe_threads);
+
+    std::vector<std::thread> threads;
+    threads.reserve(probe_threads);
+    for (size_t t = 0; t < probe_threads; ++t)
+        threads.emplace_back([&, t]
+        {
+            std::vector<UInt32> out_rows;
+            std::vector<RowRef> out_refs;
+            while (true)
+            {
+                const size_t chunk = next_chunk.fetch_add(1);
+                if (chunk >= num_chunks)
+                    break;
+                const size_t begin = chunk * chunk_rows;
+                const size_t n = std::min(chunk_rows, probe_keys.size() - begin);
+
+                /// Route pre-pass: derive the chunk's touched-group bitmap (mirrors the production probe).
+                std::array<UInt64, MAX_UNIQUE_BUCKET_SIZES / 64> touched{};
+                for (size_t i = 0; i < n; ++i)
+                {
+                    const HashT h = hashPackedKey<key_width>(&probe_keys[begin + i]);
+                    const UInt64 leaf = plan.total_bits ? (routeBits(h) >> plan.leaf_shift) : 0;
+                    const auto group = static_cast<size_t>(leaf >> tables.grouped.local_shift);
+                    touched[group / 64] |= UInt64{1} << (group % 64);
+                }
+                for (size_t group = 0; group < num_groups; ++group)
+                {
+                    if (((touched[group / 64] >> (group % 64)) & 1) == 0)
+                        continue;
+                    if (ensureLeafGroupBuilt(tables, leaves, group, fill_parallel_for))
+                        builds_performed.fetch_add(1);
+                }
+
+                out_rows.clear();
+                out_refs.clear();
+                collectMatchesTest(
+                    key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
+                    probe_keys.data() + begin, n, tables.max_bucket_bits <= 31, out_rows, out_refs);
+                for (size_t m = 0; m < out_rows.size(); ++m)
+                    per_thread[t].emplace_back(begin + out_rows[m], out_refs[m].blockNo(), out_refs[m].rowNo());
+            }
+        });
+    for (auto & thread : threads)
+        thread.join();
+
+    /// Exactly-once: one build per touched non-empty group; the probe covers every build key, so that
+    /// is ALL non-empty groups. Rowless groups are READY at prepare and never counted, even when a
+    /// missing probe key routes to them.
+    EXPECT_EQ(builds_performed.load(), non_empty_groups);
+
+    /// Every non-empty group ended READY with published cells; rowless groups stayed empty.
+    size_t built_groups = 0;
+    for (const LeafHT & group : tables.grouped.groups)
+        built_groups += !group.empty();
+    EXPECT_EQ(built_groups, non_empty_groups);
+
+    /// Each built group's fused-record blocks were released back to the scatter arena (memory ~flat):
+    /// only rowless leaves (null since the scatter) should remain, i.e. no record block survives.
+    EXPECT_EQ(leaves.arena.blockCount(), 0u);
+
+    /// The concurrent lazy-probe result equals the eager reference.
+    std::vector<Match> merged;
+    for (const auto & part : per_thread)
+        merged.insert(merged.end(), part.begin(), part.end());
+    std::sort(merged.begin(), merged.end());
+    std::sort(reference.begin(), reference.end());
+    EXPECT_EQ(merged, reference);
 }
 
 /// Exercise fused-record scatter + leaf build + probe for every supported key width, on both the DIRECT

@@ -9,6 +9,7 @@
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <thread>
 #include <type_traits>
 
 namespace DB
@@ -526,48 +527,43 @@ void collectMatchesPipelinedDispatch(
 #undef RHJ_PIPE_DISPATCH
 }
 
-void fillGroupLeaves(
-    size_t gpos,
-    size_t group_size,
-    const LeafArrays & leaf_arrays,
-    size_t key_width,
-    size_t stride,
-    const std::vector<UInt8> & group_bucket_bits,
-    const std::vector<size_t> & leaf_stride,
-    const std::vector<char *> & group_base,
-    LeafTables & out,
-    const ParallelFor & parallel_for)
+/// Fill (or refill, on an overflow rebuild) every leaf of one group into `block`: memset the leaf
+/// range, then the AMAC insert of the leaf's scattered rows. Parallel over the group's leaves via
+/// `parallel_for` (whose dense worker id keys `tables.build_arenas`). Returns whether ANY leaf
+/// overflowed its sizing (only possible under distinct-estimate sizing; row-count sizing cannot).
+bool fillGroupLeaves(LeafTables & tables, const LeafArrays & leaf_arrays, size_t gpos, char * block, const ParallelFor & parallel_for)
 {
-    const UInt64 nb = UInt64{1} << group_bucket_bits[gpos];
+    const size_t stride = leafCellBytes(tables.key_width);
+    const UInt64 nb = UInt64{1} << tables.group_bucket_bits[gpos];
     const size_t leaf_bytes = static_cast<size_t>(nb) * stride;
-    parallel_for(group_size, [&](size_t local, size_t worker)
+    const size_t leaf_stride = tables.group_leaf_stride[gpos];
+    std::atomic<bool> any_overflow{false};
+    parallel_for(tables.group_size, [&](size_t local, size_t worker)
     {
-        char * cells = group_base[gpos] + local * leaf_stride[gpos];
+        char * cells = block + local * leaf_stride;
         std::memset(cells, 0, leaf_bytes);
-        const size_t leaf = gpos * group_size + local;
+        const size_t leaf = gpos * tables.group_size + local;
         const UInt64 rows = leaf_arrays.leaf_rows[leaf];
         if (rows == 0)
             return;
-        chassert(worker < out.build_arenas.size());
+        chassert(worker < tables.build_arenas.size());
         const bool overflowed = fillLeafDispatch(
-            key_width, cells, nb, leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
-        chassert(!overflowed);
+            tables.key_width, cells, nb, leaf_arrays, leaf, *tables.build_arenas[worker], tables.any_duplicates);
+        if (overflowed)
+            any_overflow.store(true, std::memory_order_relaxed);
     });
+    return any_overflow.load(std::memory_order_relaxed);
 }
 
 }
 
-LeafTables buildLeafTables(
-    const LeafArrays & leaf_arrays,
-    UInt64 num_rows,
-    size_t key_width,
-    size_t num_workers,
-    const ParallelFor & parallel_for)
+LeafTables prepareLeafTables(const LeafArrays & leaf_arrays, UInt64 num_rows, size_t key_width, size_t num_workers)
 {
     LeafTables out;
     out.num_rows = num_rows;
+    out.key_width = key_width;
     const size_t num_leaves = leaf_arrays.num_leaves;
-    const UInt32 total_bits = num_leaves <= 1 ? 0u : static_cast<UInt32>(std::countr_zero(num_leaves));
+    out.total_bits = num_leaves <= 1 ? 0u : static_cast<UInt32>(std::countr_zero(num_leaves));
 
     /// One arena per build worker for the RowRefList Batch nodes. Each worker only ever allocates from
     /// its own arena (single-writer, no locking); the arenas live in `out` so the nodes outlive the
@@ -578,21 +574,25 @@ LeafTables buildLeafTables(
 
     const size_t stride = leafCellBytes(key_width);
 
-    const UInt32 group_bits = std::min<UInt32>(total_bits, MAX_GROUP_BITS);
+    const UInt32 group_bits = std::min<UInt32>(out.total_bits, MAX_GROUP_BITS);
     const size_t num_groups = size_t{1} << group_bits;
-    const size_t group_size = size_t{1} << (total_bits - group_bits);
+    out.group_size = size_t{1} << (out.total_bits - group_bits);
 
-    std::vector<UInt8> group_bucket_bits(num_groups, 0);
-    std::vector<size_t> leaf_stride(num_groups, 0);
-    std::vector<char *> group_base(num_groups, nullptr);
+    out.group_bucket_bits.assign(num_groups, 0);
+    out.group_leaf_stride.assign(num_groups, 0);
 
-    /// Per-group sizing: snap to the LARGEST member so every leaf in the group fits.
+    /// Per-group sizing: snap to the LARGEST member so every leaf in the group fits. `max_bucket_bits`
+    /// is bounded by the ROW-COUNT sizing (== the overflow-rebuild sizing), so it is a prepare-time
+    /// constant no later rebuild can exceed — the probe's bucket-index-width choice never has to chase
+    /// concurrent lazy builds.
+    UInt8 max_bits = 0;
     for (size_t gpos = 0; gpos < num_groups; ++gpos)
     {
         UInt64 max_sizing = 0;
-        for (size_t l = 0; l < group_size; ++l)
+        UInt64 max_rows = 0;
+        for (size_t l = 0; l < out.group_size; ++l)
         {
-            const size_t leaf = gpos * group_size + l;
+            const size_t leaf = gpos * out.group_size + l;
             const UInt64 rows = leaf_arrays.leaf_rows[leaf];
             if (rows == 0)
                 continue;
@@ -600,93 +600,146 @@ LeafTables buildLeafTables(
                 ? rows
                 : leaf_arrays.distinct_key_estimates[leaf];
             max_sizing = std::max(max_sizing, sizing);
+            max_rows = std::max(max_rows, rows);
         }
         if (max_sizing == 0)
             continue;
         const UInt64 nb = std::bit_ceil(max_sizing * 2);
-        group_bucket_bits[gpos] = static_cast<UInt8>(std::countr_zero(nb));
-        leaf_stride[gpos] = roundUpToLine(static_cast<size_t>(nb) * stride);
+        out.group_bucket_bits[gpos] = static_cast<UInt8>(std::countr_zero(nb));
+        out.group_leaf_stride[gpos] = roundUpToLine(static_cast<size_t>(nb) * stride);
+        const UInt64 bound_nb = std::bit_ceil(max_rows * 2);
+        max_bits = std::max(max_bits, static_cast<UInt8>(std::countr_zero(bound_nb)));
     }
-
-    std::atomic<UInt64> cell_alloc_count{0};
-
-    /// One allocation per non-empty group (<= 256 mallocs total); parallel over groups.
-    parallel_for(num_groups, [&](size_t gpos, size_t /*worker*/)
-    {
-        if (group_bucket_bits[gpos] == 0)
-            return;
-        const size_t block_bytes = group_size * leaf_stride[gpos];
-        char * block = static_cast<char *>(out.arena.allocate(block_bytes, LINE_BYTES));
-        cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
-        group_base[gpos] = block;
-    });
-
-    std::vector<UInt8> leaf_overflowed(num_leaves, 0);
-
-    /// Fill: parallel over leaves (dynamic, handles row skew; keeps build_arenas[worker]).
-    parallel_for(num_leaves, [&](size_t leaf, size_t worker)
-    {
-        const size_t gpos = leaf >> (total_bits - group_bits);
-        if (group_bucket_bits[gpos] == 0)
-            return;
-        const size_t local = leaf & (group_size - 1);
-        const UInt64 nb = UInt64{1} << group_bucket_bits[gpos];
-        char * cells = group_base[gpos] + local * leaf_stride[gpos];
-        std::memset(cells, 0, static_cast<size_t>(nb) * stride);
-        const UInt64 rows = leaf_arrays.leaf_rows[leaf];
-        if (rows == 0)
-            return;
-        chassert(worker < out.build_arenas.size());
-        const bool overflowed = fillLeafDispatch(
-            key_width, cells, nb, leaf_arrays, leaf, *out.build_arenas[worker], out.any_duplicates);
-        if (overflowed)
-            leaf_overflowed[leaf] = 1;
-    });
-
-    /// Group-level rebuild for any group where a leaf overflowed its distinct-estimate sizing.
-    for (size_t gpos = 0; gpos < num_groups; ++gpos)
-    {
-        if (group_bucket_bits[gpos] == 0)
-            continue;
-
-        bool needs_rebuild = false;
-        UInt64 max_rows = 0;
-        for (size_t l = 0; l < group_size; ++l)
-        {
-            const size_t leaf = gpos * group_size + l;
-            if (leaf_overflowed[leaf])
-                needs_rebuild = true;
-            max_rows = std::max(max_rows, leaf_arrays.leaf_rows[leaf]);
-        }
-        if (!needs_rebuild)
-            continue;
-
-        const UInt64 safe_nb = std::bit_ceil(max_rows * 2);
-        group_bucket_bits[gpos] = static_cast<UInt8>(std::countr_zero(safe_nb));
-        leaf_stride[gpos] = roundUpToLine(static_cast<size_t>(safe_nb) * stride);
-
-        const size_t block_bytes = group_size * leaf_stride[gpos];
-        char * block = static_cast<char *>(out.arena.allocate(block_bytes, LINE_BYTES));
-        cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
-        group_base[gpos] = block;
-
-        fillGroupLeaves(gpos, group_size, leaf_arrays, key_width, stride, group_bucket_bits, leaf_stride, group_base, out, parallel_for);
-    }
+    out.max_bucket_bits = max_bits;
 
     out.grouped.group_bits = group_bits;
-    out.grouped.local_shift = total_bits - group_bits;
+    out.grouped.local_shift = out.total_bits - group_bits;
     out.grouped.groups.assign(num_groups, LeafHT{});
+
+    /// Rowless groups have nothing to build: they start READY (their `LeafHT` stays empty, which the
+    /// probe skips), so a lazy first touch neither CASes nor counts a build for them.
+    out.group_state = std::make_unique<std::atomic<GroupBuildState>[]>(num_groups);
     for (size_t gpos = 0; gpos < num_groups; ++gpos)
-        if (group_bucket_bits[gpos] != 0)
-            out.grouped.groups[gpos] = LeafHT(group_base[gpos], UInt64{1} << group_bucket_bits[gpos]);
+        out.group_state[gpos].store(
+            out.group_bucket_bits[gpos] == 0 ? GroupBuildState::READY : GroupBuildState::EMPTY, std::memory_order_relaxed);
 
-    out.cell_alloc_count = cell_alloc_count.load(std::memory_order_relaxed);
+    out.lazy_build_mutex = std::make_unique<std::mutex>();
 
-    /// Probe slot's `pos`/`mask` are UInt32 (a 16-byte slot) iff every group's bucket count fits in 32 bits.
-    UInt8 max_bits = 0;
-    for (UInt8 bits : group_bucket_bits)
-        max_bits = std::max(max_bits, bits);
-    out.max_bucket_bits = max_bits;
+    return out;
+}
+
+void buildLeafGroup(LeafTables & tables, LeafArrays & leaf_arrays, size_t gpos, const ParallelFor & parallel_for)
+{
+    if (tables.group_bucket_bits[gpos] == 0)
+        return; /// rowless group: READY since prepare, nothing to build
+
+    const size_t stride = leafCellBytes(tables.key_width);
+
+    /// One allocation for the whole group (the no-churn property), then fill its leaves.
+    char * block = static_cast<char *>(tables.arena.allocate(tables.group_size * tables.group_leaf_stride[gpos], LINE_BYTES));
+    tables.cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+    const bool overflowed = fillGroupLeaves(tables, leaf_arrays, gpos, block, parallel_for);
+
+    /// A leaf overflowed its distinct-estimate sizing (the estimate can under-count): rebuild the whole
+    /// group with safe row-count sizing, which guarantees an empty cell per leaf (load <= 0.5) so every
+    /// linear-probe walk terminates. The undersized block is released right away (memory stays flat).
+    if (overflowed)
+    {
+        UInt64 max_rows = 0;
+        for (size_t l = 0; l < tables.group_size; ++l)
+            max_rows = std::max(max_rows, leaf_arrays.leaf_rows[gpos * tables.group_size + l]);
+
+        const UInt64 safe_nb = std::bit_ceil(max_rows * 2);
+        tables.group_bucket_bits[gpos] = static_cast<UInt8>(std::countr_zero(safe_nb));
+        tables.group_leaf_stride[gpos] = roundUpToLine(static_cast<size_t>(safe_nb) * stride);
+
+        tables.arena.release(block);
+        block = static_cast<char *>(tables.arena.allocate(tables.group_size * tables.group_leaf_stride[gpos], LINE_BYTES));
+        tables.cell_alloc_count.fetch_add(1, std::memory_order_relaxed);
+
+        const bool overflowed_again = fillGroupLeaves(tables, leaf_arrays, gpos, block, parallel_for);
+        chassert(!overflowed_again); /// row-count sizing cannot overflow
+    }
+
+    tables.grouped.groups[gpos] = LeafHT(block, UInt64{1} << tables.group_bucket_bits[gpos]);
+
+    /// The group's fused-record arrays are fully consumed: release them back to the scatter arena so
+    /// build memory stays ~flat as groups are built (the `LeafArrays` itself stays alive for the
+    /// remaining groups' lazy builds). Batched: per-block `release` re-scans the block list every call.
+    std::vector<void *> consumed_records;
+    consumed_records.reserve(tables.group_size);
+    for (size_t l = 0; l < tables.group_size; ++l)
+    {
+        const size_t leaf = gpos * tables.group_size + l;
+        if (leaf_arrays.record_base[leaf] != nullptr)
+        {
+            consumed_records.push_back(leaf_arrays.record_base[leaf]);
+            leaf_arrays.record_base[leaf] = nullptr;
+        }
+    }
+    leaf_arrays.arena.releaseMany(consumed_records);
+
+    /// Publish: the release store pairs with the probe path's acquire load of the group state, making
+    /// the cells and the `LeafHT` visible to every prober that observes READY.
+    tables.group_state[gpos].store(GroupBuildState::READY, std::memory_order_release);
+}
+
+bool ensureLeafGroupBuilt(LeafTables & tables, LeafArrays & leaf_arrays, size_t gpos, const ParallelFor & parallel_for)
+{
+    std::atomic<GroupBuildState> & state = tables.group_state[gpos];
+    while (true)
+    {
+        GroupBuildState s = state.load(std::memory_order_acquire);
+        if (s == GroupBuildState::READY)
+            return false;
+        if (s == GroupBuildState::EMPTY)
+        {
+            GroupBuildState expected = GroupBuildState::EMPTY;
+            if (state.compare_exchange_strong(expected, GroupBuildState::BUILDING, std::memory_order_acq_rel))
+            {
+                /// This toucher owns the build. One lazy build at a time (see `lazy_build_mutex`).
+                std::lock_guard lock(*tables.lazy_build_mutex);
+                try
+                {
+                    buildLeafGroup(tables, leaf_arrays, gpos, parallel_for);
+                }
+                catch (...)
+                {
+                    /// Fail open for a retry, not silent: a later toucher re-attempts the build while
+                    /// this exception propagates and (normally) kills the query.
+                    state.store(GroupBuildState::EMPTY, std::memory_order_release);
+                    throw;
+                }
+                return true;
+            }
+            continue; /// lost the CAS: re-read the state
+        }
+        std::this_thread::yield(); /// BUILDING: another prober is building this group
+    }
+}
+
+LeafTables buildLeafTables(
+    LeafArrays & leaf_arrays,
+    UInt64 num_rows,
+    size_t key_width,
+    size_t num_workers,
+    const ParallelFor & parallel_for)
+{
+    LeafTables out = prepareLeafTables(leaf_arrays, num_rows, key_width, num_workers);
+
+    /// Build all groups: parallel over groups, each group filled serially by its unit's worker. The
+    /// unit's dense worker id keys `build_arenas[worker]` inside the serial inner loop, so the
+    /// single-writer arena invariant carries over from the leaf-granular fill this replaces.
+    const size_t num_groups = out.grouped.groups.size();
+    parallel_for(num_groups, [&](size_t gpos, size_t worker)
+    {
+        const ParallelFor serial_for = [worker](size_t total, const UnitFn & fn)
+        {
+            for (size_t unit = 0; unit < total; ++unit)
+                fn(unit, worker);
+        };
+        buildLeafGroup(out, leaf_arrays, gpos, serial_for); /// publishes the group READY itself
+    });
 
     return out;
 }

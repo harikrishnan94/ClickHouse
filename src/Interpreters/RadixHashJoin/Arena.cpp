@@ -3,6 +3,7 @@
 #include <base/defines.h>
 
 #include <numeric>
+#include <unordered_set>
 
 namespace DB::RadixJoin
 {
@@ -84,6 +85,39 @@ void Arena::release(void * base) noexcept
     }
     if (size != 0)
         allocator.free(base, size);
+}
+
+void Arena::releaseMany(const std::vector<void *> & bases) noexcept
+{
+    if (bases.empty())
+        return;
+
+    /// The lookup set makes the whole batch one O(blocks + bases) pass instead of bases.size() scans.
+    std::unordered_set<const void *> to_release;
+    to_release.reserve(bases.size());
+    for (const void * base : bases)
+        if (base != nullptr)
+            to_release.insert(base);
+    if (to_release.empty())
+        return;
+
+    std::vector<Block> released;
+    released.reserve(to_release.size());
+    {
+        std::lock_guard lock(*mutex);
+        size_t kept = 0;
+        for (size_t i = 0; i < blocks.size(); ++i)
+        {
+            if (to_release.contains(blocks[i].base))
+                released.push_back(blocks[i]);
+            else
+                blocks[kept++] = blocks[i];
+        }
+        blocks.resize(kept);
+    }
+    /// Free outside the lock (jemalloc is thread-safe); only the bookkeeping is serialized.
+    for (const Block & block : released)
+        allocator.free(block.base, block.size);
 }
 
 size_t Arena::blockCount() const
