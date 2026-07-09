@@ -7,9 +7,13 @@
   *   - memcpy bandwidth  B_cpy       : baseline sequential copy (block squashing via
   *                                     `insertRangeFrom`); reported for reference.
   *   - scatter bandwidth B_scatter(P): one single-pass call of the radix join's own partitioning
-  *                                     code (scatterSide: hash -> `IColumn::Selector` ->
-  *                                     `IColumn::scatter` -> coalesce into block-sized chunks),
-  *                                     swept over the fanout P to expose the fanout cliff.
+  *                                     code (scatterSide: per-worker histograms -> a fused
+  *                                     parallel prefix sum + one exact allocation per partition
+  *                                     -> column-major direct placement, with software
+  *                                     write-combining and non-temporal stores at fanout >= 256),
+  *                                     swept over the fanout P to expose the fanout cliff; a
+  *                                     single pass covers any partition count up to F_max,
+  *                                     refine (multi-pass) passes handle the rest.
   *   - t_build_np(S)  : ns/row of the real `ConcurrentHashJoin` build phase (concurrent
   *                      `addBlockToJoin` with its internal hash/selector dispatch into per-slot
   *                      two-level maps, plus the `onBuildPhaseFinish` bucket merge), as a
@@ -21,10 +25,10 @@
   *                      materialization fused, exactly as production runs them.
   *   - t_pg_rp(S)     : ns/row of per-thread private `HashJoin::joinBlock` — the radix join's
   *                      per-partition probe+gather.
-  *   - gather         : standalone gather term (output Block built via `IColumn::insertFrom` by
-  *                      RowRef + `IColumn::replicate`, dropped in the timed region), swept over
-  *                      the stored-build-side working set; reported for reference, not used by
-  *                      the crossover model (production fuses gather into joinBlock).
+  *   - gather         : standalone gather term (output Block built via a devirtualized per-row
+  *                      copy by RowRef + `IColumn::replicate`, dropped in the timed region),
+  *                      swept over the stored-build-side working set; reported for reference,
+  *                      not used by the crossover model (production fuses gather into joinBlock).
   *
   * All kernels run multi-threaded on T threads, include memory allocation cost, and reuse no
   * memory across timed iterations except the immutable input blocks. Per-row times are wall
@@ -37,14 +41,25 @@
   *
   *   T_NP = N_b * t_build_np(S) + N_p * t_pg_np(S)
   *
-  * RPHJ partitions BOTH sides by key hash into P* partitions such that a per-partition table fits
-  * the private-cache budget C = L2/2 and there is enough parallelism:
-  * P* = max(pow2(S/C), pow2(T)), capped by --max-partitions, executed in n_pass scatter passes
-  * where each pass has fanout at most F_max (the largest measured fanout still sustaining >= 80%
-  * of peak scatter bandwidth), n_pass = ceil(log2(P*) / log2(F_max)):
+  * RPHJ partitions BOTH sides by key hash into P* partitions. Each partition's `HashJoin` is
+  * `reserve()`'d from the scatter histogram's exact per-partition row count (no rehash growth;
+  * see `RadixHashJoinBench::build`), so P* is the smallest power of two such that the *reserved*
+  * per-partition table plus that partition's share of build rows fits the private-cache budget
+  * C = L2, bumped up to at least pow2(T) for parallelism and capped by --max-partitions:
+  *
+  *   P* = smallest power of two with htBytesReserved(D/P*) + (N_b/P*)*w_b <= C = L2
+  *
+  * partitioning runs in n_pass scatter passes, each with fanout at most F_max - the largest
+  * fanout still sustaining >= 80% of peak scatter bandwidth in a contiguous prefix of the sweep,
+  * clamped by the SWWC implementation's compile-time memory-correctness ceiling
+  * (`MAX_FANOUT_PER_PASS`) and an L2-derived cap - n_pass = ceil(log2(P*) / log2(F_max)):
   *
   *   T_RP = n_pass * (N_b*w_b + N_p*w_p) / B_scatter(per-pass fanout)
   *        + N_b * t_build_rp(S/P*) + N_p * t_pg_rp(S/P*)
+  *
+  * For n_pass == 2, the scatter term instead uses a directly measured 2-pass bandwidth when
+  * available, since it already captures the refine path's single-threaded-per-group behavior
+  * and the frees between passes instead of extrapolating from a single-pass number.
   *
   * Crossover condition (RPHJ wins iff):
   *
@@ -59,6 +74,18 @@
   *     multiplying the partitioning cost and pushing the crossover out;
   *   - payload width: larger w inflates the scatter cost linearly but also the probe+gather delta.
   *
+  * With duplicate-free build sides (as the unique-keys regime and the RP/NP sweeps use),
+  * `onBuildPhaseFinish` promotes join strictness `All` to `RightAny`, so every timed probe in
+  * this program runs the promoted point-lookup path and emits exactly one row per matching probe
+  * row; the dup-key grid regimes reuse those same curves and are therefore labeled as optimistic
+  * lower bounds, not predictions of a real INNER ALL join walking `RowRefList` chains over
+  * duplicate keys. Join teardown (hash table and stored-block destruction) is timed as a
+  * separate phase for both competitors, mirroring pipeline destruction after the last output
+  * block in a real query, and is reported but not added to either competitor's total. The RPHJ
+  * build side is a materialized copy of the scattered input, while `ConcurrentHashJoin` stores
+  * zero-copy block references plus per-block selectors - an inherent memory-shape asymmetry
+  * between the two designs that this model does not otherwise account for.
+  *
   * The program measures the terms, prints the model constants, evaluates the model over a grid
   * of (N_b, N_p/N_b, key-space regime), prints the crossover summary, and finally (unless --quick)
   * validates the model by running real multi-threaded INNER joins at points near the predicted
@@ -66,9 +93,9 @@
   *   - NPHJ is the real ClickHouse `ConcurrentHashJoin` (`parallel_hash`), used as-is through the
   *     `IJoin` interface (concurrent `addBlockToJoin`, `onBuildPhaseFinish` bucket merge,
   *     unpartitioned shared-map probe via `joinBlock`);
-  *   - RPHJ is multi-pass `IColumn::scatter` radix partitioning (the same scatterSide code the
-  *     scatter kernel measures) plus one real ClickHouse `HashJoin` per partition, built and
-  *     probed single-threaded per partition through the same `IJoin` interface.
+  *   - RPHJ is multi-pass radix partitioning (the same scatterSide code the scatter kernel
+  *     measures) plus one real ClickHouse `HashJoin` per partition, built and probed
+  *     single-threaded per partition through the same `IJoin` interface.
   * All phases run on the ClickHouse thread pool (`ThreadPoolImpl`, threads carry `ThreadStatus`
   * for efficient memory tracking); the binary uses jemalloc via `clickhouse_new_delete`.
   */
@@ -86,6 +113,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -506,35 +534,81 @@ struct ScatterPoint
     double bytes_per_sec;
 };
 
-std::vector<ScatterPoint> runScatterKernel(const Config & cfg, WorkerPool & pool, const std::vector<Block> & blocks)
+/// Result of the scatter sweep: per-fanout single-pass bandwidth points, plus (when measured) the
+/// effective useful-bytes/s of one true 2-pass scatter, used directly by predict() instead of
+/// extrapolating a 2-pass cost from single-pass numbers.
+struct ScatterMeasurement
+{
+    std::vector<ScatterPoint> points;
+    double two_pass_eff_bytes_per_sec = 0; /// effective useful-bytes/s of a full 2-pass scatter (0 = not measured)
+};
+
+ScatterMeasurement runScatterKernel(const Config & cfg, WorkerPool & pool, const std::vector<Block> & blocks)
 {
     const size_t rows = totalRows(blocks);
     const size_t row_width = 8 * blocks.front().columns();
 
-    std::vector<ScatterPoint> result;
+    ScatterMeasurement result;
 
     fmt::print("\n=== scatter bandwidth (fanout sweep, {} input, radix join's scatterSide) ===\n",
         formatBytes(static_cast<double>(rows) * static_cast<double>(row_width)));
     fmt::print("{:>10}{:>14}\n", "fanout", "GB/s");
 
+    /// Explicit fanout list rather than a pure geometric *4 step: 256 (SWWC_MIN_FANOUT, where
+    /// the scatter switches from the direct to the SWWC implementation) is inserted as a
+    /// measured point so predict()/scatterBytesPerSec never interpolates log-linearly across
+    /// that implementation discontinuity.
+    std::vector<size_t> fanouts;
     for (size_t fanout = 2; fanout <= cfg.max_partitions; fanout *= 4)
-    {
-        const size_t bits = static_cast<size_t>(std::countr_zero(fanout));
+        fanouts.push_back(fanout);
+    if (cfg.max_partitions >= 256)
+        fanouts.push_back(256);
+    std::sort(fanouts.begin(), fanouts.end());
+    fanouts.erase(std::unique(fanouts.begin(), fanouts.end()), fanouts.end());
 
-        double seconds = medianTime(cfg.runs, [&]
+    /// Measures scatterSide once, including a parallel free of the resulting partitions inside
+    /// the timed region (mirroring a real radix join, which frees partitions from the same
+    /// worker pool that produced them) instead of relying on the implicit single-threaded
+    /// destruction that would otherwise run when `partitions` goes out of scope.
+    auto measure_once = [&](const std::vector<size_t> & pass_bits)
+    {
+        return medianTime(cfg.runs, [&]
         {
             Stopwatch watch;
             {
-                auto partitions = scatterSide(pool, blocks, {bits});
+                auto partitions = scatterSide(pool, blocks, pass_bits);
                 g_sink += partitions.size();
-                /// partitions deallocated here, inside the timed region.
+                pool.run([&](size_t tid)
+                {
+                    for (size_t p = tid; p < partitions.size(); p += cfg.threads)
+                        partitions[p].clear();
+                });
+                /// The vector shell itself is destroyed here - trivial after the parallel clear.
             }
             return watch.elapsedSeconds();
         });
+    };
 
+    for (size_t fanout : fanouts)
+    {
+        const size_t bits = static_cast<size_t>(std::countr_zero(fanout));
+        double seconds = measure_once({bits});
         double bw = static_cast<double>(rows) * static_cast<double>(row_width) / seconds;
-        result.push_back({fanout, bw});
+        result.points.push_back({fanout, bw});
         fmt::print("{:>10}{:>14.2f}\n", fanout, bw / 1e9);
+    }
+
+    /// One true 2-pass point: 16384 partitions via the same 7+7 bit split
+    /// computePassBits(16384, 8192) produces. Used directly by predict() for n_pass == 2
+    /// predictions instead of extrapolating from single-pass numbers, since it already
+    /// contains the refine path's single-threaded-per-group behavior and the frees between
+    /// passes.
+    if (cfg.max_partitions > MAX_FANOUT_PER_PASS)
+    {
+        double seconds = measure_once({7, 7});
+        double bw = static_cast<double>(rows) * static_cast<double>(row_width) / seconds;
+        result.two_pass_eff_bytes_per_sec = bw;
+        fmt::print("{:>10}{:>14.2f}\n", "16384 (2-pass)", bw / 1e9);
     }
 
     return result;
@@ -554,10 +628,31 @@ size_t htBytesForDistinct(size_t distinct)
     return (1ULL << degree) * 16;
 }
 
-std::vector<size_t> tableSweepDistincts(const Config & cfg)
+/// Exact size of a HashMap constructed with a size hint of `n` (the reserve path the radix
+/// benches now use): grower.set gives degree = max(8, floor(log2(n - 1)) + 2), i.e. 2n..4n
+/// cells - tighter than the 2n..8n of the insertion-growth ladder above.
+size_t htBytesForDistinctReserved(size_t n)
 {
+    size_t degree = 8;
+    if (n > 1)
+        degree = std::max<size_t>(8, static_cast<size_t>(std::log2(static_cast<double>(n - 1))) + 2);
+    return (1ULL << degree) * 16;
+}
+
+std::vector<size_t> tableSweepDistincts(const Config & cfg, size_t l2)
+{
+    /// predict() consults the RP curves only at htBytesForDistinct(D / P*):
+    ///   - uncapped, the P* loop guarantees reserved per-partition bytes <= L2, so the
+    ///     consulted (growth-ladder) label is < 4 * L2;
+    ///   - capped at max_partitions, the largest grid point D = 2^30 gives
+    ///     htBytesForDistinct(2^30) / bit_ceil(max_partitions).
+    /// x2 for one interpolation bracket past the largest consulted point. Larger per-thread
+    /// tables would only feed the informational "spilling" printout at ~T x 256 MiB of RSS.
+    const size_t cap = std::min(cfg.max_table_bytes,
+        2 * std::max(4 * l2, htBytesForDistinct(1ULL << 30) / std::bit_ceil(cfg.max_partitions)));
+
     std::vector<size_t> result;
-    for (size_t d = 256; htBytesForDistinct(d) <= cfg.max_table_bytes; d *= 4)
+    for (size_t d = 256; htBytesForDistinct(d) <= cap; d *= 4)
         result.push_back(d);
     return result;
 }
@@ -621,7 +716,7 @@ std::vector<std::vector<Block>> generatePerThreadBuildBlocks(WorkerPool & pool, 
 /// join construction, map growth and stored-block saving are inside the timed region.
 /// Sweep the number of distinct keys (i.e. table size).
 /// ---------------------------------------------------------------------------------------------
-Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool)
+Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool, size_t l2)
 {
     const size_t threads = cfg.threads;
     Curve curve;
@@ -634,7 +729,7 @@ Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool)
     auto table_join = makeTableJoin(left_header, right_header);
     auto shared_right_header = std::make_shared<const Block>(right_header);
 
-    for (size_t distinct : tableSweepDistincts(cfg))
+    for (size_t distinct : tableSweepDistincts(cfg, l2))
     {
         auto per_thread_blocks = generatePerThreadBuildBlocks(pool, distinct, cfg.build_payload_columns);
 
@@ -652,8 +747,11 @@ Curve runBuildKernelRP(const Config & cfg, WorkerPool & pool)
                 my_joins.resize(reps);
                 for (size_t r = 0; r < reps; ++r)
                 {
+                    /// Mirrors the radix join reserving each partition table from its scatter
+                    /// histogram (see RadixHashJoinBench::build): each table inserts exactly
+                    /// `distinct` rows, so reserving eliminates all rehash growth.
                     my_joins[r] = std::make_shared<HashJoin>(
-                        table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ 0,
+                        table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ distinct,
                         fmt::format("bench{}_{}", tid, r), /*use_two_level_maps*/ false);
                     for (const auto & block : per_thread_blocks[tid])
                         my_joins[r]->addBlockToJoin(block, /*check_limits*/ false);
@@ -724,7 +822,7 @@ Curve runBuildKernelNP(const Config & cfg, WorkerPool & pool)
 /// the result into real output Blocks (probe, gather and output materialization fused, with
 /// production prefetching), exactly what the radix join runs per partition.
 /// ---------------------------------------------------------------------------------------------
-Curve runProbeKernelRP(const Config & cfg, WorkerPool & pool)
+Curve runProbeKernelRP(const Config & cfg, WorkerPool & pool, size_t l2)
 {
     const size_t threads = cfg.threads;
     Curve curve;
@@ -737,7 +835,7 @@ Curve runProbeKernelRP(const Config & cfg, WorkerPool & pool)
     auto table_join = makeTableJoin(left_header, right_header);
     auto shared_right_header = std::make_shared<const Block>(right_header);
 
-    for (size_t distinct : tableSweepDistincts(cfg))
+    for (size_t distinct : tableSweepDistincts(cfg, l2))
     {
         /// Each thread gets its own duplicate-free build side covering its disjoint key domain
         /// exactly once, so every thread has a fully populated private table and the INNER ALL
@@ -754,8 +852,11 @@ Curve runProbeKernelRP(const Config & cfg, WorkerPool & pool)
         {
             pool.run([&](size_t tid)
             {
+                /// Mirrors the radix join reserving each partition table from its scatter
+                /// histogram (see RadixHashJoinBench::build): each table inserts exactly
+                /// `distinct` rows, so reserving eliminates all rehash growth.
                 joins[tid] = std::make_shared<HashJoin>(
-                    table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ 0,
+                    table_join, shared_right_header, /*any_take_last_row*/ false, /*reserve_num*/ distinct,
                     fmt::format("bench{}", tid), /*use_two_level_maps*/ false);
                 for (const auto & block : build_blocks[tid])
                     joins[tid]->addBlockToJoin(block, /*check_limits*/ false);
@@ -838,11 +939,15 @@ Curve runProbeKernelNP(const Config & cfg, WorkerPool & pool)
 
 
 /// ---------------------------------------------------------------------------------------------
-/// Kernel 5: gather. From per-block match lists, materialize an output Block exactly like
-/// production HashJoin does (LazyOutput::buildOutputFromBlocks): build-side columns appended
-/// per matched RowRef via IColumn::insertFrom, probe-side columns expanded via
-/// IColumn::replicate. The Block is created, filled and dropped inside the timed region.
-/// Sweep the stored-build-side working set.
+/// Kernel 5: gather. From per-block match lists, materialize an output Block: build-side
+/// columns filled per matched RowRef via a devirtualized per-row copy, mirroring production's
+/// devirtualized route (`IColumn::fillFromBlocksAndRowNumbers` / the internal
+/// `fillColumnFromBlocksAndRowNumbers`, `IColumn.cpp:704-732`); probe-side columns expanded via
+/// `IColumn::replicate`. The Block is created, filled and dropped inside the timed region.
+/// Sweep the stored-build-side working set. Production's other route,
+/// `IColumn::fillFromRowRefs`, coalesces runs of consecutive rows from the same RowRefList and
+/// can beat the devirtualized per-row route for duplicate-heavy keys; this kernel does not
+/// model that, so its printed ns/match is an upper bound (i.e. pessimistic) in that case.
 /// ---------------------------------------------------------------------------------------------
 Curve runGatherKernel(const Config & cfg, WorkerPool & pool, const std::vector<Block> & probe_blocks)
 {
@@ -898,6 +1003,14 @@ Curve runGatherKernel(const Config & cfg, WorkerPool & pool, const std::vector<B
             total_matches += local_matches;
         });
 
+        /// Untimed prep: per-column raw source pointers for the k stored blocks, precomputed so
+        /// the timed region below can copy per row without virtual dispatch (see the kernel's
+        /// header comment).
+        std::vector<std::vector<const UInt64 *>> src(build_columns, std::vector<const UInt64 *>(k));
+        for (size_t j = 0; j < build_columns; ++j)
+            for (size_t b = 0; b < k; ++b)
+                src[j][b] = assert_cast<const ColumnUInt64 &>(*stored_blocks[b].getByPosition(j).column).getData().data();
+
         double seconds = medianTime(cfg.runs, [&]
         {
             return pool.run([&](size_t tid)
@@ -909,17 +1022,18 @@ Curve runGatherKernel(const Config & cfg, WorkerPool & pool, const std::vector<B
                     Block out;
                     for (size_t j = 0; j < build_columns; ++j)
                     {
-                        const auto & sample = stored_blocks.front().getByPosition(j);
-                        auto dst = sample.column->cloneEmpty();
-                        dst->reserve(m.refs.size());
+                        auto dst = ColumnUInt64::create();
+                        auto & data = dst->getData();
+                        data.reserve(m.refs.size());
                         for (UInt64 ref : m.refs)
-                            dst->insertFrom(*stored_blocks[refBlock(ref)].getByPosition(j).column, refRow(ref));
+                            data.push_back(src[j][refBlock(ref)][refRow(ref)]);
+                        const auto & sample = stored_blocks.front().getByPosition(j);
                         out.insert(ColumnWithTypeAndName(std::move(dst), sample.type, sample.name));
                     }
                     for (size_t j = 0; j < probe_blocks[b].columns(); ++j)
                     {
-                        const auto & src = probe_blocks[b].getByPosition(j);
-                        out.insert(ColumnWithTypeAndName(src.column->replicate(m.offsets), src.type, src.name));
+                        const auto & src_col = probe_blocks[b].getByPosition(j);
+                        out.insert(ColumnWithTypeAndName(src_col.column->replicate(m.offsets), src_col.type, src_col.name));
                     }
 
                     g_sink += out.rows();
@@ -947,6 +1061,7 @@ struct ModelInputs
     double memcpy_bytes_per_sec = 0;
     std::vector<ScatterPoint> scatter;
     double scatter_peak = 0;
+    double scatter_two_pass_eff = 0; /// measured effective bytes/s of a full 2-pass scatter (0 = not measured)
     size_t f_max = 2;
     Curve build_np;   /// real ConcurrentHashJoin build phase, ns/row vs table size
     Curve build_rp;   /// real per-thread HashJoin build (per-partition shape), ns/row vs table size
@@ -1001,7 +1116,8 @@ Prediction predict(const ModelInputs & m, double n_b, double n_p, double distinc
 {
     Prediction p;
 
-    const double table_bytes = static_cast<double>(htBytesForDistinct(static_cast<size_t>(distinct)));
+    const size_t d = std::max<size_t>(1, static_cast<size_t>(distinct));
+    const double table_bytes = static_cast<double>(htBytesForDistinct(d));
 
     /// NPHJ: both terms measured with the real ConcurrentHashJoin (build includes its internal
     /// hash/selector dispatch and the bucket merge; probe includes gather and output
@@ -1014,9 +1130,15 @@ Prediction predict(const ModelInputs & m, double n_b, double n_p, double distinc
     /// through RowRefs), so the L2 budget applies to their sum (measured best at 1B rows:
     /// HT + build within L2 beat both coarser and finer partitioning).
     const double budget = static_cast<double>(m.l2);
-    const double partition_working_set = table_bytes + n_b * static_cast<double>(m.w_b);
+    const auto partition_bytes = [&](size_t part)
+    {
+        /// Real per-partition working set: the grower snaps per table, so this is
+        /// htBytes(D/P), NOT htBytes(D)/P - the two differ by up to 2x either way.
+        return static_cast<double>(htBytesForDistinctReserved(std::max<size_t>(1, d / part)))
+            + (n_b / static_cast<double>(part)) * static_cast<double>(m.w_b);
+    };
     size_t p_star = 1;
-    while (partition_working_set / static_cast<double>(p_star) > budget && p_star < m.max_partitions)
+    while (partition_bytes(p_star) > budget && p_star < m.max_partitions)
         p_star *= 2;
     if (p_star > 1)
         p_star = std::min(std::max(p_star, std::bit_ceil(m.threads)), std::bit_ceil(m.max_partitions));
@@ -1031,21 +1153,31 @@ Prediction predict(const ModelInputs & m, double n_b, double n_p, double distinc
     }
 
     /// Pass split mirrors what the radix join actually executes (computePassBits with the
-    /// SWWC scatter's per-pass fanout cap); the scatter cost uses the measured bandwidth at
-    /// the per-pass fanout.
+    /// measured, memory-safety-clamped F_max - see the F_max wiring in main()).
     const size_t total_bits = static_cast<size_t>(std::countr_zero(p_star));
-    const size_t f_bits = static_cast<size_t>(std::countr_zero(MAX_FANOUT_PER_PASS));
+    const size_t f_bits = std::max<size_t>(1, static_cast<size_t>(std::bit_width(std::bit_floor(m.f_max)) - 1));
     p.n_pass = (total_bits + f_bits - 1) / f_bits;
     const size_t per_pass_bits = (total_bits + p.n_pass - 1) / p.n_pass;
     const size_t per_pass_fanout = 1ULL << per_pass_bits;
 
     const double scatter_bytes = n_b * static_cast<double>(m.w_b) + n_p * static_cast<double>(m.w_p);
-    p.rp_scatter_sec = static_cast<double>(p.n_pass) * scatter_bytes / m.scatterBytesPerSec(per_pass_fanout);
+    if (p.n_pass == 2 && m.scatter_two_pass_eff > 0)
+        /// A directly measured 2-pass point already contains both passes, the refine path's
+        /// single-threaded-per-group behavior, and the frees between passes - more accurate
+        /// than n_pass * single-pass bandwidth. No measured point exists beyond n_pass == 2.
+        p.rp_scatter_sec = scatter_bytes / m.scatter_two_pass_eff;
+    else
+        p.rp_scatter_sec = static_cast<double>(p.n_pass) * scatter_bytes / m.scatterBytesPerSec(per_pass_fanout);
 
-    /// Per-partition terms measured with real per-thread HashJoin instances.
-    const double part = static_cast<double>(p_star);
-    p.rp_build_sec = n_b * m.build_rp.at(table_bytes / part) * 1e-9;
-    p.rp_probe_sec = n_p * m.probe_rp.at(table_bytes / part) * 1e-9;
+    /// Per-partition terms measured with real per-thread HashJoin instances. Curve lookups use
+    /// htBytesForDistinct (the same label function the sweeps record points with) applied to
+    /// the per-partition key count; htBytesForDistinctReserved above is used ONLY for the
+    /// physical L2-fit test above - the two must not be unified, since the sweep curves are
+    /// labeled by htBytesForDistinct even though the underlying tables are reserve()'d (see
+    /// the "Do NOT change the curve x-labels" note at the RP kernels' reserve_num fix).
+    const double per_part_label = static_cast<double>(htBytesForDistinct(std::max<size_t>(1, d / p_star)));
+    p.rp_build_sec = n_b * m.build_rp.at(per_part_label) * 1e-9;
+    p.rp_probe_sec = n_p * m.probe_rp.at(per_part_label) * 1e-9;
 
     return p;
 }
@@ -1069,9 +1201,11 @@ std::vector<Regime> gridRegimes()
 void printGridAndCrossover(const ModelInputs & m)
 {
     const std::vector<size_t> ratios = {1, 10};
+    const double np_max_bytes = m.build_np.points.back().first;
+    bool any_flat_extrapolated = false;
 
     fmt::print("\n=== model grid: predicted NPHJ vs RPHJ ===\n");
-    fmt::print("{:>22}{:>9}{:>8}{:>12}{:>8}{:>7}{:>12}{:>12}{:>10}{:>10}\n",
+    fmt::print("{:>22}{:>9}{:>8}{:>12}{:>8}{:>7}{:>13}{:>12}{:>10}{:>10}\n",
         "regime", "N_p/N_b", "N_b", "HT size", "P*", "passes", "T_NP ms", "T_RP ms", "winner", "speedup");
 
     for (const auto & regime : gridRegimes())
@@ -1085,51 +1219,72 @@ void printGridAndCrossover(const ModelInputs & m)
                 const size_t distinct = regime.distinct_of_nb(n_b);
                 auto p = predict(m, static_cast<double>(n_b), static_cast<double>(n_p), static_cast<double>(distinct));
 
+                /// Flag grid points whose HT size sweep label lies beyond the NP curves'
+                /// measured maximum: predict() then flat-extrapolates T_NP from the last
+                /// measured point instead of interpolating, which is a lower bound.
+                const bool flat = static_cast<double>(htBytesForDistinct(distinct)) > np_max_bytes;
+                any_flat_extrapolated |= flat;
+                const std::string t_np_cell = fmt::format("{:.2f}{}", p.npTotal() * 1e3, flat ? "*" : "");
+
                 const bool radix_wins = p.rpTotal() < p.npTotal();
-                fmt::print("{:>22}{:>9}{:>8}{:>12}{:>8}{:>7}{:>12.2f}{:>12.2f}{:>10}{:>10.2f}\n",
+                fmt::print("{:>22}{:>9}{:>8}{:>12}{:>8}{:>7}{:>13}{:>12.2f}{:>10}{:>10.2f}\n",
                     regime.name, ratio, fmt::format("2^{}", k),
                     formatBytes(static_cast<double>(htBytesForDistinct(distinct))),
-                    p.p_star, p.n_pass, p.npTotal() * 1e3, p.rpTotal() * 1e3,
+                    p.p_star, p.n_pass, t_np_cell, p.rpTotal() * 1e3,
                     radix_wins ? "radix" : "non-part", p.npTotal() / p.rpTotal());
             }
             fmt::print("\n");
         }
     }
 
+    if (any_flat_extrapolated)
+        fmt::print("* NP curves flat-extrapolated beyond the measured sweep maximum ({}); T_NP is a lower bound there.\n",
+            formatBytes(np_max_bytes));
+
+    fmt::print("NOTE: dup x8 and fixed-64K rows are computed from curves measured on duplicate-free builds "
+               "(RightAny-promoted probes, one output row per hit). A real INNER ALL join with duplicate keys "
+               "walks RowRefList chains and amplifies output by the duplication factor - those rows are "
+               "optimistic lower bounds, not INNER ALL predictions.\n");
+
+    const auto regimes = gridRegimes();
+
     fmt::print("=== crossover summary ===\n");
-    for (const auto & regime : gridRegimes())
+    /// The dup regimes' probes are RightAny-promoted point lookups (see the note above), which
+    /// do not model an INNER ALL join walking RowRefList chains over duplicate keys; only the
+    /// unique-keys regime's crossover is a meaningful prediction.
+    for (size_t ratio : ratios)
     {
-        for (size_t ratio : ratios)
+        const auto & regime = regimes[0];
+        std::optional<size_t> crossover;
+        for (size_t k = 14; k <= 30; ++k)
         {
-            std::optional<size_t> crossover;
-            for (size_t k = 14; k <= 30; ++k)
-            {
-                const size_t n_b = 1ULL << k;
-                const size_t distinct = regime.distinct_of_nb(n_b);
-                auto p = predict(m, static_cast<double>(n_b), static_cast<double>(n_b * ratio), static_cast<double>(distinct));
-                if (p.rpTotal() < p.npTotal() * 0.999)
-                {
-                    crossover = n_b;
-                    break;
-                }
-            }
-
-            fmt::print("  regime [{}], N_p/N_b = {}: ", regime.name, ratio);
-            if (!crossover)
-            {
-                fmt::print("radix partitioning never wins for N_b up to 2^30\n");
-                continue;
-            }
-
-            const size_t n_b = *crossover;
+            const size_t n_b = 1ULL << k;
             const size_t distinct = regime.distinct_of_nb(n_b);
-            const size_t table_bytes = htBytesForDistinct(distinct);
             auto p = predict(m, static_cast<double>(n_b), static_cast<double>(n_b * ratio), static_cast<double>(distinct));
-            fmt::print("radix wins from N_b >= {} (D = {}, HT = {} = {:.1f}x LLC, P* = {}, passes = {})\n",
-                n_b, distinct, formatBytes(static_cast<double>(table_bytes)),
-                static_cast<double>(table_bytes) / static_cast<double>(m.llc), p.p_star, p.n_pass);
+            if (p.rpTotal() < p.npTotal() * 0.999)
+            {
+                crossover = n_b;
+                break;
+            }
         }
+
+        fmt::print("  regime [{}], N_p/N_b = {}: ", regime.name, ratio);
+        if (!crossover)
+        {
+            fmt::print("radix partitioning never wins for N_b up to 2^30\n");
+            continue;
+        }
+
+        const size_t n_b = *crossover;
+        const size_t distinct = regime.distinct_of_nb(n_b);
+        const size_t table_bytes = htBytesForDistinct(distinct);
+        auto p = predict(m, static_cast<double>(n_b), static_cast<double>(n_b * ratio), static_cast<double>(distinct));
+        fmt::print("radix wins from N_b >= {} (D = {}, HT = {} = {:.1f}x LLC, P* = {}, passes = {})\n",
+            n_b, distinct, formatBytes(static_cast<double>(table_bytes)),
+            static_cast<double>(table_bytes) / static_cast<double>(m.llc), p.p_star, p.n_pass);
     }
+    for (size_t ri = 1; ri < regimes.size(); ++ri)
+        fmt::print("  regime [{}]: crossover not evaluated (probe/build curves do not model duplicate-key ALL joins)\n", regimes[ri].name);
 }
 
 
@@ -1144,18 +1299,25 @@ void printGridAndCrossover(const ModelInputs & m)
 void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cache, size_t n_b, size_t n_p)
 {
     /// The per-partition L2 budget covers the hash table plus the partition's stored build rows
-    /// (payload gather through RowRefs touches both).
+    /// (payload gather through RowRefs touches both). Same partition_bytes shape as predict();
+    /// this path runs no measurements to reuse a ModelInputs, so it is inlined here.
     const double budget = static_cast<double>(cache.l2);
-    const double table_bytes = static_cast<double>(htBytesForDistinct(n_b));
-    const double partition_working_set = table_bytes + static_cast<double>(n_b * cfg.buildRowWidth());
+    const auto partition_bytes = [&](size_t part)
+    {
+        return static_cast<double>(htBytesForDistinctReserved(std::max<size_t>(1, n_b / part)))
+            + (static_cast<double>(n_b) / static_cast<double>(part)) * static_cast<double>(cfg.buildRowWidth());
+    };
     size_t p_star = 1;
-    while (partition_working_set / static_cast<double>(p_star) > budget && p_star < cfg.max_partitions)
+    while (partition_bytes(p_star) > budget && p_star < cfg.max_partitions)
         p_star *= 2;
     if (p_star > 1)
         p_star = std::min(std::max(p_star, std::bit_ceil(cfg.threads)), std::bit_ceil(cfg.max_partitions));
     p_star = std::max<size_t>(2, p_star);
-    const size_t f_max = MAX_FANOUT_PER_PASS;
+    /// No measured F_max exists on this path (no kernel sweeps have run here); apply the same
+    /// memory-safety clamp predict()/runValidation apply to the measured F_max.
+    const size_t f_max = std::min(MAX_FANOUT_PER_PASS, std::bit_floor(std::max<size_t>(2, cache.l2 / 128)));
 
+    const double table_bytes = static_cast<double>(htBytesForDistinct(n_b));
     fmt::print("\n=== single join: N_b = {}, N_p = {}, unique keys, hit rate {}, HT = {}, build side = {}, P* = {} ===\n",
         n_b, n_p, cfg.hit_rate, formatBytes(table_bytes), formatBytes(static_cast<double>(n_b * cfg.buildRowWidth())), p_star);
 
@@ -1175,23 +1337,44 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
     if (!cfg.run_rphj)
         fmt::print("  (--algo nphj: skipping RPHJ)\n");
 
+    /// Measure each competitor as a self-contained step so the two can be run in either order
+    /// (see the order alternation below).
+    auto measure_np = [&]() -> std::optional<JoinStats>
+    {
+        if (!cfg.run_nphj)
+            return std::nullopt;
+        ConcurrentHashJoinBench bench(pool, left_header, right_header, stats_key);
+        return driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
+    };
+    auto measure_rp = [&](std::string & detail) -> std::optional<JoinStats>
+    {
+        if (!cfg.run_rphj)
+            return std::nullopt;
+        RadixHashJoinBench bench(pool, left_header, right_header, p_star, f_max);
+        auto stats = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
+        detail = bench.phaseBreakdown();
+        return stats;
+    };
+
     for (size_t run = 0; run < cfg.runs; ++run)
     {
+        /// Alternate which competitor measures first: a fixed order lets the second competitor
+        /// reuse the jemalloc extents the first just freed - a systematic page-fault asymmetry.
+        const bool np_first = (run % 2 == 0);
         std::optional<JoinStats> np;
-        if (cfg.run_nphj)
-        {
-            ConcurrentHashJoinBench bench(pool, left_header, right_header, stats_key);
-            np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
-        }
-
         std::optional<JoinStats> rp;
         std::string rp_detail;
-        if (cfg.run_rphj)
+        if (np_first)
         {
-            RadixHashJoinBench bench(pool, left_header, right_header, p_star, f_max);
-            rp = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
-            rp_detail = bench.phaseBreakdown();
+            np = measure_np();
+            rp = measure_rp(rp_detail);
         }
+        else
+        {
+            rp = measure_rp(rp_detail);
+            np = measure_np();
+        }
+        const char * order_tag = np_first ? "NP->RP" : "RP->NP";
 
         std::string result_check;
         if (cfg.verify && np && rp)
@@ -1204,18 +1387,18 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
         const double inv_threads = 1.0 / static_cast<double>(cfg.threads);
 
         if (np)
-            fmt::print("  run {}: NPHJ total {:.2f} ms (build {:.2f} ms, probe+gather {:.2f} ms; "
-                       "match/thr {:.2f} ms, gather/thr {:.2f} ms, dispatch/thr {:.2f} ms); matches {}\n",
-                run, np->total() * 1e3, np->build_sec * 1e3, np->probe_sec * 1e3,
+            fmt::print("  run {}: NPHJ total {:.2f} ms (build {:.2f} ms, probe+gather {:.2f} ms, teardown {:.2f} ms; "
+                       "match/thr {:.2f} ms, gather/thr {:.2f} ms, dispatch/thr {:.2f} ms); matches {}, order {}\n",
+                run, np->total() * 1e3, np->build_sec * 1e3, np->probe_sec * 1e3, np->teardown_sec * 1e3,
                 np->probe_profile.match_sec * 1e3 * inv_threads, np->probe_profile.gather_sec * 1e3 * inv_threads,
-                np->probe_profile.dispatch_sec * 1e3 * inv_threads, np->matches);
+                np->probe_profile.dispatch_sec * 1e3 * inv_threads, np->matches, order_tag);
 
         if (rp)
-            fmt::print("  run {}: RPHJ total {:.2f} ms (build {:.2f} ms, probe {:.2f} ms; {}; "
-                       "match/thr {:.2f} ms, gather/thr {:.2f} ms); matches {}\n",
-                run, rp->total() * 1e3, rp->build_sec * 1e3, rp->probe_sec * 1e3, rp_detail,
+            fmt::print("  run {}: RPHJ total {:.2f} ms (build {:.2f} ms, probe {:.2f} ms, teardown {:.2f} ms; {}; "
+                       "match/thr {:.2f} ms, gather/thr {:.2f} ms); matches {}, order {}\n",
+                run, rp->total() * 1e3, rp->build_sec * 1e3, rp->probe_sec * 1e3, rp->teardown_sec * 1e3, rp_detail,
                 rp->probe_profile.match_sec * 1e3 * inv_threads, rp->probe_profile.gather_sec * 1e3 * inv_threads,
-                rp->matches);
+                rp->matches, order_tag);
 
         if (np && rp)
             fmt::print("  run {}: NPHJ vs RPHJ matches {} vs {}{}{}\n",
@@ -1258,6 +1441,7 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
         fmt::print("{:>12}{:>8}{:>13}{:>13}{:>13}{:>13}{:>12}{:>12}{:>10}\n",
             "N_b", "P*", "NP pred ms", "NP meas ms", "RP pred ms", "RP meas ms", "pred win", "meas win", "matches");
 
+        size_t point_idx = 0;
         for (size_t n_b : points)
         {
             const size_t n_p = n_b * ratio;
@@ -1270,22 +1454,52 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
 
             const Block left_header = probe_blocks.front().cloneEmpty();
             const Block right_header = build_blocks.front().cloneEmpty();
+            const UInt64 stats_key = intHash64(n_b * 1000003 + n_p);
 
-            std::optional<JoinStats> np;
-            if (cfg.run_nphj)
+            auto measure_np = [&]() -> std::optional<JoinStats>
             {
-                ConcurrentHashJoinBench bench(pool, left_header, right_header, /*stats_key*/ intHash64(n_b * 1000003 + n_p));
-                np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
-            }
+                if (!cfg.run_nphj)
+                    return std::nullopt;
+                /// Discarded warmup: populates the size-hint statistics at destruction so the
+                /// timed build below preallocates, matching the steady state the t_build_np
+                /// curve measures instead of a cold first build. Extra untimed cost.
+                {
+                    ConcurrentHashJoinBench warmup(pool, left_header, right_header, stats_key);
+                    warmup.build(build_blocks);
+                    warmup.teardown();
+                }
+                ConcurrentHashJoinBench bench(pool, left_header, right_header, stats_key);
+                return driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
+            };
+            auto measure_rp = [&](std::string & detail) -> std::optional<JoinStats>
+            {
+                if (!cfg.run_rphj)
+                    return std::nullopt;
+                RadixHashJoinBench bench(pool, left_header, right_header, p_star, model.f_max);
+                auto stats = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
+                detail = bench.phaseBreakdown();
+                return stats;
+            };
 
+            /// Alternate which competitor measures first by point index: a fixed order lets the
+            /// second competitor reuse the jemalloc extents the first just freed - a systematic
+            /// page-fault asymmetry.
+            const bool np_first = (point_idx % 2 == 0);
+            ++point_idx;
+            std::optional<JoinStats> np;
             std::optional<JoinStats> rp;
             std::string rp_detail;
-            if (cfg.run_rphj)
+            if (np_first)
             {
-                RadixHashJoinBench bench(pool, left_header, right_header, p_star, MAX_FANOUT_PER_PASS);
-                rp = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
-                rp_detail = bench.phaseBreakdown();
+                np = measure_np();
+                rp = measure_rp(rp_detail);
             }
+            else
+            {
+                rp = measure_rp(rp_detail);
+                np = measure_np();
+            }
+            const char * order_tag = np_first ? "NP->RP" : "RP->NP";
 
             const char * pred_win = pred.rpTotal() < pred.npTotal() ? "radix" : "non-part";
             const char * meas_win = (np && rp) ? (rp->total() < np->total() ? "radix" : "non-part") : "-";
@@ -1297,29 +1511,87 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
                 match_check = !counts_ok ? "MISMATCH" : (!results_ok ? "DIFFER" : "ok");
             }
 
-            fmt::print("{:>12}{:>8}{:>13.2f}{:>13.2f}{:>13.2f}{:>13.2f}{:>12}{:>12}{:>10}\n",
+            fmt::print("{:>12}{:>8}{:>13.2f}{:>13.2f}{:>13.2f}{:>13.2f}{:>12}{:>12}{:>10}  order {}\n",
                 n_b, p_star, pred.npTotal() * 1e3, np ? np->total() * 1e3 : 0.0,
-                pred.rpTotal() * 1e3, rp ? rp->total() * 1e3 : 0.0, pred_win, meas_win, match_check);
+                pred.rpTotal() * 1e3, rp ? rp->total() * 1e3 : 0.0, pred_win, meas_win, match_check, order_tag);
 
             /// ProfileEvents are summed over all threads; divide by thread count to get a
             /// per-thread average directly comparable to the wall-clock phase times below.
             const double inv_threads = 1.0 / static_cast<double>(cfg.threads);
 
             if (np)
-                fmt::print("      NP meas (build/probe+gather): {:.2f} / {:.2f} ms (match/thr {:.2f} / gather/thr {:.2f} / dispatch/thr {:.2f} ms), "
-                           "pred: {:.2f} / {:.2f} ms\n",
-                    np->build_sec * 1e3, np->probe_sec * 1e3,
+                fmt::print("      NP meas (build/probe+gather/teardown): {:.2f} / {:.2f} / {:.2f} ms "
+                           "(match/thr {:.2f} / gather/thr {:.2f} / dispatch/thr {:.2f} ms), pred: {:.2f} / {:.2f} ms\n",
+                    np->build_sec * 1e3, np->probe_sec * 1e3, np->teardown_sec * 1e3,
                     np->probe_profile.match_sec * 1e3 * inv_threads, np->probe_profile.gather_sec * 1e3 * inv_threads,
                     np->probe_profile.dispatch_sec * 1e3 * inv_threads,
                     pred.np_build_sec * 1e3, pred.np_probe_sec * 1e3);
             if (rp)
-                fmt::print("      RP meas (build/probe): {:.2f} / {:.2f} ms ({}; match/thr {:.2f} / gather/thr {:.2f} ms); "
+                fmt::print("      RP meas (build/probe/teardown): {:.2f} / {:.2f} / {:.2f} ms ({}; match/thr {:.2f} / gather/thr {:.2f} ms); "
                            "pred (scatter/build/probe+gather): {:.2f} / {:.2f} / {:.2f} ms\n",
-                    rp->build_sec * 1e3, rp->probe_sec * 1e3, rp_detail,
+                    rp->build_sec * 1e3, rp->probe_sec * 1e3, rp->teardown_sec * 1e3, rp_detail,
                     rp->probe_profile.match_sec * 1e3 * inv_threads, rp->probe_profile.gather_sec * 1e3 * inv_threads,
                     pred.rp_scatter_sec * 1e3, pred.rp_build_sec * 1e3, pred.rp_probe_sec * 1e3);
         }
     }
+}
+
+
+/// ---------------------------------------------------------------------------------------------
+/// Memory budget: estimate the peak RSS of the heaviest kernels before running anything, and
+/// fail closed rather than let a too-large config get OOM-killed partway through a multi-minute
+/// run.
+/// ---------------------------------------------------------------------------------------------
+std::optional<size_t> readMemAvailableKb()
+{
+    std::ifstream in("/proc/meminfo");
+    if (!in)
+        return std::nullopt;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (!line.starts_with("MemAvailable:"))
+            continue;
+        std::istringstream iss(line.substr(std::string("MemAvailable:").size()));
+        size_t kb = 0;
+        if (iss >> kb)
+            return kb;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+size_t estimatePeakBytes(const Config & cfg, size_t l2)
+{
+    const size_t inputs = cfg.tuples * (cfg.buildRowWidth() + cfg.probeRowWidth());
+
+    /// RP kernels: T private tables sized at the sweep's largest point, plus each thread's
+    /// share of stored build rows, plus the full probe side, plus the shared inputs.
+    const auto rp_sweep = tableSweepDistincts(cfg, l2);
+    const size_t d_rp_top = rp_sweep.empty() ? size_t(256) : rp_sweep.back();
+    const size_t rp_bytes = cfg.threads * (htBytesForDistinct(d_rp_top) + d_rp_top * cfg.buildRowWidth())
+        + cfg.tuples * cfg.probeRowWidth() + inputs;
+
+    /// NP kernels: two shared tables sized at the largest point the (unmodified) NP sweep bound
+    /// reaches (htBytesForDistinct(d) <= max_table_bytes * 16, same condition as
+    /// runBuildKernelNP/runProbeKernelNP), plus the larger of a quarter of the tuple budget or
+    /// the table's own row count of build rows, plus the full probe side, plus the shared inputs.
+    size_t d_np_top = 256;
+    for (size_t d = 256; htBytesForDistinct(d) <= cfg.max_table_bytes * 16; d *= 4)
+        d_np_top = d;
+    const size_t np_bytes = 2 * htBytesForDistinct(d_np_top)
+        + std::max(cfg.tuples / 4, d_np_top) * cfg.buildRowWidth() + cfg.tuples * cfg.probeRowWidth() + inputs;
+
+    /// Gather kernel: the stored build side plus refs/offsets scratch, plus the shared inputs.
+    const size_t gather_kernel_bytes = cfg.gather_bytes + 2 * cfg.tuples * 16 + inputs;
+
+    /// Validation: both competitors' build/probe blocks at the largest validation row count,
+    /// plus two hash tables.
+    const size_t validation_bytes = 2 * cfg.validation_max_rows * cfg.buildRowWidth()
+        + 8 * cfg.validation_max_rows * cfg.probeRowWidth() + 2 * htBytesForDistinct(cfg.validation_max_rows);
+
+    const size_t peak = std::max({rp_bytes, np_bytes, gather_kernel_bytes, validation_bytes});
+    return static_cast<size_t>(1.2 * static_cast<double>(peak));
 }
 
 }
@@ -1416,6 +1688,30 @@ int main(int argc, char ** argv)
     fmt::print("  allocator: system malloc (jemalloc disabled in this build)\n");
 #endif
 
+    {
+        const size_t estimated_peak = estimatePeakBytes(cfg, cache.l2);
+        fmt::print("  estimated peak memory (heaviest kernel): {}\n", formatBytes(static_cast<double>(estimated_peak)));
+
+        const auto mem_available_kb = readMemAvailableKb();
+        if (!mem_available_kb)
+        {
+            fmt::print("  WARNING: /proc/meminfo unreadable; skipping the peak-memory guard (detection failure, not a guard failure)\n");
+        }
+        else
+        {
+            const auto mem_available_bytes = static_cast<double>(*mem_available_kb) * 1024.0;
+            fmt::print("  MemAvailable: {}\n", formatBytes(mem_available_bytes));
+            if (static_cast<double>(estimated_peak) > 0.8 * mem_available_bytes)
+            {
+                fmt::print(stderr,
+                    "ERROR: estimated peak memory {} exceeds 80% of MemAvailable ({}). Refusing to run "
+                    "(fail-close): reduce the workload via --tuples, --max-table-bytes, or --threads.\n",
+                    formatBytes(static_cast<double>(estimated_peak)), formatBytes(mem_available_bytes));
+                return 1;
+            }
+        }
+    }
+
     WorkerPool pool(cfg.threads);
 
     /// Shared immutable input blocks (the only memory reused across iterations).
@@ -1445,25 +1741,40 @@ int main(int argc, char ** argv)
     fmt::print("\n=== memcpy baseline ===\n  B_cpy = {:.2f} GB/s (aggregate, block squashing via insertRangeFrom)\n",
         model.memcpy_bytes_per_sec / 1e9);
 
-    model.scatter = runScatterKernel(cfg, pool, build_work);
+    {
+        auto scatter_measurement = runScatterKernel(cfg, pool, build_work);
+        model.scatter = std::move(scatter_measurement.points);
+        model.scatter_two_pass_eff = scatter_measurement.two_pass_eff_bytes_per_sec;
+    }
 
     model.scatter_peak = 0;
     for (const auto & sp : model.scatter)
         model.scatter_peak = std::max(model.scatter_peak, sp.bytes_per_sec);
+
+    /// Contiguous 80%-of-peak rule: the largest *prefix* fanout (in increasing order) still at
+    /// or above 80% of peak, not a later recovery past a dip - a later recovery would not be a
+    /// safe single-pass fanout if intermediate fanouts in between are slower.
     model.f_max = model.scatter.front().fanout;
     for (const auto & sp : model.scatter)
-        if (sp.bytes_per_sec >= 0.8 * model.scatter_peak)
-            model.f_max = std::max(model.f_max, sp.fanout);
+    {
+        if (sp.bytes_per_sec < 0.8 * model.scatter_peak)
+            break;
+        model.f_max = std::max(model.f_max, sp.fanout);
+    }
+    /// Clamp by memory-safety caps: the compile-time SWWC ceiling, and an L2-derived cap (~76 B
+    /// of SWWC state per partition per worker; /128 leaves headroom for the histogram/cursors).
+    model.f_max = std::min({model.f_max, MAX_FANOUT_PER_PASS, std::bit_floor(std::max<size_t>(2, cache.l2 / 128))});
 
-    fmt::print("  B_scatter peak = {:.2f} GB/s, F_max (>= 80% of peak) = {}\n", model.scatter_peak / 1e9, model.f_max);
+    fmt::print("  B_scatter peak = {:.2f} GB/s, F_max (>= 80% of peak, contiguous; drives pass planning) = {}\n",
+        model.scatter_peak / 1e9, model.f_max);
 
-    model.build_rp = runBuildKernelRP(cfg, pool);
+    model.build_rp = runBuildKernelRP(cfg, pool, cache.l2);
     model.build_np = runBuildKernelNP(cfg, pool);
-    model.probe_rp = runProbeKernelRP(cfg, pool);
+    model.probe_rp = runProbeKernelRP(cfg, pool, cache.l2);
     model.probe_np = runProbeKernelNP(cfg, pool);
     model.gather = runGatherKernel(cfg, pool, probe_work);
 
-    const double budget = static_cast<double>(cache.l2) / 2;
+    const double budget = static_cast<double>(cache.l2);
     fmt::print("\n=== derived model constants (all measured with real ClickHouse join code) ===\n");
     fmt::print("  t_build (radix part): cache-resident {:.3f} ns/row, spilling {:.3f} ns/row\n",
         model.build_rp.at(budget), model.build_rp.points.back().second);
@@ -1473,9 +1784,9 @@ int main(int argc, char ** argv)
         model.probe_rp.at(budget), model.probe_rp.points.back().second);
     fmt::print("  t_probe+gather (non-part):   cache-resident {:.3f} ns/row, spilling {:.3f} ns/row\n",
         model.probe_np.at(budget), model.probe_np.points.back().second);
-    fmt::print("  t_gather (standalone, IColumn::insertFrom by RowRef): cache-resident {:.3f} ns/match, spilling {:.3f} ns/match\n",
+    fmt::print("  t_gather (standalone, devirtualized per-row copy by RowRef): cache-resident {:.3f} ns/match, spilling {:.3f} ns/match\n",
         model.gather.at(budget), model.gather.points.back().second);
-    fmt::print("  per-partition table budget C = L2/2 = {}\n", formatBytes(budget));
+    fmt::print("  per-partition working-set budget C = L2 = {} (reserved table bytes + partition's build rows)\n", formatBytes(budget));
 
     printGridAndCrossover(model);
 
