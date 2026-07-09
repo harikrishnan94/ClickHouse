@@ -233,8 +233,9 @@ struct PartitionOutput
 };
 
 /// One radix pass: split every input group into `fanout` sub-partitions, each materialized as
-/// a single exactly-sized chunk.
-std::vector<ChunkList> scatterPass(WorkerPool & pool, const std::vector<ChunkList> & groups, size_t bits, size_t bits_done)
+/// a single exactly-sized chunk. Refine passes (groups > 1) release each input group as soon as
+/// it is consumed, so a multi-pass scatter never holds a full extra copy of the side.
+std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & groups, size_t bits, size_t bits_done)
 {
     const size_t threads = pool.size();
     const size_t fanout = 1ULL << bits;
@@ -356,6 +357,9 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, const std::vector<ChunkLis
                 for (size_t p = 0; p < fanout; ++p)
                     if (hist[p])
                         out[g * fanout + p].push_back(parts[p].toChunk());
+
+                /// Free this group's input chunks before moving to the next group.
+                groups[g].clear();
             }
         });
     }
