@@ -72,18 +72,28 @@ namespace
 {
 
 /// Radix scatter after origin/phj5-real's KeyRefScatter, adapted to column-by-column output:
-///   - the 32-bit route word is recomputed inline wherever needed rather than stored: with the
-///     column-major loop below that means re-reading the 8 B key column once per payload column
-///     pass, i.e. an extra ~8 B/row of traffic per payload column beyond the key's own pass (so
-///     ~16 B/row marginal cost for one extra payload column, vs ~10 B/row if a 2-byte partition
-///     id were instead stored once during the histogram pass and reloaded per column). Recompute
-///     is kept because the benchmark's default shapes have <= 2 payload columns, where the two
-///     approaches are a wash; every pass slices a disjoint bit range of the same word;
+///   - routing is materialized as 2-byte partition ids rather than recomputed per column, but
+///     only for a bounded window of rows at a time (a batch of chunks in the first pass, one
+///     group in refine passes), never for the whole side. The ids are emitted as a free
+///     by-product of the key column's own scatter (which reads every key anyway), so per
+///     payload column an 8 B key re-read becomes a 2 B id read, and - the reason the scheme
+///     exists - the ids end all routing uses of the input key column, so consumed input
+///     columns can be dropped eagerly (see next bullet). Every pass slices a disjoint bit
+///     range of the same 32-bit route word;
+///   - consumed input is dropped as early as possible to keep the scatter's resident memory
+///     near one copy of the side instead of two: the first pass drops each input chunk batch
+///     right after its last column is scattered (for pass 0 that releases this side's
+///     reference to the caller's blocks - in a real pipeline the upstream source's blocks get
+///     recycled here; for owned inputs it frees them), and refine passes drop each input
+///     column right after it is scattered and allocate each output column just-in-time, so
+///     the freed input extents are immediately reusable by the allocator for the next output
+///     column instead of sitting dirty until decay;
 ///   - per-partition destination columns are allocated exactly once from a histogram
 ///     (prefix sum + direct placement; no piece lists, no coalescing pass, no allocator churn);
-///   - columns are scattered one at a time (column-major loop order), so only `fanout` output
-///     streams and one fanout x 64 B staging set are live per worker at any instant (workers may
-///     be on different columns concurrently: see the fused scatter barrier in scatterPass);
+///   - columns are scattered one at a time within a routing window (column-major loop order),
+///     so only `fanout` output streams and one fanout x 64 B staging set are live per worker at
+///     any instant (workers may be on different columns concurrently: see the fused scatter
+///     barrier in scatterPass);
 ///   - at fanout >= 256 a software write-combining path stages one 64-byte line per partition
 ///     and flushes it with a non-temporal store, avoiding both the cache pollution and the
 ///     read-for-ownership traffic that create the high-fanout cliff of the naive scatter.
@@ -186,6 +196,25 @@ struct ScatterScratch
 /// 4 UInt32 lanes stay within 32 KiB even at the largest interleaved fanout.
 constexpr size_t HIST_INTERLEAVE_MAX_FANOUT = 2048;
 
+/// First-pass batch sizing: each worker routes and scatters its chunk stripe in batches of
+/// whole chunks, dropping each batch's input right after its last column is scattered. The
+/// batch must be large enough that the cost of every (batch, column) boundary - the seed/save
+/// cursor sweeps plus, on the SWWC path, up to one partial-line flush and one head-realignment
+/// memcpy per partition - stays a small fraction of the lines written in between: 64 lines per
+/// partition per batch bounds the boundary cost at ~1.5%, and targeted A/B sweeps at fanouts
+/// 128-512 measured parity with the pre-batching implementation (well within this machine's
+/// +-15% session drift). The row floor keeps batches at low fanout (where the SWWC boundary
+/// cost is absent) big enough to amortize the boundary sweeps. The target also bounds the
+/// batch's transient memory - its input rows (freed at batch end) plus 2 B/row of partition
+/// ids - at 4M rows per worker at the largest per-pass fanout (MAX_FANOUT_PER_PASS).
+constexpr size_t SCATTER_BATCH_MIN_ROWS = 256 << 10;
+constexpr size_t SCATTER_BATCH_LINES_PER_PARTITION = 64;
+
+size_t scatterBatchRowsTarget(size_t fanout)
+{
+    return std::max(SCATTER_BATCH_MIN_ROWS, fanout * SCATTER_BATCH_LINES_PER_PARTITION * ELEMS_PER_LINE);
+}
+
 /// Histograms one chunk's rows into `hist[0..fanout)`. At low fanout (`lanes` non-null, a
 /// caller-owned buffer of size 4 * fanout that persists across calls for the same worker/group),
 /// row i increments lane (i & 3) of its bucket instead of the shared counter directly, breaking
@@ -219,16 +248,40 @@ void reduceHistogramLanes(UInt32 * hist, const UInt32 * lanes, size_t fanout)
         hist[p] += lanes[0 * fanout + p] + lanes[1 * fanout + p] + lanes[2 * fanout + p] + lanes[3 * fanout + p];
 }
 
-void scatterChunkDirect(const UInt64 * keys, const UInt64 * data, size_t n, UInt32 shift, UInt32 mask, UInt64 ** cursors)
+/// The routing source per row: the key-column kernels compute the partition from the key (and
+/// optionally emit it as a 2-byte pid); the payload-column kernels reload the emitted pid.
+struct RouteFromKey
 {
-    for (size_t i = 0; i < n; ++i)
+    const UInt64 * keys;
+    UInt32 shift;
+    UInt32 mask;
+    UInt16 * pids; /// null when there are no payload columns to consume the ids
+
+    ALWAYS_INLINE UInt32 partition(size_t i) const
     {
         const UInt32 p = (routeWord(keys[i]) >> shift) & mask;
-        *cursors[p]++ = data[i];
+        if (pids)
+            pids[i] = static_cast<UInt16>(p);
+        return p;
     }
+};
+
+struct RouteFromPids
+{
+    const UInt16 * pids;
+
+    ALWAYS_INLINE UInt32 partition(size_t i) const { return pids[i]; }
+};
+
+template <typename Route>
+void scatterChunkDirect(Route route, const UInt64 * data, size_t n, UInt64 ** cursors)
+{
+    for (size_t i = 0; i < n; ++i)
+        *cursors[route.partition(i)]++ = data[i];
 }
 
-void scatterChunkSwwc(const UInt64 * keys, const UInt64 * data, size_t n, UInt32 shift, UInt32 mask, ScatterScratch & scratch)
+template <typename Route>
+void scatterChunkSwwc(Route route, const UInt64 * data, size_t n, ScatterScratch & scratch)
 {
     /// Hoisted like `staging` already was: the char*/vector NT store defeats TBAA hoisting, so
     /// without this the compiler reloads scratch.cursors/fill.data() every row (measured
@@ -239,7 +292,7 @@ void scatterChunkSwwc(const UInt64 * keys, const UInt64 * data, size_t n, UInt32
 
     for (size_t i = 0; i < n; ++i)
     {
-        const UInt32 p = (routeWord(keys[i]) >> shift) & mask;
+        const UInt32 p = route.partition(i);
         char * line = staging + static_cast<size_t>(p) * LINE_BYTES;
         UInt32 f = fill[p];
         *reinterpret_cast<UInt64 *>(line + f) = data[i];
@@ -281,6 +334,31 @@ const UInt64 * columnData(const Chunk & chunk, size_t j)
     return assert_cast<const ColumnUInt64 &>(*chunk.columns[j]).getData().data();
 }
 
+/// Scatters column j of one chunk. The key column (j == 0) routes from the keys it reads anyway
+/// and emits the chunk's partition ids as a by-product; payload columns route through those ids
+/// (a 2 B id read instead of an 8 B key re-read). `pids` is the chunk's slice of the window's
+/// id buffer (null only when the chunk has no payload columns, so the ids have no consumer).
+void scatterChunkColumn(const Chunk & chunk, size_t j, UInt32 shift, UInt32 mask, UInt16 * pids, bool use_swwc, ScatterScratch & scratch)
+{
+    const UInt64 * data = columnData(chunk, j);
+    if (j == 0)
+    {
+        RouteFromKey route{keyData(chunk), shift, mask, pids};
+        if (use_swwc)
+            scatterChunkSwwc(route, data, chunk.rows, scratch);
+        else
+            scatterChunkDirect(route, data, chunk.rows, scratch.cursors.data());
+    }
+    else
+    {
+        RouteFromPids route{pids};
+        if (use_swwc)
+            scatterChunkSwwc(route, data, chunk.rows, scratch);
+        else
+            scatterChunkDirect(route, data, chunk.rows, scratch.cursors.data());
+    }
+}
+
 /// Exactly-sized destination columns of one output partition, with raw write pointers.
 struct PartitionOutput
 {
@@ -288,19 +366,24 @@ struct PartitionOutput
     std::vector<UInt64 *> bases;
     size_t rows = 0;
 
+    /// Appends one exactly-sized destination column. ColumnVector(n) leaves POD contents
+    /// uninitialized: no memset, pages are first-touched by the scatter writes themselves.
+    /// Refine passes call this just-in-time, one column per scatter round, so the allocator
+    /// can serve it from the input column the previous round just dropped.
+    void allocateColumn()
+    {
+        auto col = ColumnUInt64::create(rows);
+        bases.push_back(col->getData().data());
+        columns.push_back(std::move(col));
+    }
+
     void allocate(size_t num_columns, size_t rows_)
     {
         rows = rows_;
         columns.reserve(num_columns);
         bases.reserve(num_columns);
         for (size_t j = 0; j < num_columns; ++j)
-        {
-            /// ColumnVector(n) leaves POD contents uninitialized: no memset, pages are
-            /// first-touched by the scatter writes themselves.
-            auto col = ColumnUInt64::create(rows_);
-            bases.push_back(col->getData().data());
-            columns.push_back(std::move(col));
-        }
+            allocateColumn();
     }
 
     Chunk toChunk()
@@ -314,13 +397,15 @@ struct PartitionOutput
 };
 
 /// One radix pass: split every input group into `fanout` sub-partitions, each materialized as
-/// a single exactly-sized chunk. Refine passes (groups > 1) release each input group as soon as
-/// it is consumed, so a multi-pass scatter never holds a full extra copy of the side.
+/// a single exactly-sized chunk. Consumed input is dropped eagerly (per chunk batch in the
+/// first pass, per column in refine passes - see the branches below), so a pass never holds a
+/// full extra copy of the side on top of its output.
 std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & groups, size_t bits, size_t bits_done)
 {
     const size_t threads = pool.size();
     const size_t fanout = 1ULL << bits;
     chassert(bits_done + bits <= 32);
+    chassert(fanout <= (1ULL << 16)); /// partition ids are UInt16
     const UInt32 shift = static_cast<UInt32>(32 - bits_done - bits);
     const UInt32 mask = static_cast<UInt32>(fanout - 1);
     const bool use_swwc = fanout >= SWWC_MIN_FANOUT;
@@ -334,7 +419,7 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
         /// from histogram + serial prefix-sum + allocation + one barrier per column): a fused
         /// prefix-sum/allocation barrier removes the single-threaded Phase B, and a fused
         /// all-columns scatter barrier removes the per-column barrier.
-        const ChunkList & chunks = groups[0];
+        ChunkList & chunks = groups[0];
         if (chunks.empty())
             return out;
         const size_t num_columns = chunks.front().columns.size();
@@ -380,32 +465,75 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
             }
         });
 
-        /// Barrier 3: single fused scatter run for all columns (column loop moved inside the
-        /// worker). Each worker writes only its own [offset, offset + hist) range of every
+        /// Barrier 3: single fused scatter run, batched. Each worker processes its chunk stripe
+        /// in batches of whole chunks (~scatterBatchRowsTarget rows): the key column's scatter
+        /// emits the batch's 2-byte partition ids as a by-product, the payload columns scatter
+        /// through the ids, then the batch's input chunks are dropped - each chunk belongs to
+        /// exactly one worker's stripe, so the drop is worker-local. On pass 0 the drop
+        /// releases this side's reference to the caller's blocks (in a real pipeline the
+        /// upstream source's blocks are recycled here); on later passes it frees the previous
+        /// pass's output, bounding the resident overlap of input and output to one batch per
+        /// worker. Each worker writes only its own [offset, offset + hist) range of every
         /// (partition, column) output buffer; those ranges are disjoint across workers and
-        /// across columns, so there is no cross-worker dependency between columns and no
-        /// barrier is needed between them - the pool.run barrier plus each worker's drain()
-        /// fence (which publishes the NT stores) is enough to make every worker's writes
-        /// visible before the collection loop below reads the outputs.
+        /// across columns, so there is no cross-worker dependency and no barrier between
+        /// columns or batches - the pool.run barrier plus each worker's drain() fences (which
+        /// publish the NT stores) are enough to make every worker's writes visible before the
+        /// collection loop below reads the outputs.
+        const size_t batch_rows_target = scatterBatchRowsTarget(fanout);
         std::vector<ScatterScratch> scratch(threads);
         pool.run([&](size_t tid)
         {
             auto & s = scratch[tid];
             if (s.fanout != fanout)
                 s.init(fanout, use_swwc);
-            for (size_t j = 0; j < num_columns; ++j)
-            {
-                for (size_t p = 0; p < fanout; ++p)
-                    s.seed(p, totals[p] ? parts[p].bases[j] + offsets[tid * fanout + p] : nullptr);
 
-                for (size_t c = tid; c < chunks.size(); c += threads)
+            /// Running write cursors per (column, partition), persisted across batches: this
+            /// worker's disjoint output ranges, advanced batch by batch. ScatterScratch's
+            /// documented invariant handles the mid-line cursor a drain leaves behind (the
+            /// next batch's first flush repairs the misaligned head).
+            std::vector<UInt64 *> col_cursors(num_columns * fanout);
+            for (size_t j = 0; j < num_columns; ++j)
+                for (size_t p = 0; p < fanout; ++p)
+                    col_cursors[j * fanout + p] = totals[p] ? parts[p].bases[j] + offsets[tid * fanout + p] : nullptr;
+
+            PaddedPODArray<UInt16> pids;
+            std::vector<size_t> batch;       /// chunk indices of the current batch
+            std::vector<size_t> batch_offsets; /// each chunk's start row within `pids`
+
+            size_t c = tid;
+            while (c < chunks.size())
+            {
+                batch.clear();
+                batch_offsets.clear();
+                size_t batch_rows = 0;
+                for (; c < chunks.size() && batch_rows < batch_rows_target; c += threads)
                 {
-                    if (use_swwc)
-                        scatterChunkSwwc(keyData(chunks[c]), columnData(chunks[c], j), chunks[c].rows, shift, mask, s);
-                    else
-                        scatterChunkDirect(keyData(chunks[c]), columnData(chunks[c], j), chunks[c].rows, shift, mask, s.cursors.data());
+                    batch.push_back(c);
+                    batch_offsets.push_back(batch_rows);
+                    batch_rows += chunks[c].rows;
                 }
-                s.drain();
+
+                if (num_columns > 1)
+                    pids.resize(batch_rows);
+
+                for (size_t j = 0; j < num_columns; ++j)
+                {
+                    for (size_t p = 0; p < fanout; ++p)
+                        s.seed(p, col_cursors[j * fanout + p]);
+
+                    for (size_t b = 0; b < batch.size(); ++b)
+                        scatterChunkColumn(chunks[batch[b]], j, shift, mask,
+                            num_columns > 1 ? pids.data() + batch_offsets[b] : nullptr, use_swwc, s);
+                    s.drain();
+
+                    for (size_t p = 0; p < fanout; ++p)
+                        col_cursors[j * fanout + p] = s.cursors[p];
+                }
+
+                /// The batch is fully consumed (the ids replaced all routing uses of the key
+                /// column): drop its input chunks before starting the next batch.
+                for (size_t b : batch)
+                    chunks[b].columns = {};
             }
         });
 
@@ -419,6 +547,15 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
         /// (an atomic counter, not a static stripe), because groups can have very different
         /// sizes and a static stripe would leave some workers idle while others are still
         /// scattering their share - the join's defense against per-group skew.
+        ///
+        /// Group inputs are owned (they are the previous pass's output), so memory is cycled
+        /// eagerly, all worker-local: the key column's scatter emits 2-byte partition ids for
+        /// the whole group (bounded: a group is at most 1/fanout_so_far of the side), after
+        /// which the key column is never read again; each column round allocates its output
+        /// columns just-in-time, scatters (through the ids from round 1 on), and drops the
+        /// consumed input column - so the freed input extents are immediately reusable for the
+        /// next round's output instead of sitting dirty until allocator decay, and a group in
+        /// flight holds ~(C+1)/C of its size instead of 2x.
         std::atomic<size_t> next_group{0};
         pool.run([&](size_t /*tid*/)
         {
@@ -428,13 +565,20 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
             std::vector<UInt32> lanes;
             if (interleave_hist)
                 lanes.resize(4 * fanout);
+            PaddedPODArray<UInt16> pids;
 
             for (size_t g = next_group.fetch_add(1, std::memory_order_relaxed); g < groups.size(); g = next_group.fetch_add(1, std::memory_order_relaxed))
             {
-                const ChunkList & chunks = groups[g];
+                ChunkList & chunks = groups[g];
                 if (chunks.empty())
                     continue;
                 const size_t num_columns = chunks.front().columns.size();
+
+                size_t group_rows = 0;
+                for (const auto & chunk : chunks)
+                    group_rows += chunk.rows;
+                if (num_columns > 1)
+                    pids.resize(group_rows);
 
                 std::fill(hist.begin(), hist.end(), 0);
                 if (interleave_hist)
@@ -446,29 +590,40 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
 
                 std::vector<PartitionOutput> parts(fanout);
                 for (size_t p = 0; p < fanout; ++p)
-                    if (hist[p])
-                        parts[p].allocate(num_columns, hist[p]);
+                    parts[p].rows = hist[p];
 
                 for (size_t j = 0; j < num_columns; ++j)
                 {
+                    /// Just-in-time exact allocation of this round's output columns: by now the
+                    /// previous round's input column has been dropped, so its extents back this.
+                    for (size_t p = 0; p < fanout; ++p)
+                        if (hist[p])
+                            parts[p].allocateColumn();
+
                     for (size_t p = 0; p < fanout; ++p)
                         scratch.seed(p, hist[p] ? parts[p].bases[j] : nullptr);
 
+                    size_t row = 0;
                     for (const auto & chunk : chunks)
                     {
-                        if (use_swwc)
-                            scatterChunkSwwc(keyData(chunk), columnData(chunk, j), chunk.rows, shift, mask, scratch);
-                        else
-                            scatterChunkDirect(keyData(chunk), columnData(chunk, j), chunk.rows, shift, mask, scratch.cursors.data());
+                        scatterChunkColumn(chunk, j, shift, mask,
+                            num_columns > 1 ? pids.data() + row : nullptr, use_swwc, scratch);
+                        row += chunk.rows;
                     }
                     scratch.drain();
+
+                    /// Input column j is fully consumed (the ids emitted during the key
+                    /// column's scatter replace all further routing uses): drop it before the
+                    /// next round allocates its outputs.
+                    for (auto & chunk : chunks)
+                        chunk.columns[j] = nullptr;
                 }
 
                 for (size_t p = 0; p < fanout; ++p)
                     if (hist[p])
                         out[g * fanout + p].push_back(parts[p].toChunk());
 
-                /// Free this group's input chunks before moving to the next group.
+                /// Only empty column shells remain; free them before moving to the next group.
                 groups[g].clear();
             }
         });

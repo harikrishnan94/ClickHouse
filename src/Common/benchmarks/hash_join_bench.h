@@ -131,11 +131,16 @@ constexpr size_t MAX_FANOUT_PER_PASS = 8192;
 /// Splits log2(p_star) partition bits into passes of at most log2(f_max) bits each.
 std::vector<size_t> computePassBits(size_t p_star, size_t f_max);
 
-/// Radix scatter of one side by the CRC32C of its first (key) column: this is the partitioning
-/// code the radix join runs, also used to measure the scatter bandwidth term. Uses histogram +
-/// prefix sum + exact one-shot allocation with direct placement, column-major loop order, and
-/// software write-combining with non-temporal stores at fanout >= 256 (single pass up to the
-/// full partition count; multiple passes only as a fallback). All UInt64 columns.
+/// Radix scatter of one side by a hash of its first (key) column (deliberately independent of
+/// the CRC32C the hash tables use; see routeWord): this is the partitioning code the radix join
+/// runs, also used to measure the scatter bandwidth term. Uses histogram + prefix sum + exact
+/// allocation with direct placement, routing materialized as 2-byte partition ids for a bounded
+/// window of rows at a time, column-major loop order within the window, and software
+/// write-combining with non-temporal stores at fanout >= 256 (single pass up to the full
+/// partition count; multiple passes only as a fallback). Consumed input is dropped eagerly
+/// (per chunk batch in the first pass - for pass 0 that releases the references to the caller's
+/// blocks - and per column in refine passes), keeping the scatter's resident memory near one
+/// copy of the side instead of two. All UInt64 columns.
 std::vector<ChunkList> scatterSide(WorkerPool & pool, const std::vector<Block> & blocks, const std::vector<size_t> & pass_bits);
 
 /// Shared setup of the join metadata: INNER ALL join on the first column of each side.

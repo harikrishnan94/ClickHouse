@@ -9,11 +9,12 @@
   *   - scatter bandwidth B_scatter(P): one single-pass call of the radix join's own partitioning
   *                                     code (scatterSide: per-worker histograms -> a fused
   *                                     parallel prefix sum + one exact allocation per partition
-  *                                     -> column-major direct placement, with software
-  *                                     write-combining and non-temporal stores at fanout >= 256),
-  *                                     swept over the fanout P to expose the fanout cliff; a
-  *                                     single pass covers any partition count up to F_max,
-  *                                     refine (multi-pass) passes handle the rest.
+  *                                     -> column-major direct placement through batch-scoped
+  *                                     2-byte partition ids, dropping consumed input eagerly,
+  *                                     with software write-combining and non-temporal stores at
+  *                                     fanout >= 256), swept over the fanout P to expose the
+  *                                     fanout cliff; a single pass covers any partition count up
+  *                                     to F_max, refine (multi-pass) passes handle the rest.
   *   - t_build_np(S)  : ns/row of the real `ConcurrentHashJoin` build phase (concurrent
   *                      `addBlockToJoin` with its internal hash/selector dispatch into per-slot
   *                      two-level maps, plus the `onBuildPhaseFinish` bucket merge), as a
@@ -525,8 +526,10 @@ double runMemcpyKernel(const Config & cfg, WorkerPool & pool, const std::vector<
 
 /// ---------------------------------------------------------------------------------------------
 /// Kernel 2: scatter. One single-pass call of the radix join's own partitioning code
-/// (scatterSide: hash -> Selector -> IColumn::scatter -> coalesce into block-sized chunks),
+/// (scatterSide: histogram + prefix sum + direct placement through batch-scoped partition ids),
 /// with all output freshly allocated and dropped inside the timed region. Sweep the fanout.
+/// Note the input blocks are shared and outlive the call, so the scatter's eager per-batch
+/// input drops release only this call's references - the kernel times the drops, not the frees.
 /// ---------------------------------------------------------------------------------------------
 struct ScatterPoint
 {
