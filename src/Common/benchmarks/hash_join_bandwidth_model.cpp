@@ -1003,10 +1003,14 @@ Prediction predict(const ModelInputs & m, double n_b, double n_p, double distinc
     p.np_build_sec = n_b * m.build_np.at(table_bytes) * 1e-9;
     p.np_probe_sec = n_p * m.probe_np.at(table_bytes) * 1e-9;
 
-    /// RPHJ: enough partitions for both cache residency and thread parallelism.
-    const double budget = static_cast<double>(m.l2) / 2;
+    /// RPHJ: enough partitions for both cache residency and thread parallelism. The probe of a
+    /// partition touches the hash table plus the partition's stored build rows (payload gather
+    /// through RowRefs), so the L2 budget applies to their sum (measured best at 1B rows:
+    /// HT + build within L2 beat both coarser and finer partitioning).
+    const double budget = static_cast<double>(m.l2);
+    const double partition_working_set = table_bytes + n_b * static_cast<double>(m.w_b);
     size_t p_star = 1;
-    while (table_bytes / static_cast<double>(p_star) > budget && p_star < m.max_partitions)
+    while (partition_working_set / static_cast<double>(p_star) > budget && p_star < m.max_partitions)
         p_star *= 2;
     if (p_star > 1)
         p_star = std::min(std::max(p_star, std::bit_ceil(m.threads)), std::bit_ceil(m.max_partitions));
@@ -1133,18 +1137,21 @@ void printGridAndCrossover(const ModelInputs & m)
 /// Reports the measured wall time of every phase for each repetition.
 void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cache, size_t n_b, size_t n_p)
 {
-    const double budget = static_cast<double>(cache.l2) / 2;
+    /// The per-partition L2 budget covers the hash table plus the partition's stored build rows
+    /// (payload gather through RowRefs touches both).
+    const double budget = static_cast<double>(cache.l2);
     const double table_bytes = static_cast<double>(htBytesForDistinct(n_b));
+    const double partition_working_set = table_bytes + static_cast<double>(n_b * cfg.buildRowWidth());
     size_t p_star = 1;
-    while (table_bytes / static_cast<double>(p_star) > budget && p_star < cfg.max_partitions)
+    while (partition_working_set / static_cast<double>(p_star) > budget && p_star < cfg.max_partitions)
         p_star *= 2;
     if (p_star > 1)
         p_star = std::min(std::max(p_star, std::bit_ceil(cfg.threads)), std::bit_ceil(cfg.max_partitions));
     p_star = std::max<size_t>(2, p_star);
     const size_t f_max = MAX_FANOUT_PER_PASS;
 
-    fmt::print("\n=== single join: N_b = {}, N_p = {}, unique keys, hit rate {}, HT = {}, P* = {} ===\n",
-        n_b, n_p, cfg.hit_rate, formatBytes(table_bytes), p_star);
+    fmt::print("\n=== single join: N_b = {}, N_p = {}, unique keys, hit rate {}, HT = {}, build side = {}, P* = {} ===\n",
+        n_b, n_p, cfg.hit_rate, formatBytes(table_bytes), formatBytes(static_cast<double>(n_b * cfg.buildRowWidth())), p_star);
 
     auto build_blocks = generateBlocks(pool, n_b, cfg.build_payload_columns, "b_", uniqueKeys(n_b), cfg.seed + n_b);
     auto probe_blocks = generateBlocks(pool, n_p, cfg.probe_payload_columns, "p_",
