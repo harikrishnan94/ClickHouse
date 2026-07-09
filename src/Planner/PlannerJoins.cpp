@@ -43,6 +43,7 @@
 #include <Interpreters/JoinSwitcher.h>
 #include <Interpreters/MergeJoin.h>
 #include <Interpreters/PasteJoin.h>
+#include <Interpreters/RadixHashJoin/RadixHashJoin.h>
 #include <Interpreters/SpillingHashJoin.h>
 
 #include <Planner/PlannerActionsVisitor.h>
@@ -1167,6 +1168,81 @@ QueryTreeNodePtr getJoinExpressionFromNode(const JoinNode & join_node)
     return join_expression;
 }
 
+/// The applicability gate for `radix_join`: a v1 RadixHashJoin requires a single-disjunct inner ALL
+/// equi-join with no special storage, over one or more fixed-width, non-nullable, non-LowCardinality
+/// key columns whose packed width (the sum of the column widths) is a multiple of 4 in [4, 64] — the
+/// scatter granularity (4 bytes) and the leaf-cell template bound. Any other shape (composite key
+/// wider than 64 bytes, nullable, low-cardinality, non-fixed-width, or a packed width that is not a
+/// multiple of 4 such as a lone `UInt8`/`UInt16`/`Date`/`Enum8`/`Enum16`) falls back to `parallel_hash`.
+static bool radixHashJoinApplicable(
+    const std::shared_ptr<TableJoin> & table_join,
+    const SharedHeader & right_table_expression_header)
+{
+    if (!table_join->oneDisjunct())
+        return false;
+    if (table_join->kind() != JoinKind::Inner)
+        return false;
+    /// v1 is ALL inner only; ANY/SEMI/ANTI/ASOF keep their own semantics and would not be bit-identical
+    /// to `hash` under the parallel passthrough.
+    if (table_join->strictness() != JoinStrictness::All)
+        return false;
+    if (table_join->isSpecialStorage())
+        return false;
+
+    const auto & key_names_right = table_join->getOnlyClause().key_names_right;
+    if (key_names_right.empty())
+        return false;
+
+    size_t packed_key_width = 0;
+    for (const auto & key_name : key_names_right)
+    {
+        const auto * key_column = right_table_expression_header->findByName(key_name);
+        if (!key_column)
+            return false;
+
+        const auto & type = key_column->type;
+        if (type->isNullable() || type->lowCardinality())
+            return false;
+        if (!type->haveMaximumSizeOfValue())
+            return false;
+
+        const size_t width = type->getMaximumSizeOfValueInMemory();
+        if (width == 0)
+            return false;
+        packed_key_width += width;
+    }
+
+    return packed_key_width % 4 == 0 && packed_key_width >= 4 && packed_key_width <= 64;
+}
+
+/// Fallback when `radix_join` is requested but its key gate does not hold: prefer `parallel_hash`
+/// (ConcurrentHashJoin) when the join shape allows it, otherwise plain `HashJoin`.
+static std::shared_ptr<IJoin> createRadixHashJoinFallback(
+    const std::shared_ptr<TableJoin> & table_join,
+    SharedHeader & right_table_expression_header,
+    const JoinAlgorithmParams & params)
+{
+    StatsCollectingParams stats_collecting_params{
+        params.hash_table_key_hash,
+        params.collect_hash_table_stats_during_joins,
+        params.max_entries_for_hash_table_stats,
+        params.max_size_to_preallocate_for_joins};
+
+    const auto kind = table_join->kind();
+    const bool parallel_ok = table_join->oneDisjunct()
+        && !table_join->isSpecialStorage()
+        && table_join->strictness() != JoinStrictness::Asof
+        && (kind == JoinKind::Left || kind == JoinKind::Inner || kind == JoinKind::Right || kind == JoinKind::Full);
+
+    if (parallel_ok)
+        return std::make_shared<ConcurrentHashJoin>(
+            table_join, params.max_threads, right_table_expression_header, stats_collecting_params);
+
+    return std::make_shared<HashJoin>(
+        table_join, right_table_expression_header, params.join_any_take_last_row, /*reserve_num_=*/0, /*instance_id_=*/"",
+        /*use_two_level_maps_=*/false, stats_collecting_params);
+}
+
 static std::shared_ptr<IJoin> tryCreateJoin(
     JoinAlgorithm algorithm,
     std::shared_ptr<TableJoin> & table_join,
@@ -1190,6 +1266,29 @@ static std::shared_ptr<IJoin> tryCreateJoin(
     {
         if (MergeJoin::isSupported(table_join))
             return std::make_shared<MergeJoin>(table_join, right_table_expression_header);
+    }
+
+    if (algorithm == JoinAlgorithm::RADIX_JOIN)
+    {
+        if (radixHashJoinApplicable(table_join, right_table_expression_header))
+            return std::make_shared<RadixHashJoin>(
+                table_join,
+                right_table_expression_header,
+                params.max_threads,
+                params.rhs_size_estimation,
+                params.radix_join_max_partitions_per_pass,
+                params.radix_join_size_tables_by_distinct_estimate,
+                params.radix_join_probe_buffer_fraction,
+                params.radix_join_probe_buffer_min_bytes,
+                params.radix_join_probe_buffer_max_bytes,
+                StatsCollectingParams{
+                    params.hash_table_key_hash,
+                    params.collect_hash_table_stats_during_joins,
+                    params.max_entries_for_hash_table_stats,
+                    params.max_size_to_preallocate_for_joins});
+
+        /// Key gate failed: fall back cleanly to parallel_hash (or plain hash where even that cannot run).
+        return createRadixHashJoinFallback(table_join, right_table_expression_header, params);
     }
 
     if (algorithm == JoinAlgorithm::HASH ||
