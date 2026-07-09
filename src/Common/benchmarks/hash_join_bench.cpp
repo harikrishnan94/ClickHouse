@@ -536,7 +536,10 @@ std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block 
     /// INNER ALL. Note: ClickHouse ANY INNER marks right rows used-once (one output row per
     /// distinct matched right key), which does not match the model's one-match-per-probe-row
     /// assumption; benchmarks therefore use ALL with duplicate-free build keys where the output
-    /// size must equal the probe side.
+    /// size must equal the probe side. With duplicate-free build sides, `onBuildPhaseFinish`
+    /// promotes `All` to `RightAny` (`HashJoin.cpp`), so every timed probe in these benchmarks
+    /// runs the promoted point-lookup path and emits exactly one row per matching probe row -
+    /// the model and the one-row-per-probe output-size assumptions rely on this.
     static const Settings default_settings;
     auto table_join = std::make_shared<TableJoin>(default_settings, /*tmp_volume*/ nullptr, /*tmp_data*/ nullptr);
     table_join->setKind(JoinKind::Inner);
@@ -620,6 +623,10 @@ JoinStats driveJoin(IJoinBench & join, const std::vector<Block> & build_blocks, 
     stats.matches = join.probe(probe_blocks, verify ? &stats.fingerprint : nullptr);
     stats.probe_sec = probe_watch.elapsedSeconds();
     stats.probe_profile = currentProbeProfile() - profile_before;
+
+    Stopwatch teardown_watch;
+    join.teardown();
+    stats.teardown_sec = teardown_watch.elapsedSeconds();
     return stats;
 }
 

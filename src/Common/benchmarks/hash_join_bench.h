@@ -70,10 +70,14 @@ struct JoinStats
 {
     double build_sec = 0;
     double probe_sec = 0;
+    double teardown_sec = 0; /// join-state destruction, timed separately (see IJoinBench::teardown)
     size_t matches = 0;
     UInt64 fingerprint = 0; /// order-independent digest of the output rows (0 unless verified)
     ProbeProfile probe_profile; /// production-code phase breakdown of probe_sec, see ProbeProfile
 
+    /// Excludes teardown_sec on purpose: teardown is reported, not added, mirroring the
+    /// production pipeline, where `IJoin` teardown happens at pipeline destruction, after the
+    /// last output block has already been handed off.
     double total() const { return build_sec + probe_sec; }
 };
 
@@ -96,6 +100,11 @@ public:
 
     /// Optional sub-phase timing details for reporting.
     virtual std::string phaseBreakdown() const { return {}; }
+
+    /// Releases all build/probe state (hash tables, stored blocks). Timed separately by the
+    /// driver, mirroring production: `IJoin` teardown happens at pipeline destruction, after
+    /// the last output block, for both competitors.
+    virtual void teardown() {}
 };
 
 /// Order-independent digest of a Block's rows: commutative over rows (any output order) and

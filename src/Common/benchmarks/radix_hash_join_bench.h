@@ -23,6 +23,7 @@ public:
     void build(const std::vector<Block> & blocks) override;
     size_t probe(const std::vector<Block> & blocks, UInt64 * fingerprint) override;
     std::string phaseBreakdown() const override;
+    void teardown() override;
 
 private:
     WorkerPool & pool;

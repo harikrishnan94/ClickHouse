@@ -51,4 +51,14 @@ size_t ConcurrentHashJoinBench::probe(const std::vector<Block> & blocks, UInt64 
     return rows;
 }
 
+void ConcurrentHashJoinBench::teardown()
+{
+    /// The `ConcurrentHashJoin` destructor already records the size-hint statistics
+    /// (`updateStatistics`, `ConcurrentHashJoin.cpp:253`) and then parallelizes hash-table
+    /// teardown across the pool (`:255-280`). Teardown must run before the next same-key bench
+    /// is constructed for the stats-warm pattern to work; the driver's
+    /// build-probe-teardown-then-next-instance ordering already guarantees this.
+    join.reset();
+}
+
 }
