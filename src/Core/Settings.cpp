@@ -3581,6 +3581,12 @@ Possible values:
 
  [Sort-merge algorithm](https://en.wikipedia.org/wiki/Sort-merge_join) with full sorting of joined tables before joining.
 
+- radix_join
+
+ A variation of `hash` join that radix-partitions the right table by join key into small cache-resident hash tables before probing.
+
+ Supports only `INNER` `ALL` equi-joins whose right-side key columns are fixed-width and non-nullable, with a packed key width that is a multiple of 4 in the range of [4, 64] bytes. For unsupported queries, another available algorithm is used.
+
 - prefer_partial_merge
 
  ClickHouse always tries to use `partial_merge` join if possible, otherwise, it uses `hash`. *Deprecated*, same as `partial_merge,hash`.
@@ -7912,6 +7918,26 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
     DECLARE(UInt64, parallel_hash_join_threshold, 100'000, R"(
 When hash-based join algorithm is applied, this threshold helps to decide between using `hash` and `parallel_hash` (only if estimation of the right table size is available).
 The former is used when we know that the right table size is below the threshold.
+)", 0) \
+    DECLARE(UInt64, radix_join_max_partitions_per_pass, 8192, R"(
+For the `radix_join` algorithm, the maximum number of partitions (fanout) produced by a single radix scatter pass.
+The total number of leaf partitions is split into the minimum number of passes that respect this cap.
+)", 0) \
+    DECLARE(Bool, radix_join_size_tables_by_distinct_estimate, true, R"(
+For the `radix_join` algorithm, size each leaf hash table from the HyperLogLog distinct-key estimate computed during the build scatter, rather than from the raw row count.
+The estimate can only ever shrink a table compared to sizing by row count, so duplicate-heavy build sides get smaller, more cache-resident tables; undersized leaf tables are rebuilt automatically, and join results are unaffected.
+When disabled, leaf tables are sized by row count.
+)", 0) \
+    DECLARE(Float, radix_join_probe_buffer_fraction, 0.15f, R"(
+For the `radix_join` algorithm, the probe-side buffer budget expressed as a fraction of the bytes accumulated by the build side (stored build rows plus leaf hash tables).
+The budget is consumed by the streaming probe; it takes effect once the streaming budgeted probe lands (currently the probe is immediate).
+See also `radix_join_probe_buffer_min_bytes` and `radix_join_probe_buffer_max_bytes`.
+)", 0) \
+    DECLARE(UInt64, radix_join_probe_buffer_min_bytes, 536870912, R"(
+For the `radix_join` algorithm, the lower bound (in bytes) for the probe buffer budget computed from `radix_join_probe_buffer_fraction`.
+)", 0) \
+    DECLARE(UInt64, radix_join_probe_buffer_max_bytes, 0, R"(
+For the `radix_join` algorithm, the upper bound (in bytes) for the probe buffer budget computed from `radix_join_probe_buffer_fraction`. 0 means no upper bound.
 )", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.

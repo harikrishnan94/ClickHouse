@@ -68,6 +68,11 @@ namespace Setting
     extern const SettingsBool allow_general_join_planning;
     extern const SettingsJoinAlgorithm join_algorithm;
     extern const SettingsUInt64 parallel_hash_join_threshold;
+    extern const SettingsUInt64 radix_join_max_partitions_per_pass;
+    extern const SettingsBool radix_join_size_tables_by_distinct_estimate;
+    extern const SettingsFloat radix_join_probe_buffer_fraction;
+    extern const SettingsUInt64 radix_join_probe_buffer_min_bytes;
+    extern const SettingsUInt64 radix_join_probe_buffer_max_bytes;
     extern const SettingsSeconds lock_acquire_timeout;
     extern const SettingsNonZeroUInt64 grace_hash_join_initial_buckets;
     extern const SettingsNonZeroUInt64 grace_hash_join_max_buckets;
@@ -1323,6 +1328,12 @@ JoinAlgorithmParams::JoinAlgorithmParams(const Context & context)
     hash_table_key_hash = 0;
     parallel_hash_join_threshold = settings[Setting::parallel_hash_join_threshold];
 
+    radix_join_max_partitions_per_pass = settings[Setting::radix_join_max_partitions_per_pass];
+    radix_join_size_tables_by_distinct_estimate = settings[Setting::radix_join_size_tables_by_distinct_estimate];
+    radix_join_probe_buffer_fraction = settings[Setting::radix_join_probe_buffer_fraction];
+    radix_join_probe_buffer_min_bytes = settings[Setting::radix_join_probe_buffer_min_bytes];
+    radix_join_probe_buffer_max_bytes = settings[Setting::radix_join_probe_buffer_max_bytes];
+
     grace_hash_join_initial_buckets = settings[Setting::grace_hash_join_initial_buckets];
     grace_hash_join_max_buckets = settings[Setting::grace_hash_join_max_buckets];
 
@@ -1351,6 +1362,12 @@ JoinAlgorithmParams::JoinAlgorithmParams(
     max_entries_for_hash_table_stats = max_entries_for_hash_table_stats_;
     hash_table_key_hash = hash_table_key_hash_;
     parallel_hash_join_threshold = join_settings.parallel_hash_join_threshold;
+
+    radix_join_max_partitions_per_pass = join_settings.radix_join_max_partitions_per_pass;
+    radix_join_size_tables_by_distinct_estimate = join_settings.radix_join_size_tables_by_distinct_estimate;
+    radix_join_probe_buffer_fraction = join_settings.radix_join_probe_buffer_fraction;
+    radix_join_probe_buffer_min_bytes = join_settings.radix_join_probe_buffer_min_bytes;
+    radix_join_probe_buffer_max_bytes = join_settings.radix_join_probe_buffer_max_bytes;
 
     grace_hash_join_initial_buckets = join_settings.grace_hash_join_initial_buckets;
     grace_hash_join_max_buckets = join_settings.grace_hash_join_max_buckets;
