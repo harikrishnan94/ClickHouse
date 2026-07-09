@@ -43,12 +43,36 @@ private:
     SimpleThreadPool pool;
 };
 
+/// Snapshot of production-code per-phase JOIN probe timings (ProfileEvents incremented by the
+/// real HashJoin/ConcurrentHashJoin code paths that IJoinBench::probe drives): hash probe/match
+/// building, output gather/materialization, and (NPHJ only, before two-level maps are merged)
+/// probe-block dispatch across slots. These are the exact same ProfileEvents a real query
+/// reports (e.g. via system.query_log), so subtracting two snapshots around a benchmark probe()
+/// call gives a phase breakdown directly comparable to a real query's, instead of only the
+/// fused probe+gather total `JoinStats::probe_sec` measures.
+struct ProbeProfile
+{
+    double match_sec = 0;    /// HashJoinProbeMatchMicroseconds: hash lookups, building matched-row lists.
+    double gather_sec = 0;   /// HashJoinProbeGatherMicroseconds: output block materialization.
+    double dispatch_sec = 0; /// ConcurrentHashJoinProbeDispatchMicroseconds: NPHJ-only slot scatter.
+
+    ProbeProfile operator-(const ProbeProfile & before) const
+    {
+        return {match_sec - before.match_sec, gather_sec - before.gather_sec, dispatch_sec - before.dispatch_sec};
+    }
+};
+
+/// Current cumulative values (summed over all threads, monotonically increasing) of the
+/// ProfileEvents behind ProbeProfile; take the difference of two snapshots for one timed region.
+ProbeProfile currentProbeProfile();
+
 struct JoinStats
 {
     double build_sec = 0;
     double probe_sec = 0;
     size_t matches = 0;
     UInt64 fingerprint = 0; /// order-independent digest of the output rows (0 unless verified)
+    ProbeProfile probe_profile; /// production-code phase breakdown of probe_sec, see ProbeProfile
 
     double total() const { return build_sec + probe_sec; }
 };

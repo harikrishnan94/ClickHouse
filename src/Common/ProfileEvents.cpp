@@ -422,6 +422,9 @@
     M(JoinSpillingHashJoinSwitchedToGraceJoin, "Number of times a (Concurrent)HashJoin was switched to GraceHashJoin due to memory limit in SpillingHashJoin.", ValueType::Number) \
     M(JoinReorderMicroseconds, "Total time spent executing JOIN reordering algorithm.", ValueType::Microseconds) \
     M(JoinOptimizeMicroseconds, "Total time spent executing JOIN plan optimizations.", ValueType::Microseconds) \
+    M(HashJoinProbeMatchMicroseconds, "Total time spent probing the hash table and building the matched-row list for a JOIN probe block (`HashJoinMethods::joinBlockImpl`), not including output block materialization. Reported per `HashJoin` instance, i.e. once per `ConcurrentHashJoin` slot.", ValueType::Microseconds) \
+    M(HashJoinProbeGatherMicroseconds, "Total time spent materializing JOIN output blocks from a matched-row list (`HashJoinResult::next`): building/replicating right-side columns and lazily replicating left-side columns.", ValueType::Microseconds) \
+    M(ConcurrentHashJoinProbeDispatchMicroseconds, "Total time spent scattering a probe block across `ConcurrentHashJoin`'s per-slot hash tables before matching. Zero once two-level maps have been merged into one after the build phase (the common case at scale), since the whole block is then matched against the shared map directly.", ValueType::Microseconds) \
     M(QueryPlanOptimizeMicroseconds, "Total time spent executing query plan optimizations.", ValueType::Microseconds) \
     M(QueryParseMicroseconds, "Total time spent parsing the query text into an AST.", ValueType::Microseconds) \
     M(QueryAnalysisMicroseconds, "Total time spent building the query tree and running analyzer passes (resolves identifiers, types, expressions).", ValueType::Microseconds) \

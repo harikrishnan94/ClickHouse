@@ -174,6 +174,12 @@ struct Config
     bool verify = false;
     UInt64 seed = 0x8899AABBCCDDEEFFULL;
 
+    /// Which real join algorithm(s) to build+drive in --join-nb and the validation joins; lets
+    /// a debugging session iterate on just one side (e.g. NPHJ alone, to compare its production
+    /// ProfileEvents against a real query) without paying for the other's construction and run.
+    bool run_nphj = true;
+    bool run_rphj = true;
+
     size_t buildRowWidth() const { return 8 * (1 + build_payload_columns); }
     size_t probeRowWidth() const { return 8 * (1 + probe_payload_columns); }
 };
@@ -1164,16 +1170,23 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
     /// later runs preallocate the maps (steady state of repeated queries).
     const UInt64 stats_key = intHash64(n_b * 1000003 + n_p);
 
+    if (!cfg.run_nphj)
+        fmt::print("  (--algo rphj: skipping NPHJ)\n");
+    if (!cfg.run_rphj)
+        fmt::print("  (--algo nphj: skipping RPHJ)\n");
+
     for (size_t run = 0; run < cfg.runs; ++run)
     {
-        JoinStats np;
+        std::optional<JoinStats> np;
+        if (cfg.run_nphj)
         {
             ConcurrentHashJoinBench bench(pool, left_header, right_header, stats_key);
             np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
         }
 
-        JoinStats rp;
+        std::optional<JoinStats> rp;
         std::string rp_detail;
+        if (cfg.run_rphj)
         {
             RadixHashJoinBench bench(pool, left_header, right_header, p_star, f_max);
             rp = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
@@ -1181,16 +1194,32 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
         }
 
         std::string result_check;
-        if (cfg.verify)
-            result_check = np.fingerprint == rp.fingerprint
-                ? fmt::format(", results equal (fingerprint {:x})", np.fingerprint)
-                : fmt::format(", RESULTS DIFFER (fingerprints {:x} vs {:x})", np.fingerprint, rp.fingerprint);
+        if (cfg.verify && np && rp)
+            result_check = np->fingerprint == rp->fingerprint
+                ? fmt::format(", results equal (fingerprint {:x})", np->fingerprint)
+                : fmt::format(", RESULTS DIFFER (fingerprints {:x} vs {:x})", np->fingerprint, rp->fingerprint);
 
-        fmt::print("  run {}: NPHJ total {:.2f} ms (build {:.2f} ms, probe+gather {:.2f} ms); "
-                   "RPHJ total {:.2f} ms (build {:.2f} ms, probe {:.2f} ms; {}); matches {}{}{}\n",
-            run, np.total() * 1e3, np.build_sec * 1e3, np.probe_sec * 1e3,
-            rp.total() * 1e3, rp.build_sec * 1e3, rp.probe_sec * 1e3, rp_detail,
-            np.matches, np.matches == rp.matches ? "" : " MISMATCH", result_check);
+        /// ProfileEvents are summed over all threads; divide by thread count to get a per-thread
+        /// average directly comparable to the wall-clock phase times (build_sec/probe_sec).
+        const double inv_threads = 1.0 / static_cast<double>(cfg.threads);
+
+        if (np)
+            fmt::print("  run {}: NPHJ total {:.2f} ms (build {:.2f} ms, probe+gather {:.2f} ms; "
+                       "match/thr {:.2f} ms, gather/thr {:.2f} ms, dispatch/thr {:.2f} ms); matches {}\n",
+                run, np->total() * 1e3, np->build_sec * 1e3, np->probe_sec * 1e3,
+                np->probe_profile.match_sec * 1e3 * inv_threads, np->probe_profile.gather_sec * 1e3 * inv_threads,
+                np->probe_profile.dispatch_sec * 1e3 * inv_threads, np->matches);
+
+        if (rp)
+            fmt::print("  run {}: RPHJ total {:.2f} ms (build {:.2f} ms, probe {:.2f} ms; {}; "
+                       "match/thr {:.2f} ms, gather/thr {:.2f} ms); matches {}\n",
+                run, rp->total() * 1e3, rp->build_sec * 1e3, rp->probe_sec * 1e3, rp_detail,
+                rp->probe_profile.match_sec * 1e3 * inv_threads, rp->probe_profile.gather_sec * 1e3 * inv_threads,
+                rp->matches);
+
+        if (np && rp)
+            fmt::print("  run {}: NPHJ vs RPHJ matches {} vs {}{}{}\n",
+                run, np->matches, rp->matches, np->matches == rp->matches ? "" : " MISMATCH", result_check);
     }
 }
 
@@ -1242,14 +1271,16 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
             const Block left_header = probe_blocks.front().cloneEmpty();
             const Block right_header = build_blocks.front().cloneEmpty();
 
-            JoinStats np;
+            std::optional<JoinStats> np;
+            if (cfg.run_nphj)
             {
                 ConcurrentHashJoinBench bench(pool, left_header, right_header, /*stats_key*/ intHash64(n_b * 1000003 + n_p));
                 np = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
             }
 
-            JoinStats rp;
+            std::optional<JoinStats> rp;
             std::string rp_detail;
+            if (cfg.run_rphj)
             {
                 RadixHashJoinBench bench(pool, left_header, right_header, p_star, MAX_FANOUT_PER_PASS);
                 rp = driveJoin(bench, build_blocks, probe_blocks, cfg.verify);
@@ -1257,22 +1288,36 @@ void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & mo
             }
 
             const char * pred_win = pred.rpTotal() < pred.npTotal() ? "radix" : "non-part";
-            const char * meas_win = rp.total() < np.total() ? "radix" : "non-part";
-            const bool counts_ok = np.matches == rp.matches;
-            const bool results_ok = !cfg.verify || np.fingerprint == rp.fingerprint;
-            const char * match_check = !counts_ok ? "MISMATCH" : (!results_ok ? "DIFFER" : "ok");
+            const char * meas_win = (np && rp) ? (rp->total() < np->total() ? "radix" : "non-part") : "-";
+            const char * match_check = "-";
+            if (np && rp)
+            {
+                const bool counts_ok = np->matches == rp->matches;
+                const bool results_ok = !cfg.verify || np->fingerprint == rp->fingerprint;
+                match_check = !counts_ok ? "MISMATCH" : (!results_ok ? "DIFFER" : "ok");
+            }
 
             fmt::print("{:>12}{:>8}{:>13.2f}{:>13.2f}{:>13.2f}{:>13.2f}{:>12}{:>12}{:>10}\n",
-                n_b, p_star, pred.npTotal() * 1e3, np.total() * 1e3, pred.rpTotal() * 1e3, rp.total() * 1e3,
-                pred_win, meas_win, match_check);
+                n_b, p_star, pred.npTotal() * 1e3, np ? np->total() * 1e3 : 0.0,
+                pred.rpTotal() * 1e3, rp ? rp->total() * 1e3 : 0.0, pred_win, meas_win, match_check);
 
-            fmt::print("      NP meas (build/probe+gather): {:.2f} / {:.2f} ms, pred: {:.2f} / {:.2f} ms;  "
-                       "RP meas (build/probe): {:.2f} / {:.2f} ms ({});  "
-                       "RP pred (scatter/build/probe+gather): {:.2f} / {:.2f} / {:.2f} ms\n",
-                np.build_sec * 1e3, np.probe_sec * 1e3,
-                pred.np_build_sec * 1e3, pred.np_probe_sec * 1e3,
-                rp.build_sec * 1e3, rp.probe_sec * 1e3, rp_detail,
-                pred.rp_scatter_sec * 1e3, pred.rp_build_sec * 1e3, pred.rp_probe_sec * 1e3);
+            /// ProfileEvents are summed over all threads; divide by thread count to get a
+            /// per-thread average directly comparable to the wall-clock phase times below.
+            const double inv_threads = 1.0 / static_cast<double>(cfg.threads);
+
+            if (np)
+                fmt::print("      NP meas (build/probe+gather): {:.2f} / {:.2f} ms (match/thr {:.2f} / gather/thr {:.2f} / dispatch/thr {:.2f} ms), "
+                           "pred: {:.2f} / {:.2f} ms\n",
+                    np->build_sec * 1e3, np->probe_sec * 1e3,
+                    np->probe_profile.match_sec * 1e3 * inv_threads, np->probe_profile.gather_sec * 1e3 * inv_threads,
+                    np->probe_profile.dispatch_sec * 1e3 * inv_threads,
+                    pred.np_build_sec * 1e3, pred.np_probe_sec * 1e3);
+            if (rp)
+                fmt::print("      RP meas (build/probe): {:.2f} / {:.2f} ms ({}; match/thr {:.2f} / gather/thr {:.2f} ms); "
+                           "pred (scatter/build/probe+gather): {:.2f} / {:.2f} / {:.2f} ms\n",
+                    rp->build_sec * 1e3, rp->probe_sec * 1e3, rp_detail,
+                    rp->probe_profile.match_sec * 1e3 * inv_threads, rp->probe_profile.gather_sec * 1e3 * inv_threads,
+                    pred.rp_scatter_sec * 1e3, pred.rp_build_sec * 1e3, pred.rp_probe_sec * 1e3);
         }
     }
 }
@@ -1306,7 +1351,8 @@ int main(int argc, char ** argv)
         ("quick", po::bool_switch(&cfg.quick), "skip the validation joins")
         ("verify", po::bool_switch(&cfg.verify), "compare NPHJ and RPHJ outputs via order-independent row fingerprints (adds overhead to probe timings)")
         ("join-nb", po::value<size_t>()->default_value(0), "run only the real joins at this exact build-side row count (skips all kernels)")
-        ("join-np", po::value<size_t>()->default_value(0), "probe-side row count for --join-nb (default: same as --join-nb)");
+        ("join-np", po::value<size_t>()->default_value(0), "probe-side row count for --join-nb (default: same as --join-nb)")
+        ("algo", po::value<std::string>()->default_value("both"), "which real join(s) to build+drive in --join-nb and the validation joins: both (default), nphj, rphj");
 
     po::variables_map options;
     po::store(po::parse_command_line(argc, argv, desc), options);
@@ -1320,6 +1366,28 @@ int main(int argc, char ** argv)
 
     cfg.threads = options.contains("threads") ? options["threads"].as<size_t>() : getNumberOfCPUCoresToUse();
     cfg.hit_rate = std::clamp(cfg.hit_rate, 0.01, 1.0);
+
+    const std::string algo = options["algo"].as<std::string>();
+    if (algo == "both")
+    {
+        cfg.run_nphj = true;
+        cfg.run_rphj = true;
+    }
+    else if (algo == "nphj")
+    {
+        cfg.run_nphj = true;
+        cfg.run_rphj = false;
+    }
+    else if (algo == "rphj")
+    {
+        cfg.run_nphj = false;
+        cfg.run_rphj = true;
+    }
+    else
+    {
+        fmt::print(stderr, "invalid --algo '{}': expected one of both, nphj, rphj\n", algo);
+        return 1;
+    }
 
     CacheInfo cache = detectCaches();
     if (options.contains("l1"))

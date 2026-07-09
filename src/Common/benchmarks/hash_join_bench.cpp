@@ -18,6 +18,7 @@
 #include <Common/CurrentMetrics.h>
 #include <Common/HashTable/Hash.h>
 #include <Common/PODArray.h>
+#include <Common/ProfileEvents.h>
 #include <Common/Stopwatch.h>
 #include <Common/assert_cast.h>
 
@@ -28,8 +29,24 @@ namespace CurrentMetrics
     extern const Metric LocalThreadScheduled;
 }
 
+namespace ProfileEvents
+{
+    extern const Event HashJoinProbeMatchMicroseconds;
+    extern const Event HashJoinProbeGatherMicroseconds;
+    extern const Event ConcurrentHashJoinProbeDispatchMicroseconds;
+}
+
 namespace DB::JoinBench
 {
+
+ProbeProfile currentProbeProfile()
+{
+    return {
+        static_cast<double>(ProfileEvents::global_counters[ProfileEvents::HashJoinProbeMatchMicroseconds]) * 1e-6,
+        static_cast<double>(ProfileEvents::global_counters[ProfileEvents::HashJoinProbeGatherMicroseconds]) * 1e-6,
+        static_cast<double>(ProfileEvents::global_counters[ProfileEvents::ConcurrentHashJoinProbeDispatchMicroseconds]) * 1e-6,
+    };
+}
 
 std::atomic<UInt64> g_sink{0};
 
@@ -497,9 +514,11 @@ JoinStats driveJoin(IJoinBench & join, const std::vector<Block> & build_blocks, 
     join.build(build_blocks);
     stats.build_sec = build_watch.elapsedSeconds();
 
+    const ProbeProfile profile_before = currentProbeProfile();
     Stopwatch probe_watch;
     stats.matches = join.probe(probe_blocks, verify ? &stats.fingerprint : nullptr);
     stats.probe_sec = probe_watch.elapsedSeconds();
+    stats.probe_profile = currentProbeProfile() - profile_before;
     return stats;
 }
 
