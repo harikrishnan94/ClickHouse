@@ -1,5 +1,10 @@
 # RADIX-JOIN-V1 — Review record (§12)
 
+> Cadence change (D-0011, user directive, 2026-07-09): per-unit reviews are deferred. U2–U5 close
+> on acceptance evidence alone; ONE consolidated adversarial review of the full implementation
+> runs after U5, in parallel with U6. The U2 fan-out that was mid-flight was stopped unfinished;
+> its scope is folded into the consolidated pass.
+
 ## U1 — Component port — single adversarial pass (low-risk tier) — 2026-07-09T18:30Z
 
 Reviewer: independent subagent, clean context (spec + artifacts + §9 only).

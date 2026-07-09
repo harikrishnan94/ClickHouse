@@ -213,3 +213,80 @@ Entries are never edited after the fact; corrections are new entries referencing
 - Learnings: R3's fix means U3's non-fixed-width fallback is needed only for genuinely
   variable-width columns (String, Nullable, LowCardinality, Array).
 - Verdict: DONE — U1 GREEN.
+
+### L0009 — U2 opened: prereg + decisions written; C1+C2 delegated  [unit U2]  [iteration 1]  2026-07-09T18:46:59Z
+- Goal / hypothesis: U2 per prereg (bep/prereg.md U2 section): gate table + equality matrix
+  pre-registered; decisions D-0003 (runPostBuildPhase), D-0004 (lazy at group granularity),
+  D-0005 (immediate per-block degenerate probe), D-0006 (radix_join naming, five settings),
+  D-0007 (no LLC counter / no CHJ instrumentation).
+- Holistic impact note (§2.3): C1's IJoin lane overloads are default-forwarding — zero behavior
+  change for every existing join; JoiningTransform/QueryPipelineBuilder changes only ADD a stored
+  index/lane, no scheduling change. C2's enum+settings are inert until the C4 planner branch —
+  EXCEPT join_algorithm='radix_join' alone pre-C4 throws NOT_IMPLEMENTED (acceptable transient
+  state inside the unit; C4 lands before the unit closes). LeafTable group-build refactor (C3)
+  touches a U1-verified component — U1 suite re-verification is pre-registered (D-0002 trigger).
+  Old analyzer intentionally not taught radix_join (documented; new analyzer is default).
+- What I did: wrote prereg + 5 decisions; delegated C1+C2 to a subagent (donor re-application with
+  adaptations; investigates pre-registered risk R-a: lanes vs max_threads).
+- How verified: pending (subagent gates + my re-run + C3/C4 + full A–E review at unit end).
+- Verdict: CONTINUE.
+
+### L0010 — U2 equality-matrix harness built and self-validated  [unit U2]  [iteration 1]  2026-07-09T19:26:07Z
+- Goal / hypothesis: the pre-registered U2 matrix (prereg U2) needs a driver whose own correctness
+  is established BEFORE radix_join exists, so harness defects cannot masquerade as join bugs.
+- What I did: delegated bep/tools/u2_equality_matrix.py (+README) to a subagent. 9 key configs
+  (incl. the 12 B composite for the 1e8 subset), dups {unique, x8, skew(quadratic bucketing, max
+  multiplicity 15)}, hit {1.0, 0.5, 0.05} via exact hit periods, probe = 2x build, byte-exact
+  TSV comparison vs 'hash', t=1 and t=32 at 1e5, query_plan_join_swap_table=false pinned.
+- How verified (harness self-test, all on binary 26.7.1.1 reldeb):
+  parallel_hash candidate: 1e5 full cross + edges 156/156 PASS (5.3 s), 1e7 full cross 72/72
+  PASS (34 s), 1e8 subset 4/4 PASS (30 s, --max-memory 60e9); full_sorting_merge 3/3 PASS;
+  negative control (bogus algorithm) → ERROR + exit 1. TSVs in bep/tools/results/.
+- Result: harness GREEN. Memory finding: 1e8 FS64 point needs ~21.4 GiB (README: --jobs 2,
+  --max-memory 60e9 for the 1e8 tier).
+- Interpretation: acceptance oracle ready; radix_join runs need only the post-C4 binary.
+- Learnings: pin query_plan_join_swap_table=false in ALL later SQL A/B work (incl. U6) so the
+  build side stays on the right.
+- Verdict: DONE (tooling).
+
+### L0011 — U2 result-equality matrix: 232/232 PASS  [unit U2]  [iteration 1]  2026-07-09T19:58:17Z
+- Goal / hypothesis: prereg U2 matrix — radix_join byte-equal to hash on every pre-registered
+  point; any mismatch = stop-and-diagnose finding.
+- What I did: ran bep/tools/u2_equality_matrix.py (harness self-validated in L0010) with
+  --candidate radix_join on the post-C4 binary (commits 4c039eb816c + 0dee4ea0d38).
+- How I did it:
+  1e5 --jobs 8 · 1e7 --jobs 4 · 1e8 --jobs 2 --max-memory 60e9 (exact commands in tmp/u2_matrix_*.log).
+- How verified: driver exit codes 0/0/0 AND per-TSV status counts (defense vs empty runs):
+  156 PASS (1e5 full cross of 8 key configs x 3 dup modes x 3 hit rates + 6 edge cases, each at
+  max_threads 1 AND 32), 72 PASS (1e7 full cross), 4 PASS (1e8 pre-registered subset).
+  TSVs: bep/tools/results/u2_matrix_radix_join_20260709_{195447,195453,195632}.tsv.
+- Result: 232/232 byte-identical to hash. Zero FAIL/ERROR.
+- Interpretation: prereg prediction HELD. Combined with: 50 reldeb gtests (incl. lazy
+  exactly-once), stateless 04508/04509 stable x3, EXPLAIN engagement check, lazy ProfileEvents
+  proof (LeafGroupBuilds 0 on empty probe / == non-empty groups on real probe) — the U2
+  correctness claim now has >= 3 independent source classes. Sanitizer gates omitted per D-0009
+  (user directive).
+- Learnings: none new; R-d memory behavior already recorded (L-pending, see C3 report).
+- Verdict: CONTINUE (awaiting existing-join-subset no-harm run, then review fan-out).
+
+### L0012 — U2 closed: acceptance-green, review deferred per D-0011  [unit U2]  [iteration 1]  2026-07-09T20:12:47Z
+- Goal / hypothesis: close U2 per the amended process (D-0009/D-0010/D-0011 user directives).
+- Acceptance evidence (final; sources across independent classes):
+  1. Equality oracle: 232/232 matrix PASS vs hash (L0011; TSVs in bep/tools/results/).
+  2. Unit oracles: 50 reldeb gtests green (incl. LazyGroupBuildExactlyOnceUnderConcurrentProbes).
+  3. Stateless harness: 04508 (17 gate rows incl. all pre-registered accept/reject shapes,
+     fallback equality) + 04509 (distinct-estimate on/off) — deterministic x3 vs references.
+  4. Structural: EXPLAIN PLAN description=1 shows Algorithm: RadixHashJoin / ConcurrentHashJoin /
+     HashJoin exactly per gate row.
+  5. Lazy demo: ProfileEvents — empty probe: RadixHashJoinLeafGroupBuilds absent(0) with build
+     events >0; probed query: LeafGroupBuilds == non-empty groups; exactly-once gtest.
+  6. Edge/no-harm smokes: Sparse/Const right columns, WITH TOTALS, extremes, right-TOTALS
+     subquery, empty sides, max_threads=1 — all equal hash.
+  Waived per user directives: sanitizer runs (D-0009), full existing-join suite (D-0010).
+  Deferred per D-0011: adversarial review (consolidated post-U5 pass, parallel with U6).
+- Commits: 6503c7cfa9a (C1), d8bd320606c (C2), 4c039eb816c (C3), 0dee4ea0d38 (C4).
+- Prediction-vs-observation: prereg gate table and matrix predictions HELD in full; risks R-a
+  (resolved: freelist scratch, D-0008), R-b (chassert + Sparse/Const smoke), R-c (header path
+  verified), R-d (CONFIRMED hazard: dup-heavy 20M-row output as ONE ~1 GB JoinResult block vs
+  18 MB for hash — carried to U3 as a budgeted-emission obligation).
+- Verdict: DONE — U2 acceptance-green (review pending per D-0011).

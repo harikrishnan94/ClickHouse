@@ -97,7 +97,64 @@ Expected: all green in reldeb + ASan. Any semantic divergence between ported ker
 behavior on the same inputs = finding to investigate (cross-check available: run the bench binary).
 
 ## U2 — Skeleton + build side
-(pending)
+Pre-registered 2026-07-09T19:10Z, before any U2 implementation. Decisions D-0003..D-0007 bind.
+
+### Scope recap (per spec §8-U2, adapted by D-0003/4/5/6/7)
+`RadixHashJoin : IJoin` in src/Interpreters/RadixHashJoin/ (ported from donor, adapted:
+StoredColumnsIndex/StoredBlock migration, runPostBuildPhase hook, lazy group builds, lane-scratch
+sizing robust to any lane index); JoinAlgorithm::RADIX_JOIN + "radix_join"; five radix_join_*
+settings + history in 26.7 + JoinSettings/QueryPlanSerializationSettings/JoinAlgorithmParams
+plumbing; IJoin lane overloads + using-decls in 9 implementors; JoiningTransform stream_index +
+FillingRightJoinSideTransform build_lane + QueryPipelineBuilder lane assignment; planner gate
+radixHashJoinApplicable + createRadixJoinFallback (adapted to pass stats_collecting_params) +
+tryCreateJoin dispatch; HashTablesStatistics RadixHashJoinEntry; ProfileEvents (Build/Probe/
+CollectMatches/PackHashRoute/LeafGroupBuilds µs+count) + 3 CurrentMetrics + ThreadName::RADIX_JOIN.
+Probe = immediate per-block (D-0005). Old analyzer NOT taught radix_join (documented limitation;
+tests pin enable_analyzer=1).
+
+### Commit seams (each must build green)
+C1 lane plumbing (IJoin + transforms + pipeline builder, inert alone) · C2 enum/settings/plumbing
+(inert-ish: radix_join alone pre-C4 throws NOT_IMPLEMENTED — acceptable intermediate) ·
+C3 RadixHashJoin class + events/metrics/stats + LeafTable group-build refactor + gtests ·
+C4 planner gate/fallback/dispatch + stateless SQL tests.
+
+### Pre-registered gate acceptance/rejection table (each row exercised by SQL test; rejected rows
+must fall back and produce results equal to `hash`)
+ACCEPT: k UInt64 · k UInt32 · (UInt64,UInt32) · k FixedString(16) · (UInt64×8)=64 B · k Date32
+  (4 B) · k UUID (16 B).
+REJECT (gate): k UInt8 (w=1, %4 fail) · k String (not fixed) · k LowCardinality(String) ·
+  k Nullable(UInt64) · (UInt64,UInt8)=9 B (%4 fail) · k FixedString(68) (>64) · k FixedString(3)
+  (w=3) · LEFT JOIN (kind) · INNER ANY (strictness) · OR-disjunct ON (oneDisjunct fail) ·
+  join with StorageJoin (special storage).
+Engagement proof: EXPLAIN (description) shows Algorithm: RadixHashJoin for accepted shapes and the
+fallback name for rejected; system.query_log ProfileEvents[RadixHashJoinBuildMicroseconds] > 0 on
+accepted shapes only.
+
+### Pre-registered result-equality matrix (radix_join vs hash; sorted-result fingerprint =
+(count(), sum(cityHash64(all cols)), and full sorted output on <=1e5 shapes))
+Axes: key widths {4,8,16,32,64} B, single + multi-column mixes; duplicates {unique, x8, zipf-skew};
+hit rates {1.0, 0.5, 0.05}; build rows {1e5, 1e7}: FULL CROSS at 1e5 and 1e7.
+At 1e8 rows (memory/time bound): pre-registered SUBSET {8 B unique hit1.0, 8 B x8 hit0.05,
+64 B unique hit0.5, (UInt64,UInt32) zipf hit0.5}. Plus: empty build side, empty probe side,
+all-miss (hit 0), one-row build. TOTALS + extremes: one WITH TOTALS and one extremes=1 query
+equal vs hash. Expected: byte-equal results everywhere; any mismatch = stop-and-diagnose finding.
+
+### Lazy leaf build demonstration (D-0004; pre-registered evidence)
+(1) empty-probe query: RadixHashJoinLeafGroupBuilds == 0 while build events > 0;
+(2) full probe: LeafGroupBuilds == number of non-empty groups (gtest asserts exactly-once under
+    16 concurrent probe threads x 100 blocks);
+(3) U1 suite still green after the LeafTable per-group refactor (D-0002 revisit re-verification).
+
+### Pre-registered risks/unknowns to resolve with evidence during U2
+R-a: max_streams vs max_threads — can lanes exceed ctor max_threads on HEAD? (donor threw
+  LOGICAL_ERROR). Resolve by reading pipeline code; implement lane storage safe for any index.
+R-b: StoredBlock::replicated_columns — our normalized materialized right blocks must never carry
+  them (chassert + test with replicated-prone input e.g. Sparse/Const columns).
+R-c: header-time joinBlock (empty block, pre-build) must emit the exact output header
+  transformHeader expects (donor handled; verify against HEAD's JoiningTransform.cpp:30-39).
+R-d: JoinResult single-block emission with duplicate-heavy output (no max_block_size splitting,
+  donor behavior) — acceptable for U2 (documented), revisit at U3 with max_joined_block_rows.
+Expected outcome: all gates green; any semantic adaptation beyond the listed ones = logged finding.
 
 ## U3 — Streaming budgeted probe
 (pending)
