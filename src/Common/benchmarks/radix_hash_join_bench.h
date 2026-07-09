@@ -25,6 +25,17 @@ public:
     std::string phaseBreakdown() const override;
     void teardown() override;
 
+    /// BEP probe-budget emulation: consume the probe side in `waves` consecutive windows of
+    /// blocks; each window is scattered and probed against every touched partition, then its
+    /// scattered chunks are dropped - i.e. one window = one probe-buffer budget of
+    /// |probe| / waves bytes, and each partition is revisited once per wave (paying the
+    /// partition working-set reload) instead of once per join. `waves` == 1 is the plain
+    /// radix probe. Timings land in probeScatterSec/probeJoinSec (summed over waves).
+    size_t probeWaves(const std::vector<Block> & blocks, size_t waves, UInt64 * fingerprint);
+
+    double probeScatterSec() const { return probe_scatter_sec; }
+    double probeJoinSec() const { return probe_join_sec; }
+
 private:
     WorkerPool & pool;
     Block left_header;
@@ -34,6 +45,7 @@ private:
     std::vector<std::unique_ptr<HashJoin>> partition_joins;
     double build_scatter_sec = 0;
     double probe_scatter_sec = 0;
+    double probe_join_sec = 0;
 };
 
 }

@@ -78,34 +78,74 @@ void RadixHashJoinBench::build(const std::vector<Block> & blocks)
 
 size_t RadixHashJoinBench::probe(const std::vector<Block> & blocks, UInt64 * fingerprint)
 {
-    Stopwatch scatter_watch;
-    auto probe_parts = scatterSide(pool, blocks, pass_bits);
-    probe_scatter_sec = scatter_watch.elapsedSeconds();
+    return probeWaves(blocks, /*waves*/ 1, fingerprint);
+}
+
+size_t RadixHashJoinBench::probeWaves(const std::vector<Block> & blocks, size_t waves, UInt64 * fingerprint)
+{
+    probe_scatter_sec = 0;
+    probe_join_sec = 0;
+
+    /// Single-pass partitioning (the common case: p_star <= f_max) runs the fused streaming
+    /// loop - one pool.run for all waves, std::barrier between phases, persistent per-worker
+    /// scratch - so per-wave overhead stays flat as the budget shrinks. The legacy per-wave
+    /// scatterSide loop below remains only for multi-pass splits (p_star > f_max).
+    if (pass_bits.size() == 1)
+    {
+        StreamingWaveStats stats;
+        const size_t rows = streamingWaveProbe(
+            pool, blocks, pass_bits[0], waves,
+            [&](size_t p, Chunk chunk, UInt64 * digest)
+            { return drainJoinResult(partition_joins[p]->joinBlock(toBlock(chunk, left_header)), digest); },
+            fingerprint, stats);
+        probe_scatter_sec = stats.scatter_sec;
+        probe_join_sec = stats.probe_sec;
+        return rows;
+    }
 
     std::atomic<size_t> rows{0};
     std::atomic<UInt64> digest{0};
-    std::atomic<size_t> next_partition{0};
-    pool.run([&](size_t /*tid*/)
-    {
-        size_t local_rows = 0;
-        UInt64 local_digest = 0;
-        for (size_t p = next_partition.fetch_add(1, std::memory_order_relaxed); p < probe_parts.size();
-             p = next_partition.fetch_add(1, std::memory_order_relaxed))
-        {
-            for (const auto & chunk : probe_parts[p])
-                local_rows += drainJoinResult(
-                    partition_joins[p]->joinBlock(toBlock(chunk, left_header)), fingerprint ? &local_digest : nullptr);
 
-            /// Free the consumed scattered probe input before moving to the next partition:
-            /// genuine RP probe-side work with no NP analogue. The join itself is NOT reset
-            /// here - teardown() times that separately, matching a real query's pipeline
-            /// destruction happening after the last output block.
-            probe_parts[p].clear();
-        }
-        g_sink += local_rows;
-        rows += local_rows;
-        digest += local_digest;
-    });
+    /// One wave = one probe-buffer-budget's worth of input: scattered, probed against every
+    /// touched partition, dropped. Wave-major order means each partition is revisited once per
+    /// wave with 1/waves of its probe rows, with all other partitions touched in between - the
+    /// cache-reuse pattern of BEP evicting at a budget of |probe| / waves bytes.
+    const size_t num_waves = std::max<size_t>(1, std::min(waves, blocks.size()));
+    for (size_t w = 0; w < num_waves; ++w)
+    {
+        const std::vector<Block> window(
+            blocks.begin() + blocks.size() * w / num_waves,
+            blocks.begin() + blocks.size() * (w + 1) / num_waves);
+
+        Stopwatch scatter_watch;
+        auto probe_parts = scatterSide(pool, window, pass_bits);
+        probe_scatter_sec += scatter_watch.elapsedSeconds();
+
+        Stopwatch join_watch;
+        std::atomic<size_t> next_partition{0};
+        pool.run([&](size_t /*tid*/)
+        {
+            size_t local_rows = 0;
+            UInt64 local_digest = 0;
+            for (size_t p = next_partition.fetch_add(1, std::memory_order_relaxed); p < probe_parts.size();
+                 p = next_partition.fetch_add(1, std::memory_order_relaxed))
+            {
+                for (const auto & chunk : probe_parts[p])
+                    local_rows += drainJoinResult(
+                        partition_joins[p]->joinBlock(toBlock(chunk, left_header)), fingerprint ? &local_digest : nullptr);
+
+                /// Free the consumed scattered probe input before moving to the next partition:
+                /// genuine RP probe-side work with no NP analogue. The join itself is NOT reset
+                /// here - teardown() times that separately, matching a real query's pipeline
+                /// destruction happening after the last output block.
+                probe_parts[p].clear();
+            }
+            g_sink += local_rows;
+            rows += local_rows;
+            digest += local_digest;
+        });
+        probe_join_sec += join_watch.elapsedSeconds();
+    }
     if (fingerprint)
         *fingerprint += digest;
     return rows;

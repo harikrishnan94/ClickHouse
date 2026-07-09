@@ -1291,6 +1291,99 @@ void printGridAndCrossover(const ModelInputs & m)
 }
 
 
+/// ---------------------------------------------------------------------------------------------
+/// Fraction crossover: with the probe side SMALLER than the build side, the partitioned join's
+/// build-side work (shuffle + per-partition builds, net of NPHJ's own build cost) is an
+/// investment that only per-probe-row savings can amortize. For fixed N_b, P* does not depend
+/// on N_p, so gain(f) = T_NP - T_RP at N_p = f * N_b is exactly linear in f, and the minimal
+/// winning fraction has the closed form
+///
+///   f* = -gain(0) / gain'(f)
+///      = (c_s*w_b - dBuild) / (dPG - c_s*w_p),   c_s = n_pass / B_scatter (per byte)
+///
+/// The RP probe curve (runProbeKernelRP) probes tables still cache-warm from their untimed
+/// rebuild, so it excludes the compulsory reload of each partition's table + stored build rows
+/// that a real radix join pays when probing a partition long after building it (all P* builds
+/// have evicted each other by then). That reload,
+///
+///   C_reload = (P* * htBytesReserved(D/P*) + N_b*w_b) / B_read,
+///
+/// is independent of N_p and matters exactly in this small-probe regime, so f* is reported both
+/// without ("warm") and with ("+reload") it, using the measured memcpy bandwidth as B_read.
+/// Real-join validation at fractional N_p decides which is closer to reality.
+/// ---------------------------------------------------------------------------------------------
+void printFractionCrossover(const ModelInputs & m)
+{
+    const double np_max_bytes = m.build_np.points.back().first;
+
+    fmt::print("\n=== fraction crossover: minimal f = N_p/N_b where the partitioned join wins (unique keys) ===\n");
+    fmt::print("{:>8}{:>12}{:>8}{:>7}{:>12}{:>12}{:>12}{:>12}{:>12}{:>12}{:>14}{:>14}\n",
+        "N_b", "HT size", "P*", "passes",
+        "dBuild ns", "dPG ns", "scat_b ns", "scat_p ns", "reload ms",
+        "f* warm", "f* +reload", "min N_p");
+
+    for (size_t k = 22; k <= 30; ++k)
+    {
+        const size_t n_b = 1ULL << k;
+        const double d = static_cast<double>(n_b);
+        auto p0 = predict(m, d, /*n_p*/ 0.0, d);
+        auto p1 = predict(m, d, /*n_p*/ d, d);
+
+        const std::string nb_label = fmt::format("2^{}{}", k,
+            static_cast<double>(htBytesForDistinct(n_b)) > np_max_bytes ? "*" : "");
+
+        if (p1.p_star <= 1)
+        {
+            fmt::print("{:>8}{:>12}{:>8}{:>7}  (P* = 1: degenerates to the non-partitioned join)\n",
+                nb_label, formatBytes(static_cast<double>(htBytesForDistinct(n_b))), p1.p_star, p1.n_pass);
+            continue;
+        }
+
+        /// All per-row terms derived from predict() itself, so they include the pass split and
+        /// the measured 2-pass scatter point exactly as the grid predictions do.
+        const double scat_b_ns = p0.rp_scatter_sec / d * 1e9;                       /// build-side shuffle per build row
+        const double scat_p_ns = (p1.rp_scatter_sec - p0.rp_scatter_sec) / d * 1e9; /// probe-side shuffle per probe row
+        const double d_build_ns = (p0.np_build_sec - p0.rp_build_sec) / d * 1e9;    /// NP build - RP build per build row
+        const double d_pg_ns = (p1.np_probe_sec - p1.rp_probe_sec) / d * 1e9;       /// NP probe - RP probe per probe row
+
+        const double gain0 = p0.npTotal() - p0.rpTotal();
+        const double slope = (p1.npTotal() - p1.rpTotal()) - gain0; /// net RP gain per unit f
+
+        const double reload_bytes
+            = static_cast<double>(p1.p_star)
+                * static_cast<double>(htBytesForDistinctReserved(std::max<size_t>(1, n_b / p1.p_star)))
+            + d * static_cast<double>(m.w_b);
+        const double reload_sec = reload_bytes / m.memcpy_bytes_per_sec;
+
+        /// gain(f) = gain0 - extra + slope * f; the winning f-range depends on both signs:
+        ///   slope > 0: probe rows amortize the build-side investment -> wins for f > f*
+        ///   slope < 0: each probe row is a net cost -> wins for f < f_cap (build-side gain only)
+        const auto fraction_cell = [&](double extra) -> std::string
+        {
+            const double g0 = gain0 - extra;
+            if (slope > 0)
+                return g0 >= 0 ? "always" : fmt::format("f>{:.4f}", -g0 / slope);
+            if (slope < 0)
+                return g0 <= 0 ? "never" : fmt::format("f<{:.4f}", g0 / -slope);
+            return g0 > 0 ? "always" : "never";
+        };
+
+        std::string min_np = "-";
+        if (slope > 0 && gain0 - reload_sec < 0)
+            min_np = fmt::format("{:.3g}", (reload_sec - gain0) / slope * d);
+
+        fmt::print("{:>8}{:>12}{:>8}{:>7}{:>12.3f}{:>12.3f}{:>12.3f}{:>12.3f}{:>12.2f}{:>12}{:>14}{:>14}\n",
+            nb_label, formatBytes(static_cast<double>(htBytesForDistinct(n_b))), p1.p_star, p1.n_pass,
+            d_build_ns, d_pg_ns, scat_b_ns, scat_p_ns, reload_sec * 1e3,
+            fraction_cell(0.0), fraction_cell(reload_sec), min_np);
+    }
+
+    fmt::print("  f* warm    = minimal probe fraction from the measured curves as-is (RP partitions cache-warm at probe).\n"
+               "  f* +reload = same plus the compulsory per-partition reload C_reload charged to the RP probe.\n"
+               "  * = NP curves flat-extrapolated beyond the measured sweep maximum; f* is an upper bound there.\n");
+}
+
+
 
 /// ---------------------------------------------------------------------------------------------
 /// Validation: real end-to-end INNER joins (implementations in concurrent_hash_join_bench.cpp
@@ -1408,6 +1501,121 @@ void runSingleJoin(const Config & cfg, WorkerPool & pool, const CacheInfo & cach
                 run, np->matches, rp->matches, np->matches == rp->matches ? "" : " MISMATCH", result_check);
     }
 }
+
+/// BEP probe-budget sweep: fixed (N_b, N_p), probe consumed in ceil(N_p*w_p / M) waves - each
+/// wave is one probe-buffer budget M of scattered probe bytes, probed to completion before the
+/// next (RadixHashJoinBench::probeWaves, fused streaming loop). The budget is expressed as a
+/// fraction of the build side's total accumulated bytes (stored build rows + reserved hash
+/// tables), swept 5%..25% in 5% steps with a 512 MiB floor; a PHJ row (one wave = full probe
+/// materialized) and the NPHJ probe of the same N_p bound the sweep from both sides. Growing
+/// the budget grows the rows-per-partition-per-visit, i.e. how well each visit amortizes the
+/// partition working-set reload.
+void runBepWaveSweep(const Config & cfg, WorkerPool & pool, const CacheInfo & cache, size_t n_b, size_t n_p, size_t extra_budget)
+{
+    /// P*/F_max selection: same as runSingleJoin.
+    const double budget = static_cast<double>(cache.l2);
+    const auto partition_bytes = [&](size_t part)
+    {
+        return static_cast<double>(htBytesForDistinctReserved(std::max<size_t>(1, n_b / part)))
+            + (static_cast<double>(n_b) / static_cast<double>(part)) * static_cast<double>(cfg.buildRowWidth());
+    };
+    size_t p_star = 1;
+    while (partition_bytes(p_star) > budget && p_star < cfg.max_partitions)
+        p_star *= 2;
+    if (p_star > 1)
+        p_star = std::min(std::max(p_star, std::bit_ceil(cfg.threads)), std::bit_ceil(cfg.max_partitions));
+    p_star = std::max<size_t>(2, p_star);
+    const size_t f_max = std::min(MAX_FANOUT_PER_PASS, std::bit_floor(std::max<size_t>(2, cache.l2 / 128)));
+
+    fmt::print("\n=== BEP wave sweep: N_b = {}, N_p = {}, unique keys, hit rate {}, HT = {}, build side = {}, P* = {} ===\n",
+        n_b, n_p, cfg.hit_rate, formatBytes(static_cast<double>(htBytesForDistinct(n_b))),
+        formatBytes(static_cast<double>(n_b * cfg.buildRowWidth())), p_star);
+
+    auto build_blocks = generateBlocks(pool, n_b, cfg.build_payload_columns, "b_", uniqueKeys(n_b), cfg.seed + n_b);
+    auto probe_blocks = generateBlocks(pool, n_p, cfg.probe_payload_columns, "p_",
+                                       probePermutationKeys(n_b, n_p, cfg.hit_rate), cfg.seed + n_b + 1);
+    const Block left_header = probe_blocks.front().cloneEmpty();
+    const Block right_header = build_blocks.front().cloneEmpty();
+
+    /// NPHJ probe reference (built once; probe repeated, median).
+    double np_probe_sec = 0;
+    size_t np_matches = 0;
+    {
+        ConcurrentHashJoinBench np(pool, left_header, right_header, intHash64(n_b * 1000003 + n_p));
+        Stopwatch build_watch;
+        np.build(build_blocks);
+        const double np_build_sec = build_watch.elapsedSeconds();
+        np_probe_sec = medianTime(cfg.runs, [&]
+        {
+            Stopwatch watch;
+            np_matches = np.probe(probe_blocks, nullptr);
+            return watch.elapsedSeconds();
+        });
+        np.teardown();
+        fmt::print("  NPHJ reference: build {:.2f} ms, probe+gather {:.2f} ms ({:.3f} ns/row)\n",
+            np_build_sec * 1e3, np_probe_sec * 1e3, np_probe_sec * 1e9 / static_cast<double>(n_p));
+    }
+
+    RadixHashJoinBench rp(pool, left_header, right_header, p_star, f_max);
+    Stopwatch build_watch;
+    rp.build(build_blocks);
+    const double rp_build_sec = build_watch.elapsedSeconds();
+
+    /// The budget's reference quantity: everything the build phase has accumulated by probe
+    /// time - the stored (scattered) build rows plus the reserved per-partition hash tables.
+    const size_t build_accumulated_bytes = n_b * cfg.buildRowWidth()
+        + p_star * htBytesForDistinctReserved(std::max<size_t>(1, n_b / p_star));
+    const size_t probe_bytes = n_p * cfg.probeRowWidth();
+    constexpr size_t min_budget = 512ULL << 20;
+
+    fmt::print("  RPHJ build: {:.2f} ms ({}); build accumulated bytes (stored rows + reserved HTs): {}\n\n",
+        rp_build_sec * 1e3, rp.phaseBreakdown(), formatBytes(static_cast<double>(build_accumulated_bytes)));
+
+    fmt::print("{:>10}{:>14}{:>7}{:>16}{:>12}{:>12}{:>12}{:>12}{:>10}{:>10}\n",
+        "budget", "bytes", "waves", "rows/part/wave", "scatter ms", "probe ms", "total ms", "ns/row", "vs NP", "matches");
+
+    /// (label, budget bytes); budget 0 = unbounded (PHJ, one wave).
+    std::vector<std::pair<std::string, size_t>> budgets;
+    budgets.emplace_back("PHJ", 0);
+    for (size_t percent = 5; percent <= 25; percent += 5)
+        budgets.emplace_back(fmt::format("{}%", percent),
+            std::max(min_budget, build_accumulated_bytes * percent / 100));
+    if (extra_budget)
+        budgets.emplace_back("extra", extra_budget);
+
+    for (const auto & [label, budget_bytes] : budgets)
+    {
+        const size_t waves = budget_bytes ? std::max<size_t>(1, (probe_bytes + budget_bytes - 1) / budget_bytes) : 1;
+
+        /// Median by total probe time over cfg.runs (plus one discarded warmup).
+        struct Sample { double scatter, join; };
+        std::vector<Sample> samples;
+        size_t matches = 0;
+        rp.probeWaves(probe_blocks, waves, nullptr); /// warmup
+        for (size_t r = 0; r < cfg.runs; ++r)
+        {
+            matches = rp.probeWaves(probe_blocks, waves, nullptr);
+            samples.push_back({rp.probeScatterSec(), rp.probeJoinSec()});
+        }
+        std::sort(samples.begin(), samples.end(),
+            [](const Sample & a, const Sample & b) { return a.scatter + a.join < b.scatter + b.join; });
+        const Sample & med = samples[samples.size() / 2];
+        const double total = med.scatter + med.join;
+
+        fmt::print("{:>10}{:>14}{:>7}{:>16}{:>12.2f}{:>12.2f}{:>12.2f}{:>12.3f}{:>10.2f}{:>10}\n",
+            label, formatBytes(static_cast<double>(budget_bytes ? budget_bytes : probe_bytes)), waves,
+            n_p / (waves * p_star),
+            med.scatter * 1e3, med.join * 1e3, total * 1e3,
+            total * 1e9 / static_cast<double>(n_p), np_probe_sec / total,
+            matches == np_matches ? "ok" : "MISMATCH");
+    }
+    rp.teardown();
+
+    fmt::print("\n  budget = max(512 MiB, %% of build accumulated bytes); waves = ceil(probe bytes / budget);\n"
+               "  PHJ = unbounded budget (full probe materialized). vs NP = NPHJ probe time / BEP probe total.\n"
+               "  All budgets probe the SAME prebuilt partition tables; scatter+probe are per-wave, summed.\n");
+}
+
 
 void runValidation(const Config & cfg, WorkerPool & pool, const ModelInputs & model)
 {
@@ -1627,6 +1835,9 @@ int main(int argc, char ** argv)
         ("verify", po::bool_switch(&cfg.verify), "compare NPHJ and RPHJ outputs via order-independent row fingerprints (adds overhead to probe timings)")
         ("join-nb", po::value<size_t>()->default_value(0), "run only the real joins at this exact build-side row count (skips all kernels)")
         ("join-np", po::value<size_t>()->default_value(0), "probe-side row count for --join-nb (default: same as --join-nb)")
+        ("bep-nb", po::value<size_t>()->default_value(0), "run the BEP probe-budget wave sweep at this build-side row count (skips all kernels)")
+        ("bep-np", po::value<size_t>()->default_value(0), "probe-side row count for --bep-nb (default: same as --bep-nb)")
+        ("bep-budget", po::value<size_t>()->default_value(0), "additionally measure this explicit probe-buffer budget in bytes in the BEP sweep")
         ("algo", po::value<std::string>()->default_value("both"), "which real join(s) to build+drive in --join-nb and the validation joins: both (default), nphj, rphj");
 
     po::variables_map options;
@@ -1726,6 +1937,14 @@ int main(int argc, char ** argv)
         return 0;
     }
 
+    if (const size_t bep_nb = options["bep-nb"].as<size_t>())
+    {
+        const size_t bep_np = options["bep-np"].as<size_t>() ? options["bep-np"].as<size_t>() : bep_nb;
+        runBepWaveSweep(cfg, pool, cache, bep_nb, bep_np, options["bep-budget"].as<size_t>());
+        fmt::print("\n(check value: {})\n", g_sink.load());
+        return 0;
+    }
+
     fmt::print("\ngenerating input blocks...\n");
     auto build_work = generateBlocks(pool, cfg.tuples, cfg.build_payload_columns, "b_", uniqueKeys(cfg.tuples), cfg.seed);
     auto probe_work = generateBlocks(pool, cfg.tuples, cfg.probe_payload_columns, "p_",
@@ -1792,6 +2011,7 @@ int main(int argc, char ** argv)
     fmt::print("  per-partition working-set budget C = L2 = {} (reserved table bytes + partition's build rows)\n", formatBytes(budget));
 
     printGridAndCrossover(model);
+    printFractionCrossover(model);
 
     if (!cfg.quick)
         runValidation(cfg, pool, model);

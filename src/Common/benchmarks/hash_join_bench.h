@@ -143,6 +143,39 @@ std::vector<size_t> computePassBits(size_t p_star, size_t f_max);
 /// copy of the side instead of two. All UInt64 columns.
 std::vector<ChunkList> scatterSide(WorkerPool & pool, const std::vector<Block> & blocks, const std::vector<size_t> & pass_bits);
 
+/// Phase timings of one streamingWaveProbe call (wall seconds, summed over waves).
+struct StreamingWaveStats
+{
+    double scatter_sec = 0;
+    double probe_sec = 0;
+};
+
+/// BEP streaming probe (evict-all-at-budget shape): consumes the probe side in `waves`
+/// consecutive windows; each window is radix-scattered to leaf depth (single pass of `bits`
+/// bits) and every non-empty partition's window chunk is probed through `probe_partition`
+/// (work-stealing) and dropped before the next window starts. One window = one probe-buffer
+/// budget of |probe| / waves bytes; each partition is revisited once per wave.
+///
+/// The whole wave loop runs inside ONE pool.run: phases (histogram, fused prefix-sum +
+/// allocation, fused all-columns scatter, probe) are separated by std::barrier instead of
+/// per-phase pool dispatches, and per-worker scratch (SWWC staging, histogram lanes, partition
+/// ids, cursors) persists across waves. This removes the per-wave overhead that dominated
+/// small budgets when each wave paid its own scatterSide + probe pool.run round-trips
+/// (~4 dispatches/wave, measured ~1.9 ms/wave at 96 threads).
+///
+/// `probe_partition` is called concurrently from all workers, receives ownership of the
+/// window's chunk for that partition (freed on return), and returns the number of output
+/// rows; with a non-null `digest` it must also accumulate the output fingerprint.
+/// Returns total output rows. `fingerprint`, when non-null, receives the summed digest.
+size_t streamingWaveProbe(
+    WorkerPool & pool,
+    const std::vector<Block> & blocks,
+    size_t bits,
+    size_t waves,
+    const std::function<size_t(size_t partition, Chunk chunk, UInt64 * digest)> & probe_partition,
+    UInt64 * fingerprint,
+    StreamingWaveStats & stats);
+
 /// Shared setup of the join metadata: INNER ALL join on the first column of each side.
 std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header);
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <barrier>
 #include <bit>
 #include <cstring>
 #include <limits>
@@ -680,6 +681,168 @@ std::vector<ChunkList> scatterSide(WorkerPool & pool, const std::vector<Block> &
         bits_done += bits;
     }
     return groups;
+}
+
+size_t streamingWaveProbe(
+    WorkerPool & pool,
+    const std::vector<Block> & blocks,
+    size_t bits,
+    size_t waves,
+    const std::function<size_t(size_t partition, Chunk chunk, UInt64 * digest)> & probe_partition,
+    UInt64 * fingerprint,
+    StreamingWaveStats & stats)
+{
+    stats = {};
+    if (blocks.empty())
+        return 0;
+
+    const size_t threads = pool.size();
+    const size_t fanout = 1ULL << bits;
+    chassert(bits >= 1 && bits <= 16);
+
+    const UInt32 shift = static_cast<UInt32>(32 - bits);
+    const UInt32 mask = static_cast<UInt32>(fanout - 1);
+    const bool use_swwc = fanout >= SWWC_MIN_FANOUT;
+    const bool interleave_hist = fanout <= HIST_INTERLEAVE_MAX_FANOUT;
+
+    std::vector<Chunk> chunks;
+    chunks.reserve(blocks.size());
+    size_t total_rows = 0;
+    for (const auto & block : blocks)
+    {
+        Chunk chunk;
+        chunk.rows = block.rows();
+        total_rows += chunk.rows;
+        for (size_t j = 0; j < block.columns(); ++j)
+            chunk.columns.push_back(block.getByPosition(j).column);
+        chunks.push_back(std::move(chunk));
+    }
+    if (total_rows > std::numeric_limits<UInt32>::max())
+        throw std::runtime_error("streamingWaveProbe supports at most 2^32-1 probe rows");
+    const size_t num_columns = chunks.front().columns.size();
+    const size_t num_waves = std::max<size_t>(1, std::min(waves, chunks.size()));
+
+    /// Shared per-wave state, allocated once. Every phase writes disjoint slices per worker
+    /// (histogram/offset stripes, contiguous partition ranges), so barriers are the only
+    /// synchronization; `next_partition` drives the probe phase's work stealing and is reset
+    /// during the allocation phase (a barrier separates it from both neighboring uses).
+    PaddedPODArray<UInt32> hist;
+    hist.resize(threads * fanout);
+    PaddedPODArray<UInt32> offsets;
+    offsets.resize(threads * fanout);
+    std::vector<UInt64> totals(fanout);
+    std::vector<PartitionOutput> parts(fanout);
+    std::atomic<size_t> next_partition{0};
+    std::atomic<size_t> rows{0};
+    std::atomic<UInt64> digest{0};
+    std::barrier<> barrier(static_cast<std::ptrdiff_t>(threads));
+
+    pool.run([&](size_t tid)
+    {
+        ScatterScratch scratch;
+        scratch.init(fanout, use_swwc);
+        std::vector<UInt32> lanes;
+        if (interleave_hist)
+            lanes.resize(4 * fanout);
+        PaddedPODArray<UInt16> pids;
+        std::vector<UInt64 *> col_cursors(num_columns * fanout);
+        size_t local_rows = 0;
+        UInt64 local_digest = 0;
+
+        Stopwatch watch; /// consulted on tid 0 only; barriers make its spans ~wall time
+        barrier.arrive_and_wait(); /// align the start so tid 0's first span excludes pool ramp-up
+        if (tid == 0)
+            watch.restart();
+
+        for (size_t w = 0; w < num_waves; ++w)
+        {
+            const size_t begin = chunks.size() * w / num_waves;
+            const size_t end = chunks.size() * (w + 1) / num_waves;
+
+            /// Histogram of this worker's chunk stripe of the window.
+            UInt32 * h = hist.data() + tid * fanout;
+            memset(h, 0, fanout * sizeof(UInt32));
+            if (interleave_hist)
+                std::fill(lanes.begin(), lanes.end(), 0);
+            for (size_t c = begin + tid; c < end; c += threads)
+                histogramChunk(keyData(chunks[c]), chunks[c].rows, shift, mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
+            if (interleave_hist)
+                reduceHistogramLanes(h, lanes.data(), fanout);
+            barrier.arrive_and_wait();
+
+            /// Fused prefix sum + exact allocation of this worker's partition range.
+            for (size_t p = fanout * tid / threads; p < fanout * (tid + 1) / threads; ++p)
+            {
+                UInt64 total = 0;
+                for (size_t worker = 0; worker < threads; ++worker)
+                {
+                    offsets[worker * fanout + p] = static_cast<UInt32>(total);
+                    total += hist[worker * fanout + p];
+                }
+                totals[p] = total;
+                parts[p] = PartitionOutput{};
+                if (total)
+                    parts[p].allocate(num_columns, total);
+            }
+            if (tid == 0)
+                next_partition.store(0, std::memory_order_relaxed);
+            barrier.arrive_and_wait();
+
+            /// Fused all-columns scatter of the stripe (same structure as scatterPass's
+            /// barrier 3, without the intra-window batching: the window is the batch).
+            size_t stripe_rows = 0;
+            for (size_t c = begin + tid; c < end; c += threads)
+                stripe_rows += chunks[c].rows;
+            if (num_columns > 1)
+                pids.resize(stripe_rows);
+            for (size_t j = 0; j < num_columns; ++j)
+                for (size_t p = 0; p < fanout; ++p)
+                    col_cursors[j * fanout + p] = totals[p] ? parts[p].bases[j] + offsets[tid * fanout + p] : nullptr;
+            for (size_t j = 0; j < num_columns; ++j)
+            {
+                for (size_t p = 0; p < fanout; ++p)
+                    scratch.seed(p, col_cursors[j * fanout + p]);
+                size_t row = 0;
+                for (size_t c = begin + tid; c < end; c += threads)
+                {
+                    scatterChunkColumn(chunks[c], j, shift, mask,
+                        num_columns > 1 ? pids.data() + row : nullptr, use_swwc, scratch);
+                    row += chunks[c].rows;
+                }
+                scratch.drain();
+            }
+            barrier.arrive_and_wait();
+            if (tid == 0)
+            {
+                stats.scatter_sec += watch.elapsedSeconds();
+                watch.restart();
+            }
+
+            /// Probe every non-empty partition of the window (work stealing), dropping the
+            /// window's chunk on return from the callback.
+            for (size_t p = next_partition.fetch_add(1, std::memory_order_relaxed); p < fanout;
+                 p = next_partition.fetch_add(1, std::memory_order_relaxed))
+            {
+                if (!totals[p])
+                    continue;
+                local_rows += probe_partition(p, parts[p].toChunk(), fingerprint ? &local_digest : nullptr);
+            }
+            barrier.arrive_and_wait();
+            if (tid == 0)
+            {
+                stats.probe_sec += watch.elapsedSeconds();
+                watch.restart();
+            }
+        }
+
+        g_sink += local_rows;
+        rows += local_rows;
+        digest += local_digest;
+    });
+
+    if (fingerprint)
+        *fingerprint += digest;
+    return rows;
 }
 
 std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header)
