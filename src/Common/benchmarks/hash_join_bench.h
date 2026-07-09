@@ -110,8 +110,13 @@ struct Chunk
 };
 using ChunkList = std::vector<Chunk>;
 
-/// Per-pass fanout cap of the SWWC scatter: staging (fanout x 64 B) plus cursors must stay
-/// within the private cache budget. Single pass for any realistic partition count.
+/// Hard memory-correctness ceiling of the SWWC scatter, not a runtime tuning knob: at fanout F
+/// each worker's per-partition SWWC state is F * (64 B staging + 8 B cursor + 4 B fill) ~= 76 B,
+/// so F = 8192 needs ~608 KiB, which only fits an L2 >= ~1 MiB. The *effective* per-pass fanout
+/// used at runtime is the min of the measured F_max (the largest fanout still sustaining >= 80%
+/// of peak scatter bandwidth), this constant, and an L2-derived cap (see the model's F_max
+/// wiring in hash_join_bandwidth_model.cpp); this constant only bounds how far a single pass may
+/// go before the SWWC state stops fitting in cache at all.
 constexpr size_t MAX_FANOUT_PER_PASS = 8192;
 
 /// Splits log2(p_star) partition bits into passes of at most log2(f_max) bits each.

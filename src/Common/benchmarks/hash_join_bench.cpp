@@ -4,6 +4,8 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <limits>
+#include <stdexcept>
 #include <string_view>
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
@@ -70,13 +72,18 @@ namespace
 {
 
 /// Radix scatter after origin/phj5-real's KeyRefScatter, adapted to column-by-column output:
-///   - the 32-bit route word is recomputed inline wherever needed (never stored; the route
-///     hash is ~1 cycle/row, cheaper than 4 B/row of traffic); every pass slices a disjoint
-///     bit range of the same word;
+///   - the 32-bit route word is recomputed inline wherever needed rather than stored: with the
+///     column-major loop below that means re-reading the 8 B key column once per payload column
+///     pass, i.e. an extra ~8 B/row of traffic per payload column beyond the key's own pass (so
+///     ~16 B/row marginal cost for one extra payload column, vs ~10 B/row if a 2-byte partition
+///     id were instead stored once during the histogram pass and reloaded per column). Recompute
+///     is kept because the benchmark's default shapes have <= 2 payload columns, where the two
+///     approaches are a wash; every pass slices a disjoint bit range of the same word;
 ///   - per-partition destination columns are allocated exactly once from a histogram
 ///     (prefix sum + direct placement; no piece lists, no coalescing pass, no allocator churn);
 ///   - columns are scattered one at a time (column-major loop order), so only `fanout` output
-///     streams and one fanout x 64 B staging set are live at any instant;
+///     streams and one fanout x 64 B staging set are live per worker at any instant (workers may
+///     be on different columns concurrently: see the fused scatter barrier in scatterPass);
 ///   - at fanout >= 256 a software write-combining path stages one 64-byte line per partition
 ///     and flushes it with a non-temporal store, avoiding both the cache pollution and the
 ///     read-for-ownership traffic that create the high-fanout cliff of the naive scatter.
@@ -107,8 +114,15 @@ constexpr size_t SWWC_MIN_FANOUT = 256;
 
 using NtLine = char __attribute__((vector_size(LINE_BYTES)));
 
-/// Per-worker scatter state: write cursors, and for the SWWC path one 64-byte staging line
-/// per partition plus fill/peel counters.
+/// Per-worker scatter state: write cursors, and for the SWWC path one 64-byte staging line per
+/// partition plus a fill counter (bytes currently staged for that partition's line).
+///
+/// Invariant: staged bytes for partition p live at staging_line + [m, fill), where
+/// m = (uintptr)cursors[p] & 63. Before the first flush of a seeding session the cursor has not
+/// advanced, so m equals the misalignment seeded into `fill` by seed(); after the first flush the
+/// cursor is line-aligned and m == 0. Cursors are always 8-byte aligned (UInt64 columns), so m is
+/// a multiple of 8 and LINE_BYTES - m >= 8. This lets scatterChunkSwwc handle cursor misalignment
+/// once per flush (at most once per partition per seeding session) instead of once per row.
 struct ScatterScratch
 {
     size_t fanout = 0;
@@ -117,7 +131,6 @@ struct ScatterScratch
     char * staging = nullptr;
     PaddedPODArray<UInt64 *> cursors;
     PaddedPODArray<UInt32> fill; /// bytes currently staged for the partition's line
-    PaddedPODArray<UInt32> peel; /// elements to write directly until the cursor is line-aligned
 
     void init(size_t fanout_, bool use_swwc_)
     {
@@ -130,7 +143,6 @@ struct ScatterScratch
             staging = reinterpret_cast<char *>(
                 (reinterpret_cast<uintptr_t>(staging_mem.data()) + LINE_BYTES - 1) & ~static_cast<uintptr_t>(LINE_BYTES - 1));
             fill.resize(fanout);
-            peel.resize(fanout);
         }
     }
 
@@ -138,14 +150,11 @@ struct ScatterScratch
     {
         cursors[p] = cursor;
         if (use_swwc)
-        {
-            fill[p] = 0;
-            const UInt32 misalign = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cursor) & (LINE_BYTES - 1));
-            peel[p] = ((LINE_BYTES - misalign) & (LINE_BYTES - 1)) / sizeof(UInt64);
-        }
+            /// nullptr -> 0, harmless: no row ever routes to an empty (never-seeded) partition.
+            fill[p] = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cursor) & (LINE_BYTES - 1));
     }
 
-    /// Flush residual (< one line) staged bytes of every partition and publish the NT stores.
+    /// Flush residual staged bytes of every partition and publish the NT stores.
     void drain()
     {
         if (!use_swwc)
@@ -153,22 +162,61 @@ struct ScatterScratch
         for (size_t p = 0; p < fanout; ++p)
         {
             const UInt32 f = fill[p];
-            if (f)
+            if (!f)
+                continue;
+            UInt64 * cur = cursors[p];
+            const UInt32 m = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cur) & (LINE_BYTES - 1));
+            /// f == m means no rows were staged since seeding: nothing to flush. f > m covers
+            /// both the pre-first-flush case (data at [m, f)) and the post-flush case
+            /// (m == 0, data at [0, f)).
+            if (f > m)
             {
-                memcpy(cursors[p], staging + p * LINE_BYTES, f);
-                cursors[p] += f / sizeof(UInt64);
-                fill[p] = 0;
+                memcpy(cur, staging + p * LINE_BYTES + m, f - m);
+                cursors[p] = cur + (f - m) / sizeof(UInt64);
             }
+            fill[p] = 0;
         }
         /// NT stores are weakly ordered; make them visible before the outputs are read.
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
 };
 
-void histogramChunk(const UInt64 * keys, size_t n, UInt32 shift, UInt32 mask, UInt64 * hist)
+/// At low fanout, consecutive rows commonly hit the same counter and the histogram's
+/// load-increment-store chain serializes (measured ~1.9x slower at fanout 2 with 4 lanes vs 1).
+/// 4 UInt32 lanes stay within 32 KiB even at the largest interleaved fanout.
+constexpr size_t HIST_INTERLEAVE_MAX_FANOUT = 2048;
+
+/// Histograms one chunk's rows into `hist[0..fanout)`. At low fanout (`lanes` non-null, a
+/// caller-owned buffer of size 4 * fanout that persists across calls for the same worker/group),
+/// row i increments lane (i & 3) of its bucket instead of the shared counter directly, breaking
+/// the dependency chain; the caller must reduce the lanes into `hist` via reduceHistogramLanes
+/// once after all chunks are processed. At high fanout collisions are rare and 4 lanes would blow
+/// the cache footprint, so `lanes` is null and rows increment `hist` directly.
+void histogramChunk(const UInt64 * keys, size_t n, UInt32 shift, UInt32 mask, UInt32 * hist, UInt32 * lanes, size_t fanout)
 {
-    for (size_t i = 0; i < n; ++i)
-        ++hist[(routeWord(keys[i]) >> shift) & mask];
+    if (!lanes)
+    {
+        for (size_t i = 0; i < n; ++i)
+            ++hist[(routeWord(keys[i]) >> shift) & mask];
+        return;
+    }
+
+    size_t i = 0;
+    for (; i + 4 <= n; i += 4)
+    {
+        ++lanes[0 * fanout + ((routeWord(keys[i + 0]) >> shift) & mask)];
+        ++lanes[1 * fanout + ((routeWord(keys[i + 1]) >> shift) & mask)];
+        ++lanes[2 * fanout + ((routeWord(keys[i + 2]) >> shift) & mask)];
+        ++lanes[3 * fanout + ((routeWord(keys[i + 3]) >> shift) & mask)];
+    }
+    for (; i < n; ++i)
+        ++lanes[(i & 3) * fanout + ((routeWord(keys[i]) >> shift) & mask)];
+}
+
+void reduceHistogramLanes(UInt32 * hist, const UInt32 * lanes, size_t fanout)
+{
+    for (size_t p = 0; p < fanout; ++p)
+        hist[p] += lanes[0 * fanout + p] + lanes[1 * fanout + p] + lanes[2 * fanout + p] + lanes[3 * fanout + p];
 }
 
 void scatterChunkDirect(const UInt64 * keys, const UInt64 * data, size_t n, UInt32 shift, UInt32 mask, UInt64 ** cursors)
@@ -182,28 +230,44 @@ void scatterChunkDirect(const UInt64 * keys, const UInt64 * data, size_t n, UInt
 
 void scatterChunkSwwc(const UInt64 * keys, const UInt64 * data, size_t n, UInt32 shift, UInt32 mask, ScatterScratch & scratch)
 {
-    char * staging = scratch.staging;
+    /// Hoisted like `staging` already was: the char*/vector NT store defeats TBAA hoisting, so
+    /// without this the compiler reloads scratch.cursors/fill.data() every row (measured
+    /// ~1.07x on clang, ~1.65x on GCC by hoisting).
+    char * const staging = scratch.staging;
+    UInt64 ** const cursors = scratch.cursors.data();
+    UInt32 * const fill = scratch.fill.data();
+
     for (size_t i = 0; i < n; ++i)
     {
         const UInt32 p = (routeWord(keys[i]) >> shift) & mask;
-        if (scratch.peel[p])
-        {
-            *scratch.cursors[p]++ = data[i];
-            --scratch.peel[p];
-            continue;
-        }
-
         char * line = staging + static_cast<size_t>(p) * LINE_BYTES;
-        UInt32 f = scratch.fill[p];
+        UInt32 f = fill[p];
         *reinterpret_cast<UInt64 *>(line + f) = data[i];
         f += sizeof(UInt64);
         if (f == LINE_BYTES)
         {
-            __builtin_nontemporal_store(*reinterpret_cast<const NtLine *>(line), reinterpret_cast<NtLine *>(scratch.cursors[p]));
-            scratch.cursors[p] += ELEMS_PER_LINE;
+            UInt64 * cur = cursors[p];
+            const UInt32 m = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cur) & (LINE_BYTES - 1));
+            if (m) /// first flush of a misaligned stream: emit the partial head line with regular stores
+            {
+                __builtin_memcpy(cur, line + m, LINE_BYTES - m);
+                cursors[p] = cur + (LINE_BYTES - m) / sizeof(UInt64);
+            }
+            else
+            {
+                /// A variant reading the 8 UInt64s individually (via volatile loads, to force 8
+                /// narrow loads instead of one that the store-to-load-forwarding unit cannot
+                /// service from the immediately-preceding 8 narrow stores) was measured against
+                /// this wide vector load at fanouts 512 and 2048 (3 runs each, --quick --tuples
+                /// 2^26): wide averaged 70.7 GB/s / 61.5 GB/s vs narrow's 65.9 GB/s / 60.1 GB/s -
+                /// the narrow variant did not win at either point (run-to-run noise on this
+                /// machine is +-15%), so the wide load is kept.
+                __builtin_nontemporal_store(*reinterpret_cast<const NtLine *>(line), reinterpret_cast<NtLine *>(cur));
+                cursors[p] = cur + ELEMS_PER_LINE;
+            }
             f = 0;
         }
-        scratch.fill[p] = f;
+        fill[p] = f;
     }
 }
 
@@ -262,58 +326,77 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
     const bool use_swwc = fanout >= SWWC_MIN_FANOUT;
     std::vector<ChunkList> out(groups.size() * fanout);
 
+    const bool interleave_hist = fanout <= HIST_INTERLEAVE_MAX_FANOUT;
+
     if (groups.size() == 1)
     {
-        /// First pass: all threads cooperate on the single group; chunks are striped over
-        /// workers identically in the histogram and scatter phases.
+        /// First pass: all threads cooperate on the single group in exactly 3 barriers (down
+        /// from histogram + serial prefix-sum + allocation + one barrier per column): a fused
+        /// prefix-sum/allocation barrier removes the single-threaded Phase B, and a fused
+        /// all-columns scatter barrier removes the per-column barrier.
         const ChunkList & chunks = groups[0];
         if (chunks.empty())
             return out;
         const size_t num_columns = chunks.front().columns.size();
 
-        /// Phase A: per-worker histograms.
-        std::vector<std::vector<UInt64>> hist(threads);
+        /// Barrier 1: per-worker histograms into disjoint slices of one flat array.
+        PaddedPODArray<UInt32> hist;
+        hist.resize(threads * fanout);
         pool.run([&](size_t tid)
         {
-            auto & h = hist[tid];
-            h.assign(fanout, 0);
+            UInt32 * h = hist.data() + tid * fanout;
+            memset(h, 0, fanout * sizeof(UInt32));
+            std::vector<UInt32> lanes;
+            if (interleave_hist)
+                lanes.assign(4 * fanout, 0);
             for (size_t c = tid; c < chunks.size(); c += threads)
-                histogramChunk(keyData(chunks[c]), chunks[c].rows, shift, mask, h.data());
+                histogramChunk(keyData(chunks[c]), chunks[c].rows, shift, mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
+            if (interleave_hist)
+                reduceHistogramLanes(h, lanes.data(), fanout);
         });
 
-        /// Phase B: prefix sums -> per-(worker, partition) start offsets, then one exact
-        /// allocation per non-empty partition.
-        std::vector<std::vector<UInt64>> offsets(threads, std::vector<UInt64>(fanout));
+        /// Barrier 2: fused prefix sum + exact one-shot allocation. Each worker owns a
+        /// contiguous, disjoint range of partitions, so there is no cross-worker write
+        /// dependency and no separate single-threaded prefix-sum phase is needed.
+        PaddedPODArray<UInt32> offsets;
+        offsets.resize(threads * fanout);
         std::vector<UInt64> totals(fanout, 0);
-        for (size_t p = 0; p < fanout; ++p)
-        {
-            for (size_t w = 0; w < threads; ++w)
-            {
-                offsets[w][p] = totals[p];
-                totals[p] += hist[w][p];
-            }
-        }
-
         std::vector<PartitionOutput> parts(fanout);
         pool.run([&](size_t tid)
         {
-            for (size_t p = tid; p < fanout; p += threads)
-                if (totals[p])
-                    parts[p].allocate(num_columns, totals[p]);
+            const size_t begin = fanout * tid / threads;
+            const size_t end = fanout * (tid + 1) / threads;
+            for (size_t p = begin; p < end; ++p)
+            {
+                UInt64 total = 0;
+                for (size_t w = 0; w < threads; ++w)
+                {
+                    offsets[w * fanout + p] = static_cast<UInt32>(total);
+                    total += hist[w * fanout + p];
+                }
+                totals[p] = total;
+                if (total)
+                    parts[p].allocate(num_columns, total);
+            }
         });
 
-        /// Phase C: column-major scatter; only `fanout` output streams (and one staging set)
-        /// are live at any instant, keeping the SWWC/dTLB behavior independent of column count.
+        /// Barrier 3: single fused scatter run for all columns (column loop moved inside the
+        /// worker). Each worker writes only its own [offset, offset + hist) range of every
+        /// (partition, column) output buffer; those ranges are disjoint across workers and
+        /// across columns, so there is no cross-worker dependency between columns and no
+        /// barrier is needed between them - the pool.run barrier plus each worker's drain()
+        /// fence (which publishes the NT stores) is enough to make every worker's writes
+        /// visible before the collection loop below reads the outputs.
         std::vector<ScatterScratch> scratch(threads);
-        for (size_t j = 0; j < num_columns; ++j)
+        pool.run([&](size_t tid)
         {
-            pool.run([&, j](size_t tid)
+            auto & s = scratch[tid];
+            if (s.fanout != fanout)
+                s.init(fanout, use_swwc);
+            for (size_t j = 0; j < num_columns; ++j)
             {
-                auto & s = scratch[tid];
-                if (s.fanout != fanout)
-                    s.init(fanout, use_swwc);
                 for (size_t p = 0; p < fanout; ++p)
-                    s.seed(p, totals[p] ? parts[p].bases[j] + offsets[tid][p] : nullptr);
+                    s.seed(p, totals[p] ? parts[p].bases[j] + offsets[tid * fanout + p] : nullptr);
 
                 for (size_t c = tid; c < chunks.size(); c += threads)
                 {
@@ -323,8 +406,8 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
                         scatterChunkDirect(keyData(chunks[c]), columnData(chunks[c], j), chunks[c].rows, shift, mask, s.cursors.data());
                 }
                 s.drain();
-            });
-        }
+            }
+        });
 
         for (size_t p = 0; p < fanout; ++p)
             if (totals[p])
@@ -332,24 +415,34 @@ std::vector<ChunkList> scatterPass(WorkerPool & pool, std::vector<ChunkList> & g
     }
     else
     {
-        /// Refine passes (multi-pass fallback): whole groups are assigned to workers, each
-        /// group scattered single-threaded with worker-local state.
-        pool.run([&](size_t tid)
+        /// Refine passes (multi-pass fallback): groups are assigned to workers dynamically
+        /// (an atomic counter, not a static stripe), because groups can have very different
+        /// sizes and a static stripe would leave some workers idle while others are still
+        /// scattering their share - the join's defense against per-group skew.
+        std::atomic<size_t> next_group{0};
+        pool.run([&](size_t /*tid*/)
         {
             ScatterScratch scratch;
             scratch.init(fanout, use_swwc);
-            std::vector<UInt64> hist(fanout);
+            std::vector<UInt32> hist(fanout);
+            std::vector<UInt32> lanes;
+            if (interleave_hist)
+                lanes.resize(4 * fanout);
 
-            for (size_t g = tid; g < groups.size(); g += threads)
+            for (size_t g = next_group.fetch_add(1, std::memory_order_relaxed); g < groups.size(); g = next_group.fetch_add(1, std::memory_order_relaxed))
             {
                 const ChunkList & chunks = groups[g];
                 if (chunks.empty())
                     continue;
                 const size_t num_columns = chunks.front().columns.size();
 
-                hist.assign(fanout, 0);
+                std::fill(hist.begin(), hist.end(), 0);
+                if (interleave_hist)
+                    std::fill(lanes.begin(), lanes.end(), 0);
                 for (const auto & chunk : chunks)
-                    histogramChunk(keyData(chunk), chunk.rows, shift, mask, hist.data());
+                    histogramChunk(keyData(chunk), chunk.rows, shift, mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
+                if (interleave_hist)
+                    reduceHistogramLanes(hist.data(), lanes.data(), fanout);
 
                 std::vector<PartitionOutput> parts(fanout);
                 for (size_t p = 0; p < fanout; ++p)
@@ -406,6 +499,14 @@ std::vector<size_t> computePassBits(size_t p_star, size_t f_max)
 
 std::vector<ChunkList> scatterSide(WorkerPool & pool, const std::vector<Block> & blocks, const std::vector<size_t> & pass_bits)
 {
+    /// Histogram/offset counters are UInt32 (see scatterPass): a side with more rows would
+    /// silently overflow them, so this is a hard precondition, not a soft cap.
+    size_t total_rows = 0;
+    for (const auto & block : blocks)
+        total_rows += block.rows();
+    if (total_rows > std::numeric_limits<UInt32>::max())
+        throw std::runtime_error("scatter supports at most 2^32-1 rows per side");
+
     std::vector<ChunkList> groups(1);
     groups[0].reserve(blocks.size());
     for (const auto & block : blocks)
