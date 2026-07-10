@@ -180,3 +180,69 @@
   stateless tests) stay in force at every unit boundary. Owner: user (explicit directive).
 - Revisit trigger: a consolidated-review blocking finding that invalidates U6 measurements →
   re-measure after fix.
+
+### D-0012 — U3 buffer shape: accumulate blocks per lane, scatter at eviction — 2026-07-09T20:45:00Z
+- Context: spec offers "pass-1-only chains with refine-at-eviction, or direct-to-leaf windows —
+  decide by measurement". The measured evidence base (streamingWaveProbe, priors P2/P3) is
+  accumulate-chunks-then-scatter-at-wave-time; on-arrival scattering would need cross-lane
+  synchronized partition buffers the bench never measured.
+- Chosen: per-lane buffered block lists (COW refs + running byte count); at eviction the whole
+  buffered set is scattered to leaf depth via the U1 ColumnScatter wave machinery (single pass
+  when p_star <= f_max, multi-pass otherwise), then probed per partition. This IS the bench
+  mechanism (bandwidth properties §7.5 carried by the U1 port), so the "decide by measurement"
+  clause is satisfied by the existing measurements rather than new ones.
+- Risks: none new vs bench. Revisit trigger: U6 shows scatter-at-eviction latency spikes that
+  pass-1-on-arrival would amortize.
+
+### D-0013 — U3 eviction concurrency contract (variant C, no lane rendezvous) — 2026-07-09T20:45:00Z
+- The contract (to be implemented verbatim and tested):
+  1. joinBlock(block, lane): append block refs to the lane's buffer under a per-lane mutex held
+     only for the append; atomically add bytes.
+  2. If buffered_bytes >= budget and no eviction active: CAS claims evictor role for THIS call.
+  3. The evictor (a) steals all lanes' buffered lists by taking each per-lane mutex briefly —
+     never waits for lanes to arrive or participate; (b) drives scatter on the join's internal
+     pool (ColumnScatter wave, window inputs dropped as scattered); (c) probing+gather runs on
+     the pool with per-partition work stealing, lazy group builds use per-pool-worker arenas (no
+     lazy_build_mutex on this path); (d) output blocks flow into a BOUNDED queue (~2x pool size);
+     (e) the triggering call's JoinResult::next() pops one block per call (streaming, R-d fix).
+  4. Non-evictor lanes keep appending during an eviction. If buffered_bytes exceeds
+     budget + one scatter window, the appending call waits on eviction completion (condvar) —
+     it waits on POOL progress, never on other lanes. Deadlock-freedom argument: the only waits
+     are (lanes -> eviction completion) and (pool workers -> output-queue space -> consumer
+     next()); the evictor waits on nothing held by a lane; no cycle. A lane that never receives
+     another block is never waited on (negative test pre-registered).
+  5. Cancellation/teardown: abort flag + queue shutdown unblocks pool workers and waiting lanes;
+     JoinResult dtor drains/aborts its eviction.
+- Memory bound: buffered probe bytes <= budget + one scatter window + one in-flight block;
+  eviction transient <= ~2x budget while scattered copies replace buffered inputs batch-by-batch.
+  Peak gauge exported via ProfileEvents/log for the acceptance assertion.
+- Risks: executor-thread waiting in 4 (bounded by eviction progress; precedent: joins already do
+  heavy work in work() quanta). Revisit: contention shows up at U6.
+
+### D-0014 — U3 buffering eligibility: fixed-width-scatterable probe payloads only (v1) — 2026-07-09T20:45:00Z
+- Context: ColumnScatter supports fixed-width columns (incl. Decimal/UUID/IP/DateTime64 post-R3);
+  probe-side OUTPUT columns can be arbitrary types (the gate only constrains keys).
+- Chosen: buffer (BEP path) only when every probe column needed for output is scatterable;
+  otherwise the query keeps U2's immediate per-block probe (still radix_join, still correct —
+  buffering is an optimization). Decided-at-init, logged in the query log via an event.
+- Rationale: the entire evidence base (priors P1-P5) is fixed-width; an IColumn::scatter
+  fallback is unmeasured engineering. U6 measures fixed-width shapes per the shape map.
+- Risks: String-payload probe sides never get BEP in v1 (documented). Revisit trigger: U6b/user
+  demand; then implement row-ref buffering + gather-at-emit as variant (b).
+
+### D-0015 — Minimal end-of-input drain lands in U3; U4 = parallel/hardened drain — 2026-07-09T20:55:00Z
+- Context: U3's MUST-HOLD is full result equality under forced-tiny budgets, but buffering
+  without ANY drain leaves the final sub-budget residue unprobed — equality is unreachable
+  before U4 as literally split. The pipeline also wires DelayedJoinedBlocksTransform only if
+  hasDelayedBlocks() is true at pipeline-build time (static), so the hook must exist early.
+- Chosen: U3 implements the minimal Grace-style drain: hasDelayedBlocks() = buffering-eligible
+  (known at initialize from the left header per D-0014); getDelayedBlocks() = one final eviction
+  over the residue returning an internally-synchronized IBlocksStream (nullptr when nothing
+  buffered, per the SpillingHashJoin precedent). U4 then delivers: parallel work-stealing across
+  the drain's num_streams workers, cancellation-mid-drain hardening, drain-only-shape coverage,
+  teardown/leak tests — its spec's acceptance stands, only the "introduce the mechanism" part
+  moves to U3.
+- Rationale: keeps every unit independently green with real oracles; matches SpillingHashJoin's
+  always-wired-drain pattern.
+- Risks: U3's drain v1 may serialize the final residue probe (acceptable; residue < budget).
+- Revisit trigger: none — U4 supersedes the implementation.

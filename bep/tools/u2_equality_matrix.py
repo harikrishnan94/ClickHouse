@@ -187,10 +187,20 @@ def side_subquery(cfg_name, key_id_expr, payload_col, rows):
             f"FROM numbers_mt({rows})")
 
 
+# Extra settings appended to every query's SETTINGS clause (both candidate and
+# baseline), set once from --extra-settings in main(). Empty = no extras
+# (backward-compatible default).
+EXTRA_SETTINGS = ""
+
+
 def settings_clause(algo, threads, max_memory):
-    return (f"SETTINGS join_algorithm = '{algo}', max_threads = {threads}, "
-            f"max_memory_usage = {max_memory}, enable_analyzer = 1, "
-            f"query_plan_join_swap_table = 'false'")
+    clause = (f"SETTINGS join_algorithm = '{algo}', max_threads = {threads}, "
+              f"max_memory_usage = {max_memory}, enable_analyzer = 1, "
+              f"query_plan_join_swap_table = 'false'")
+    if EXTRA_SETTINGS:
+        clause += ", " + ", ".join(
+            s.strip() for s in EXTRA_SETTINGS.split(",") if s.strip())
+    return clause
 
 
 def join_from_clause(cfg_name, build_rows, dups, hit_rate, probe_rows=None):
@@ -365,6 +375,11 @@ def main():
                     help="per-invocation timeout in seconds (default: 3600)")
     ap.add_argument("--max-memory", type=int, default=DEFAULT_MAX_MEMORY,
                     help=f"max_memory_usage per process (default: {DEFAULT_MAX_MEMORY})")
+    ap.add_argument("--extra-settings", default="",
+                    help="comma-separated key=value settings appended to every "
+                         "query's SETTINGS clause, candidate and baseline alike "
+                         "(e.g. 'radix_join_probe_buffer_fraction=0,"
+                         "radix_join_probe_buffer_min_bytes=1')")
     ap.add_argument("--list", action="store_true",
                     help="list selected point ids and exit")
     ap.add_argument("--print-query", default="",

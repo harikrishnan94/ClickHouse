@@ -290,3 +290,61 @@ Entries are never edited after the fact; corrections are new entries referencing
   verified), R-d (CONFIRMED hazard: dup-heavy 20M-row output as ONE ~1 GB JoinResult block vs
   18 MB for hash — carried to U3 as a budgeted-emission obligation).
 - Verdict: DONE — U2 acceptance-green (review pending per D-0011).
+
+### L0013 — ORIENTATION: U2-state perf preview at 2^26 build, 32 threads — radix_join loses; gather-dominated  [unit U6-prep]  [iteration 0]  2026-07-09T21:21:04Z
+- Goal / hypothesis: user-requested indicative A/B (>=64M build side, max_threads=32) at the U2
+  state (immediate/PHJ-degenerate probe). NOT §9-grade evidence: shared host (U3 agent working),
+  numbers_mt sources (not MergeTree), 32 threads (priors used 96), single decomposition run.
+- What I did: tmp/bep/u2_perf_preview.sh on the snapshotted U2 binary
+  (tmp/bep/clickhouse_u2_snapshot, HEAD 8175276f3ef). First attempt INVALID (script bug: %% in
+  plain interpolation -> 48 syntax errors; caught by empty result column; fixed + fail-loud
+  guard added). Second run: results byte-identical across algos on every shape.
+- Result (medians of 5, spread <=3%; tmp/bep/u2_perf_preview.tsv):
+  b1_r4: RJ 1.962s vs PH 0.996s (0.51x) · b1_r8: RJ 2.192 vs PH 1.250 (0.57x)
+  b7_r4: RJ 2.447 vs PH 1.648 (0.67x) · b7_r8: RJ 2.823 vs PH 2.093 (0.74x)
+- Decomposition (b1_r8, ProfileEvents, thread-time sums): Probe total 47.29s; of which
+  CollectMatches (AMAC) 8.78s, PackHashRoute pre-pass 1.03s, LeafGroupBuilds 256 builds / 1.05s;
+  UNACCOUNTED probe remainder ~36.4s (77%) = output gather/materialization (gatherLeft/
+  gatherRight + block assembly). Build accumulate 0.98s; scatter (JoinBuildPostProcessing) 58ms.
+- Interpretation (mechanism, preliminary): the loss is NOT the partitioned machinery — scatter is
+  negligible, lazy builds are 2%, AMAC matching is competitive. It is the PRODUCTION GATHER path.
+  Key realization: the §7 bench priors' RPHJ probe used per-partition HashJoin::joinBlock, i.e.
+  HashJoin's optimized LazyOutput gather — while production RadixHashJoin ships the donor's own
+  gather, which this preview suggests is ~4x costlier per output row. The bench priors therefore
+  do NOT cover our gather implementation. Also: U2's per-block immediate probe emits ~520k-row
+  output blocks per 65k-row input (ratio 8) — R-d shape.
+- Learnings (carried to U3/U6): (1) U6 pre-registration must treat "gather efficiency reaches
+  HashJoin's" as a first-class hypothesis/iteration target — likely THE gap between bench priors
+  and SQL reality; (2) re-measure after U3 (wave probe changes locality; budgeted emission
+  changes block sizes); (3) decompositions via RadixHashJoin* ProfileEvents work well.
+- Verdict: CONTINUE (orientation; feeds U6 prereg; no acceptance claim made).
+
+### L0014 — CORRECTION of L0013 + no-gather isolation: the U2 gap is serialized lazy builds (fixed ~1s) + 1.3x marginal probe rate; gather exonerated  [unit U6-prep]  [iteration 0]  2026-07-09T21:27:34Z
+- Goal / hypothesis: user-requested no-build-payload rerun to isolate gather. L0013's preliminary
+  interpretation ("~77% of probe time = payload gather") is hereby CORRECTED — it was wrong.
+- What I did: tmp/bep/u2_perf_nogather.sh (count-only and probe-payload-only variants, keys-only
+  build side, same 2^26 build, t=32, snapshot binary) + decomposition run + two verification
+  probes: t=1 runs (spin impossible) and a t=32 ratio-16 point (marginal-rate fit).
+- Results (medians; tmp/bep/u2_perf_nogather.tsv):
+  countonly r4: RJ 1.712 vs PH 0.684 (0.40x) · r8: RJ 1.896 vs PH 0.832 (0.44x) ·
+  r16: RJ 2.28 vs PH 1.12 (0.49x) · probepay ~identical to countonly.
+  Decomposition (countonly r8): Probe total 44.36 thread-s (vs 47.29 WITH payloads → payload
+  gather was only ~3 thread-s ≈ 6%, NOT 77%); CollectMatches 8.11s; PackHashRoute 1.0s;
+  LeafGroupBuilds 256/1.02s; unaccounted ~34 thread-s.
+  Linear fit across r4/r8/r16 (count-only, t=32): RJ ≈ 1.53 s fixed + 0.71 ns/row;
+  PH ≈ 0.54 s fixed + 0.54 ns/row (marginals consistent across both intervals).
+  t=1 r4: RJ 7.19-7.35 vs PH 6.42-6.45 → RJ only 12% behind single-threaded.
+- Interpretation (mechanism, converging): the ~1.0 s FIXED delta at t=32 ≈ the serialized lazy
+  group-build window — 256 groups built one-at-a-time under lazy_build_mutex (1.02 thread-s ≈
+  1.0 s wall) while up to 31 probe lanes spin-yield inside joinBlock (the spin lands in
+  RadixHashJoinProbeMicroseconds but no sub-event → the "unaccounted" 34 thread-s). Three
+  sources converge: (1) event arithmetic, (2) t=1 near-parity (no spin possible → gap collapses
+  to 12%), (3) fixed-vs-marginal fit (offset delta ≈ measured serialized build wall time).
+  Residual steady-state gap: marginal probe rate 0.71 vs 0.54 ns/row (1.3x) — the target of
+  U3's partitioned wave probe (bench prior P3: partitioned probe 2.42x FASTER at ratio 8).
+- Learnings for U3/U6: (a) D-0004's accepted U2-only stall is REAL and ~1s at this scale —
+  U3's parallel wave-time group builds must eliminate it (add to U3 verification: fixed-offset
+  re-fit after U3); (b) gather is NOT currently a first-order problem (L0013's U6 hypothesis
+  demoted to secondary); (c) count-only marginal probe rate is the clean U6 tracking metric.
+- Caveats: shared host (spreads tight, <=3%); numbers_mt sources; t=32.
+- Verdict: DONE (orientation; corrected finding supersedes L0013's interpretation).

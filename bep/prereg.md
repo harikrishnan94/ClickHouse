@@ -157,7 +157,54 @@ R-d: JoinResult single-block emission with duplicate-heavy output (no max_block_
 Expected outcome: all gates green; any semantic adaptation beyond the listed ones = logged finding.
 
 ## U3 — Streaming budgeted probe
-(pending)
+Pre-registered 2026-07-09T20:50Z, before any U3 implementation. D-0012/D-0013/D-0014 bind.
+Amendments in force: sanitizer gates waived (D-0009); review deferred post-U5 (D-0011) —
+the spec's "TSan-clean" MUST-HOLD is replaced by reldeb gtest stress runs.
+
+### Scope
+Budget = clamp(radix_join_probe_buffer_fraction × build_accumulated_bytes,
+radix_join_probe_buffer_min_bytes, radix_join_probe_buffer_max_bytes[0=∞]), where
+build_accumulated_bytes = stored build block bytes + scattered record bytes + built leaf-table
+bytes at post-build end. Buffered-probe path per D-0012 (accumulate per lane, scatter at
+eviction via ColumnScatter, probe partitions on the join pool, stream output through the
+triggering JoinResult per D-0013). Eligibility per D-0014 (fixed-width probe output columns;
+else U2 immediate path). AMAC stays on the buffered path (partition probe = the U1 leaf-table
+AMAC kernel). Lazy group builds on the pool use per-worker arenas (lazy_build_mutex removed on
+that path). The U2-only double-hash pre-pass disappears on the buffered path (routes computed
+once at scatter). New ProfileEvents: RadixHashJoinEvictions, RadixHashJoinProbeBufferedBytesPeak,
+RadixHashJoinProbeScatterMicroseconds, RadixHashJoinEvictProbeMicroseconds,
+RadixHashJoinBufferedProbeBlocks (names may be refined; semantics fixed here).
+
+### Pre-registered MUST-HOLD acceptance
+1. Result equality vs hash on the FULL U2 matrix (bep/tools/u2_equality_matrix.py, all tiers)
+   with budget forced tiny: fraction=0, min_bytes=1 → eviction on ~every block (hundreds+).
+   Also at fraction=0, min_bytes=64MiB (mid), and defaults. Expected: byte-equal everywhere.
+2. Memory bound: peak buffered probe bytes ≤ budget + one scatter window + one block, asserted
+   via the peak ProfileEvent in a dedicated SQL test (tiny + mid budgets) and in the gtest.
+3. Deadlock negative-test (gtest, IJoin level with fabricated TableJoin — port the donor bench's
+   makeTableJoin helper): N lanes feed blocks; lane X stops feeding entirely mid-stream while
+   others trip evictions repeatedly; the join must complete all evictions and the final result
+   (after U4 lands, drain; within U3: all evicted output correct + no hang for 30s watchdog).
+4. Concurrency stress (TSan replacement per D-0009): the same gtest at 16 lanes × hundreds of
+   blocks × tiny budget, --gtest_repeat=20 in reldeb; zero failures/hangs.
+5. No-harm: U2 gate/fallback tests 04508/04509 still green; immediate-path (non-buffered
+   eligibility) queries still equal hash.
+
+### Pre-registered GOAL (streaming demonstrated)
+6. IJoin-level gtest: with tiny budget, some joinBlock call k returns a non-empty JoinResult
+   BEFORE block k+1 is fed (first output precedes probe-input exhaustion). Plus SQL-level:
+   RadixHashJoinEvictions ≥ 1 with correct results on a budget-tripping query.
+7. R-d regression fix check: the U2-observed ~1 GB single-block emission shape (dup-heavy 20M
+   output rows) emits in ≤ max(block size)-bounded chunks on the eviction path; peak tracked
+   memory for that query drops to the same order as hash (measure before/after).
+
+### Pre-registered risks
+R-e: executor-thread condvar wait (contract step 4) interacting with executor scheduling —
+     watch for stalls in the stress gtest.
+R-f: output-queue backpressure vs cancellation — abort path must unblock workers (gtest kills
+     a query mid-eviction... covered in U4 cancellation tests; U3 gtest covers dtor-mid-eviction).
+R-g: budget floor default (512 MiB) means small joins never evict — streaming tests must force
+     tiny budgets explicitly (fraction=0 semantics: 0 disables the fraction term, min_bytes rules).
 
 ## U4 — End-of-input drain
 (pending)
