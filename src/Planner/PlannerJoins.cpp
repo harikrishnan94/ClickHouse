@@ -1168,14 +1168,32 @@ QueryTreeNodePtr getJoinExpressionFromNode(const JoinNode & join_node)
     return join_expression;
 }
 
+/// True when every column of `header` scatters as raw fixed-width bytes, i.e. its column is
+/// fixed-and-contiguous (`ColumnVector`/`ColumnDecimal`/`ColumnFixedString`). This single check
+/// subsumes Nullable/LowCardinality/String/Array/Tuple — all of which report false — and every
+/// fixed-and-contiguous column supports `insertRawUninitialized`, which the radix scatter uses.
+static bool allColumnsFixedAndContiguous(const SharedHeader & header)
+{
+    for (const auto & column : *header)
+    {
+        if (!column.type->createColumn()->isFixedAndContiguous())
+            return false;
+    }
+    return true;
+}
+
 /// The applicability gate for `radix_join`: a v1 RadixHashJoin requires a single-disjunct inner ALL
 /// equi-join with no special storage, over one or more fixed-width, non-nullable, non-LowCardinality
 /// key columns whose packed width (the sum of the column widths) is a multiple of 4 in [4, 64] — the
-/// scatter granularity (4 bytes) and the leaf-cell template bound. Any other shape (composite key
-/// wider than 64 bytes, nullable, low-cardinality, non-fixed-width, or a packed width that is not a
-/// multiple of 4 such as a lone `UInt8`/`UInt16`/`Date`/`Enum8`/`Enum16`) falls back to `parallel_hash`.
+/// scatter granularity (4 bytes) and the leaf-cell template bound — AND all columns of both sides
+/// fixed-width (the whole build side is physically scattered, and each probe window is scattered on
+/// the left columns, so both must scatter as raw bytes). Any other shape (composite key wider than 64
+/// bytes, nullable, low-cardinality, non-fixed-width, a packed width that is not a multiple of 4 such
+/// as a lone `UInt8`/`UInt16`/`Date`/`Enum8`/`Enum16`, or any String/Array/Nullable payload column on
+/// either side) falls back to `parallel_hash`. Coverage beyond all-fixed-width columns comes later.
 static bool radixHashJoinApplicable(
     const std::shared_ptr<TableJoin> & table_join,
+    const SharedHeader & left_table_expression_header,
     const SharedHeader & right_table_expression_header)
 {
     if (!table_join->oneDisjunct())
@@ -1212,7 +1230,13 @@ static bool radixHashJoinApplicable(
         packed_key_width += width;
     }
 
-    return packed_key_width % 4 == 0 && packed_key_width >= 4 && packed_key_width <= 64;
+    if (!(packed_key_width % 4 == 0 && packed_key_width >= 4 && packed_key_width <= 64))
+        return false;
+
+    /// The whole build side and each probe window are physically radix-scattered, so every column of
+    /// both sides must scatter as raw fixed-width bytes.
+    return allColumnsFixedAndContiguous(left_table_expression_header)
+        && allColumnsFixedAndContiguous(right_table_expression_header);
 }
 
 /// Fallback when `radix_join` is requested but its key gate does not hold: prefer `parallel_hash`
@@ -1270,7 +1294,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
 
     if (algorithm == JoinAlgorithm::RADIX_JOIN)
     {
-        if (radixHashJoinApplicable(table_join, right_table_expression_header))
+        if (radixHashJoinApplicable(table_join, left_table_expression_header, right_table_expression_header))
             return std::make_shared<RadixHashJoin>(
                 table_join,
                 right_table_expression_header,

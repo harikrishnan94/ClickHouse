@@ -3585,7 +3585,7 @@ Possible values:
 
  A variation of `hash` join that radix-partitions the right table by join key into small cache-resident hash tables before probing.
 
- Supports only `INNER` `ALL` equi-joins whose right-side key columns are fixed-width and non-nullable, with a packed key width that is a multiple of 4 in the range of [4, 64] bytes. For unsupported queries, another available algorithm is used.
+ Supports only `INNER` `ALL` equi-joins where the key columns are fixed-width and non-nullable, with a packed key width that is a multiple of 4 in the range of [4, 64] bytes, and where all columns of both sides are fixed-width (the whole build side and each probe window are physically radix-scattered). For unsupported queries, another available algorithm is used.
 
 - prefer_partial_merge
 
@@ -7930,7 +7930,7 @@ When disabled, leaf tables are sized by row count.
 )", 0) \
     DECLARE(Float, radix_join_probe_buffer_fraction, 0.15f, R"(
 For the `radix_join` algorithm, the probe-side buffer budget expressed as a fraction of the bytes accumulated by the build side (stored build rows plus leaf hash tables).
-The budget is consumed by the streaming probe; it takes effect once the streaming budgeted probe lands (currently the probe is immediate).
+The budget is consumed by the streaming probe: probe blocks are buffered until the budget is reached, then the buffered window is radix-scattered and probed as one wave.
 See also `radix_join_probe_buffer_min_bytes` and `radix_join_probe_buffer_max_bytes`.
 )", 0) \
     DECLARE(UInt64, radix_join_probe_buffer_min_bytes, 536870912, R"(

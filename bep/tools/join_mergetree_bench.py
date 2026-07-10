@@ -26,7 +26,7 @@ from collections.abc import Sequence
 
 DEFAULT_BINARY = "/mnt/ch/ClickHouse/build/reldeb/programs/clickhouse"
 DEFAULT_PATH = "tmp/join_bench_data"
-DEFAULT_MAX_MEMORY = 20_000_000_000
+DEFAULT_MAX_MEMORY = 100_000_000_000
 DEFAULT_VERIFY_MAX_OUTPUT_ROWS = 10_000_000
 SCHEMA_VERSION = 4
 GENERATOR_SIGNATURE = "join-mergetree-generator-v4"

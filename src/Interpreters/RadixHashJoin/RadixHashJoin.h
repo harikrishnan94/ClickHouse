@@ -16,35 +16,42 @@ class TableJoin;
 /** RadixHashJoin — a radix-partitioned hash join exposed as `join_algorithm = 'radix_join'`.
   *
   * It targets the case where the build-side hash table working set exceeds last-level cache, for a
-  * fixed-width join key whose packed width is a multiple of 4 in [4, 64]. The idea: never copy build
-  * payload (only the key and an 8-byte build reference are partitioned), do all the partitioning as one
-  * deferred, exactly-sized scatter, and probe small per-leaf hash tables that each stay L2-resident.
-  * Where `parallel_hash` probes one shared map that has fallen out of LLC (a cold miss per lookup),
-  * this probes a cache-hot leaf — that lookup locality is the win; the conscious trade-off is that the
-  * payload gather stays random across the build blocks (payload is not co-located).
+  * join whose key and payload columns are all fixed-width. The build side is radix-partitioned into
+  * many small hash tables that each stay L2-resident, and the probe side is streamed against them in
+  * budgeted waves so that each leaf table is loaded into cache once and hit by a long contiguous run
+  * of probe rows. Where `parallel_hash` probes one shared map that has fallen out of LLC (a cold miss
+  * per lookup), this probes a cache-hot leaf — that lookup locality is the win.
+  *
+  * v1 integrates the benchmark implementation (`src/Common/benchmarks/{radix_hash_join_bench,
+  * hash_join_bench}.cpp`): the whole build side (keys and payload) is physically radix-scattered into
+  * one exactly-sized chunk per leaf partition, and one real `HashJoin` is built per partition with an
+  * exact reserve. The probe side is buffered and, once a probe-buffer budget is reached, radix-
+  * scattered with the same kernels and probed against every touched leaf's `HashJoin`. Correctness
+  * comes from delegating per-partition build/probe/emit to those `HashJoin` instances.
   *
   * The planner gate (`radixHashJoinApplicable` in PlannerJoins.cpp) admits only:
-  *   - a single-disjunct inner ALL equi-join with no special storage, and
-  *   - join key columns that are all fixed-width, non-nullable, non-LowCardinality, whose packed width
-  *     (the sum of the column widths) is a multiple of 4 in [4, 64].
+  *   - a single-disjunct inner ALL equi-join with no special storage,
+  *   - join key columns that are all fixed-width, non-nullable, non-LowCardinality, whose packed
+  *     width (the sum of the column widths) is a multiple of 4 in [4, 64], and
+  *   - all columns of both sides fixed-width (so they scatter as raw bytes).
   * Anything else falls back to `parallel_hash` (or plain `hash` where even that shape does not hold).
   * The constructor re-checks these and throws a LOGICAL_ERROR if violated (rather than silently
   * degrading).
   *
   * Lifecycle:
-  *   addBlockToJoin      accumulate the right block (move) + count rows per leaf; no scatter, no copy.
-  *   onBuildPhaseFinish  the cheap build barrier only: concatenate the per-lane block stores and fold
-  *                       the per-lane histograms. Runs inside the last filling transform's prepare(),
-  *                       which must stay cheap for the executor (D-0003).
+  *   addBlockToJoin      accumulate the right block (move) into a per-lane block store; no scatter.
+  *   onBuildPhaseFinish  the cheap build barrier only: concatenate the per-lane block stores. Runs
+  *                       inside the last filling transform's prepare(), which must stay cheap (D-0003).
   *   runPostBuildPhase   the heavy post-build, parallelised over a dedicated `ThreadPool`: the radix
-  *                       scatter of every `[ref | key]` record to its leaf array, the leaf GROUP
-  *                       layout/sizing (`prepareLeafTables`), and the payload-resolution index. Leaf
-  *                       hash tables are NOT built here.
-  *   joinBlock           probe and emit; never accumulates build rows (before the build barrier it
-  *                       emits schema only). Leaf tables are built lazily at GROUP granularity on the
-  *                       first probe touch of the group (D-0004): a cheap route pre-pass over the
-  *                       block's keys derives the touched groups, missing ones are built exactly once
-  *                       (first toucher wins, contenders spin), then the AMAC probe runs.
+  *                       scatter of the whole build side to its leaf chunks, and one exactly-reserved
+  *                       `HashJoin` built per non-empty partition.
+  *   joinBlock           buffer the probe block; when the buffered window reaches the probe budget the
+  *                       triggering call runs one wave (scatter on the pool, probe touched partitions
+  *                       work-stealing) and streams its output. Before the build barrier (the header/
+  *                       planning path) it delegates to a schema-only `HashJoin`.
+  *   getDelayedBlocks    after all probe input, flushes the final partial window through the standard
+  *                       delayed-blocks mechanism (the `GraceHashJoin` path), whose stream probes
+  *                       partitions work-stealing across the executor's delayed-worker transforms.
   */
 class RadixHashJoin : public IJoin
 {
@@ -66,7 +73,7 @@ public:
     std::string getName() const override { return "RadixHashJoin"; }
     const TableJoin & getTableJoin() const override;
 
-    /// Build is parallel: the radix build path is lock-free (one build-store slot per build lane).
+    /// Build is parallel: the build path only accumulates blocks into per-lane stores (no shared map).
     bool supportParallelJoin() const override { return true; }
 
     bool addBlockToJoin(const Block & block, bool check_limits) override;
@@ -96,25 +103,31 @@ public:
     bool hasPostBuildPhase() const override { return true; }
     void runPostBuildPhase() override;
 
-private:
-    /// D-0004: given the packed (or raw single-column) probe keys of one block, route them to leaf
-    /// groups and build any touched group whose tables do not exist yet — exactly once per group,
-    /// parallelised over `State::pool`. Runs on the probing thread, before the AMAC lookup.
-    void ensureTouchedGroupsBuilt(const char * keys, size_t rows);
+    /// The final partial probe window is flushed through the standard delayed-blocks mechanism, so the
+    /// executor drives its probe across all delayed-worker transforms in parallel.
+    bool hasDelayedBlocks() const override { return true; }
+    IBlocksStreamPtr getDelayedBlocks() override;
 
+    void setEnableLazyColumnsIndexing(bool value) override;
+
+private:
     std::shared_ptr<TableJoin> table_join;
     SharedHeader right_sample_block;
 
     size_t max_threads;
     std::optional<UInt64> rhs_size_estimation;
     UInt64 max_partitions_per_pass;
-    /// When true, leaf hash tables are sized by a per-leaf HLL distinct-key estimate (only ever smaller)
-    /// rather than by row count. Gated by setting `radix_join_size_tables_by_distinct_estimate`.
+    /// When true, leaf hash tables would be sized by a per-leaf HLL distinct-key estimate rather than by
+    /// row count. No-op in v1: leaf tables are already sized exactly from the scatter histogram. Gated by
+    /// setting `radix_join_size_tables_by_distinct_estimate`.
     bool size_tables_by_distinct_estimate;
 
-    /// Cross-run hash-table statistics ("the stats"): keyed by the query plan, this lets a warm run reuse
-    /// the previous run's distinct-key estimate and skip the per-leaf HLL estimation entirely. Disabled
-    /// (key == 0) when `collect_hash_table_stats_during_joins` is off, in which case every run runs the HLL.
+    double probe_buffer_fraction;
+    UInt64 probe_buffer_min_bytes;
+    UInt64 probe_buffer_max_bytes;
+
+    /// Cross-run hash-table statistics ("the stats"): keyed by the query plan. No-op in v1 (leaf tables
+    /// are sized exactly from the histogram); kept for a future distinct-estimate sizing path.
     StatsCollectingParams stats_collecting_params;
 
     std::mutex totals_mutex;

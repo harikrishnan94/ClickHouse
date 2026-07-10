@@ -2,20 +2,32 @@
 
 #include "hash_join_bench.h"
 
+#include <memory>
+
 namespace DB
 {
-class HashJoin;
+class RadixHashJoin;
 }
 
 namespace DB::JoinBench
 {
 
-/// Radix partitioned hash join: multi-pass `IColumn::scatter` of both sides into p_star
-/// partitions, then one real ClickHouse `HashJoin` per partition, built and probed
-/// single-threaded through the same `IJoin` interface (partitions processed in parallel).
+/// Radix-partitioned hash join: the real ClickHouse `RadixHashJoin` (`join_algorithm = 'radix_join'`),
+/// used as-is through the `IJoin` interface — exactly as `ConcurrentHashJoinBench` wraps
+/// `ConcurrentHashJoin`. The build side is radix-scattered into per-leaf `HashJoin` tables
+/// (`addBlockToJoin` per lane, then `onBuildPhaseFinish` + `runPostBuildPhase`), and the probe side
+/// is buffered by `joinBlock` and flushed as budgeted waves — the final window through the standard
+/// delayed-blocks path (`getDelayedBlocks`), drained across the pool like the executor's
+/// delayed-worker transforms.
+///
+/// The driver constructs the join with a probe-buffer budget that makes the whole probe one wave
+/// (the benchmark's canonical `waves = 1` shape); `probeWaves` reconstructs the join with a budget
+/// pinned to `probe_bytes / waves` to force a specific wave count for the BEP sweep.
 class RadixHashJoinBench : public IJoinBench
 {
 public:
+    /// `p_star` caps the leaf fanout (`radix_join_max_partitions_per_pass`); `f_max` is accepted for
+    /// call-site compatibility (the production join is single-pass and derives fanout internally).
     RadixHashJoinBench(WorkerPool & pool_, const Block & left_header_, const Block & right_header_, size_t p_star_, size_t f_max_);
     ~RadixHashJoinBench() override;
 
@@ -25,25 +37,29 @@ public:
     std::string phaseBreakdown() const override;
     void teardown() override;
 
-    /// BEP probe-budget emulation: consume the probe side in `waves` consecutive windows of
-    /// blocks; each window is scattered and probed against every touched partition, then its
-    /// scattered chunks are dropped - i.e. one window = one probe-buffer budget of
-    /// |probe| / waves bytes, and each partition is revisited once per wave (paying the
-    /// partition working-set reload) instead of once per join. `waves` == 1 is the plain
-    /// radix probe. Timings land in probeScatterSec/probeJoinSec (summed over waves).
+    /// BEP probe-budget emulation: force `waves` windows by pinning the production probe-buffer budget
+    /// to `probe_bytes / waves`. Each call reconstructs and rebuilds a fresh production join (the probe
+    /// path is one-shot: window + delayed-flush state). `waves == 1` is the plain single-wave probe.
     size_t probeWaves(const std::vector<Block> & blocks, size_t waves, UInt64 * fingerprint);
 
     double probeScatterSec() const { return probe_scatter_sec; }
     double probeJoinSec() const { return probe_join_sec; }
 
 private:
+    std::unique_ptr<RadixHashJoin> makeJoin(UInt64 probe_min_bytes, UInt64 probe_max_bytes);
+    void buildJoin(RadixHashJoin & join_, const std::vector<Block> & blocks);
+    size_t driveProbe(RadixHashJoin & join_, const std::vector<Block> & blocks, UInt64 * fingerprint);
+
     WorkerPool & pool;
     Block left_header;
     SharedHeader right_header;
     std::shared_ptr<TableJoin> table_join;
-    std::vector<size_t> pass_bits;
-    std::vector<std::unique_ptr<HashJoin>> partition_joins;
-    double build_scatter_sec = 0;
+    size_t p_star;
+
+    std::unique_ptr<RadixHashJoin> join;
+    const std::vector<Block> * build_blocks = nullptr;
+
+    double build_sec = 0;
     double probe_scatter_sec = 0;
     double probe_join_sec = 0;
 };
