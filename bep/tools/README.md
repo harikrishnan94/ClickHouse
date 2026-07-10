@@ -138,3 +138,119 @@ Validated with `--candidate parallel_hash --baseline hash` on
   divisible by 8; 1e5 is not divisible by 64 — deterministic either way).
 * A candidate that legitimately cannot run a shape (e.g. an unsupported type) surfaces as
   ERROR with the server message in `candidate_result`; that is fail-close by design.
+
+# Persistent `MergeTree` join benchmark {#persistent-mergetree-join-benchmark}
+
+`join_mergetree_bench.py` performs a real `MergeTree` SQL comparison of `radix_join` and
+`parallel_hash` through `clickhouse local`. It separates persistent data loading from
+repeatable correctness checks and timing.
+
+## Two-step usage {#join-mergetree-bench-usage}
+
+First load one maximal bucketed dataset. `--max-cardinality` is the largest distinct-key
+count, and `--bucket-width` is a power of two that divides it. Later runs may select any
+cardinality that is a multiple of the bucket width. Keep `--path` under `tmp` so the data
+persists across invocations:
+
+```bash
+python3 bep/tools/join_mergetree_bench.py load \
+    --path tmp/join_mergetree_bench_data \
+    --max-cardinality 1048576 \
+    --bucket-width 65536 \
+    --max-multiplicity 8 \
+    --max-cycles 16 \
+    --max-build-payload-columns 2 \
+    --max-probe-payload-columns 2
+```
+
+`load` is idempotent when its requested dimensions and validated on-disk state match. Then
+select any valid cardinalities, multiplicities, ratios, hit rates, and payload-column counts:
+
+```bash
+python3 bep/tools/join_mergetree_bench.py run \
+    --path tmp/join_mergetree_bench_data \
+    --cardinalities 262144,1048576 \
+    --multiplicities 1,8 \
+    --ratios 0.5,2 \
+    --hit-rates 0,0.5,1 \
+    --build-payload-columns 0,1,2 \
+    --probe-payload-columns 0,1,2 \
+    --threads 32 \
+    --runs 5
+```
+
+For each benchmark point, `N_b = D * m` build rows and `N_p = N_b * r` probe rows; `N_p`
+must be an exact integer. For requested hit rate `h`, `n_hit` is the exact decimal
+round-half-up result of `N_p * h`, and the joined output has `n_hit * m` rows. Thus the
+realized hit fraction is `n_hit / N_p` and need not equal `h`. A point must satisfy
+`r * m <= C_max`, where `C_max` is the loaded `--max-cycles`.
+
+`--max-multiplicity` is at most 64, `--max-cycles` is at most 128, and
+`D_max * C_max` must not exceed `2^63` so miss keys remain in a disjoint domain. Before a
+rebuild, `load` reports the raw-size estimate
+`D_max * M_b * 8 * (5 + P_b) + D_max * C_max * 8 * (5 + P_p)` and refuses to proceed when
+it exceeds 90% of the target filesystem's free space. A matching valid no-op does not need
+that rebuild headroom.
+
+Use the built-in help as the complete CLI reference:
+
+```bash
+python3 bep/tools/join_mergetree_bench.py --help
+python3 bep/tools/join_mergetree_bench.py load --help
+python3 bep/tools/join_mergetree_bench.py run --help
+```
+
+## Deterministic data and loading {#join-mergetree-bench-data}
+
+The build table contains `D_max * M_b` rows partitioned by occurrence. Keys depend only on
+the selector, so every smaller selectable key set is a prefix subset of the maximal set.
+Rows are independently and deterministically shuffled within each occurrence/bucket block.
+Its sorting key is `(occurrence, card_bucket, shuffle_rank)`.
+
+The probe table contains `D_max * C_max` rows partitioned by cycle. Each cycle/bucket block
+uses a deterministic odd affine permutation to cover every key in that bucket exactly once.
+It stores both hit and disjoint-domain miss keys, and its sorting key is
+`(cycle, card_bucket, rank)`.
+
+At run time, build and probe subqueries select only sorting-key prefixes with `PREWHERE`.
+Probe rows consist of complete cycles followed by a bucket/rank prefix. Their dense index
+drives an exact Bresenham-style hit/miss dither, which realizes exactly `n_hit` hits without
+clustering them.
+
+The loader records schema metadata, the generator signature, dimensions, payload maxima,
+and Python SHA-256 fingerprints of the sorted `(partition_id, hash_of_all_files)` pairs. It
+runs `OPTIMIZE TABLE ... FINAL`, requires exactly one active part in every build and probe
+partition, and validates `D_max` rows per partition plus total row counts. Matching valid
+state is a no-op; absent, malformed, fingerprint-mismatched, or parameter-mismatched state
+is rebuilt and validated.
+
+## Measurement and correctness {#join-mergetree-bench-measurement}
+
+`--time` supplies wall latency for each warmup or timed query. Final query-scoped
+`--print-profile-events` totals provide the radix/hash phase counters. The shown
+`ProfileEvents` counters come from the timed run whose wall latency is closest to the
+computed median; with an even run count, the median may not be the latency of any literal
+sample. Every timed run is still checked to assert the requested execution path. The
+benchmark does not subtract cumulative `system.events` snapshots because the snapshot queries
+contaminate those counters. It also does not use `RealTimeMicroseconds` as latency because
+that event sums time across worker threads rather than measuring wall time.
+
+Every benchmark query pins `join_algorithm` to `radix_join` or `parallel_hash`,
+`max_threads` to `--threads`, `query_plan_join_swap_table = false`, `enable_analyzer = 1`,
+`enable_join_runtime_filters = 0`, `max_bytes_before_external_join = 0`,
+`max_bytes_ratio_before_external_join = 0`, and `max_memory_usage` to `--max-memory`. Before
+timing, exact probe, build, and joined row-count assertions must pass. Fallback detection
+requires radix leaf-group activity for `radix_join` and zero radix-path activity for
+`parallel_hash`.
+
+The final join projection contains only the requested payload columns, never the join key.
+When both payload counts are zero it projects `toUInt8(0) AS matched`.
+
+Cross-algorithm result verification is a separate sorted `ORDER BY ALL FORMAT Hash` query.
+It is skipped when expected output exceeds `--verify-max-output-rows` (10,000,000 by default)
+or when `--no-verify` is explicit; count assertions and path checks still run.
+
+Normal output consists of readable per-point tables and a summary on stdout; the tool creates
+no result files. Fatal setup and validation diagnostics go to stderr. For `run`, completed
+benchmark failures such as invalid counts, fallback detection, measurement or verification
+errors, and hash mismatches return 1; setup or loaded-state validation errors return 2.
