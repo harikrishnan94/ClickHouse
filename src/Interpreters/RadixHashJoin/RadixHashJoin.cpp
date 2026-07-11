@@ -18,6 +18,7 @@
 #include <Common/logger_useful.h>
 #include <Common/setThreadName.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstring>
@@ -1075,6 +1076,30 @@ void probePartition(HashJoin & leaf, Block probe_block, const Emit & emit)
     }
 }
 
+/// Probe drain order: the ids of the partitions worth probing (non-empty on both sides), largest
+/// probe partition first. One worker probes one partition, so a wave's wall time is lower-bounded
+/// by its largest partition; starting the largest first (LPT scheduling) keeps it off the tail
+/// under imbalance, and draining the biggest buffers first also releases the most memory earliest
+/// (a partition's columns are moved out when probed). Ties break by partition id for determinism.
+std::vector<UInt32> probeDrainOrder(const std::vector<PartitionOutput> & parts, const std::vector<std::unique_ptr<HashJoin>> & partition_joins)
+{
+    std::vector<UInt32> order;
+    order.reserve(parts.size());
+    for (size_t p = 0; p < parts.size(); ++p)
+        if (parts[p].rows && partition_joins[p])
+            order.push_back(static_cast<UInt32>(p));
+    std::sort(
+        order.begin(),
+        order.end(),
+        [&](UInt32 a, UInt32 b)
+        {
+            if (parts[a].rows != parts[b].rows)
+                return parts[a].rows > parts[b].rows;
+            return a < b;
+        });
+    return order;
+}
+
 /// One mid-stream wave: scatter the window on the pool, then probe touched partitions with
 /// work-stealing pool workers that stream output blocks through a bounded queue. Waves are sequential
 /// (wave_mutex, held for the result's lifetime), so transient memory stays ~2x the budget.
@@ -1091,6 +1116,7 @@ public:
             parts = scatterToPartitions(
                 shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.pass_bits);
         }
+        drain_order = probeDrainOrder(parts, shared.partition_joins);
 
         active_workers.store(shared.threads);
         for (size_t t = 0; t < shared.threads; ++t)
@@ -1134,11 +1160,10 @@ private:
     {
         try
         {
-            for (size_t p = next_partition.fetch_add(1, std::memory_order_relaxed); p < shared.fanout;
-                 p = next_partition.fetch_add(1, std::memory_order_relaxed))
+            for (size_t i = next_partition.fetch_add(1, std::memory_order_relaxed); i < drain_order.size();
+                 i = next_partition.fetch_add(1, std::memory_order_relaxed))
             {
-                if (!parts[p].rows || !shared.partition_joins[p])
-                    continue;
+                const size_t p = drain_order[i];
                 bool stop = false;
                 probePartition(
                     *shared.partition_joins[p],
@@ -1169,6 +1194,7 @@ private:
     ProbeShared shared;
     std::unique_lock<std::mutex> wave_lock;
     std::vector<PartitionOutput> parts;
+    std::vector<UInt32> drain_order;
     ConcurrentBoundedQueue<Block> output_queue;
     std::atomic<size_t> next_partition{0};
     std::atomic<size_t> active_workers{0};
@@ -1186,6 +1212,7 @@ public:
     RadixDelayedBlocks(ProbeShared shared_, std::vector<PartitionOutput> parts_)
         : shared(std::move(shared_))
         , parts(std::move(parts_))
+        , drain_order(probeDrainOrder(parts, shared.partition_joins))
     {
     }
 
@@ -1212,8 +1239,8 @@ protected:
 
             if (!res)
             {
-                const size_t p = next_partition.fetch_add(1, std::memory_order_relaxed);
-                if (p >= shared.fanout)
+                const size_t i = next_partition.fetch_add(1, std::memory_order_relaxed);
+                if (i >= drain_order.size())
                 {
                     /// No new partitions. Make sure no in-flight probe is about to leave pending rows.
                     shared_guard.unlock();
@@ -1225,8 +1252,7 @@ protected:
                     }
                     return more ? nextImpl() : Block{};
                 }
-                if (!parts[p].rows || !shared.partition_joins[p])
-                    continue;
+                const size_t p = drain_order[i];
                 leaf = shared.partition_joins[p].get();
                 res = leaf->joinBlock(parts[p].toBlock(shared.left_header));
             }
@@ -1262,6 +1288,7 @@ private:
 
     ProbeShared shared;
     std::vector<PartitionOutput> parts;
+    std::vector<UInt32> drain_order;
     std::atomic<size_t> next_partition{0};
     std::mutex pending_mutex;
     std::list<Pending> pending TSA_GUARDED_BY(pending_mutex);
