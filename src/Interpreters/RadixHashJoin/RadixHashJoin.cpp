@@ -12,8 +12,8 @@
 #include <Common/ProfileEvents.h>
 #include <Common/SharedMutex.h>
 #include <Common/Stopwatch.h>
-#include <Common/ThreadPool.h>
 #include <Common/ThreadGroupSwitcher.h>
+#include <Common/ThreadPool.h>
 #include <Common/formatReadable.h>
 #include <Common/logger_useful.h>
 #include <Common/setThreadName.h>
@@ -21,9 +21,14 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <limits>
 #include <list>
 #include <mutex>
 #include <shared_mutex>
+
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#endif
 
 namespace ProfileEvents
 {
@@ -72,11 +77,11 @@ constexpr size_t HIST_INTERLEAVE_MAX_FANOUT = 2048;
 constexpr size_t SCATTER_BATCH_MIN_ROWS = 256 << 10;
 constexpr size_t SCATTER_BATCH_LINES_PER_PARTITION = 64;
 
-/// Partition-plan constants (5.1): the target leaf working set (~L2), the single-pass fanout ceiling
+/// Partition-plan constants (5.1): the target leaf working set (~L2), the per-pass fanout ceiling
 /// (the benchmark's SWWC staging cache ceiling, MAX_FANOUT_PER_PASS), and the per-entry hash-table
 /// byte estimate (a cell at 0.5 load factor, matching the bench bandwidth model).
 constexpr size_t LEAF_TARGET_BYTES = 1 << 20;
-constexpr size_t MAX_LEAVES = 8192;
+constexpr size_t MAX_FANOUT_PER_PASS = 8192;
 constexpr size_t HT_CELL_BYTES = 16;
 
 using NtLine = char __attribute__((vector_size(LINE_BYTES)));
@@ -93,10 +98,20 @@ bool widthSupportsSwwc(size_t w)
     return w == 1 || w == 2 || w == 4 || w == 8 || w == 16;
 }
 
-/// Route hash: a multiply-shift mixing (the golden-ratio constant) deliberately independent of the
-/// CRC32C the leaf hash tables use for bucketing — otherwise partition assignment would correlate
-/// with in-table bucket placement and per-partition tables would see a skewed hash space. For a
-/// single UInt64 key this reduces to the benchmark's non-CRC `routeWord` exactly.
+/// Route hashes are deliberately independent of the CRC32C the leaf hash tables use for bucketing:
+/// otherwise partition assignment would correlate with in-table bucket placement and each leaf
+/// table would see a skewed hash space. The hot single-UInt64 path exactly matches the benchmark:
+/// ISO-polynomial CRC32 on aarch64, golden-ratio multiply-shift elsewhere. Wider and composite keys
+/// retain the width-generic multiply-shift fold.
+ALWAYS_INLINE UInt32 routeWord(UInt64 key)
+{
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+    return __crc32d(-1U, key);
+#else
+    return static_cast<UInt32>((key * 0x9E3779B97F4A7C15ULL) >> 32);
+#endif
+}
+
 ALWAYS_INLINE UInt64 mixStep(UInt64 h, UInt64 x)
 {
     return (h ^ x) * 0x9E3779B97F4A7C15ULL;
@@ -130,7 +145,16 @@ ALWAYS_INLINE UInt64 foldBytes(UInt64 h, const char * p, size_t w)
 template <size_t width>
 ALWAYS_INLINE UInt32 routeWordFixed(const char * p)
 {
-    return finalizeRoute(foldBytes(0, p, width));
+    if constexpr (width == sizeof(UInt64))
+    {
+        UInt64 key;
+        __builtin_memcpy_inline(&key, p, sizeof(key));
+        return routeWord(key);
+    }
+    else
+    {
+        return finalizeRoute(foldBytes(0, p, width));
+    }
 }
 
 ALWAYS_INLINE UInt32 routeWordBytes(const char * p, size_t w)
@@ -171,6 +195,12 @@ struct ScatterScratch
         }
     }
 
+    void setUseSwwc(bool use_swwc_)
+    {
+        chassert(!use_swwc_ || staging);
+        use_swwc = use_swwc_;
+    }
+
     void seed(size_t p, char * cursor)
     {
         cursors[p] = cursor;
@@ -209,11 +239,12 @@ struct RouteFromKey
 {
     const char * keys;
     UInt32 shift;
+    UInt32 mask;
     UInt16 * pids; /// null when there are no columns to consume the ids
 
     ALWAYS_INLINE UInt32 partition(size_t i) const
     {
-        const UInt32 p = routeWordFixed<width>(keys + i * width) >> shift;
+        const UInt32 p = (routeWordFixed<width>(keys + i * width) >> shift) & mask;
         if (pids)
             pids[i] = static_cast<UInt16>(p);
         return p;
@@ -225,11 +256,12 @@ struct RouteFromKeyGeneric
     const char * keys;
     size_t width;
     UInt32 shift;
+    UInt32 mask;
     UInt16 * pids;
 
     ALWAYS_INLINE UInt32 partition(size_t i) const
     {
-        const UInt32 p = routeWordBytes(keys + i * width, width) >> shift;
+        const UInt32 p = (routeWordBytes(keys + i * width, width) >> shift) & mask;
         if (pids)
             pids[i] = static_cast<UInt16>(p);
         return p;
@@ -249,7 +281,7 @@ void scatterDirect(Route route, const char * data, size_t n, char ** cursors)
     {
         const UInt32 p = route.partition(i);
         char * dst = cursors[p];
-        memcpy(dst, data + i * width, width);
+        __builtin_memcpy_inline(dst, data + i * width, width);
         cursors[p] = dst + width;
     }
 }
@@ -280,7 +312,7 @@ void scatterSwwc(Route route, const char * data, size_t n, ScatterScratch & scra
         const UInt32 p = route.partition(i);
         char * line = staging + static_cast<size_t>(p) * LINE_BYTES;
         UInt32 f = fill[p];
-        memcpy(line + f, data + i * width, width);
+        __builtin_memcpy_inline(line + f, data + i * width, width);
         f += width;
         if (f == LINE_BYTES)
         {
@@ -313,14 +345,15 @@ ALWAYS_INLINE void scatterOne(Route route, const char * data, size_t n, bool use
 
 /// Scatter one chunk's key column (single-key mode), emitting pids as a by-product when `pids`
 /// is non-null. Width dispatch to a compile-time kernel for the common widths.
-void scatterKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt16 * pids, bool use_swwc, ScatterScratch & scratch)
+void scatterKeyChunk(
+    size_t kw, const char * keys, size_t n, UInt32 shift, UInt32 mask, UInt16 * pids, bool use_swwc, ScatterScratch & scratch)
 {
     switch (kw)
     {
-        case 4: scatterOne<4>(RouteFromKey<4>{keys, shift, pids}, keys, n, use_swwc, scratch); break;
-        case 8: scatterOne<8>(RouteFromKey<8>{keys, shift, pids}, keys, n, use_swwc, scratch); break;
-        case 16: scatterOne<16>(RouteFromKey<16>{keys, shift, pids}, keys, n, use_swwc, scratch); break;
-        default: scatterDirectGeneric(RouteFromKeyGeneric{keys, kw, shift, pids}, keys, n, kw, scratch.cursors.data()); break;
+        case 4: scatterOne<4>(RouteFromKey<4>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
+        case 8: scatterOne<8>(RouteFromKey<8>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
+        case 16: scatterOne<16>(RouteFromKey<16>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
+        default: scatterDirectGeneric(RouteFromKeyGeneric{keys, kw, shift, mask, pids}, keys, n, kw, scratch.cursors.data()); break;
     }
 }
 
@@ -342,75 +375,87 @@ void scatterPidChunk(size_t w, const UInt16 * pids, const char * data, size_t n,
 /// Histogram one chunk's rows from a single key column. At low fanout `lanes` (4 * fanout, caller
 /// owned, persistent across chunks) breaks the load-increment-store dependency chain.
 /// hist and lanes are each written on one branch (a clang-tidy false positive flags them const-able).
-template <size_t width>
-void histogramKeyT(const char * keys, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout) /// NOLINT(readability-non-const-parameter)
+template <size_t width, typename Counter>
+void histogramKeyT(
+    const char * keys,
+    size_t n,
+    UInt32 shift,
+    UInt32 mask,
+    Counter * hist,
+    Counter * lanes,
+    size_t fanout) /// NOLINT(readability-non-const-parameter)
 {
     if (!lanes)
     {
         for (size_t i = 0; i < n; ++i)
-            ++hist[routeWordFixed<width>(keys + i * width) >> shift];
+            ++hist[(routeWordFixed<width>(keys + i * width) >> shift) & mask];
         return;
     }
     size_t i = 0;
     for (; i + 4 <= n; i += 4)
     {
-        ++lanes[0 * fanout + (routeWordFixed<width>(keys + (i + 0) * width) >> shift)];
-        ++lanes[1 * fanout + (routeWordFixed<width>(keys + (i + 1) * width) >> shift)];
-        ++lanes[2 * fanout + (routeWordFixed<width>(keys + (i + 2) * width) >> shift)];
-        ++lanes[3 * fanout + (routeWordFixed<width>(keys + (i + 3) * width) >> shift)];
+        ++lanes[0 * fanout + ((routeWordFixed<width>(keys + (i + 0) * width) >> shift) & mask)];
+        ++lanes[1 * fanout + ((routeWordFixed<width>(keys + (i + 1) * width) >> shift) & mask)];
+        ++lanes[2 * fanout + ((routeWordFixed<width>(keys + (i + 2) * width) >> shift) & mask)];
+        ++lanes[3 * fanout + ((routeWordFixed<width>(keys + (i + 3) * width) >> shift) & mask)];
     }
     for (; i < n; ++i)
-        ++lanes[(i & 3) * fanout + (routeWordFixed<width>(keys + i * width) >> shift)];
+        ++lanes[(i & 3) * fanout + ((routeWordFixed<width>(keys + i * width) >> shift) & mask)];
 }
 
-void histogramKeyGeneric(const char * keys, size_t width, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout)
+template <typename Counter>
+void histogramKeyGeneric(
+    const char * keys, size_t width, size_t n, UInt32 shift, UInt32 mask, Counter * hist, Counter * lanes, size_t fanout)
 {
     if (!lanes)
     {
         for (size_t i = 0; i < n; ++i)
-            ++hist[routeWordBytes(keys + i * width, width) >> shift];
+            ++hist[(routeWordBytes(keys + i * width, width) >> shift) & mask];
         return;
     }
     for (size_t i = 0; i < n; ++i)
-        ++lanes[(i & 3) * fanout + (routeWordBytes(keys + i * width, width) >> shift)];
+        ++lanes[(i & 3) * fanout + ((routeWordBytes(keys + i * width, width) >> shift) & mask)];
 }
 
-void histogramKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout)
+template <typename Counter>
+void histogramKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt32 mask, Counter * hist, Counter * lanes, size_t fanout)
 {
     switch (kw)
     {
-        case 4: histogramKeyT<4>(keys, n, shift, hist, lanes, fanout); break;
-        case 8: histogramKeyT<8>(keys, n, shift, hist, lanes, fanout); break;
-        case 16: histogramKeyT<16>(keys, n, shift, hist, lanes, fanout); break;
-        default: histogramKeyGeneric(keys, kw, n, shift, hist, lanes, fanout); break;
+        case 4: histogramKeyT<4>(keys, n, shift, mask, hist, lanes, fanout); break;
+        case 8: histogramKeyT<8>(keys, n, shift, mask, hist, lanes, fanout); break;
+        case 16: histogramKeyT<16>(keys, n, shift, mask, hist, lanes, fanout); break;
+        default: histogramKeyGeneric(keys, kw, n, shift, mask, hist, lanes, fanout); break;
     }
 }
 
 /// Histogram one chunk's rows from precomputed route words (composite-key mode).
-void histogramRouteChunk(const UInt32 * routes, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout)
+template <typename Counter>
+void histogramRouteChunk(const UInt32 * routes, size_t n, UInt32 shift, UInt32 mask, Counter * hist, Counter * lanes, size_t fanout)
 {
     if (!lanes)
     {
         for (size_t i = 0; i < n; ++i)
-            ++hist[routes[i] >> shift];
+            ++hist[(routes[i] >> shift) & mask];
         return;
     }
     size_t i = 0;
     for (; i + 4 <= n; i += 4)
     {
-        ++lanes[0 * fanout + (routes[i + 0] >> shift)];
-        ++lanes[1 * fanout + (routes[i + 1] >> shift)];
-        ++lanes[2 * fanout + (routes[i + 2] >> shift)];
-        ++lanes[3 * fanout + (routes[i + 3] >> shift)];
+        ++lanes[0 * fanout + ((routes[i + 0] >> shift) & mask)];
+        ++lanes[1 * fanout + ((routes[i + 1] >> shift) & mask)];
+        ++lanes[2 * fanout + ((routes[i + 2] >> shift) & mask)];
+        ++lanes[3 * fanout + ((routes[i + 3] >> shift) & mask)];
     }
     for (; i < n; ++i)
-        ++lanes[(i & 3) * fanout + (routes[i] >> shift)];
+        ++lanes[(i & 3) * fanout + ((routes[i] >> shift) & mask)];
 }
 
-void reduceHistogramLanes(UInt64 * hist, const UInt32 * lanes, size_t fanout)
+template <typename Counter>
+void reduceHistogramLanes(Counter * hist, const Counter * lanes, size_t fanout)
 {
     for (size_t p = 0; p < fanout; ++p)
-        hist[p] += static_cast<UInt64>(lanes[0 * fanout + p]) + lanes[1 * fanout + p] + lanes[2 * fanout + p] + lanes[3 * fanout + p];
+        hist[p] += lanes[0 * fanout + p] + lanes[1 * fanout + p] + lanes[2 * fanout + p] + lanes[3 * fanout + p];
 }
 
 /// The fixed-width layout of one side (build or probe): column widths in bytes and the key columns.
@@ -434,7 +479,8 @@ SideLayout makeSideLayout(const Block & header, const Names & key_names)
     {
         const auto & column = header.getByPosition(j).column;
         if (!column->isFixedAndContiguous())
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: column {} is not fixed-and-contiguous", header.getByPosition(j).name);
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: column {} is not fixed-and-contiguous", header.getByPosition(j).name);
         layout.col_widths[j] = column->sizeOfValueIfFixed();
     }
     for (const auto & name : key_names)
@@ -459,22 +505,30 @@ struct PartitionOutput
     std::vector<char *> bases;
     size_t rows = 0;
 
-    /// createColumn()+insertRawUninitialized leaves POD contents uninitialized: no memset, pages are
-    /// first-touched by the scatter writes themselves.
-    void allocate(const Block & header, const std::vector<size_t> & col_widths, size_t rows_)
+    void initialize(const Block & header, size_t rows_)
     {
         rows = rows_;
-        const size_t n = header.columns();
-        columns.resize(n);
-        bases.resize(n);
-        for (size_t j = 0; j < n; ++j)
-        {
-            auto col = header.getByPosition(j).type->createColumn();
-            auto span = col->insertRawUninitialized(rows);
-            chassert(span.size() == rows * col_widths[j]);
-            bases[j] = span.data();
-            columns[j] = std::move(col);
-        }
+        columns.resize(header.columns());
+        bases.resize(header.columns(), nullptr);
+    }
+
+    /// createColumn()+insertRawUninitialized leaves POD contents uninitialized: no memset, pages are
+    /// first-touched by the scatter writes themselves. Refine passes call this just-in-time so the
+    /// allocator can reuse the input column released by the preceding scatter round.
+    void allocateColumn(const Block & header, const std::vector<size_t> & col_widths, size_t j)
+    {
+        auto col = header.getByPosition(j).type->createColumn();
+        auto span = col->insertRawUninitialized(rows);
+        chassert(span.size() == rows * col_widths[j]);
+        bases[j] = span.data();
+        columns[j] = std::move(col);
+    }
+
+    void allocate(const Block & header, const std::vector<size_t> & col_widths, size_t rows_)
+    {
+        initialize(header, rows_);
+        for (size_t j = 0; j < header.columns(); ++j)
+            allocateColumn(header, col_widths, j);
     }
 
     Block toBlock(const Block & header)
@@ -491,23 +545,69 @@ struct PartitionOutput
 void parallelRun(ThreadPool & pool, size_t threads, const ThreadGroupPtr & thread_group, const std::function<void(size_t)> & fn)
 {
     for (size_t t = 0; t < threads; ++t)
-        pool.scheduleOrThrow([&fn, t, thread_group] { ThreadGroupSwitcher switcher(thread_group, ThreadName::RADIX_JOIN); fn(t); });
+        pool.scheduleOrThrow(
+            [&fn, t, thread_group]
+            {
+                ThreadGroupSwitcher switcher(thread_group, ThreadName::RADIX_JOIN);
+                fn(t);
+            });
     pool.wait();
 }
 
-/// Radix-scatter `blocks` (all sharing `header`'s structure) into `fanout` exactly-sized per-partition
-/// column bundles, using three cooperative pool phases (histogram, fused prefix-sum + exact
-/// allocation, batched column-major scatter). `blocks` is consumed (columns dropped batch-eagerly).
-std::vector<PartitionOutput> scatterToPartitions(
+std::vector<size_t> computePassBits(size_t partitions, size_t max_fanout)
+{
+    const size_t total_bits = std::countr_zero(std::bit_ceil(partitions));
+    const size_t fanout_bits = std::max<size_t>(1, std::bit_width(std::bit_floor(std::max<size_t>(2, max_fanout))) - 1);
+    const size_t num_passes = (total_bits + fanout_bits - 1) / fanout_bits;
+    const size_t bits_per_pass = (total_bits + num_passes - 1) / num_passes;
+
+    std::vector<size_t> result;
+    result.reserve(num_passes);
+    size_t remaining = total_bits;
+    while (remaining)
+    {
+        const size_t bits = std::min(bits_per_pass, remaining);
+        result.push_back(bits);
+        remaining -= bits;
+    }
+    return result;
+}
+
+std::vector<size_t> makeScatterOrder(const SideLayout & layout)
+{
+    std::vector<size_t> order;
+    order.reserve(layout.num_columns);
+    if (!layout.single_key)
+    {
+        for (size_t j = 0; j < layout.num_columns; ++j)
+            order.push_back(j);
+        return order;
+    }
+
+    order.push_back(layout.key_pos);
+    for (size_t j = 0; j < layout.num_columns; ++j)
+        if (j != layout.key_pos)
+            order.push_back(j);
+    return order;
+}
+
+/// First radix pass: all workers cooperate on the single input group in exactly three barriers
+/// (histogram, fused prefix-sum + exact allocation, fused batched column-major scatter). `blocks` is
+/// consumed batch-eagerly. `Counter` is selected once from the exact side row count, outside the row
+/// loops: `UInt32` in the common case and `UInt64` only for sides larger than 2^32 - 1 rows.
+template <typename Counter>
+std::vector<PartitionOutput> scatterFirstPass(
     ThreadPool & pool,
     size_t threads,
     const ThreadGroupPtr & thread_group,
     const Block & header,
     std::vector<Block> & blocks,
     const SideLayout & layout,
-    size_t fanout,
-    UInt32 route_shift)
+    size_t bits)
 {
+    const size_t fanout = 1ULL << bits;
+    const UInt32 route_shift = static_cast<UInt32>(32 - bits);
+    const UInt32 route_mask = static_cast<UInt32>(fanout - 1);
     const size_t num_chunks = blocks.size();
     const size_t num_columns = layout.num_columns;
     const bool use_swwc_fanout = fanout >= SWWC_MIN_FANOUT;
@@ -525,70 +625,80 @@ std::vector<PartitionOutput> scatterToPartitions(
         chunk_routes.resize(num_chunks);
 
     /// Barrier 1: per-worker histograms into disjoint slices of one flat array.
-    PaddedPODArray<UInt64> hist;
+    PaddedPODArray<Counter> hist;
     hist.resize(threads * fanout);
-    parallelRun(pool, threads, thread_group, [&](size_t tid)
-    {
-        UInt64 * h = hist.data() + tid * fanout;
-        memset(h, 0, fanout * sizeof(UInt64));
-        std::vector<UInt32> lanes;
-        if (interleave_hist)
-            lanes.assign(4 * fanout, 0);
-
-        PaddedPODArray<UInt64> acc; /// composite fold accumulator, reused per chunk
-        for (size_t c = tid; c < num_chunks; c += threads)
+    parallelRun(
+        pool,
+        threads,
+        thread_group,
+        [&](size_t tid)
         {
-            const size_t n = chunk_rows[c];
-            if (composite)
+            Counter * h = hist.data() + tid * fanout;
+            memset(h, 0, fanout * sizeof(Counter));
+            std::vector<Counter> lanes;
+            if (interleave_hist)
+                lanes.assign(4 * fanout, 0);
+
+            PaddedPODArray<UInt64> acc; /// composite fold accumulator, reused per chunk
+            for (size_t c = tid; c < num_chunks; c += threads)
             {
-                acc.resize(n);
-                memset(acc.data(), 0, n * sizeof(UInt64));
-                for (size_t k = 0; k < layout.key_positions.size(); ++k)
+                const size_t n = chunk_rows[c];
+                if (composite)
                 {
-                    const size_t pos = layout.key_positions[k];
-                    const size_t w = layout.key_widths[k];
-                    const char * base = blocks[c].getByPosition(pos).column->getRawData().data();
+                    acc.resize(n);
+                    memset(acc.data(), 0, n * sizeof(UInt64));
+                    for (size_t k = 0; k < layout.key_positions.size(); ++k)
+                    {
+                        const size_t pos = layout.key_positions[k];
+                        const size_t w = layout.key_widths[k];
+                        const char * base = blocks[c].getByPosition(pos).column->getRawData().data();
+                        for (size_t i = 0; i < n; ++i)
+                            acc[i] = foldBytes(acc[i], base + i * w, w);
+                    }
+                    chunk_routes[c].resize(n);
                     for (size_t i = 0; i < n; ++i)
-                        acc[i] = foldBytes(acc[i], base + i * w, w);
+                        chunk_routes[c][i] = finalizeRoute(acc[i]);
+                    histogramRouteChunk(
+                        chunk_routes[c].data(), n, route_shift, route_mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
                 }
-                chunk_routes[c].resize(n);
-                for (size_t i = 0; i < n; ++i)
-                    chunk_routes[c][i] = finalizeRoute(acc[i]);
-                histogramRouteChunk(chunk_routes[c].data(), n, route_shift, h, interleave_hist ? lanes.data() : nullptr, fanout);
+                else
+                {
+                    const char * keys = blocks[c].getByPosition(layout.key_pos).column->getRawData().data();
+                    histogramKeyChunk(
+                        layout.key_width, keys, n, route_shift, route_mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
+                }
             }
-            else
-            {
-                const char * keys = blocks[c].getByPosition(layout.key_pos).column->getRawData().data();
-                histogramKeyChunk(layout.key_width, keys, n, route_shift, h, interleave_hist ? lanes.data() : nullptr, fanout);
-            }
-        }
-        if (interleave_hist)
-            reduceHistogramLanes(h, lanes.data(), fanout);
-    });
+            if (interleave_hist)
+                reduceHistogramLanes(h, lanes.data(), fanout);
+        });
 
     /// Barrier 2: fused prefix sum + exact one-shot allocation. Each worker owns a contiguous,
     /// disjoint range of partitions.
-    PaddedPODArray<UInt64> offsets; /// per (worker, partition) start row within the partition
+    PaddedPODArray<Counter> offsets; /// per (worker, partition) start row within the partition
     offsets.resize(threads * fanout);
     std::vector<size_t> totals(fanout, 0);
     std::vector<PartitionOutput> parts(fanout);
-    parallelRun(pool, threads, thread_group, [&](size_t tid)
-    {
-        const size_t begin = fanout * tid / threads;
-        const size_t end = fanout * (tid + 1) / threads;
-        for (size_t p = begin; p < end; ++p)
+    parallelRun(
+        pool,
+        threads,
+        thread_group,
+        [&](size_t tid)
         {
-            UInt64 total = 0;
-            for (size_t w = 0; w < threads; ++w)
+            const size_t begin = fanout * tid / threads;
+            const size_t end = fanout * (tid + 1) / threads;
+            for (size_t p = begin; p < end; ++p)
             {
-                offsets[w * fanout + p] = total;
-                total += hist[w * fanout + p];
+                size_t total = 0;
+                for (size_t w = 0; w < threads; ++w)
+                {
+                    offsets[w * fanout + p] = static_cast<Counter>(total);
+                    total += hist[w * fanout + p];
+                }
+                totals[p] = total;
+                if (total)
+                    parts[p].allocate(header, layout.col_widths, total);
             }
-            totals[p] = total;
-            if (total)
-                parts[p].allocate(header, layout.col_widths, total);
-        }
-    });
+        });
 
     /// Barrier 3: single fused scatter run, batched. Each worker processes its chunk stripe in batches
     /// of whole chunks; the batch's input chunks are dropped after their last column is scattered.
@@ -596,106 +706,275 @@ std::vector<PartitionOutput> scatterToPartitions(
 
     /// Column processing order: single-key routes the key column first (emitting the pids the payload
     /// columns then consume); composite precomputes the pids from the route words up front.
-    std::vector<size_t> scatter_order;
-    scatter_order.reserve(num_columns);
+    const std::vector<size_t> scatter_order = makeScatterOrder(layout);
+    const bool need_pids = composite || num_columns > 1;
+
+    parallelRun(
+        pool,
+        threads,
+        thread_group,
+        [&](size_t tid)
+        {
+            ScatterScratch scratch;
+            scratch.init(fanout, use_swwc_fanout);
+
+            /// Running write cursors per (column, partition), persisted across batches.
+            std::vector<char *> col_cursors(num_columns * fanout, nullptr);
+            for (size_t j = 0; j < num_columns; ++j)
+                for (size_t p = 0; p < fanout; ++p)
+                    if (totals[p])
+                        col_cursors[j * fanout + p] = parts[p].bases[j] + offsets[tid * fanout + p] * layout.col_widths[j];
+
+            PaddedPODArray<UInt16> pids;
+            std::vector<size_t> batch;
+            std::vector<size_t> batch_offsets;
+
+            size_t c = tid;
+            while (c < num_chunks)
+            {
+                batch.clear();
+                batch_offsets.clear();
+                size_t batch_rows = 0;
+                for (; c < num_chunks && batch_rows < batch_rows_target; c += threads)
+                {
+                    batch.push_back(c);
+                    batch_offsets.push_back(batch_rows);
+                    batch_rows += chunk_rows[c];
+                }
+
+                if (need_pids)
+                    pids.resize(batch_rows);
+
+                /// Composite: derive the batch's pids from the route words before any column scatters.
+                if (composite && need_pids)
+                {
+                    for (size_t b = 0; b < batch.size(); ++b)
+                    {
+                        const size_t cc = batch[b];
+                        const size_t n = chunk_rows[cc];
+                        UInt16 * dst = pids.data() + batch_offsets[b];
+                        const UInt32 * routes = chunk_routes[cc].data();
+                        for (size_t i = 0; i < n; ++i)
+                            dst[i] = static_cast<UInt16>((routes[i] >> route_shift) & route_mask);
+                    }
+                }
+
+                for (size_t j : scatter_order)
+                {
+                    const size_t w = layout.col_widths[j];
+                    const bool use_swwc = use_swwc_fanout && widthSupportsSwwc(w);
+                    scratch.setUseSwwc(use_swwc);
+                    for (size_t p = 0; p < fanout; ++p)
+                        scratch.seed(p, col_cursors[j * fanout + p]);
+
+                    const bool key_first = !composite && j == layout.key_pos;
+                    for (size_t b = 0; b < batch.size(); ++b)
+                    {
+                        const size_t cc = batch[b];
+                        const size_t n = chunk_rows[cc];
+                        if (!n)
+                            continue;
+                        const char * data = blocks[cc].getByPosition(j).column->getRawData().data();
+                        UInt16 * pid_slice = need_pids ? pids.data() + batch_offsets[b] : nullptr;
+                        if (key_first)
+                        {
+                            scatterKeyChunk(layout.key_width, data, n, route_shift, route_mask, pid_slice, use_swwc, scratch);
+                        }
+                        else
+                        {
+                            scatterPidChunk(w, pids.data() + batch_offsets[b], data, n, use_swwc, scratch);
+                        }
+                    }
+                    scratch.drain();
+                    for (size_t p = 0; p < fanout; ++p)
+                        col_cursors[j * fanout + p] = scratch.cursors[p];
+                }
+
+                /// The batch is fully consumed: drop its input chunks before the next batch.
+                for (size_t cc : batch)
+                    blocks[cc].clear();
+            }
+        });
+
+    return parts;
+}
+
+/// Refine one previous-pass output group. One worker owns the group for the whole operation. Output
+/// columns are allocated just-in-time and each consumed input column is released before the next
+/// output-column allocation, keeping resident data near one copy of the group.
+template <typename Counter>
+void scatterRefineGroup(
+    const Block & header,
+    const SideLayout & layout,
+    PartitionOutput & group,
+    size_t bits,
+    size_t bits_done,
+    std::vector<PartitionOutput> & out,
+    size_t out_begin)
+{
+    const size_t fanout = 1ULL << bits;
+    const UInt32 route_shift = static_cast<UInt32>(32 - bits_done - bits);
+    const UInt32 route_mask = static_cast<UInt32>(fanout - 1);
+    const bool use_swwc_fanout = fanout >= SWWC_MIN_FANOUT;
+    const bool interleave_hist = fanout <= HIST_INTERLEAVE_MAX_FANOUT;
+    const bool composite = !layout.single_key;
+    const bool need_pids = composite || layout.num_columns > 1;
+
+    std::vector<Counter> hist(fanout, 0);
+    std::vector<Counter> lanes;
+    if (interleave_hist)
+        lanes.assign(4 * fanout, 0);
+
+    PaddedPODArray<UInt16> pids;
+    if (need_pids)
+        pids.resize(group.rows);
+
     if (composite)
     {
-        for (size_t j = 0; j < num_columns; ++j)
-            scatter_order.push_back(j);
+        {
+            PaddedPODArray<UInt64> accumulators;
+            accumulators.resize(group.rows);
+            memset(accumulators.data(), 0, group.rows * sizeof(UInt64));
+            for (size_t k = 0; k < layout.key_positions.size(); ++k)
+            {
+                const size_t pos = layout.key_positions[k];
+                const size_t width = layout.key_widths[k];
+                const char * base = group.columns[pos]->getRawData().data();
+                for (size_t i = 0; i < group.rows; ++i)
+                    accumulators[i] = foldBytes(accumulators[i], base + i * width, width);
+            }
+
+            PaddedPODArray<UInt32> routes;
+            routes.resize(group.rows);
+            for (size_t i = 0; i < group.rows; ++i)
+                routes[i] = finalizeRoute(accumulators[i]);
+
+            histogramRouteChunk(
+                routes.data(), group.rows, route_shift, route_mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
+            for (size_t i = 0; i < group.rows; ++i)
+                pids[i] = static_cast<UInt16>((routes[i] >> route_shift) & route_mask);
+        }
     }
     else
     {
-        scatter_order.push_back(layout.key_pos);
-        for (size_t j = 0; j < num_columns; ++j)
-            if (j != layout.key_pos)
-                scatter_order.push_back(j);
+        const char * keys = group.columns[layout.key_pos]->getRawData().data();
+        histogramKeyChunk(
+            layout.key_width, keys, group.rows, route_shift, route_mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
     }
-    const bool need_pids = composite || num_columns > 1;
+    if (interleave_hist)
+        reduceHistogramLanes(hist.data(), lanes.data(), fanout);
 
-    parallelRun(pool, threads, thread_group, [&](size_t tid)
+    std::vector<PartitionOutput> parts(fanout);
+    for (size_t p = 0; p < fanout; ++p)
+        if (hist[p])
+            parts[p].initialize(header, hist[p]);
+
+    ScatterScratch scratch;
+    scratch.init(fanout, use_swwc_fanout);
+    const std::vector<size_t> scatter_order = makeScatterOrder(layout);
+    for (size_t j : scatter_order)
     {
-        ScatterScratch scratch;
-        scratch.init(fanout, use_swwc_fanout);
-
-        /// Running write cursors per (column, partition), persisted across batches.
-        std::vector<char *> col_cursors(num_columns * fanout, nullptr);
-        for (size_t j = 0; j < num_columns; ++j)
-            for (size_t p = 0; p < fanout; ++p)
-                if (totals[p])
-                    col_cursors[j * fanout + p] = parts[p].bases[j] + offsets[tid * fanout + p] * layout.col_widths[j];
-
-        PaddedPODArray<UInt16> pids;
-        std::vector<size_t> batch;
-        std::vector<size_t> batch_offsets;
-
-        size_t c = tid;
-        while (c < num_chunks)
+        const size_t width = layout.col_widths[j];
+        const bool use_swwc = use_swwc_fanout && widthSupportsSwwc(width);
+        scratch.setUseSwwc(use_swwc);
+        for (size_t p = 0; p < fanout; ++p)
         {
-            batch.clear();
-            batch_offsets.clear();
-            size_t batch_rows = 0;
-            for (; c < num_chunks && batch_rows < batch_rows_target; c += threads)
-            {
-                batch.push_back(c);
-                batch_offsets.push_back(batch_rows);
-                batch_rows += chunk_rows[c];
-            }
-
-            if (need_pids)
-                pids.resize(batch_rows);
-
-            /// Composite: derive the batch's pids from the route words before any column scatters.
-            if (composite && need_pids)
-            {
-                for (size_t b = 0; b < batch.size(); ++b)
-                {
-                    const size_t cc = batch[b];
-                    const size_t n = chunk_rows[cc];
-                    UInt16 * dst = pids.data() + batch_offsets[b];
-                    const UInt32 * routes = chunk_routes[cc].data();
-                    for (size_t i = 0; i < n; ++i)
-                        dst[i] = static_cast<UInt16>(routes[i] >> route_shift);
-                }
-            }
-
-            for (size_t j : scatter_order)
-            {
-                const size_t w = layout.col_widths[j];
-                const bool use_swwc = use_swwc_fanout && widthSupportsSwwc(w);
-                for (size_t p = 0; p < fanout; ++p)
-                    scratch.seed(p, col_cursors[j * fanout + p]);
-
-                const bool key_first = !composite && j == layout.key_pos;
-                for (size_t b = 0; b < batch.size(); ++b)
-                {
-                    const size_t cc = batch[b];
-                    const size_t n = chunk_rows[cc];
-                    if (!n)
-                        continue;
-                    const char * data = blocks[cc].getByPosition(j).column->getRawData().data();
-                    UInt16 * pid_slice = need_pids ? pids.data() + batch_offsets[b] : nullptr;
-                    if (key_first)
-                    {
-                        const bool key_swwc = use_swwc_fanout && widthSupportsSwwc(layout.key_width);
-                        scatterKeyChunk(layout.key_width, data, n, route_shift, pid_slice, key_swwc, scratch);
-                    }
-                    else
-                    {
-                        scatterPidChunk(w, pids.data() + batch_offsets[b], data, n, use_swwc, scratch);
-                    }
-                }
-                scratch.drain();
-                for (size_t p = 0; p < fanout; ++p)
-                    col_cursors[j * fanout + p] = scratch.cursors[p];
-            }
-
-            /// The batch is fully consumed: drop its input chunks before the next batch.
-            for (size_t cc : batch)
-                blocks[cc].clear();
+            if (hist[p])
+                parts[p].allocateColumn(header, layout.col_widths, j);
+            scratch.seed(p, hist[p] ? parts[p].bases[j] : nullptr);
         }
-    });
 
-    return parts;
+        const char * data = group.columns[j]->getRawData().data();
+        if (!composite && j == layout.key_pos)
+        {
+            scatterKeyChunk(
+                layout.key_width, data, group.rows, route_shift, route_mask, need_pids ? pids.data() : nullptr, use_swwc, scratch);
+        }
+        else
+        {
+            scatterPidChunk(width, pids.data(), data, group.rows, use_swwc, scratch);
+        }
+        scratch.drain();
+
+        group.columns[j].reset();
+        group.bases[j] = nullptr;
+    }
+
+    for (size_t p = 0; p < fanout; ++p)
+        if (hist[p])
+            out[out_begin + p] = std::move(parts[p]);
+
+    group.columns.clear();
+    group.bases.clear();
+    group.rows = 0;
+}
+
+/// Later radix passes: dynamically assign differently-sized previous-pass groups to workers. Each
+/// group uses the narrowest safe histogram counters, chosen before its row loops.
+std::vector<PartitionOutput> scatterRefinePass(
+    ThreadPool & pool,
+    size_t threads,
+    const ThreadGroupPtr & thread_group,
+    const Block & header,
+    const SideLayout & layout,
+    std::vector<PartitionOutput> & groups,
+    size_t bits,
+    size_t bits_done)
+{
+    const size_t fanout = 1ULL << bits;
+    std::vector<PartitionOutput> out(groups.size() * fanout);
+    std::atomic<size_t> next_group{0};
+
+    parallelRun(
+        pool,
+        threads,
+        thread_group,
+        [&](size_t)
+        {
+            for (size_t g = next_group.fetch_add(1, std::memory_order_relaxed); g < groups.size();
+                 g = next_group.fetch_add(1, std::memory_order_relaxed))
+            {
+                if (!groups[g].rows)
+                    continue;
+                if (groups[g].rows <= std::numeric_limits<UInt32>::max())
+                    scatterRefineGroup<UInt32>(header, layout, groups[g], bits, bits_done, out, g * fanout);
+                else
+                    scatterRefineGroup<UInt64>(header, layout, groups[g], bits, bits_done, out, g * fanout);
+            }
+        });
+    return out;
+}
+
+/// Radix-scatter a side according to a plan of disjoint route-word bit slices. A one-pass plan calls
+/// only the cooperative three-barrier kernel above. Multi-pass plans feed its exactly-sized outputs
+/// through dynamically scheduled, memory-cycling refine passes.
+std::vector<PartitionOutput> scatterToPartitions(
+    ThreadPool & pool,
+    size_t threads,
+    const ThreadGroupPtr & thread_group,
+    const Block & header,
+    std::vector<Block> & blocks,
+    const SideLayout & layout,
+    const std::vector<size_t> & pass_bits)
+{
+    chassert(!pass_bits.empty());
+    size_t total_rows = 0;
+    for (const auto & block : blocks)
+        total_rows += block.rows();
+
+    std::vector<PartitionOutput> groups;
+    if (total_rows <= std::numeric_limits<UInt32>::max())
+        groups = scatterFirstPass<UInt32>(pool, threads, thread_group, header, blocks, layout, pass_bits.front());
+    else
+        groups = scatterFirstPass<UInt64>(pool, threads, thread_group, header, blocks, layout, pass_bits.front());
+
+    size_t bits_done = pass_bits.front();
+    for (size_t pass = 1; pass < pass_bits.size(); ++pass)
+    {
+        groups = scatterRefinePass(pool, threads, thread_group, header, layout, groups, pass_bits[pass], bits_done);
+        bits_done += pass_bits[pass];
+    }
+    return groups;
 }
 
 }
@@ -724,7 +1003,7 @@ struct RadixHashJoin::State
     std::atomic<bool> post_build_done{false};
 
     size_t fanout = 0;
-    UInt32 route_shift = 0;
+    std::vector<size_t> pass_bits;
     std::vector<std::unique_ptr<HashJoin>> partition_joins; /// size fanout, nullptr = empty partition
     size_t post_build_bytes = 0;
     size_t probe_window_budget = 0;
@@ -765,7 +1044,7 @@ struct ProbeShared
     const Block & left_header;
     const SideLayout & left_layout;
     size_t fanout;
-    UInt32 route_shift;
+    const std::vector<size_t> & pass_bits;
 };
 
 /// Drives one leaf partition's probe, forwarding output blocks through `emit` (which returns false to
@@ -810,17 +1089,18 @@ public:
         {
             ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
             parts = scatterToPartitions(
-                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.fanout, shared.route_shift);
+                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.pass_bits);
         }
 
         active_workers.store(shared.threads);
         for (size_t t = 0; t < shared.threads; ++t)
         {
-            shared.pool.scheduleOrThrow([this]
-            {
-                ThreadGroupSwitcher switcher(shared.thread_group, ThreadName::RADIX_JOIN);
-                worker();
-            });
+            shared.pool.scheduleOrThrow(
+                [this]
+                {
+                    ThreadGroupSwitcher switcher(shared.thread_group, ThreadName::RADIX_JOIN);
+                    worker();
+                });
         }
     }
 
@@ -863,7 +1143,15 @@ private:
                 probePartition(
                     *shared.partition_joins[p],
                     parts[p].toBlock(shared.left_header),
-                    [&](Block out) { if (!output_queue.push(std::move(out))) { stop = true; return false; } return true; });
+                    [&](Block out)
+                    {
+                        if (!output_queue.push(std::move(out)))
+                        {
+                            stop = true;
+                            return false;
+                        }
+                        return true;
+                    });
                 if (stop)
                     break;
             }
@@ -896,7 +1184,8 @@ class RadixDelayedBlocks : public IBlocksStream
 {
 public:
     RadixDelayedBlocks(ProbeShared shared_, std::vector<PartitionOutput> parts_)
-        : shared(std::move(shared_)), parts(std::move(parts_))
+        : shared(std::move(shared_))
+        , parts(std::move(parts_))
     {
     }
 
@@ -1045,7 +1334,6 @@ RadixHashJoin::RadixHashJoin(
     state->schema_join->setEnableLazyColumnsIndexing(state->enable_lazy_columns_indexing);
 
     (void)rhs_size_estimation;
-    (void)max_partitions_per_pass;
     (void)size_tables_by_distinct_estimate;
 }
 
@@ -1060,11 +1348,15 @@ RadixHashJoin::~RadixHashJoin()
         auto thread_group = CurrentThread::getGroup();
         std::atomic<size_t> next{0};
         const size_t n = state->partition_joins.size();
-        parallelRun(*state->pool, max_threads, thread_group, [&](size_t)
-        {
-            for (size_t p = next.fetch_add(1, std::memory_order_relaxed); p < n; p = next.fetch_add(1, std::memory_order_relaxed))
-                state->partition_joins[p].reset();
-        });
+        parallelRun(
+            *state->pool,
+            max_threads,
+            thread_group,
+            [&](size_t)
+            {
+                for (size_t p = next.fetch_add(1, std::memory_order_relaxed); p < n; p = next.fetch_add(1, std::memory_order_relaxed))
+                    state->partition_joins[p].reset();
+            });
     }
     catch (...)
     {
@@ -1157,25 +1449,23 @@ void RadixHashJoin::runPostBuildPhase()
     auto ht_bytes = [](size_t n) { return std::bit_ceil(std::max<size_t>(2 * n, 1)) * HT_CELL_BYTES; };
     auto leaf_bytes = [&](size_t p) { return ht_bytes(build_rows / p) + build_bytes / p; };
 
-    const size_t lower = std::min<size_t>(std::bit_ceil(max_threads), MAX_LEAVES);
-    const size_t upper = std::min<size_t>(MAX_LEAVES, std::bit_floor(std::max<size_t>(2, max_partitions_per_pass)));
-
-    size_t fanout = 1;
-    while (fanout < upper && leaf_bytes(fanout) > LEAF_TARGET_BYTES)
+    constexpr size_t max_route_partitions = UInt64{1} << 32;
+    const size_t lower = std::min<size_t>(std::max<size_t>(2, std::bit_ceil(max_threads)), max_route_partitions);
+    size_t fanout = lower;
+    while (fanout < max_route_partitions && leaf_bytes(fanout) > LEAF_TARGET_BYTES)
         fanout <<= 1;
-    fanout = std::clamp(fanout, std::max<size_t>(lower, 1), std::max<size_t>(upper, 1));
-    fanout = std::bit_ceil(fanout);
 
+    const size_t max_pass_fanout = std::min<size_t>(MAX_FANOUT_PER_PASS, std::bit_floor(std::max<size_t>(2, max_partitions_per_pass)));
     state->fanout = fanout;
-    state->route_shift = static_cast<UInt32>(32 - std::countr_zero(fanout));
+    state->pass_bits = computePassBits(fanout, max_pass_fanout);
 
     /// Probe-buffer budget from the settings knobs, computed once against the built size below.
     Block build_header = state->build_blocks.front().cloneEmpty();
     SideLayout build_layout = makeSideLayout(build_header, state->right_key_names);
 
     auto thread_group = CurrentThread::getGroup();
-    std::vector<PartitionOutput> parts = scatterToPartitions(
-        *state->pool, max_threads, thread_group, build_header, state->build_blocks, build_layout, fanout, state->route_shift);
+    std::vector<PartitionOutput> parts
+        = scatterToPartitions(*state->pool, max_threads, thread_group, build_header, state->build_blocks, build_layout, state->pass_bits);
 
     /// Release the (now-empty) build block shells.
     state->build_blocks.clear();
@@ -1186,27 +1476,35 @@ void RadixHashJoin::runPostBuildPhase()
     std::atomic<size_t> next_partition{0};
     std::atomic<size_t> leaves_built{0};
     Stopwatch leaf_watch;
-    parallelRun(*state->pool, max_threads, thread_group, [&](size_t)
-    {
-        size_t local_leaves = 0;
-        for (size_t p = next_partition.fetch_add(1, std::memory_order_relaxed); p < fanout;
-             p = next_partition.fetch_add(1, std::memory_order_relaxed))
+    parallelRun(
+        *state->pool,
+        max_threads,
+        thread_group,
+        [&](size_t)
         {
-            if (!parts[p].rows)
-                continue;
-            auto join = std::make_unique<HashJoin>(
-                table_join, right_sample_block, /*any_take_last_row*/ false, /*reserve_num*/ parts[p].rows,
-                fmt::format("radix{}", p), /*use_two_level_maps*/ false);
-            join->setMaxJoinedBlockRows(table_join->maxJoinedBlockRows());
-            join->setMaxJoinedBlockBytes(table_join->maxJoinedBlockBytes());
-            join->setEnableLazyColumnsIndexing(state->enable_lazy_columns_indexing);
-            join->addBlockToJoin(parts[p].toBlock(build_header), /*check_limits*/ false);
-            join->onBuildPhaseFinish();
-            state->partition_joins[p] = std::move(join);
-            ++local_leaves;
-        }
-        leaves_built.fetch_add(local_leaves, std::memory_order_relaxed);
-    });
+            size_t local_leaves = 0;
+            for (size_t p = next_partition.fetch_add(1, std::memory_order_relaxed); p < fanout;
+                 p = next_partition.fetch_add(1, std::memory_order_relaxed))
+            {
+                if (!parts[p].rows)
+                    continue;
+                auto join = std::make_unique<HashJoin>(
+                    table_join,
+                    right_sample_block,
+                    /*any_take_last_row*/ false,
+                    /*reserve_num*/ parts[p].rows,
+                    fmt::format("radix{}", p),
+                    /*use_two_level_maps*/ false);
+                join->setMaxJoinedBlockRows(table_join->maxJoinedBlockRows());
+                join->setMaxJoinedBlockBytes(table_join->maxJoinedBlockBytes());
+                join->setEnableLazyColumnsIndexing(state->enable_lazy_columns_indexing);
+                join->addBlockToJoin(parts[p].toBlock(build_header), /*check_limits*/ false);
+                join->onBuildPhaseFinish();
+                state->partition_joins[p] = std::move(join);
+                ++local_leaves;
+            }
+            leaves_built.fetch_add(local_leaves, std::memory_order_relaxed);
+        });
     ProfileEvents::increment(ProfileEvents::RadixHashJoinLeafGroupBuilds, leaves_built.load(std::memory_order_relaxed));
     ProfileEvents::increment(ProfileEvents::RadixHashJoinLeafGroupBuildMicroseconds, leaf_watch.elapsedMicroseconds());
 
@@ -1228,8 +1526,9 @@ void RadixHashJoin::runPostBuildPhase()
     ProfileEvents::increment(ProfileEvents::RadixHashJoinBuildMicroseconds, build_watch.elapsedMicroseconds());
     LOG_DEBUG(
         getLogger("RadixHashJoin"),
-        "Built {} leaf partitions from {} rows ({}), probe window budget {}, in {} ms",
+        "Built {} leaf partitions in {} radix pass(es) from {} rows ({}), probe window budget {}, in {} ms",
         fanout,
+        state->pass_bits.size(),
         build_rows,
         ReadableSize(post_build_bytes),
         ReadableSize(state->probe_window_budget),
@@ -1306,7 +1605,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t /*lane*/)
         state->left_header,
         state->left_layout,
         state->fanout,
-        state->route_shift};
+        state->pass_bits};
 
     std::unique_lock<std::mutex> wave_lock(state->wave_mutex);
     return std::make_unique<WaveJoinResult>(std::move(shared), std::move(window), std::move(wave_lock));
@@ -1335,7 +1634,7 @@ IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
     {
         ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
         parts = scatterToPartitions(
-            *state->pool, max_threads, thread_group, state->left_header, window, state->left_layout, state->fanout, state->route_shift);
+            *state->pool, max_threads, thread_group, state->left_header, window, state->left_layout, state->pass_bits);
     }
 
     ProbeShared shared{
@@ -1346,7 +1645,7 @@ IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
         state->left_header,
         state->left_layout,
         state->fanout,
-        state->route_shift};
+        state->pass_bits};
 
     return std::make_shared<RadixDelayedBlocks>(std::move(shared), std::move(parts));
 }
