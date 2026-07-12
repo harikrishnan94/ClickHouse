@@ -148,7 +148,7 @@ ALWAYS_INLINE UInt32 routeWordFixed(const char * p)
 {
     if constexpr (width == sizeof(UInt64))
     {
-        UInt64 key;
+        UInt64 key{};
         __builtin_memcpy_inline(&key, p, sizeof(key));
         return routeWord(key);
     }
