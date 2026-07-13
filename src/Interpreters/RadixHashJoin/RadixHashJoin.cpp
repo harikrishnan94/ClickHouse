@@ -1,5 +1,7 @@
 #include <Interpreters/RadixHashJoin/RadixHashJoin.h>
 
+#include <Columns/ColumnsScatter.h>
+
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashJoin/ScatteredBlock.h>
 #include <Interpreters/TableJoin.h>
@@ -26,10 +28,6 @@
 #include <list>
 #include <mutex>
 #include <shared_mutex>
-
-#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
-#include <arm_acle.h>
-#endif
 
 namespace ProfileEvents
 {
@@ -61,403 +59,31 @@ namespace
 {
 
 /// ---------------------------------------------------------------------------------------------
-/// Radix scatter kernels — a width-generic port of the benchmark's scatter (see
-/// src/Common/benchmarks/hash_join_bench.cpp). The benchmark operates on UInt64 columns; here the
-/// same structure (histogram + prefix sum + exact allocation + software write-combining scatter)
-/// is generalized to arbitrary fixed-width columns.
+/// The radix scatter kernels formerly defined here live in `ColumnsScatter` (semantically
+/// identical extraction; the hot row loops run inside that TU and are called at chunk
+/// granularity, so the call cost is per (batch, column), never per row). The join keeps its own
+/// planning constants and the partition/pass orchestration below.
 /// ---------------------------------------------------------------------------------------------
 
-constexpr size_t LINE_BYTES = 64;
-constexpr size_t ELEMS_PER_LINE = LINE_BYTES / sizeof(UInt64);
-/// Fanout from which the SWWC + non-temporal path wins over plain per-partition cursors.
-constexpr size_t SWWC_MIN_FANOUT = 256;
-/// Below this fanout the histogram uses 4 interleaved lanes to break the load-increment-store chain.
-constexpr size_t HIST_INTERLEAVE_MAX_FANOUT = 2048;
-/// First-pass batch sizing: the boundary cost (cursor sweeps, partial-line flushes) stays a small
-/// fraction of the lines written in between.
-constexpr size_t SCATTER_BATCH_MIN_ROWS = 256 << 10;
-constexpr size_t SCATTER_BATCH_LINES_PER_PARTITION = 64;
+using ColumnsScatter::ScatterScratch;
+using ColumnsScatter::scatterKeyChunk;
+using ColumnsScatter::scatterPidChunk;
+using ColumnsScatter::histogramKeyChunk;
+using ColumnsScatter::histogramRouteChunk;
+using ColumnsScatter::reduceHistogramLanes;
+using ColumnsScatter::foldBytes;
+using ColumnsScatter::finalizeRoute;
+using ColumnsScatter::scatterBatchRowsTarget;
+using ColumnsScatter::widthSupportsSwwc;
+using ColumnsScatter::SWWC_MIN_FANOUT;
+using ColumnsScatter::HIST_INTERLEAVE_MAX_FANOUT;
+using ColumnsScatter::MAX_FANOUT_PER_PASS;
 
-/// Partition-plan constants (5.1): the target leaf working set (~L2), the per-pass fanout ceiling
-/// (the benchmark's SWWC staging cache ceiling, MAX_FANOUT_PER_PASS), and the per-entry hash-table
-/// byte estimate (a cell at 0.5 load factor, matching the bench bandwidth model).
+/// Partition-plan constants (5.1): the target leaf working set (~L2) and the per-entry hash-table
+/// byte estimate (a cell at 0.5 load factor, matching the bench bandwidth model). The per-pass
+/// fanout ceiling is the module's `MAX_FANOUT_PER_PASS`.
 constexpr size_t LEAF_TARGET_BYTES = 1 << 20;
-constexpr size_t MAX_FANOUT_PER_PASS = 8192;
 constexpr size_t HT_CELL_BYTES = 16;
-
-using NtLine = char __attribute__((vector_size(LINE_BYTES)));
-
-size_t scatterBatchRowsTarget(size_t fanout)
-{
-    return std::max(SCATTER_BATCH_MIN_ROWS, fanout * SCATTER_BATCH_LINES_PER_PARTITION * ELEMS_PER_LINE);
-}
-
-/// SWWC is enabled only for widths that divide the 64-byte line and are covered by the 16-byte
-/// minimum alignment of column data (so the per-partition staging line fills to exactly 64 bytes).
-bool widthSupportsSwwc(size_t w)
-{
-    return w == 1 || w == 2 || w == 4 || w == 8 || w == 16;
-}
-
-/// Route hashes are deliberately independent of the CRC32C the leaf hash tables use for bucketing:
-/// otherwise partition assignment would correlate with in-table bucket placement and each leaf
-/// table would see a skewed hash space. The hot single-UInt64 path exactly matches the benchmark:
-/// ISO-polynomial CRC32 on aarch64, golden-ratio multiply-shift elsewhere. Wider and composite keys
-/// retain the width-generic multiply-shift fold.
-ALWAYS_INLINE UInt32 routeWord(UInt64 key)
-{
-#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
-    return __crc32d(-1U, key);
-#else
-    return static_cast<UInt32>((key * 0x9E3779B97F4A7C15ULL) >> 32);
-#endif
-}
-
-ALWAYS_INLINE UInt64 mixStep(UInt64 h, UInt64 x)
-{
-    return (h ^ x) * 0x9E3779B97F4A7C15ULL;
-}
-
-ALWAYS_INLINE UInt32 finalizeRoute(UInt64 h)
-{
-    return static_cast<UInt32>(h >> 32);
-}
-
-/// Fold `w` bytes at `p` into the accumulator, 8 bytes at a time with a zero-padded tail.
-ALWAYS_INLINE UInt64 foldBytes(UInt64 h, const char * p, size_t w)
-{
-    size_t i = 0;
-    for (; i + 8 <= w; i += 8)
-    {
-        UInt64 x = 0;
-        memcpy(&x, p + i, sizeof(x));
-        h = mixStep(h, x);
-    }
-    if (i < w)
-    {
-        UInt64 x = 0;
-        memcpy(&x, p + i, w - i);
-        h = mixStep(h, x);
-    }
-    return h;
-}
-
-/// Compile-time width variant for the hot single-key path (the loop unrolls fully).
-template <size_t width>
-ALWAYS_INLINE UInt32 routeWordFixed(const char * p)
-{
-    if constexpr (width == sizeof(UInt64))
-    {
-        UInt64 key{};
-        __builtin_memcpy_inline(&key, p, sizeof(key));
-        return routeWord(key);
-    }
-    else
-    {
-        return finalizeRoute(foldBytes(0, p, width));
-    }
-}
-
-ALWAYS_INLINE UInt32 routeWordBytes(const char * p, size_t w)
-{
-    return finalizeRoute(foldBytes(0, p, w));
-}
-
-/// Per-worker scatter state: write cursors (byte-granular), and for the SWWC path one 64-byte
-/// staging line per partition plus a byte fill counter. Ported from the benchmark's ScatterScratch,
-/// generalized from 8-byte elements to arbitrary fixed widths.
-///
-/// Invariant: staged bytes for partition p live at staging + p*64 + [m, fill), where
-/// m = (uintptr)cursors[p] & 63. seed() seeds `fill` with the cursor misalignment; before the first
-/// flush the cursor has not advanced (m == fill start), after the first flush the cursor is
-/// line-aligned (m == 0). Column-data bases are >= 16-byte aligned and per-worker start offsets are
-/// multiples of the element width, so for the SWWC-enabled widths (1,2,4,8,16) m is a multiple of the
-/// width and the staging line fills to exactly 64 bytes.
-struct ScatterScratch
-{
-    size_t fanout = 0;
-    bool use_swwc = false;
-    PaddedPODArray<char> staging_mem;
-    char * staging = nullptr;
-    PaddedPODArray<char *> cursors;
-    PaddedPODArray<UInt32> fill;
-
-    void init(size_t fanout_, bool use_swwc_)
-    {
-        fanout = fanout_;
-        use_swwc = use_swwc_;
-        cursors.resize(fanout);
-        if (use_swwc)
-        {
-            staging_mem.resize(fanout * LINE_BYTES + LINE_BYTES);
-            staging = reinterpret_cast<char *>(
-                (reinterpret_cast<uintptr_t>(staging_mem.data()) + LINE_BYTES - 1) & ~static_cast<uintptr_t>(LINE_BYTES - 1));
-            fill.resize(fanout);
-        }
-    }
-
-    void setUseSwwc(bool use_swwc_)
-    {
-        chassert(!use_swwc_ || staging);
-        use_swwc = use_swwc_;
-    }
-
-    void seed(size_t p, char * cursor)
-    {
-        cursors[p] = cursor;
-        if (use_swwc)
-            fill[p] = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cursor) & (LINE_BYTES - 1));
-    }
-
-    /// Flush residual staged bytes of every partition and publish the non-temporal stores.
-    void drain()
-    {
-        if (!use_swwc)
-            return;
-        for (size_t p = 0; p < fanout; ++p)
-        {
-            const UInt32 f = fill[p];
-            if (!f)
-                continue;
-            char * cur = cursors[p];
-            const UInt32 m = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cur) & (LINE_BYTES - 1));
-            if (f > m)
-            {
-                memcpy(cur, staging + p * LINE_BYTES + m, f - m);
-                cursors[p] = cur + (f - m);
-            }
-            fill[p] = 0;
-        }
-        /// NT stores are weakly ordered; make them visible before the outputs are read.
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-    }
-};
-
-/// The routing source per row. The single-column key kernel computes the partition from the key (and
-/// optionally emits it as a 2-byte pid); the payload kernels reload the emitted pid.
-template <size_t width>
-struct RouteFromKey
-{
-    const char * keys;
-    UInt32 shift;
-    UInt32 mask;
-    UInt16 * pids; /// null when there are no columns to consume the ids
-
-    ALWAYS_INLINE UInt32 partition(size_t i) const
-    {
-        const UInt32 p = (routeWordFixed<width>(keys + i * width) >> shift) & mask;
-        if (pids)
-            pids[i] = static_cast<UInt16>(p);
-        return p;
-    }
-};
-
-struct RouteFromKeyGeneric
-{
-    const char * keys;
-    size_t width;
-    UInt32 shift;
-    UInt32 mask;
-    UInt16 * pids;
-
-    ALWAYS_INLINE UInt32 partition(size_t i) const
-    {
-        const UInt32 p = (routeWordBytes(keys + i * width, width) >> shift) & mask;
-        if (pids)
-            pids[i] = static_cast<UInt16>(p);
-        return p;
-    }
-};
-
-struct RouteFromPids
-{
-    const UInt16 * pids;
-    ALWAYS_INLINE UInt32 partition(size_t i) const { return pids[i]; }
-};
-
-template <size_t width, typename Route>
-void scatterDirect(Route route, const char * data, size_t n, char ** cursors)
-{
-    for (size_t i = 0; i < n; ++i)
-    {
-        const UInt32 p = route.partition(i);
-        char * dst = cursors[p];
-        __builtin_memcpy_inline(dst, data + i * width, width);
-        cursors[p] = dst + width;
-    }
-}
-
-template <typename Route>
-void scatterDirectGeneric(Route route, const char * data, size_t n, size_t w, char ** cursors)
-{
-    for (size_t i = 0; i < n; ++i)
-    {
-        const UInt32 p = route.partition(i);
-        char * dst = cursors[p];
-        memcpy(dst, data + i * w, w);
-        cursors[p] = dst + w;
-    }
-}
-
-template <size_t width, typename Route>
-void scatterSwwc(Route route, const char * data, size_t n, ScatterScratch & scratch)
-{
-    /// Hoisted like `staging`: the char*/vector NT store defeats TBAA hoisting, so without this the
-    /// compiler reloads scratch.cursors/fill.data() every row.
-    char * const staging = scratch.staging;
-    char ** const cursors = scratch.cursors.data();
-    UInt32 * const fill = scratch.fill.data();
-
-    for (size_t i = 0; i < n; ++i)
-    {
-        const UInt32 p = route.partition(i);
-        char * line = staging + static_cast<size_t>(p) * LINE_BYTES;
-        UInt32 f = fill[p];
-        __builtin_memcpy_inline(line + f, data + i * width, width);
-        f += width;
-        if (f == LINE_BYTES)
-        {
-            char * cur = cursors[p];
-            const UInt32 m = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cur) & (LINE_BYTES - 1));
-            if (m) /// first flush of a misaligned stream: emit the partial head line with regular stores
-            {
-                __builtin_memcpy(cur, line + m, LINE_BYTES - m);
-                cursors[p] = cur + (LINE_BYTES - m);
-            }
-            else
-            {
-                __builtin_nontemporal_store(*reinterpret_cast<const NtLine *>(line), reinterpret_cast<NtLine *>(cur));
-                cursors[p] = cur + LINE_BYTES;
-            }
-            f = 0;
-        }
-        fill[p] = f;
-    }
-}
-
-template <size_t width, typename Route>
-ALWAYS_INLINE void scatterOne(Route route, const char * data, size_t n, bool use_swwc, ScatterScratch & scratch)
-{
-    if (use_swwc)
-        scatterSwwc<width>(route, data, n, scratch);
-    else
-        scatterDirect<width>(route, data, n, scratch.cursors.data());
-}
-
-/// Scatter one chunk's key column (single-key mode), emitting pids as a by-product when `pids`
-/// is non-null. Width dispatch to a compile-time kernel for the common widths.
-void scatterKeyChunk(
-    size_t kw, const char * keys, size_t n, UInt32 shift, UInt32 mask, UInt16 * pids, bool use_swwc, ScatterScratch & scratch)
-{
-    switch (kw)
-    {
-        case 4: scatterOne<4>(RouteFromKey<4>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
-        case 8: scatterOne<8>(RouteFromKey<8>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
-        case 16: scatterOne<16>(RouteFromKey<16>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
-        default: scatterDirectGeneric(RouteFromKeyGeneric{keys, kw, shift, mask, pids}, keys, n, kw, scratch.cursors.data()); break;
-    }
-}
-
-/// Scatter one chunk's column via precomputed pids. Width dispatch to a compile-time kernel.
-void scatterPidChunk(size_t w, const UInt16 * pids, const char * data, size_t n, bool use_swwc, ScatterScratch & scratch)
-{
-    RouteFromPids route{pids};
-    switch (w)
-    {
-        case 1: scatterOne<1>(route, data, n, use_swwc, scratch); break;
-        case 2: scatterOne<2>(route, data, n, use_swwc, scratch); break;
-        case 4: scatterOne<4>(route, data, n, use_swwc, scratch); break;
-        case 8: scatterOne<8>(route, data, n, use_swwc, scratch); break;
-        case 16: scatterOne<16>(route, data, n, use_swwc, scratch); break;
-        default: scatterDirectGeneric(route, data, n, w, scratch.cursors.data()); break;
-    }
-}
-
-/// Histogram one chunk's rows from a single key column. At low fanout `lanes` (4 * fanout, caller
-/// owned, persistent across chunks) breaks the load-increment-store dependency chain.
-/// hist and lanes are each written on one branch (a clang-tidy false positive flags them const-able).
-template <size_t width, typename Counter>
-void histogramKeyT(
-    const char * keys,
-    size_t n,
-    UInt32 shift,
-    UInt32 mask,
-    Counter * hist,
-    Counter * lanes,
-    size_t fanout) /// NOLINT(readability-non-const-parameter)
-{
-    if (!lanes)
-    {
-        for (size_t i = 0; i < n; ++i)
-            ++hist[(routeWordFixed<width>(keys + i * width) >> shift) & mask];
-        return;
-    }
-    size_t i = 0;
-    for (; i + 4 <= n; i += 4)
-    {
-        ++lanes[0 * fanout + ((routeWordFixed<width>(keys + (i + 0) * width) >> shift) & mask)];
-        ++lanes[1 * fanout + ((routeWordFixed<width>(keys + (i + 1) * width) >> shift) & mask)];
-        ++lanes[2 * fanout + ((routeWordFixed<width>(keys + (i + 2) * width) >> shift) & mask)];
-        ++lanes[3 * fanout + ((routeWordFixed<width>(keys + (i + 3) * width) >> shift) & mask)];
-    }
-    for (; i < n; ++i)
-        ++lanes[(i & 3) * fanout + ((routeWordFixed<width>(keys + i * width) >> shift) & mask)];
-}
-
-template <typename Counter>
-void histogramKeyGeneric(
-    const char * keys, size_t width, size_t n, UInt32 shift, UInt32 mask, Counter * hist, Counter * lanes, size_t fanout)
-{
-    if (!lanes)
-    {
-        for (size_t i = 0; i < n; ++i)
-            ++hist[(routeWordBytes(keys + i * width, width) >> shift) & mask];
-        return;
-    }
-    for (size_t i = 0; i < n; ++i)
-        ++lanes[(i & 3) * fanout + ((routeWordBytes(keys + i * width, width) >> shift) & mask)];
-}
-
-template <typename Counter>
-void histogramKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt32 mask, Counter * hist, Counter * lanes, size_t fanout)
-{
-    switch (kw)
-    {
-        case 4: histogramKeyT<4>(keys, n, shift, mask, hist, lanes, fanout); break;
-        case 8: histogramKeyT<8>(keys, n, shift, mask, hist, lanes, fanout); break;
-        case 16: histogramKeyT<16>(keys, n, shift, mask, hist, lanes, fanout); break;
-        default: histogramKeyGeneric(keys, kw, n, shift, mask, hist, lanes, fanout); break;
-    }
-}
-
-/// Histogram one chunk's rows from precomputed route words (composite-key mode).
-template <typename Counter>
-void histogramRouteChunk(const UInt32 * routes, size_t n, UInt32 shift, UInt32 mask, Counter * hist, Counter * lanes, size_t fanout)
-{
-    if (!lanes)
-    {
-        for (size_t i = 0; i < n; ++i)
-            ++hist[(routes[i] >> shift) & mask];
-        return;
-    }
-    size_t i = 0;
-    for (; i + 4 <= n; i += 4)
-    {
-        ++lanes[0 * fanout + ((routes[i + 0] >> shift) & mask)];
-        ++lanes[1 * fanout + ((routes[i + 1] >> shift) & mask)];
-        ++lanes[2 * fanout + ((routes[i + 2] >> shift) & mask)];
-        ++lanes[3 * fanout + ((routes[i + 3] >> shift) & mask)];
-    }
-    for (; i < n; ++i)
-        ++lanes[(i & 3) * fanout + ((routes[i] >> shift) & mask)];
-}
-
-template <typename Counter>
-void reduceHistogramLanes(Counter * hist, const Counter * lanes, size_t fanout)
-{
-    for (size_t p = 0; p < fanout; ++p)
-        hist[p] += lanes[0 * fanout + p] + lanes[1 * fanout + p] + lanes[2 * fanout + p] + lanes[3 * fanout + p];
-}
 
 /// The fixed-width layout of one side (build or probe): column widths in bytes and the key columns.
 struct SideLayout

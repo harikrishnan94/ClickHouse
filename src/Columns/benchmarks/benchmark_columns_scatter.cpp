@@ -1,12 +1,12 @@
 /// Microbenchmark for scatter kernels — Gate-1 instrument of the ColumnsScatter work.
 ///
-/// U0 reference arm: a VERBATIM copy of the in-tree radix scatter kernels from
-/// src/Interpreters/RadixHashJoin/RadixHashJoin.cpp (namespace `ScatterReference` below). The copied
-/// block is delimited by the two marker comment lines further down and is kept byte-identical to the
-/// source line range named in the opening marker: to verify, extract the lines strictly between the
-/// markers and diff them against that line range of the source file. It measures the byte-bandwidth
-/// of `scatterOne<8>` in both routing modes at representative fanouts covering both regimes (direct
-/// below `SWWC_MIN_FANOUT`, SWWC + NT stores at or above it).
+/// U0 reference arm: a VERBATIM copy of the pre-migration radix scatter kernels from
+/// RadixHashJoin.cpp (namespace `ScatterReference` below). Since U5 the live kernels are in
+/// src/Columns/ColumnsScatter.{h,cpp}; the frozen source of truth for this block is the commit
+/// named in the opening marker further down. The block is kept byte-identical to that line range:
+/// to verify, extract the lines strictly between the markers and diff them against it. It measures
+/// the byte-bandwidth of `scatterOne<8>` in both routing modes at representative fanouts covering
+/// both regimes (direct below `SWWC_MIN_FANOUT`, SWWC + NT stores at or above it).
 ///
 /// Timed region per iteration = seed(all cursors) + scatterOne<8>(n rows) + drain — exactly the
 /// per-(batch, column) work of the in-tree barrier-3 scatter. Histogram, prefix sum and destination
@@ -69,7 +69,7 @@ ALWAYS_INLINE UInt32 finalizeRoute(UInt64 h);
 ALWAYS_INLINE UInt64 foldBytes(UInt64 h, const char * p, size_t w);
 ALWAYS_INLINE UInt32 routeWordBytes(const char * p, size_t w);
 
-/// ---- BEGIN verbatim copy of src/Interpreters/RadixHashJoin/RadixHashJoin.cpp lines 70-345 ----
+/// ---- BEGIN verbatim copy of git show 646c2c3b4a2:src/Interpreters/RadixHashJoin/RadixHashJoin.cpp lines 70-345 (pre-U5-migration kernels; this frozen copy IS the U0 bandwidth reference) ----
 constexpr size_t LINE_BYTES = 64;
 constexpr size_t ELEMS_PER_LINE = LINE_BYTES / sizeof(UInt64);
 /// Fanout from which the SWWC + non-temporal path wins over plain per-partition cursors.
