@@ -23,6 +23,9 @@
 #include <Columns/ColumnsNumber.h>
 #include <Columns/ColumnsScatter.h>
 #include <Common/PODArray.h>
+#include <Core/Field.h>
+#include <DataTypes/DataTypeFactory.h>
+#include <DataTypes/IDataType.h>
 
 #include <base/defines.h>
 #include <base/types.h>
@@ -824,6 +827,68 @@ void registerStringBenchmarks()
     }
 }
 
+/// U3: fallback throughput documentation cells (exotic leaf types are exempt from the bandwidth
+/// gate; their legacy-scatter cost is measured and documented instead). Timed region = the full
+/// Layer-1 call (the fallback owns allocation), bytes = a nominal 8 per row for comparability.
+struct FallbackFixture
+{
+    size_t fanout;
+    size_t n;
+    MutableColumnPtr column;
+    PaddedPODArray<UInt16> pids;
+
+    FallbackFixture(size_t fanout_, const char * type_name) : fanout(fanout_), n(256 << 10)
+    {
+        auto type = DataTypeFactory::instance().get(type_name);
+        column = type->createColumn();
+        pcg64 rng(44);
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (rng() % 3 == 0)
+                column->insert(Field("v_" + std::to_string(i % 97)));
+            else
+                column->insert(Field(static_cast<UInt64>(rng())));
+        }
+        pids.resize(n);
+        const UInt32 shift = static_cast<UInt32>(32 - std::countr_zero(fanout));
+        const UInt32 mask = static_cast<UInt32>(fanout - 1);
+        for (size_t i = 0; i < n; ++i)
+            pids[i] = static_cast<UInt16>((ScatterReference::routeWord(rng()) >> shift) & mask);
+    }
+
+    MutableColumns run()
+    {
+        const IColumn * source = column.get();
+        std::span<const UInt16> pid_span(pids.data(), n);
+        return ColumnsScatter::scatter(
+            std::span<const IColumn * const>(&source, 1), std::span<const std::span<const UInt16>>(&pid_span, 1), fanout);
+    }
+};
+
+void registerFallbackBenchmarks()
+{
+    for (size_t fanout : {64uz, 256uz})
+    {
+        for (const char * type_name : {"Variant(UInt64, String)", "Dynamic"})
+        {
+            auto fixture = std::make_shared<FallbackFixture>(fanout, type_name);
+            std::string label = std::string("BM_fallback_") + (std::string(type_name).starts_with("Variant") ? "variant" : "dynamic");
+            benchmark::RegisterBenchmark(
+                (label + "/F" + std::to_string(fanout)).c_str(),
+                [fixture](benchmark::State & state)
+                {
+                    for (auto _ : state)
+                    {
+                        auto shards = fixture->run();
+                        benchmark::DoNotOptimize(shards.data());
+                    }
+                    state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * fixture->n * 8);
+                    state.counters["rows"] = static_cast<double>(fixture->n);
+                });
+        }
+    }
+}
+
 void registerNullableBenchmarks(const std::vector<std::shared_ptr<ReferenceFixture>> & ref_fixtures)
 {
     for (const auto & ref : ref_fixtures)
@@ -852,6 +917,7 @@ int main(int argc, char ** argv)
     auto reference_fixtures = registerReferenceBenchmarks();
     registerStringBenchmarks();
     registerNullableBenchmarks(reference_fixtures);
+    registerFallbackBenchmarks();
     benchmark::Initialize(&argc, argv);
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();

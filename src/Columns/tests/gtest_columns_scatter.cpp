@@ -10,11 +10,16 @@
 #include <Columns/ColumnReplicated.h>
 #include <Columns/ColumnSparse.h>
 #include <Columns/ColumnString.h>
+#include <Columns/ColumnQBit.h>
 #include <Columns/ColumnTuple.h>
+#include <Columns/ColumnVariant.h>
 #include <Columns/ColumnsNumber.h>
 #include <Common/Arena.h>
 #include <Common/Exception.h>
 #include <Common/randomSeed.h>
+#include <Common/tests/gtest_global_register.h>
+#include <Core/Field.h>
+#include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeString.h>
 
@@ -953,6 +958,274 @@ TEST(ColumnsScatter, MisalignedCursorSeedingSwwc)
     }
     for (size_t p = 0; p < fanout; ++p)
         ASSERT_EQ(destination.data() + (prefix[p] + counts[p]) * width, scratch.cursors[p]) << "shard " << p;
+}
+
+
+/// U3: full dispatch-table contract (pre-registered in PREREG §U3) — every supported family maps to
+/// its named kernel; every exotic leaf maps to the fallback.
+TEST(ColumnsScatter, DispatchTableComplete)
+{
+    tryRegisterAggregateFunctions();
+    using ColumnsScatter::ScatterKernelId;
+    ASSERT_EQ(ScatterKernelId::FixedWidth, ColumnsScatter::plannedKernel(*ColumnUInt64::create()));
+    ASSERT_EQ(ScatterKernelId::FixedWidth, ColumnsScatter::plannedKernel(*ColumnFixedString::create(3)));
+    ASSERT_EQ(ScatterKernelId::FixedWidth, ColumnsScatter::plannedKernel(*ColumnDecimal<Decimal64>::create(0, 3)));
+    ASSERT_EQ(ScatterKernelId::String, ColumnsScatter::plannedKernel(*ColumnString::create()));
+    ASSERT_EQ(
+        ScatterKernelId::Nullable,
+        ColumnsScatter::plannedKernel(*ColumnNullable::create(ColumnUInt64::create(), ColumnUInt8::create())));
+    ASSERT_EQ(ScatterKernelId::Tuple, ColumnsScatter::plannedKernel(*ColumnTuple::create(1)));
+    ASSERT_EQ(
+        ScatterKernelId::Array,
+        ColumnsScatter::plannedKernel(*ColumnArray::create(ColumnUInt64::create(), ColumnArray::ColumnOffsets::create())));
+    {
+        auto map_column = DataTypeFactory::instance().get("Map(UInt64, UInt64)")->createColumn();
+        ASSERT_EQ(ScatterKernelId::Map, ColumnsScatter::plannedKernel(*map_column));
+    }
+    ASSERT_EQ(ScatterKernelId::LowCardinality, ColumnsScatter::plannedKernel(*makeLowCardinalityStrings(1, 1)));
+    /// Exotic leaves stay on the legacy fallback (accepted tradeoff; costs documented in
+    /// MEASUREMENTS §U3).
+    for (const char * type_name : {"Variant(UInt64, String)", "Dynamic", "AggregateFunction(count)", "JSON"})
+    {
+        auto column = DataTypeFactory::instance().get(type_name)->createColumn();
+        ASSERT_EQ(ScatterKernelId::Fallback, ColumnsScatter::plannedKernel(*column)) << type_name;
+    }
+}
+
+/// U3: Variant with mismatched nested representations across chunks (full vs sparse alternative) —
+/// the generic normalization gate must strip the sparse alternative before the cross-chunk append.
+TEST(ColumnsScatter, VariantMixedNestedRepresentation)
+{
+    const size_t n = 64;
+    auto make_discriminators = [](size_t rows)
+    {
+        auto discriminators = ColumnVariant::ColumnDiscriminators::create();
+        for (size_t i = 0; i < rows; ++i)
+            discriminators->insertValue(0);
+        return discriminators;
+    };
+    auto make_offsets = [](size_t rows)
+    {
+        auto offsets = ColumnVariant::ColumnOffsets::create();
+        for (size_t i = 0; i < rows; ++i)
+            offsets->insertValue(i);
+        return offsets;
+    };
+    auto make_full = [&](size_t rows) -> ColumnPtr
+    {
+        auto nested = ColumnUInt64::create();
+        for (size_t i = 0; i < rows; ++i)
+            nested->insertValue(i);
+        Columns variants;
+        variants.push_back(std::move(nested));
+        return ColumnVariant::create(make_discriminators(rows), make_offsets(rows), variants);
+    };
+    auto make_sparse = [&](size_t rows) -> ColumnPtr
+    {
+        auto values = ColumnUInt64::create();
+        values->insertValue(0);
+        auto sparse_offsets = ColumnUInt64::create();
+        for (size_t i = 0; i < rows; ++i)
+        {
+            values->insertValue(i);
+            sparse_offsets->insertValue(i);
+        }
+        auto sparse_nested = ColumnSparse::create(std::move(values), std::move(sparse_offsets), rows);
+        Columns variants;
+        variants.push_back(std::move(sparse_nested));
+        return ColumnVariant::create(make_discriminators(rows), make_offsets(rows), variants);
+    };
+
+    auto full_column = make_full(n);
+    auto sparse_column = make_sparse(n);
+    std::vector<const IColumn *> sources{full_column.get(), sparse_column.get()};
+    std::vector<std::vector<UInt32>> pids{makePids<UInt32>(n, 3), makePids<UInt32>(n, 3)};
+    std::vector<std::span<const UInt32>> pid_spans;
+    for (const auto & p : pids)
+        pid_spans.emplace_back(p.data(), p.size());
+
+    ColumnsScatter::DispatchTrace trace;
+    auto * previous = ColumnsScatter::exchangeDispatchTrace(&trace);
+    auto result = ColumnsScatter::scatter(
+        std::span<const IColumn * const>(sources.data(), sources.size()), std::span<const std::span<const UInt32>>(pid_spans), 3);
+    ColumnsScatter::exchangeDispatchTrace(previous);
+    ASSERT_EQ(1u, trace.entries.size());
+    ASSERT_EQ(ColumnsScatter::ScatterKernelId::Fallback, trace.entries[0].kernel);
+
+    /// Oracle: the same values through two full-nested chunks.
+    auto reference_a = make_full(n);
+    auto reference_b = make_full(n);
+    std::vector<const IColumn *> reference_sources{reference_a.get(), reference_b.get()};
+    auto expected = referenceScatter(std::span<const IColumn * const>(reference_sources.data(), 2), pids, 3);
+    for (size_t s = 0; s < 3; ++s)
+        expectColumnsBitIdentical(*expected[s], *result[s], "variant shard " + std::to_string(s));
+}
+
+/// U3: QBit with one sparse FixedString bit-group element in one chunk — the generic
+/// `hasAnySubcolumn` gate must route QBit through recursive normalization (a hand-written type
+/// switch would have missed it).
+TEST(ColumnsScatter, QBitMixedNestedRepresentation)
+{
+    constexpr size_t dimension = 8;
+    constexpr size_t bytes = 1;
+    constexpr size_t bit_groups = 16;
+    auto build_qbit = [&](size_t rows, bool sparse_one_element) -> ColumnPtr
+    {
+        MutableColumns elements;
+        for (size_t g = 0; g < bit_groups; ++g)
+        {
+            if (sparse_one_element && g == 3)
+            {
+                auto values = ColumnFixedString::create(bytes);
+                values->insertDefault();
+                auto offsets = ColumnUInt64::create();
+                for (size_t i = 0; i < rows; ++i)
+                    if (i % 2 == 0)
+                    {
+                        const char value = static_cast<char>('A' + (i % 20));
+                        values->insertData(&value, 1);
+                        offsets->insertValue(i);
+                    }
+                MutableColumnPtr values_base = std::move(values);
+                MutableColumnPtr offsets_base = std::move(offsets);
+                elements.push_back(ColumnSparse::create(std::move(values_base), std::move(offsets_base), rows));
+            }
+            else
+            {
+                auto group = ColumnFixedString::create(bytes);
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    const char value = static_cast<char>('a' + ((i + g) % 20));
+                    group->insertData(&value, 1);
+                }
+                elements.push_back(std::move(group));
+            }
+        }
+        MutableColumnPtr tuple = ColumnTuple::create(std::move(elements));
+        return ColumnQBit::create(std::move(tuple), dimension, /*stride=*/dimension);
+    };
+
+    auto full_column = build_qbit(120, false);
+    auto sparse_column = build_qbit(90, true);
+    std::vector<const IColumn *> sources{full_column.get(), sparse_column.get()};
+    std::vector<std::vector<UInt32>> pids{makePids<UInt32>(120, 3), makePids<UInt32>(90, 3)};
+    ASSERT_EQ(ColumnsScatter::ScatterKernelId::Fallback, ColumnsScatter::plannedKernel(*full_column));
+    checkEquivalence(std::span<const IColumn * const>(sources.data(), sources.size()), pids, 3);
+}
+
+/// U3: Dynamic (exotic leaf) — values preserved through the fallback, result stays Dynamic.
+TEST(ColumnsScatter, DynamicFallbackEquivalence)
+{
+    auto type = DataTypeFactory::instance().get("Dynamic");
+    auto column_a = type->createColumn();
+    auto column_b = type->createColumn();
+    for (size_t i = 0; i < 200; ++i)
+    {
+        column_a->insert(i % 3 == 0 ? Field("text_" + std::to_string(i)) : Field(static_cast<UInt64>(i)));
+        if (i < 120)
+            column_b->insert(i % 2 == 0 ? Field(static_cast<Int64>(-static_cast<Int64>(i))) : Field("b_" + std::to_string(i)));
+    }
+    std::vector<const IColumn *> sources{column_a.get(), column_b.get()};
+    std::vector<std::vector<UInt32>> pids{makePids<UInt32>(200, 4), makePids<UInt32>(120, 4)};
+    std::vector<std::span<const UInt32>> pid_spans;
+    for (const auto & p : pids)
+        pid_spans.emplace_back(p.data(), p.size());
+
+    ColumnsScatter::DispatchTrace trace;
+    auto * previous = ColumnsScatter::exchangeDispatchTrace(&trace);
+    auto result = ColumnsScatter::scatter(
+        std::span<const IColumn * const>(sources.data(), sources.size()), std::span<const std::span<const UInt32>>(pid_spans), 4);
+    ColumnsScatter::exchangeDispatchTrace(previous);
+    ASSERT_EQ(1u, trace.entries.size());
+    ASSERT_EQ(ColumnsScatter::ScatterKernelId::Fallback, trace.entries[0].kernel);
+
+    auto expected = referenceScatter(std::span<const IColumn * const>(sources.data(), sources.size()), pids, 4);
+    for (size_t s = 0; s < 4; ++s)
+    {
+        ASSERT_EQ(TypeIndex::Dynamic, result[s]->getDataType()) << "shard " << s;
+        ASSERT_EQ(expected[s]->size(), result[s]->size()) << "shard " << s;
+        for (size_t i = 0; i < expected[s]->size(); ++i)
+            ASSERT_EQ((*expected[s])[i], (*result[s])[i]) << "shard " << s << " row " << i;
+    }
+}
+
+/// U3 (carried from the U2 review): LowCardinality nested INSIDE composites must stay
+/// LowCardinality per shard — the serialize-based value oracle cannot see this.
+TEST(ColumnsScatter, LowCardinalityInsideCompositesPreserved)
+{
+    /// Tuple(LC(String), UInt64), single- and multi-source.
+    auto make_tuple = [](size_t rows)
+    {
+        MutableColumns elements;
+        elements.push_back(makeLowCardinalityStrings(rows, 6));
+        elements.push_back(fillFixedRandom(ColumnUInt64::create(), rows));
+        return ColumnTuple::create(std::move(elements));
+    };
+    for (size_t num_sources : {1uz, 2uz})
+    {
+        std::vector<MutableColumnPtr> owned;
+        std::vector<const IColumn *> sources;
+        std::vector<std::vector<UInt32>> pids;
+        for (size_t b = 0; b < num_sources; ++b)
+        {
+            owned.push_back(make_tuple(150));
+            sources.push_back(owned.back().get());
+            pids.push_back(makePids<UInt32>(150, 4));
+        }
+        std::vector<std::span<const UInt32>> pid_spans;
+        for (const auto & p : pids)
+            pid_spans.emplace_back(p.data(), p.size());
+        auto result = ColumnsScatter::scatter(
+            std::span<const IColumn * const>(sources.data(), sources.size()), std::span<const std::span<const UInt32>>(pid_spans), 4);
+        const IColumn * shared_nested_dictionary = nullptr;
+        for (const auto & shard : result)
+        {
+            const auto & tuple = assert_cast<const ColumnTuple &>(*shard);
+            ASSERT_EQ(TypeIndex::LowCardinality, tuple.getColumn(0).getDataType());
+            /// Single-source scatter must SHARE one dictionary across shards, nested or not.
+            if (num_sources == 1)
+            {
+                const auto & low_cardinality = assert_cast<const ColumnLowCardinality &>(tuple.getColumn(0));
+                if (!shared_nested_dictionary)
+                    shared_nested_dictionary = low_cardinality.getDictionaryPtr().get();
+                else
+                    ASSERT_EQ(shared_nested_dictionary, low_cardinality.getDictionaryPtr().get());
+            }
+        }
+        auto expected = referenceScatter(std::span<const IColumn * const>(sources.data(), sources.size()), pids, 4);
+        for (size_t s = 0; s < 4; ++s)
+            expectColumnsBitIdentical(*expected[s], *result[s], "tuple-lc shard " + std::to_string(s));
+    }
+
+    /// Array(LC(String)).
+    auto make_array = [](size_t rows)
+    {
+        auto offsets = ColumnArray::ColumnOffsets::create();
+        size_t total = 0;
+        for (size_t i = 0; i < rows; ++i)
+        {
+            total += 1 + (rng()() % 3);
+            offsets->insert(total);
+        }
+        return ColumnArray::create(makeLowCardinalityStrings(total, 5), std::move(offsets));
+    };
+    auto array_a = make_array(120);
+    auto array_b = make_array(80);
+    std::vector<const IColumn *> sources{array_a.get(), array_b.get()};
+    std::vector<std::vector<UInt32>> pids{makePids<UInt32>(120, 4), makePids<UInt32>(80, 4)};
+    std::vector<std::span<const UInt32>> pid_spans;
+    for (const auto & p : pids)
+        pid_spans.emplace_back(p.data(), p.size());
+    auto result = ColumnsScatter::scatter(
+        std::span<const IColumn * const>(sources.data(), sources.size()), std::span<const std::span<const UInt32>>(pid_spans), 4);
+    for (const auto & shard : result)
+    {
+        const auto & array = assert_cast<const ColumnArray &>(*shard);
+        ASSERT_EQ(TypeIndex::LowCardinality, array.getData().getDataType());
+    }
+    auto expected = referenceScatter(std::span<const IColumn * const>(sources.data(), sources.size()), pids, 4);
+    for (size_t s = 0; s < 4; ++s)
+        expectColumnsBitIdentical(*expected[s], *result[s], "array-lc shard " + std::to_string(s));
 }
 
 /// Layer-0 primitives: the exact composition the join will use in U5 (histogram -> exact allocation

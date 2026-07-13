@@ -561,6 +561,18 @@ MutableColumns scatterArray(std::span<const IColumn * const> sources, SourcePids
 {
     const size_t num_shards = rows_per_shard.size();
 
+    /// The nested dispatch sizes destinations from UInt32 counts; batches with more elements take
+    /// the legacy fallback instead. Checked BEFORE the pid expansion so the overflow path does not
+    /// first materialize a multi-gigabyte expansion it then discards.
+    size_t total_elements = 0;
+    for (const IColumn * source : sources)
+    {
+        const auto & offsets = assert_cast<const ColumnArray &>(*source).getOffsets();
+        total_elements += offsets.empty() ? 0 : offsets.back();
+    }
+    if (total_elements > std::numeric_limits<UInt32>::max())
+        return scatterFallback<Pid>(sources, pids, rows_per_shard);
+
     /// Pass 1: per-shard element totals + element-level pid expansion, per source chunk.
     PaddedPODArray<UInt64> elements_per_shard;
     elements_per_shard.resize_fill(num_shards, 0);
@@ -586,19 +598,10 @@ MutableColumns scatterArray(std::span<const IColumn * const> sources, SourcePids
         nested.push_back(&array.getData());
     }
 
-    /// The nested dispatch needs UInt32 per-shard element counts; totals above 2^32 - 1 take the
-    /// legacy fallback for the whole batch instead (checked by the caller-side overflow guard on
-    /// rows; element counts are re-checked here).
     PaddedPODArray<UInt32> nested_rows_per_shard;
     nested_rows_per_shard.resize(num_shards);
-    size_t total_elements = 0;
     for (size_t s = 0; s < num_shards; ++s)
-    {
-        total_elements += elements_per_shard[s];
         nested_rows_per_shard[s] = static_cast<UInt32>(elements_per_shard[s]);
-    }
-    if (total_elements > std::numeric_limits<UInt32>::max())
-        return scatterFallback<Pid>(sources, pids, rows_per_shard);
 
     std::vector<std::span<const Pid>> element_pid_spans; /// STYLE_CHECK_ALLOW_STD_CONTAINERS
     element_pid_spans.reserve(sources.size());
