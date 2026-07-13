@@ -156,7 +156,9 @@ ALWAYS_INLINE void copyRowExact(char * __restrict dst, const char * __restrict s
         __builtin_memcpy_inline(dst + w - 2, src + w - 2, 2);
     }
     else if (w == 1)
+    {
         dst[0] = src[0];
+    }
 }
 
 template <typename Route>
@@ -417,8 +419,10 @@ void scatterStringChunkImpl(const char * chars, const UInt64 * offsets, const Pi
     }
 }
 
+/// bytes_per_shard is written through on every iteration below; the write is type-dependent on
+/// Pid (a clang-tidy false positive flags the pointer as const-able), same as histogramKeyT above.
 template <typename Pid>
-void stringBytesPerShardImpl(const UInt64 * offsets, const Pid * pids, size_t n, UInt64 * bytes_per_shard)
+void stringBytesPerShardImpl(const UInt64 * offsets, const Pid * pids, size_t n, UInt64 * bytes_per_shard) /// NOLINT(readability-non-const-parameter)
 {
     UInt64 prev = 0;
     for (size_t i = 0; i < n; ++i)
@@ -480,7 +484,10 @@ MutableColumns scatterFixedWidth(std::span<const IColumn * const> sources, Sourc
     }
 
     for (size_t b = 0; b < sources.size(); ++b)
-        scatterPidChunkImpl(width, pids[b].data(), sources[b]->getRawData().data(), sources[b]->size(), use_swwc, scratch);
+        /// The byte length used below is rows * width (sources[b]->size() * width), not
+        /// getRawData().size() itself, so the checker cannot correlate the .data() pointer with a
+        /// .size() call on the same view; getRawData() is documented to span exactly that many bytes.
+        scatterPidChunkImpl(width, pids[b].data(), sources[b]->getRawData().data(), sources[b]->size(), use_swwc, scratch); /// NOLINT(bugprone-suspicious-stringview-data-usage)
 
     scratch.drain();
     return result;

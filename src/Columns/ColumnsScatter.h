@@ -255,11 +255,11 @@ struct StringScatterState
     /// (at fanout 8192 the state alone is 256 KiB — per-row line count dominates the L2 traffic).
     struct ShardCursor
     {
-        char * chars;
-        UInt64 * offsets;
+        char * chars = nullptr;
+        UInt64 * offsets = nullptr;
         /// Running rebased byte total == the value the NEXT row's destination offset gets after
         /// adding its length. Seed with 0 for fresh destinations.
-        UInt64 rebased;
+        UInt64 rebased = 0;
         UInt64 padding = 0;
     };
 
