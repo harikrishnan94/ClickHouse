@@ -476,7 +476,7 @@ struct ReferenceFixture
 /// result teardown) — a definitionally different, informational cell (PREREG P-U1-2).
 struct ModuleFixture
 {
-    ReferenceFixture & ref;
+    ReferenceFixture & ref; /// borrowed; the registering lambda co-captures the owning shared_ptr
     PaddedPODArray<UInt32> pids32;
     ColumnsScatter::ScatterScratch scratch;
     /// Layer-1 inputs: a real column mirroring the reference keys + precomputed shard counts.
@@ -596,12 +596,14 @@ struct ModuleFixture
     }
 };
 
-void registerReferenceBenchmarks()
+std::vector<std::shared_ptr<ReferenceFixture>> registerReferenceBenchmarks()
 {
     static constexpr size_t fanouts[] = {64, 256, 2048, 8192};
+    std::vector<std::shared_ptr<ReferenceFixture>> fixtures;
     for (size_t fanout : fanouts)
     {
         auto fixture = std::make_shared<ReferenceFixture>(fanout);
+        fixtures.push_back(fixture);
         benchmark::RegisterBenchmark(
             ("BM_ref_pid8/F" + std::to_string(fanout)).c_str(),
             [fixture](benchmark::State & state)
@@ -657,13 +659,199 @@ void registerReferenceBenchmarks()
                 benchmark::DoNotOptimize(shards.data());
             });
     }
+    return fixtures;
+}
+
+/// U2 String cells: the variable-length Layer-0 kernel at fixed row length L, same fanouts and
+/// batch-row sizing as the reference. Bytes counted = chars + offsets actually written
+/// ((L + 8) per row). Timed region = seed + scatterStringChunk (no staging to drain); byte
+/// histogram and destination allocation are untimed, mirroring the fixed-width cells.
+struct StringFixture
+{
+    size_t fanout;
+    size_t n;
+    size_t length;
+    PaddedPODArray<char> chars;
+    PaddedPODArray<UInt64> offsets;
+    PaddedPODArray<UInt16> pids;
+    std::vector<PaddedPODArray<char>> chars_destination; /// one per shard: overflow-15 tolerant each
+    PaddedPODArray<UInt64> offsets_destination;
+    std::vector<char *> chars_bases;
+    std::vector<UInt64 *> offsets_bases;
+    ColumnsScatter::StringScatterState state;
+
+    StringFixture(size_t fanout_, size_t length_)
+        : fanout(fanout_)
+        , n(ScatterReference::scatterBatchRowsTarget(fanout_))
+        , length(length_)
+    {
+        chars.resize(n * length);
+        offsets.resize(n);
+        pids.resize(n);
+        pcg64 rng(42);
+        for (auto & byte : chars)
+            byte = static_cast<char>(rng());
+        for (size_t i = 0; i < n; ++i)
+            offsets[i] = (i + 1) * length;
+        const UInt32 shift = static_cast<UInt32>(32 - std::countr_zero(fanout));
+        const UInt32 mask = static_cast<UInt32>(fanout - 1);
+        for (size_t i = 0; i < n; ++i)
+            pids[i] = static_cast<UInt16>((ScatterReference::routeWord(rng()) >> shift) & mask);
+
+        /// Untimed: byte/row histograms + exact destination carving at per-shard offsets.
+        std::vector<UInt64> byte_counts(fanout, 0);
+        std::vector<UInt64> row_counts(fanout, 0);
+        for (size_t i = 0; i < n; ++i)
+        {
+            byte_counts[pids[i]] += length;
+            ++row_counts[pids[i]];
+        }
+        chars_destination.resize(fanout);
+        offsets_destination.resize(n);
+        chars_bases.resize(fanout);
+        offsets_bases.resize(fanout);
+        UInt64 row_prefix = 0;
+        for (size_t p = 0; p < fanout; ++p)
+        {
+            /// Per-shard chars allocations: the kernel's overflow-15 copies require each shard's
+            /// region to be independently overflow-tolerant (see the Layer-0 contract).
+            chars_destination[p].resize(byte_counts[p]);
+            chars_bases[p] = chars_destination[p].data();
+            offsets_bases[p] = offsets_destination.data() + row_prefix;
+            row_prefix += row_counts[p];
+        }
+        state.init(fanout);
+        verify();
+    }
+
+    void run()
+    {
+        for (size_t p = 0; p < fanout; ++p)
+            state.seed(p, chars_bases[p], offsets_bases[p], 0);
+        ColumnsScatter::scatterStringChunk(chars.data(), offsets.data(), pids.data(), n, state);
+    }
+
+    /// Scalar-reference oracle over both output streams.
+    void verify()
+    {
+        run();
+        std::vector<UInt64> row_cursor(fanout, 0);
+        std::vector<UInt64> byte_cursor(fanout, 0);
+        for (size_t i = 0; i < n; ++i)
+        {
+            const size_t p = pids[i];
+            const char * expected = chars.data() + i * length;
+            const char * actual = chars_bases[p] + byte_cursor[p];
+            if (std::memcmp(expected, actual, length) != 0)
+                throw std::runtime_error("string scatter oracle: bad chars");
+            byte_cursor[p] += length;
+            if (offsets_bases[p][row_cursor[p]] != byte_cursor[p])
+                throw std::runtime_error("string scatter oracle: bad rebased offset");
+            ++row_cursor[p];
+        }
+    }
+};
+
+/// U2 Nullable(UInt64) cell: two fixed streams (width-1 null map + width-8 payload) through the
+/// module chunk kernel, driven by one pid stream. Bytes counted = 9 per row.
+struct NullableFixture
+{
+    ReferenceFixture & ref; /// borrowed; the registering lambda co-captures the owning shared_ptr
+    PaddedPODArray<char> null_bytes;
+    PaddedPODArray<char> null_destination;
+    std::vector<char *> null_bases;
+    ColumnsScatter::ScatterScratch null_scratch;
+    ColumnsScatter::ScatterScratch payload_scratch;
+
+    explicit NullableFixture(ReferenceFixture & ref_) : ref(ref_)
+    {
+        pcg64 rng(43);
+        null_bytes.resize(ref.n);
+        for (auto & byte : null_bytes)
+            byte = (rng() % 4) == 0;
+        null_destination.resize(ref.n);
+        null_bases.resize(ref.fanout);
+        std::vector<size_t> counts(ref.fanout, 0);
+        for (size_t i = 0; i < ref.n; ++i)
+            ++counts[ref.pids[i]];
+        size_t prefix = 0;
+        for (size_t p = 0; p < ref.fanout; ++p)
+        {
+            null_bases[p] = null_destination.data() + prefix;
+            prefix += counts[p];
+        }
+        null_scratch.init(ref.fanout, ref.use_swwc);
+        payload_scratch.init(ref.fanout, ref.use_swwc);
+    }
+
+    void run()
+    {
+        for (size_t p = 0; p < ref.fanout; ++p)
+        {
+            null_scratch.seed(p, null_bases[p]);
+            payload_scratch.seed(p, ref.bases[p]);
+        }
+        ColumnsScatter::scatterPidChunk(1, ref.pids.data(), null_bytes.data(), ref.n, ref.use_swwc, null_scratch);
+        ColumnsScatter::scatterPidChunk(
+            8, ref.pids.data(), reinterpret_cast<const char *>(ref.keys.data()), ref.n, ref.use_swwc, payload_scratch);
+        null_scratch.drain();
+        payload_scratch.drain();
+    }
+};
+
+void registerStringBenchmarks()
+{
+    static constexpr size_t fanouts[] = {64, 256, 2048, 8192};
+    for (size_t fanout : fanouts)
+    {
+        for (size_t length : {8uz, 32uz})
+        {
+            auto fixture = std::make_shared<StringFixture>(fanout, length);
+            benchmark::RegisterBenchmark(
+                ("BM_mod0_str_L" + std::to_string(length) + "/F" + std::to_string(fanout)).c_str(),
+                [fixture](benchmark::State & state)
+                {
+                    for (auto _ : state)
+                    {
+                        fixture->run();
+                        benchmark::ClobberMemory();
+                    }
+                    state.SetBytesProcessed(
+                        static_cast<int64_t>(state.iterations()) * fixture->n * (fixture->length + sizeof(UInt64)));
+                    state.counters["rows"] = static_cast<double>(fixture->n);
+                });
+        }
+    }
+}
+
+void registerNullableBenchmarks(const std::vector<std::shared_ptr<ReferenceFixture>> & ref_fixtures)
+{
+    for (const auto & ref : ref_fixtures)
+    {
+        auto fixture = std::make_shared<NullableFixture>(*ref);
+        benchmark::RegisterBenchmark(
+            ("BM_mod0_null8/F" + std::to_string(ref->fanout)).c_str(),
+            [fixture, ref](benchmark::State & state)
+            {
+                for (auto _ : state)
+                {
+                    fixture->run();
+                    benchmark::ClobberMemory();
+                }
+                state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * ref->n * 9);
+                state.counters["rows"] = static_cast<double>(ref->n);
+                state.counters["swwc"] = ref->use_swwc ? 1 : 0;
+            });
+    }
 }
 
 }
 
 int main(int argc, char ** argv)
 {
-    registerReferenceBenchmarks();
+    auto reference_fixtures = registerReferenceBenchmarks();
+    registerStringBenchmarks();
+    registerNullableBenchmarks(reference_fixtures);
     benchmark::Initialize(&argc, argv);
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();

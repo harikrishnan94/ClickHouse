@@ -1,9 +1,17 @@
 #include <Columns/ColumnsScatter.h>
 
+#include <Columns/ColumnArray.h>
 #include <Columns/ColumnConst.h>
+#include <Columns/ColumnLowCardinality.h>
+#include <Columns/ColumnMap.h>
+#include <Columns/ColumnNullable.h>
+#include <Columns/ColumnString.h>
+#include <Columns/ColumnTuple.h>
 #include <Common/Arena.h>
 #include <Common/Exception.h>
 #include <Common/assert_cast.h>
+
+#include <base/MemorySanitizer.h>
 
 #include <Core/TypeId.h>
 
@@ -319,6 +327,59 @@ ALWAYS_INLINE void traceDispatch(TypeIndex type, ScatterKernelId kernel)
         dispatch_trace->entries.push_back({type, kernel});
 }
 
+/// Row copy with the `memcpySmallAllowReadWriteOverflow15` contract (may read/write up to 15 bytes
+/// past the ends). The explicit barrier prevents clang's loop-idiom recognition from turning the
+/// loop into a libc `memcpy` call — the x86 library variant carries the same barrier for the same
+/// reason, but the aarch64 variant lacks it, and the resulting per-row PLT call cost ~8% of the
+/// String kernel's bandwidth at fanout 64 with 8-byte rows, part of an initial 27% miss vs the
+/// reference (see MEASUREMENTS §U2 cycles 1-2).
+ALWAYS_INLINE void copyRowAllowOverflow15(char * __restrict dst, const char * __restrict src, ssize_t n)
+{
+    __msan_unpoison_overflow_15(src, n);
+    while (n > 0)
+    {
+        __builtin_memcpy_inline(dst, src, 16);
+        dst += 16;
+        src += 16;
+        n -= 16;
+        __asm__ __volatile__("" : : : "memory");
+    }
+}
+
+/// Variable-length row loop shared by both pid widths: fused chars copy + rebased offset store.
+template <typename Pid>
+void scatterStringChunkImpl(const char * chars, const UInt64 * offsets, const Pid * pids, size_t n, StringScatterState & state)
+{
+    StringScatterState::ShardCursor * const cursors = state.cursors.data();
+
+    UInt64 prev = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const size_t p = pids[i];
+        const UInt64 end = offsets[i];
+        const UInt64 len = end - prev;
+        StringScatterState::ShardCursor & cursor = cursors[p];
+        copyRowAllowOverflow15(cursor.chars, chars + prev, static_cast<ssize_t>(len));
+        cursor.chars += len;
+        const UInt64 total = cursor.rebased + len;
+        cursor.rebased = total;
+        *cursor.offsets++ = total;
+        prev = end;
+    }
+}
+
+template <typename Pid>
+void stringBytesPerShardImpl(const UInt64 * offsets, const Pid * pids, size_t n, UInt64 * bytes_per_shard)
+{
+    UInt64 prev = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const UInt64 end = offsets[i];
+        bytes_per_shard[pids[i]] += end - prev;
+        prev = end;
+    }
+}
+
 /// ------------------------------------------------------------------------------------------------
 /// Layer-1 typed kernels
 /// ------------------------------------------------------------------------------------------------
@@ -328,6 +389,14 @@ using SourcePids = std::span<const std::span<const Pid>>;
 
 template <typename Pid>
 using ScatterKernel = MutableColumns (*)(std::span<const IColumn * const>, SourcePids<Pid>, std::span<const UInt32>);
+
+/// Internal recursive dispatch (no tracing: the trace records the TOP-LEVEL kernel per Layer-1 call;
+/// composite kernels call this for their nested columns). Defined after the table.
+template <typename Pid>
+MutableColumns dispatchToKernel(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard);
+
+template <typename Pid>
+MutableColumns scatterFallback(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard);
 
 /// Raw-byte kernel for every fixed-and-contiguous type with insertRawUninitialized support
 /// (ColumnVector, ColumnDecimal, ColumnFixedString). One runtime-width body; the per-chunk width
@@ -365,6 +434,258 @@ MutableColumns scatterFixedWidth(std::span<const IColumn * const> sources, Sourc
         scatterPidChunkImpl(width, pids[b].data(), sources[b]->getRawData().data(), sources[b]->size(), use_swwc, scratch);
 
     scratch.drain();
+    return result;
+}
+
+/// Fused chars + rebased-offsets kernel for `ColumnString`. Per-shard chars sizes come from one
+/// byte-histogram pass over (offsets, pids); destinations are exact-sized and uninitialized
+/// (`resize_exact` on chars and offsets), first-touched by the scatter writes.
+template <typename Pid>
+MutableColumns scatterString(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    const size_t num_shards = rows_per_shard.size();
+
+    PaddedPODArray<UInt64> bytes_per_shard;
+    bytes_per_shard.resize_fill(num_shards, 0);
+    for (size_t b = 0; b < sources.size(); ++b)
+    {
+        const auto & source = assert_cast<const ColumnString &>(*sources[b]);
+        stringBytesPerShardImpl(source.getOffsets().data(), pids[b].data(), source.size(), bytes_per_shard.data());
+    }
+
+    MutableColumns result(num_shards);
+    StringScatterState state;
+    state.init(num_shards);
+    for (size_t s = 0; s < num_shards; ++s)
+    {
+        auto column = ColumnString::create();
+        column->getChars().resize_exact(bytes_per_shard[s]);
+        column->getOffsets().resize_exact(rows_per_shard[s]);
+        state.seed(s, reinterpret_cast<char *>(column->getChars().data()), column->getOffsets().data(), 0);
+        result[s] = std::move(column);
+    }
+
+    for (size_t b = 0; b < sources.size(); ++b)
+    {
+        const auto & source = assert_cast<const ColumnString &>(*sources[b]);
+        scatterStringChunkImpl(
+            reinterpret_cast<const char *>(source.getChars().data()),
+            source.getOffsets().data(),
+            pids[b].data(),
+            source.size(),
+            state);
+    }
+    return result;
+}
+
+/// Null map goes through the width-1 fixed kernel; the nested column is dispatched recursively with
+/// the same pids and rows_per_shard, then each shard is rewrapped.
+template <typename Pid>
+MutableColumns scatterNullable(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    const size_t num_shards = rows_per_shard.size();
+
+    ColumnRawPtrs null_maps;
+    ColumnRawPtrs nested;
+    null_maps.reserve(sources.size());
+    nested.reserve(sources.size());
+    for (const IColumn * source : sources)
+    {
+        const auto & nullable = assert_cast<const ColumnNullable &>(*source);
+        null_maps.push_back(&nullable.getNullMapColumn());
+        nested.push_back(&nullable.getNestedColumn());
+    }
+
+    auto null_map_shards = scatterFixedWidth<Pid>({null_maps.data(), null_maps.size()}, pids, rows_per_shard);
+    auto nested_shards = dispatchToKernel<Pid>({nested.data(), nested.size()}, pids, rows_per_shard);
+
+    MutableColumns result(num_shards);
+    for (size_t s = 0; s < num_shards; ++s)
+        result[s] = ColumnNullable::create(std::move(nested_shards[s]), std::move(null_map_shards[s]));
+    return result;
+}
+
+/// Per-element recursive dispatch; shards reassembled element-wise.
+template <typename Pid>
+MutableColumns scatterTuple(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    const size_t num_shards = rows_per_shard.size();
+    const auto & first = assert_cast<const ColumnTuple &>(*sources[0]);
+    const size_t num_elements = first.tupleSize();
+
+    /// `getDataType` equality at the entry cannot see tuple arity; a mismatch here would index
+    /// elements out of bounds.
+    for (size_t b = 1; b < sources.size(); ++b)
+        if (assert_cast<const ColumnTuple &>(*sources[b]).tupleSize() != num_elements)
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "Source column {} is a tuple of {} elements but source 0 has {} elements",
+                b,
+                assert_cast<const ColumnTuple &>(*sources[b]).tupleSize(),
+                num_elements);
+
+    /// Element-less tuples carry only a row count per shard.
+    if (num_elements == 0)
+    {
+        MutableColumns result(num_shards);
+        for (size_t s = 0; s < num_shards; ++s)
+            result[s] = ColumnTuple::create(rows_per_shard[s]);
+        return result;
+    }
+
+    std::vector<MutableColumns> element_shards(num_elements); /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+    ColumnRawPtrs element_sources;
+    for (size_t e = 0; e < num_elements; ++e)
+    {
+        element_sources.clear();
+        for (const IColumn * source : sources)
+            element_sources.push_back(&assert_cast<const ColumnTuple &>(*source).getColumn(e));
+        element_shards[e] = dispatchToKernel<Pid>({element_sources.data(), element_sources.size()}, pids, rows_per_shard);
+    }
+
+    MutableColumns result(num_shards);
+    for (size_t s = 0; s < num_shards; ++s)
+    {
+        MutableColumns elements(num_elements);
+        for (size_t e = 0; e < num_elements; ++e)
+            elements[e] = std::move(element_shards[e][s]);
+        result[s] = ColumnTuple::create(std::move(elements));
+    }
+    return result;
+}
+
+/// Array: destination offsets are rebased running per-shard ELEMENT totals; the nested column is
+/// scattered recursively with element-level pids (each row's pid replicated over its elements).
+template <typename Pid>
+MutableColumns scatterArray(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    const size_t num_shards = rows_per_shard.size();
+
+    /// Pass 1: per-shard element totals + element-level pid expansion, per source chunk.
+    PaddedPODArray<UInt64> elements_per_shard;
+    elements_per_shard.resize_fill(num_shards, 0);
+    std::vector<PaddedPODArray<Pid>> element_pids(sources.size()); /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+    ColumnRawPtrs nested;
+    nested.reserve(sources.size());
+    for (size_t b = 0; b < sources.size(); ++b)
+    {
+        const auto & array = assert_cast<const ColumnArray &>(*sources[b]);
+        const auto & offsets = array.getOffsets();
+        const size_t n = array.size();
+        element_pids[b].resize(offsets.empty() ? 0 : offsets[n - 1]);
+        UInt64 prev = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const UInt64 end = offsets[i];
+            const Pid p = pids[b][i];
+            elements_per_shard[p] += end - prev;
+            for (UInt64 j = prev; j < end; ++j)
+                element_pids[b][j] = p;
+            prev = end;
+        }
+        nested.push_back(&array.getData());
+    }
+
+    /// The nested dispatch needs UInt32 per-shard element counts; totals above 2^32 - 1 take the
+    /// legacy fallback for the whole batch instead (checked by the caller-side overflow guard on
+    /// rows; element counts are re-checked here).
+    PaddedPODArray<UInt32> nested_rows_per_shard;
+    nested_rows_per_shard.resize(num_shards);
+    size_t total_elements = 0;
+    for (size_t s = 0; s < num_shards; ++s)
+    {
+        total_elements += elements_per_shard[s];
+        nested_rows_per_shard[s] = static_cast<UInt32>(elements_per_shard[s]);
+    }
+    if (total_elements > std::numeric_limits<UInt32>::max())
+        return scatterFallback<Pid>(sources, pids, rows_per_shard);
+
+    std::vector<std::span<const Pid>> element_pid_spans; /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+    element_pid_spans.reserve(sources.size());
+    for (const auto & span : element_pids)
+        element_pid_spans.emplace_back(span.data(), span.size());
+    auto nested_shards = dispatchToKernel<Pid>(
+        {nested.data(), nested.size()},
+        {element_pid_spans.data(), element_pid_spans.size()},
+        {nested_rows_per_shard.data(), num_shards});
+
+    /// Pass 2: rebased offsets per shard.
+    MutableColumns offsets_shards(num_shards);
+    /// ShardCursor is reused here purely as per-shard {offsets cursor, rebased total} storage;
+    /// the chars stream of the record stays unused (seeded nullptr).
+    StringScatterState offsets_state;
+    offsets_state.init(num_shards);
+    for (size_t s = 0; s < num_shards; ++s)
+    {
+        auto offsets_column = ColumnArray::ColumnOffsets::create();
+        offsets_column->getData().resize_exact(rows_per_shard[s]);
+        offsets_state.seed(s, nullptr, offsets_column->getData().data(), 0);
+        offsets_shards[s] = std::move(offsets_column);
+    }
+    for (size_t b = 0; b < sources.size(); ++b)
+    {
+        const auto & array = assert_cast<const ColumnArray &>(*sources[b]);
+        const auto & offsets = array.getOffsets();
+        StringScatterState::ShardCursor * const cursors = offsets_state.cursors.data();
+        UInt64 prev = 0;
+        for (size_t i = 0; i < array.size(); ++i)
+        {
+            const UInt64 end = offsets[i];
+            const size_t p = pids[b][i];
+            StringScatterState::ShardCursor & cursor = cursors[p];
+            const UInt64 total = cursor.rebased + (end - prev);
+            cursor.rebased = total;
+            *cursor.offsets++ = total;
+            prev = end;
+        }
+    }
+
+    MutableColumns result(num_shards);
+    for (size_t s = 0; s < num_shards; ++s)
+        result[s] = ColumnArray::create(std::move(nested_shards[s]), std::move(offsets_shards[s]));
+    return result;
+}
+
+/// Map delegates to its nested `Array(Tuple(key, value))` column.
+template <typename Pid>
+MutableColumns scatterMap(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    ColumnRawPtrs nested;
+    nested.reserve(sources.size());
+    for (const IColumn * source : sources)
+        nested.push_back(&assert_cast<const ColumnMap &>(*source).getNestedColumn());
+    auto nested_shards = scatterArray<Pid>({nested.data(), nested.size()}, pids, rows_per_shard);
+
+    /// Statistics is a serialization sizing hint the legacy scatter propagates to every part; with
+    /// multiple sources the first source's statistics is propagated (the merged shards have no
+    /// exact statistics either way).
+    const auto & statistics = assert_cast<const ColumnMap &>(*sources[0]).getStatistics();
+    MutableColumns result(nested_shards.size());
+    for (size_t s = 0; s < nested_shards.size(); ++s)
+        result[s] = ColumnMap::create(std::move(nested_shards[s]), statistics);
+    return result;
+}
+
+/// Type-preserving LowCardinality: the index stream goes through the fixed-width kernel and every
+/// shard shares one mutated dictionary, mirroring legacy `ColumnLowCardinality::scatter`. A
+/// multi-source batch generally carries per-source dictionaries; merging them is exactly what the
+/// per-source legacy scatter + `insertRangeFrom` fallback body does, so this kernel delegates that
+/// case (results stay LowCardinality either way).
+template <typename Pid>
+MutableColumns scatterLowCardinality(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    if (sources.size() > 1)
+        return scatterFallback<Pid>(sources, pids, rows_per_shard);
+
+    const auto & low_cardinality = assert_cast<const ColumnLowCardinality &>(*sources[0]);
+    const IColumn * indexes = &low_cardinality.getIndexes();
+    auto index_shards = scatterFixedWidth<Pid>({&indexes, 1}, pids, rows_per_shard);
+
+    ColumnPtr shared_dictionary = IColumn::mutate(low_cardinality.getDictionaryPtr());
+    MutableColumns result(rows_per_shard.size());
+    for (size_t s = 0; s < result.size(); ++s)
+        result[s] = IColumn::mutate(
+            ColumnLowCardinality::create(shared_dictionary, ColumnPtr(std::move(index_shards[s])), /*is_shared*/ true));
     return result;
 }
 
@@ -425,13 +746,19 @@ constexpr std::array<TypeIndex, 25> FIXED_WIDTH_TYPES = {
 
 /// The kernel-id table is the single source of registration truth; the function-pointer table is
 /// DERIVED from it, so the recorded trace equals the executed kernel by construction (a new type
-/// family in U2+ is a one-place edit: register the id here, map it in kernelForId).
+/// family is a one-place edit: register the id here, map it in kernelForId).
 constexpr std::array<ScatterKernelId, SCATTER_TABLE_SIZE> buildKernelIdTable()
 {
     std::array<ScatterKernelId, SCATTER_TABLE_SIZE> table{};
     table.fill(ScatterKernelId::Fallback);
     for (TypeIndex type : FIXED_WIDTH_TYPES)
         table[static_cast<size_t>(type)] = ScatterKernelId::FixedWidth;
+    table[static_cast<size_t>(TypeIndex::String)] = ScatterKernelId::String;
+    table[static_cast<size_t>(TypeIndex::Nullable)] = ScatterKernelId::Nullable;
+    table[static_cast<size_t>(TypeIndex::Tuple)] = ScatterKernelId::Tuple;
+    table[static_cast<size_t>(TypeIndex::Array)] = ScatterKernelId::Array;
+    table[static_cast<size_t>(TypeIndex::Map)] = ScatterKernelId::Map;
+    table[static_cast<size_t>(TypeIndex::LowCardinality)] = ScatterKernelId::LowCardinality;
     return table;
 }
 
@@ -444,6 +771,18 @@ constexpr ScatterKernel<Pid> kernelForId(ScatterKernelId id)
     {
         case ScatterKernelId::FixedWidth:
             return &scatterFixedWidth<Pid>;
+        case ScatterKernelId::String:
+            return &scatterString<Pid>;
+        case ScatterKernelId::Nullable:
+            return &scatterNullable<Pid>;
+        case ScatterKernelId::Tuple:
+            return &scatterTuple<Pid>;
+        case ScatterKernelId::Array:
+            return &scatterArray<Pid>;
+        case ScatterKernelId::Map:
+            return &scatterMap<Pid>;
+        case ScatterKernelId::LowCardinality:
+            return &scatterLowCardinality<Pid>;
         case ScatterKernelId::ConstCompact: /// not a dispatch-table kernel: handled before dispatch
         case ScatterKernelId::Fallback:
             return &scatterFallback<Pid>;
@@ -458,6 +797,13 @@ constexpr std::array<ScatterKernel<Pid>, SCATTER_TABLE_SIZE> buildScatterTable()
     for (size_t i = 0; i < SCATTER_TABLE_SIZE; ++i)
         table[i] = kernelForId<Pid>(KERNEL_ID_TABLE[i]);
     return table;
+}
+
+template <typename Pid>
+MutableColumns dispatchToKernel(std::span<const IColumn * const> sources, SourcePids<Pid> pids, std::span<const UInt32> rows_per_shard)
+{
+    static constexpr auto table = buildScatterTable<Pid>();
+    return table[static_cast<size_t>(sources[0]->getDataType())](sources, pids, rows_per_shard);
 }
 
 /// ------------------------------------------------------------------------------------------------
@@ -689,6 +1035,23 @@ MutableColumns scatterImpl(
         sources = std::span<const IColumn * const>(normalized_sources.data(), normalized_sources.size());
     }
 
+#ifdef DEBUG_OR_SANITIZER_BUILD
+    /// Deep concrete-type equality on the NORMALIZED sources, where the type implements it (release
+    /// builds check only TypeIndex plus the width/arity guards in the fixed-width and tuple kernels).
+    for (size_t b = 1; b < sources.size(); ++b)
+    {
+        try
+        {
+            chassert(sources[b]->structureEquals(*sources[0]));
+        }
+        catch (const Exception & e)
+        {
+            if (e.code() != ErrorCodes::NOT_IMPLEMENTED)
+                throw;
+        }
+    }
+#endif
+
     const TypeIndex type = sources[0]->getDataType();
 
     if (!fits_32)
@@ -793,6 +1156,26 @@ std::pair<MutableColumnPtr, std::span<char>> allocateUninitializedFixed(const IC
     return {std::move(column), raw};
 }
 
+void stringBytesPerShard(const UInt64 * offsets, const UInt16 * pids, size_t n, UInt64 * bytes_per_shard)
+{
+    stringBytesPerShardImpl(offsets, pids, n, bytes_per_shard);
+}
+
+void stringBytesPerShard(const UInt64 * offsets, const UInt32 * pids, size_t n, UInt64 * bytes_per_shard)
+{
+    stringBytesPerShardImpl(offsets, pids, n, bytes_per_shard);
+}
+
+void scatterStringChunk(const char * chars, const UInt64 * offsets, const UInt16 * pids, size_t n, StringScatterState & state)
+{
+    scatterStringChunkImpl(chars, offsets, pids, n, state);
+}
+
+void scatterStringChunk(const char * chars, const UInt64 * offsets, const UInt32 * pids, size_t n, StringScatterState & state)
+{
+    scatterStringChunkImpl(chars, offsets, pids, n, state);
+}
+
 /// ------------------------------------------------------------------------------------------------
 /// Introspection
 /// ------------------------------------------------------------------------------------------------
@@ -802,6 +1185,12 @@ const char * toString(ScatterKernelId id)
     switch (id)
     {
         case ScatterKernelId::FixedWidth: return "FixedWidth";
+        case ScatterKernelId::String: return "String";
+        case ScatterKernelId::Nullable: return "Nullable";
+        case ScatterKernelId::Tuple: return "Tuple";
+        case ScatterKernelId::Array: return "Array";
+        case ScatterKernelId::Map: return "Map";
+        case ScatterKernelId::LowCardinality: return "LowCardinality";
         case ScatterKernelId::ConstCompact: return "ConstCompact";
         case ScatterKernelId::Fallback: return "Fallback";
     }

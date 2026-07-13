@@ -230,6 +230,57 @@ void reduceHistogramLanes(UInt64 * hist, const UInt64 * lanes, size_t fanout);
 std::pair<MutableColumnPtr, std::span<char>> allocateUninitializedFixed(const IColumn & sample, size_t rows);
 
 /// ------------------------------------------------------------------------------------------------
+/// Layer 0 — variable-length (String-shaped) chunk kernel: two coupled per-shard output streams,
+/// chars (data-dependent row lengths, byte cursors) and offsets (destination offsets are REBASED
+/// running per-shard byte totals, not copies of source offsets). Callers compute per-shard byte
+/// totals with `stringBytesPerShard`, allocate exactly, seed, and scatter chunk by chunk; cursors
+/// and rebased totals persist across chunks like `ScatterScratch` cursors do.
+/// ------------------------------------------------------------------------------------------------
+struct StringScatterState
+{
+    /// One 32-byte record per shard so a row touches ONE line of cursor state, not three arrays
+    /// (at fanout 8192 the state alone is 256 KiB — per-row line count dominates the L2 traffic).
+    struct ShardCursor
+    {
+        char * chars;
+        UInt64 * offsets;
+        /// Running rebased byte total == the value the NEXT row's destination offset gets after
+        /// adding its length. Seed with 0 for fresh destinations.
+        UInt64 rebased;
+        UInt64 padding = 0;
+    };
+
+    size_t fanout = 0;
+    PaddedPODArray<ShardCursor> cursors;
+
+    void init(size_t fanout_)
+    {
+        fanout = fanout_;
+        cursors.resize(fanout);
+    }
+
+    void seed(size_t p, char * chars_cursor, UInt64 * offsets_cursor, UInt64 rebased_start)
+    {
+        cursors[p] = {chars_cursor, offsets_cursor, rebased_start, 0};
+    }
+};
+
+/// Accumulate per-shard chars-byte totals for one chunk (`offsets` in `ColumnString` form:
+/// offsets[i] = end of row i, offsets[-1] readable as 0 via the PODArray left pad).
+void stringBytesPerShard(const UInt64 * offsets, const UInt16 * pids, size_t n, UInt64 * bytes_per_shard);
+void stringBytesPerShard(const UInt64 * offsets, const UInt32 * pids, size_t n, UInt64 * bytes_per_shard);
+
+/// Scatter one chunk of a String column via precomputed pids. The chars copy follows the
+/// `memcpySmallAllowReadWriteOverflow15` contract (implemented in-module; see the kernel comment
+/// for why the library function is not called): every row write may touch up to 15 bytes past the
+/// row's end, so EACH shard's chars destination must be its own overflow-tolerant allocation (e.g.
+/// a per-shard `PaddedPODArray`, as a `ColumnString` naturally provides). Carving multiple shard
+/// regions out of one shared buffer is NOT supported — a row written to shard p would clobber the
+/// head of shard p+1.
+void scatterStringChunk(const char * chars, const UInt64 * offsets, const UInt16 * pids, size_t n, StringScatterState & state);
+void scatterStringChunk(const char * chars, const UInt64 * offsets, const UInt32 * pids, size_t n, StringScatterState & state);
+
+/// ------------------------------------------------------------------------------------------------
 /// Dispatch introspection — test-visible proof of which path handled a column. plannedKernel is a
 /// pure probe of the dispatch table; DispatchTrace records what actually ran (one entry per Layer-1
 /// call). The disabled-trace cost is one predictable null check per call — never per row.
@@ -237,9 +288,16 @@ std::pair<MutableColumnPtr, std::span<char>> allocateUninitializedFixed(const IC
 
 enum class ScatterKernelId : UInt8
 {
-    FixedWidth,   /// raw-byte kernels: ColumnVector, ColumnDecimal, ColumnFixedString
-    ConstCompact, /// all-const equal-value batch: cloneResized per shard, O(1) memory
-    Fallback,     /// legacy IColumn::scatter + insertRangeFrom
+    FixedWidth,     /// raw-byte kernels: ColumnVector, ColumnDecimal, ColumnFixedString
+    String,         /// fused chars + rebased-offsets kernel with per-shard byte cursors
+    Nullable,       /// null-map via the width-1 fixed kernel + nested dispatched recursively
+    Tuple,          /// per-element recursive dispatch, shards reassembled
+    Array,          /// rebased offsets + element-level pid expansion + nested dispatched recursively
+    Map,            /// delegates to the nested Array(Tuple(key, value)) kernel
+    LowCardinality, /// type-preserving: index stream via the fixed kernel, dictionary shared,
+                    /// (single source; a multi-source batch merges per-source legacy scatters)
+    ConstCompact,   /// all-const equal-value batch: cloneResized per shard, O(1) memory
+    Fallback,       /// legacy IColumn::scatter + insertRangeFrom
 };
 
 const char * toString(ScatterKernelId id);
@@ -285,9 +343,11 @@ void countRowsPerShard(std::span<const std::span<const UInt32>> pids_per_source,
   * - Transparent wrappers (ColumnConst/ColumnSparse/ColumnReplicated) are normalized away
   *   recursively before dispatch; ColumnLowCardinality is preserved. An all-const batch with
   *   byte-identical values stays compact (ColumnConst results).
-  * - Misuse (span size mismatches, pid count != column size, source type mismatch, zero shards)
-  *   throws `LOGICAL_ERROR` in every build mode; out-of-range pids and rows_per_shard contents are
-  *   checked in debug/sanitizer builds only.
+  * - Misuse (span size mismatches, pid count != column size, zero shards, source TypeIndex
+  *   mismatch, mismatched FixedString widths or tuple arity) throws `LOGICAL_ERROR` in every build
+  *   mode. DEEPER concrete-type mismatches between same-TypeIndex sources (e.g. differently-typed
+  *   tuple elements of equal width), out-of-range pids, and wrong rows_per_shard contents are
+  *   checked in debug/sanitizer builds only — in release they are undefined behavior.
   */
 [[nodiscard]] MutableColumns scatter(
     std::span<const IColumn * const> source_columns,
