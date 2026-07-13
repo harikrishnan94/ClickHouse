@@ -92,6 +92,10 @@ ALWAYS_INLINE inline UInt32 finalizeRoute(UInt64 h)
 }
 
 /// Fold `w` bytes at `p` into the accumulator, 8 bytes at a time with a zero-padded tail.
+/// The tail dispatches on its size to constant-size copies: a runtime-size copy lowers to a
+/// per-row libc `memcpy` call on the runtime-width paths, while constant sizes lower to plain
+/// loads (and constant-width callers fold the switch away entirely). Each case copies exactly
+/// `w - i` bytes into the zeroed chunk, so the fold value is bit-identical to a runtime-size copy.
 ALWAYS_INLINE inline UInt64 foldBytes(UInt64 h, const char * p, size_t w)
 {
     size_t i = 0;
@@ -104,7 +108,16 @@ ALWAYS_INLINE inline UInt64 foldBytes(UInt64 h, const char * p, size_t w)
     if (i < w)
     {
         UInt64 x = 0;
-        memcpy(&x, p + i, w - i);
+        switch (w - i) // NOLINT(bugprone-switch-missing-default-case): the tail size is provably in [1, 7]
+        {
+            case 1: memcpy(&x, p + i, 1); break;
+            case 2: memcpy(&x, p + i, 2); break;
+            case 3: memcpy(&x, p + i, 3); break;
+            case 4: memcpy(&x, p + i, 4); break;
+            case 5: memcpy(&x, p + i, 5); break;
+            case 6: memcpy(&x, p + i, 6); break;
+            case 7: memcpy(&x, p + i, 7); break;
+        }
         h = mixStep(h, x);
     }
     return h;

@@ -218,6 +218,49 @@ std::vector<size_t> makeScatterOrder(const SideLayout & layout)
     return order;
 }
 
+/// Fold one key column's rows into the route accumulators with a compile-time width: `foldBytes`
+/// fully unrolls into plain loads, so the row body is one load + mix per 8-byte chunk with no
+/// per-row width checks or tail dispatch.
+template <size_t width>
+void foldKeyColumnRows(const char * base, size_t n, UInt64 * acc)
+{
+    for (size_t i = 0; i < n; ++i)
+        acc[i] = foldBytes(acc[i], base + i * width, width);
+}
+
+/// Composite-key route materialization for one chunk of `n` rows: fold every key column's bytes
+/// into per-row accumulators (`foldBytes`), then finalize each accumulator into a route word.
+/// `get_key_column_base` maps a key column position to its raw data pointer. `acc` is caller-owned
+/// scratch so the first pass can reuse one allocation across its whole chunk stripe. Called at
+/// chunk granularity: the hot row loops live inside, never behind a per-row call. The fold row
+/// loop is width-dispatched like the module's scatter kernels (the common fixed widths hit the
+/// unrolled loops; anything else folds through the runtime-width loop).
+template <typename GetKeyColumnBase>
+void materializeCompositeRoutes(
+    const SideLayout & layout, const GetKeyColumnBase & get_key_column_base, size_t n, PaddedPODArray<UInt64> & acc, UInt32 * routes)
+{
+    acc.resize(n);
+    memset(acc.data(), 0, n * sizeof(UInt64));
+    for (size_t k = 0; k < layout.key_positions.size(); ++k)
+    {
+        const size_t w = layout.key_widths[k];
+        const char * base = get_key_column_base(layout.key_positions[k]);
+        switch (w)
+        {
+            case 1: foldKeyColumnRows<1>(base, n, acc.data()); break;
+            case 2: foldKeyColumnRows<2>(base, n, acc.data()); break;
+            case 4: foldKeyColumnRows<4>(base, n, acc.data()); break;
+            case 8: foldKeyColumnRows<8>(base, n, acc.data()); break;
+            case 16: foldKeyColumnRows<16>(base, n, acc.data()); break;
+            default:
+                for (size_t i = 0; i < n; ++i)
+                    acc[i] = foldBytes(acc[i], base + i * w, w);
+        }
+    }
+    for (size_t i = 0; i < n; ++i)
+        routes[i] = finalizeRoute(acc[i]);
+}
+
 /// First radix pass: all workers cooperate on the single input group in exactly three barriers
 /// (histogram, fused prefix-sum + exact allocation, fused batched column-major scatter). `blocks` is
 /// consumed batch-eagerly. `Counter` is selected once from the exact side row count, outside the row
@@ -272,19 +315,13 @@ std::vector<PartitionOutput> scatterFirstPass(
                 const size_t n = chunk_rows[c];
                 if (composite)
                 {
-                    acc.resize(n);
-                    memset(acc.data(), 0, n * sizeof(UInt64));
-                    for (size_t k = 0; k < layout.key_positions.size(); ++k)
-                    {
-                        const size_t pos = layout.key_positions[k];
-                        const size_t w = layout.key_widths[k];
-                        const char * base = blocks[c].getByPosition(pos).column->getRawData().data();
-                        for (size_t i = 0; i < n; ++i)
-                            acc[i] = foldBytes(acc[i], base + i * w, w);
-                    }
                     chunk_routes[c].resize(n);
-                    for (size_t i = 0; i < n; ++i)
-                        chunk_routes[c][i] = finalizeRoute(acc[i]);
+                    materializeCompositeRoutes(
+                        layout,
+                        [&](size_t pos) { return blocks[c].getByPosition(pos).column->getRawData().data(); },
+                        n,
+                        acc,
+                        chunk_routes[c].data());
                     histogramRouteChunk(
                         chunk_routes[c].data(), n, route_shift, route_mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
                 }
@@ -458,29 +495,20 @@ void scatterRefineGroup(
 
     if (composite)
     {
-        {
-            PaddedPODArray<UInt64> accumulators;
-            accumulators.resize(group.rows);
-            memset(accumulators.data(), 0, group.rows * sizeof(UInt64));
-            for (size_t k = 0; k < layout.key_positions.size(); ++k)
-            {
-                const size_t pos = layout.key_positions[k];
-                const size_t width = layout.key_widths[k];
-                const char * base = group.columns[pos]->getRawData().data();
-                for (size_t i = 0; i < group.rows; ++i)
-                    accumulators[i] = foldBytes(accumulators[i], base + i * width, width);
-            }
+        PaddedPODArray<UInt64> accumulators;
+        PaddedPODArray<UInt32> routes;
+        routes.resize(group.rows);
+        materializeCompositeRoutes(
+            layout,
+            [&](size_t pos) { return group.columns[pos]->getRawData().data(); },
+            group.rows,
+            accumulators,
+            routes.data());
 
-            PaddedPODArray<UInt32> routes;
-            routes.resize(group.rows);
-            for (size_t i = 0; i < group.rows; ++i)
-                routes[i] = finalizeRoute(accumulators[i]);
-
-            histogramRouteChunk(
-                routes.data(), group.rows, route_shift, route_mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
-            for (size_t i = 0; i < group.rows; ++i)
-                pids[i] = static_cast<UInt16>((routes[i] >> route_shift) & route_mask);
-        }
+        histogramRouteChunk(
+            routes.data(), group.rows, route_shift, route_mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
+        for (size_t i = 0; i < group.rows; ++i)
+            pids[i] = static_cast<UInt16>((routes[i] >> route_shift) & route_mask);
     }
     else
     {

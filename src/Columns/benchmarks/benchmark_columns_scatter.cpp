@@ -993,7 +993,7 @@ void referenceScatterByWidth(const Route & route, const char * data, size_t n, s
 /// module exports — identical shapes.
 struct MtFixture
 {
-    enum class Kind : uint8_t { Pid8, Key8, W1, W4, W16, W32, StrL8, Null8 };
+    enum class Kind : uint8_t { Pid8, Key8, W1, W4, W7, W16, W32, W33, StrL8, Null8 };
 
     Kind kind;
     size_t fanout;
@@ -1133,8 +1133,10 @@ struct MtFixture
         {
             case Kind::W1: return 1;
             case Kind::W4: return 4;
+            case Kind::W7: return 7;
             case Kind::W16: return 16;
             case Kind::W32: return 32;
+            case Kind::W33: return 33;
             /// Explicit so a new Kind trips -Wswitch here, not silently width 8 (review U4-simplicity-2).
             case Kind::Pid8:
             case Kind::Key8:
@@ -1175,8 +1177,10 @@ struct MtFixture
             case Kind::Pid8:
             case Kind::W1:
             case Kind::W4:
+            case Kind::W7:
             case Kind::W16:
             case Kind::W32:
+            case Kind::W33:
                 seedRef(worker.ref_scratch, worker.bases);
                 referenceScatterByWidth(route, data.data(), n, width, use_swwc, worker.ref_scratch);
                 break;
@@ -1209,8 +1213,10 @@ struct MtFixture
             case Kind::Pid8:
             case Kind::W1:
             case Kind::W4:
+            case Kind::W7:
             case Kind::W16:
             case Kind::W32:
+            case Kind::W33:
                 seedMod(worker.mod_scratch, worker.bases);
                 ColumnsScatter::scatterPidChunk(width, pids.data(), data.data(), n, use_swwc, worker.mod_scratch);
                 worker.mod_scratch.drain();
@@ -1319,8 +1325,10 @@ void registerThreadSweepBenchmarks()
         {"key8", MtFixture::Kind::Key8},
         {"w1", MtFixture::Kind::W1},
         {"w4", MtFixture::Kind::W4},
+        {"w7", MtFixture::Kind::W7},
         {"w16", MtFixture::Kind::W16},
         {"w32", MtFixture::Kind::W32},
+        {"w33", MtFixture::Kind::W33},
         {"strL8", MtFixture::Kind::StrL8},
         {"null8", MtFixture::Kind::Null8},
     };
@@ -1403,10 +1411,11 @@ MutableColumnPtr fillRandomFixed(MutableColumnPtr column, size_t rows)
     return column;
 }
 
-/// U4: width-matched cells. Same shape as the 8-byte cells: for each width w in {1,2,4,16}, the
-/// reference arm runs the U0-frozen verbatim `scatterOne` at width w and the module arm runs
-/// `scatterPidChunk` with the same runtime width into the SAME preallocated per-shard buffers —
-/// the D-0006 basis for narrow fixed widths in the Gate-1 table.
+/// U4: width-matched cells. Same shape as the 8-byte cells: for each width w in the gate-table
+/// width list (dispatched narrow widths, 32, and the generic-path widths 7/33), the reference arm
+/// runs the U0-frozen verbatim `scatterOne` at width w and the module arm runs `scatterPidChunk`
+/// with the same runtime width into the SAME preallocated per-shard buffers — the D-0006 basis
+/// for fixed widths in the Gate-1 table.
 struct WidthFixture
 {
     size_t fanout;
@@ -1564,7 +1573,7 @@ void registerGateTableBenchmarks()
     /// to the U1 cells `BM_mod0_pid{16,32}`, whose suffix is the pid integer width.
     for (size_t fanout : fanouts)
     {
-        for (size_t width : {1uz, 2uz, 4uz, 16uz, 32uz})
+        for (size_t width : {1uz, 2uz, 4uz, 7uz, 16uz, 32uz, 33uz})
         {
             auto holder = std::make_shared<std::unique_ptr<WidthFixture>>();
             auto register_cell = [&](const char * arm, auto run)

@@ -119,6 +119,46 @@ void scatterDirect(Route route, const char * data, size_t n, char ** cursors)
     }
 }
 
+/// Exact-byte runtime-width row copy from CONSTANT-size copies only: 16-byte chunks, then one
+/// OVERLAPPED 16-byte copy for the tail (sub-16 widths use overlapping constant-size pairs). A
+/// runtime-size `memcpy(dst, src, w)` lowers to a per-row libc call on the runtime-width scatter
+/// paths; constant sizes lower to plain loads/stores, and the barrier stops clang's loop-idiom
+/// recognition from re-materializing the call (same device as copyRowAllowOverflow15 below).
+/// Overlapped stores rewrite bytes of the same row with identical values, so the destination
+/// equals the runtime-size copy byte-for-byte, and no byte outside [dst, dst + w) is touched —
+/// the exact-sized-destination contract of the direct kernels is unchanged.
+ALWAYS_INLINE void copyRowExact(char * __restrict dst, const char * __restrict src, size_t w)
+{
+    if (w >= 16)
+    {
+        size_t i = 0;
+        for (; i + 16 <= w; i += 16)
+        {
+            __builtin_memcpy_inline(dst + i, src + i, 16);
+            __asm__ __volatile__("" : : : "memory");
+        }
+        if (i != w)
+            __builtin_memcpy_inline(dst + w - 16, src + w - 16, 16);
+    }
+    else if (w >= 8)
+    {
+        __builtin_memcpy_inline(dst, src, 8);
+        __builtin_memcpy_inline(dst + w - 8, src + w - 8, 8);
+    }
+    else if (w >= 4)
+    {
+        __builtin_memcpy_inline(dst, src, 4);
+        __builtin_memcpy_inline(dst + w - 4, src + w - 4, 4);
+    }
+    else if (w >= 2)
+    {
+        __builtin_memcpy_inline(dst, src, 2);
+        __builtin_memcpy_inline(dst + w - 2, src + w - 2, 2);
+    }
+    else if (w == 1)
+        dst[0] = src[0];
+}
+
 template <typename Route>
 void scatterDirectGeneric(Route route, const char * data, size_t n, size_t w, char ** cursors)
 {
@@ -126,7 +166,7 @@ void scatterDirectGeneric(Route route, const char * data, size_t n, size_t w, ch
     {
         const UInt32 p = route.partition(i);
         char * dst = cursors[p];
-        memcpy(dst, data + i * w, w);
+        copyRowExact(dst, data + i * w, w);
         cursors[p] = dst + w;
     }
 }
@@ -185,6 +225,10 @@ void scatterKeyChunkImpl(
         case 4: scatterOne<4>(RouteFromKey<4, Pid>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
         case 8: scatterOne<8>(RouteFromKey<8, Pid>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
         case 16: scatterOne<16>(RouteFromKey<16, Pid>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
+        /// 32 (UInt256/Int256/Decimal256) is not SWWC-eligible (widthSupportsSwwc: the 16-byte
+        /// alignment guarantee cannot keep a 32-byte-stride staging line exact), so it dispatches
+        /// straight to the direct kernel like the generic default does.
+        case 32: scatterDirect<32>(RouteFromKey<32, Pid>{keys, shift, mask, pids}, keys, n, scratch.cursors.data()); break;
         default:
             scatterDirectGeneric(RouteFromKeyGeneric<Pid>{keys, kw, shift, mask, pids}, keys, n, kw, scratch.cursors.data());
             break;
@@ -202,6 +246,8 @@ void scatterPidChunkImpl(size_t w, const Pid * pids, const char * data, size_t n
         case 4: scatterOne<4>(route, data, n, use_swwc, scratch); break;
         case 8: scatterOne<8>(route, data, n, use_swwc, scratch); break;
         case 16: scatterOne<16>(route, data, n, use_swwc, scratch); break;
+        /// 32 is not SWWC-eligible (see scatterKeyChunkImpl); direct kernel only.
+        case 32: scatterDirect<32>(route, data, n, scratch.cursors.data()); break;
         default: scatterDirectGeneric(route, data, n, w, scratch.cursors.data()); break;
     }
 }
@@ -260,6 +306,9 @@ void histogramKeyChunkImpl(
         case 4: histogramKeyT<4>(keys, n, shift, mask, hist, lanes, fanout); break;
         case 8: histogramKeyT<8>(keys, n, shift, mask, hist, lanes, fanout); break;
         case 16: histogramKeyT<16>(keys, n, shift, mask, hist, lanes, fanout); break;
+        /// Kept in lockstep with scatterKeyChunkImpl's dispatch set; the route values are
+        /// identical either way (routeWordFixed<32> and routeWordBytes share foldBytes).
+        case 32: histogramKeyT<32>(keys, n, shift, mask, hist, lanes, fanout); break;
         default: histogramKeyGeneric(keys, kw, n, shift, mask, hist, lanes, fanout); break;
     }
 }
