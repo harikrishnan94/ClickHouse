@@ -1,5 +1,7 @@
 #include <Columns/ColumnsScatter.h>
 
+#include <AggregateFunctions/IAggregateFunction.h>
+#include <Columns/ColumnAggregateFunction.h>
 #include <Columns/ColumnArray.h>
 #include <Columns/ColumnConst.h>
 #include <Columns/ColumnDecimal.h>
@@ -19,6 +21,7 @@
 #include <Common/randomSeed.h>
 #include <Common/tests/gtest_global_register.h>
 #include <Core/Field.h>
+#include <DataTypes/DataTypeAggregateFunction.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeString.h>
@@ -1226,6 +1229,81 @@ TEST(ColumnsScatter, LowCardinalityInsideCompositesPreserved)
     auto expected = referenceScatter(std::span<const IColumn * const>(sources.data(), sources.size()), pids, 4);
     for (size_t s = 0; s < 4; ++s)
         expectColumnsBitIdentical(*expected[s], *result[s], "array-lc shard " + std::to_string(s));
+}
+
+
+/// U4 (carried from the U3 review): AggregateFunction states through the fallback — the exotic with
+/// the least trivial semantics (view outputs sharing the source arena; cross-source appends deep-copy
+/// via `ensureOwnership`). Strengthened per review U4-corr-3: the states are arena-allocating
+/// `groupArray` states with DISTINCT per-row payloads (a misroute or permutation changes the
+/// serialized value), and every non-result owner is destroyed BEFORE the results are read — under
+/// the ASan gtest run this catches any break in the result -> source -> arena ownership chain.
+TEST(ColumnsScatter, AggregateFunctionFallbackEquivalence)
+{
+    tryRegisterAggregateFunctions();
+    auto type = DataTypeFactory::instance().get("AggregateFunction(groupArray, UInt64)");
+    auto function = typeid_cast<const DataTypeAggregateFunction &>(*type).getFunction();
+    auto make_states = [&](size_t rows, UInt64 salt)
+    {
+        auto values = ColumnUInt64::create();
+        for (size_t i = 0; i < rows; ++i)
+            values->insertValue(salt * 1000003 + i);
+        const IColumn * arguments[1] = {values.get()};
+        auto column = type->createColumn();
+        auto & aggregate_column = typeid_cast<ColumnAggregateFunction &>(*column);
+        Arena & arena = aggregate_column.createOrGetArena();
+        for (size_t i = 0; i < rows; ++i)
+        {
+            column->insertDefault();
+            function->add(aggregate_column.getData()[i], arguments, i, &arena);
+        }
+        return column;
+    };
+    for (size_t num_sources : {1uz, 2uz})
+    {
+        std::vector<MutableColumnPtr> owned;
+        std::vector<const IColumn *> sources;
+        std::vector<std::vector<UInt32>> pids;
+        for (size_t b = 0; b < num_sources; ++b)
+        {
+            owned.push_back(make_states(100, b + 1));
+            sources.push_back(owned.back().get());
+            pids.push_back(makePids<UInt32>(100, 4));
+        }
+        std::vector<std::span<const UInt32>> pid_spans;
+        for (const auto & p : pids)
+            pid_spans.emplace_back(p.data(), p.size());
+
+        ColumnsScatter::DispatchTrace trace;
+        auto * previous = ColumnsScatter::exchangeDispatchTrace(&trace);
+        auto result = ColumnsScatter::scatter(
+            std::span<const IColumn * const>(sources.data(), sources.size()),
+            std::span<const std::span<const UInt32>>(pid_spans),
+            4);
+        ColumnsScatter::exchangeDispatchTrace(previous);
+        ASSERT_EQ(1u, trace.entries.size());
+        ASSERT_EQ(ColumnsScatter::ScatterKernelId::Fallback, trace.entries[0].kernel);
+
+        /// Materialize the expected values into plain Fields, then drop every non-result owner:
+        /// reading the result shards afterwards must stay valid on the strength of the results'
+        /// own ownership chain alone.
+        auto expected = referenceScatter(std::span<const IColumn * const>(sources.data(), sources.size()), pids, 4);
+        std::vector<std::vector<Field>> expected_fields(4);
+        for (size_t s = 0; s < 4; ++s)
+            for (size_t i = 0; i < expected[s]->size(); ++i)
+                expected_fields[s].push_back((*expected[s])[i]);
+        expected.clear();
+        sources.clear();
+        owned.clear();
+
+        for (size_t s = 0; s < 4; ++s)
+        {
+            ASSERT_EQ(TypeIndex::AggregateFunction, result[s]->getDataType()) << "shard " << s;
+            ASSERT_EQ(expected_fields[s].size(), result[s]->size()) << "shard " << s;
+            for (size_t i = 0; i < expected_fields[s].size(); ++i)
+                ASSERT_EQ(expected_fields[s][i], (*result[s])[i]) << "shard " << s << " row " << i;
+        }
+    }
 }
 
 /// Layer-0 primitives: the exact composition the join will use in U5 (histogram -> exact allocation

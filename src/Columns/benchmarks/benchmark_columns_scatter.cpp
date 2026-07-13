@@ -14,12 +14,19 @@
 /// emitted by the key mode are a by-product and are not counted. Destinations are warm steady-state
 /// (rewritten every iteration): the reference is a RELATIVE kernel gate, not an end-to-end claim.
 ///
-/// Run (single-threaded, pinned):
+/// Run (single-threaded, pinned; add `--benchmark_filter=-BM_mt` to skip the thread-sweep cells):
 ///   taskset -c 8 ./benchmark_columns_scatter --benchmark_repetitions=7 \
 ///       --benchmark_report_aggregates_only=true --benchmark_format=json
+/// The `BM_mt_*` thread-sweep cells must run UNPINNED (pinning serializes the worker pool) and
+/// with `->UseRealTime()` semantics already baked in.
+/// Fixtures are constructed lazily on each cell's first use, so filtered runs and
+/// `--benchmark_list_tests` stay cheap — but an UNFILTERED full-matrix run still accumulates
+/// roughly 60 GB of fixture memory by the end (review U4-simplicity-1).
 
 #include <benchmark/benchmark.h>
 
+#include <Columns/ColumnArray.h>
+#include <Columns/ColumnTuple.h>
 #include <Columns/ColumnsNumber.h>
 #include <Columns/ColumnsScatter.h>
 #include <Common/PODArray.h>
@@ -32,11 +39,16 @@
 
 #include <pcg_random.hpp>
 
+#include <atomic>
+#include <barrier>
 #include <bit>
 #include <cstring>
+#include <functional>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
@@ -865,6 +877,497 @@ struct FallbackFixture
     }
 };
 
+/// Settling cell for the Nullable composite basis: the SAME alternating two-pass shape as
+/// `BM_mod0_null8` (width-1 pass + width-8 pass per iteration) built from the U0-frozen REFERENCE
+/// kernels — if this shows the same cost as the module cell, the passes are tax-free and the
+/// isolated-pass composite (`t_ref_pid1` + `t_ref_pid8`) is simply an optimistic basis at
+/// cache-boundary fanouts (inter-pass interference).
+struct NullableRefFixture
+{
+    NullableFixture & mod; /// borrowed; registering lambda co-captures the owning shared_ptr
+    ScatterScratch null_scratch;
+    ScatterScratch payload_scratch;
+
+    explicit NullableRefFixture(NullableFixture & mod_) : mod(mod_)
+    {
+        null_scratch.init(mod.ref.fanout, mod.ref.use_swwc);
+        payload_scratch.init(mod.ref.fanout, mod.ref.use_swwc);
+    }
+
+    void run()
+    {
+        for (size_t p = 0; p < mod.ref.fanout; ++p)
+        {
+            null_scratch.seed(p, mod.null_bases[p]);
+            payload_scratch.seed(p, mod.ref.bases[p]);
+        }
+        scatterOne<1>(RouteFromPids{mod.ref.pids.data()}, mod.null_bytes.data(), mod.ref.n, mod.ref.use_swwc, null_scratch);
+        scatterOne<8>(
+            RouteFromPids{mod.ref.pids.data()},
+            reinterpret_cast<const char *>(mod.ref.keys.data()),
+            mod.ref.n,
+            mod.ref.use_swwc,
+            payload_scratch);
+        null_scratch.drain();
+        payload_scratch.drain();
+    }
+};
+
+
+/// ------------------------------------------------------------------------------------------------
+/// D-0008 thread sweep: parity under contention. A persistent fork-join pool runs T workers per
+/// iteration; each worker scatters the SAME shared input into its own private destinations with its
+/// own scratch (same aggregate traffic as the join's shared-partition writes, without false sharing
+/// at partition boundaries). Aggregate bytes/s reported (per-thread bytes summed by the driver).
+/// ------------------------------------------------------------------------------------------------
+class ForkJoinPool
+{
+public:
+    explicit ForkJoinPool(size_t threads_) : threads(threads_), start_barrier(threads_ + 1), end_barrier(threads_ + 1)
+    {
+        for (size_t t = 0; t < threads; ++t)
+            workers.emplace_back(
+                [this, t]
+                {
+                    while (true)
+                    {
+                        start_barrier.arrive_and_wait();
+                        if (stop.load(std::memory_order_acquire))
+                            return;
+                        job(t);
+                        end_barrier.arrive_and_wait();
+                    }
+                });
+    }
+
+    ~ForkJoinPool()
+    {
+        stop.store(true, std::memory_order_release);
+        start_barrier.arrive_and_wait();
+        for (auto & worker : workers)
+            worker.join();
+    }
+
+    void run(const std::function<void(size_t)> & job_)
+    {
+        job = job_;
+        start_barrier.arrive_and_wait();
+        end_barrier.arrive_and_wait();
+    }
+
+private:
+    size_t threads;
+    std::barrier<> start_barrier;
+    std::barrier<> end_barrier;
+    std::function<void(size_t)> job;
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> workers;
+};
+
+/// The ONE reference-arm dispatch for a routed fixed-width scatter, shared by `WidthFixture` and
+/// `MtFixture` (review U4-simplicity-2: two hand-maintained copies of this switch would let the
+/// Gate-1 basis silently drift). The U0-frozen verbatim `scatterOne` handles the in-tree
+/// instantiated widths; any other width takes the in-tree generic path (no SWWC; per-row copy
+/// with a RUNTIME width), mirroring the default branch of the in-tree pid dispatch — the width
+/// must not be a literal in that call or the compiler constant-propagates it into an inline copy
+/// the real call sites never get (METHODOLOGY L0015).
+template <typename Route>
+void referenceScatterByWidth(const Route & route, const char * data, size_t n, size_t width, bool use_swwc, ScatterScratch & scratch)
+{
+    switch (width)
+    {
+        case 1: scatterOne<1>(route, data, n, use_swwc, scratch); break;
+        case 2: scatterOne<2>(route, data, n, use_swwc, scratch); break;
+        case 4: scatterOne<4>(route, data, n, use_swwc, scratch); break;
+        case 8: scatterOne<8>(route, data, n, use_swwc, scratch); break;
+        case 16: scatterOne<16>(route, data, n, use_swwc, scratch); break;
+        default:
+            scatterDirectGeneric(route, data, n, width, scratch.cursors.data());
+            return; /// direct cursor writes — nothing staged to drain
+    }
+    scratch.drain();
+}
+
+/// One family cell: shared input, per-worker destinations/scratch for up to `threads` workers.
+/// `kind` selects the arm pair; the ref arm uses the U0-frozen verbatim kernels, the mod arm the
+/// module exports — identical shapes.
+struct MtFixture
+{
+    enum class Kind : uint8_t { Pid8, Key8, W1, W4, W16, W32, StrL8, Null8 };
+
+    Kind kind;
+    size_t fanout;
+    size_t threads;
+    size_t n;
+    size_t width;
+    bool use_swwc;
+    UInt32 shift;
+    UInt32 mask;
+    PaddedPODArray<UInt64> keys;
+    PaddedPODArray<char> data;
+    PaddedPODArray<UInt16> pids;
+    PaddedPODArray<char> null_bytes;
+    PaddedPODArray<UInt64> string_offsets;
+    std::vector<size_t> counts;
+
+    struct Worker
+    {
+        std::vector<PaddedPODArray<char>> parts;         /// per shard (fixed-width / chars payloads)
+        std::vector<PaddedPODArray<char>> null_parts;    /// Null8: width-1 stream
+        PaddedPODArray<UInt64> offsets_out;              /// StrL8: offsets stream
+        PaddedPODArray<UInt16> pids_out;                 /// Key8
+        std::vector<char *> bases;
+        std::vector<char *> null_bases;
+        std::vector<UInt64 *> offsets_bases;
+        ScatterScratch ref_scratch;
+        ScatterScratch ref_scratch2;
+        ColumnsScatter::ScatterScratch mod_scratch;
+        ColumnsScatter::ScatterScratch mod_scratch2;
+        ColumnsScatter::StringScatterState string_state;
+    };
+    std::vector<Worker> workers;
+
+    /// One shared pool per thread count (five total across every MT cell) — per-fixture pools would
+    /// park thousands of idle threads at registration time.
+    static ForkJoinPool & poolFor(size_t threads)
+    {
+        static std::map<size_t, std::unique_ptr<ForkJoinPool>> pools;
+        auto it = pools.find(threads);
+        if (it == pools.end())
+            it = pools.emplace(threads, std::make_unique<ForkJoinPool>(threads)).first;
+        return *it->second;
+    }
+
+    MtFixture(Kind kind_, size_t fanout_, size_t threads_)
+        : kind(kind_)
+        , fanout(fanout_)
+        , threads(threads_)
+        , n(scatterBatchRowsTarget(fanout_))
+        , width(kindWidth(kind_))
+        , use_swwc(fanout_ >= SWWC_MIN_FANOUT && widthSupportsSwwc(width))
+        , shift(static_cast<UInt32>(32 - std::countr_zero(fanout_)))
+        , mask(static_cast<UInt32>(fanout_ - 1))
+    {
+        pcg64 rng(50);
+        keys.resize(n);
+        for (auto & key : keys)
+            key = rng();
+        pids.resize(n);
+        for (size_t i = 0; i < n; ++i)
+            pids[i] = static_cast<UInt16>((routeWord(keys[i]) >> shift) & mask);
+        counts.assign(fanout, 0);
+        for (size_t i = 0; i < n; ++i)
+            ++counts[pids[i]];
+
+        if (kind == Kind::Pid8 || kind == Kind::Key8)
+        {
+            data.resize(n * 8);
+            std::memcpy(data.data(), reinterpret_cast<const char *>(keys.data()), n * 8);
+        }
+        else if (kind == Kind::StrL8)
+        {
+            data.resize(n * 8);
+            std::memcpy(data.data(), reinterpret_cast<const char *>(keys.data()), n * 8);
+            string_offsets.resize(n);
+            for (size_t i = 0; i < n; ++i)
+                string_offsets[i] = (i + 1) * 8;
+        }
+        else
+        {
+            data.resize(n * width);
+            for (auto & byte : data)
+                byte = static_cast<char>(rng());
+        }
+        if (kind == Kind::Null8)
+        {
+            null_bytes.resize(n);
+            for (auto & byte : null_bytes)
+                byte = (rng() % 4) == 0;
+        }
+
+        workers.resize(threads);
+        for (auto & worker : workers)
+        {
+            worker.parts.resize(fanout);
+            worker.bases.resize(fanout);
+            for (size_t p = 0; p < fanout; ++p)
+            {
+                worker.parts[p].resize(counts[p] * width);
+                worker.bases[p] = worker.parts[p].data();
+            }
+            worker.ref_scratch.init(fanout, use_swwc);
+            worker.mod_scratch.init(fanout, use_swwc);
+            if (kind == Kind::Key8)
+                worker.pids_out.resize(n);
+            if (kind == Kind::Null8)
+            {
+                worker.null_parts.resize(fanout);
+                worker.null_bases.resize(fanout);
+                for (size_t p = 0; p < fanout; ++p)
+                {
+                    worker.null_parts[p].resize(counts[p]);
+                    worker.null_bases[p] = worker.null_parts[p].data();
+                }
+                worker.ref_scratch2.init(fanout, use_swwc);
+                worker.mod_scratch2.init(fanout, use_swwc);
+            }
+            if (kind == Kind::StrL8)
+            {
+                worker.offsets_out.resize(n);
+                worker.offsets_bases.resize(fanout);
+                size_t row_prefix = 0;
+                for (size_t p = 0; p < fanout; ++p)
+                {
+                    worker.offsets_bases[p] = worker.offsets_out.data() + row_prefix;
+                    row_prefix += counts[p];
+                }
+                worker.string_state.init(fanout);
+            }
+        }
+        verify();
+    }
+
+    static size_t kindWidth(Kind kind_)
+    {
+        switch (kind_)
+        {
+            case Kind::W1: return 1;
+            case Kind::W4: return 4;
+            case Kind::W16: return 16;
+            case Kind::W32: return 32;
+            /// Explicit so a new Kind trips -Wswitch here, not silently width 8 (review U4-simplicity-2).
+            case Kind::Pid8:
+            case Kind::Key8:
+            case Kind::StrL8:
+            case Kind::Null8: return 8;
+        }
+        UNREACHABLE();
+    }
+
+    /// Bytes genuinely moved per WORKER per iteration (for aggregate accounting).
+    size_t bytesPerWorker() const
+    {
+        if (kind == Kind::StrL8)
+            return n * 16;
+        if (kind == Kind::Null8)
+            return n * 9;
+        return n * width;
+    }
+
+    void runArm(bool module_arm)
+    {
+        poolFor(threads).run(
+            [this, module_arm](size_t t)
+            {
+                Worker & worker = workers[t];
+                if (module_arm)
+                    runModWorker(worker);
+                else
+                    runRefWorker(worker);
+            });
+    }
+
+    void runRefWorker(Worker & worker)
+    {
+        const RouteFromPids route{pids.data()};
+        switch (kind)
+        {
+            case Kind::Pid8:
+            case Kind::W1:
+            case Kind::W4:
+            case Kind::W16:
+            case Kind::W32:
+                seedRef(worker.ref_scratch, worker.bases);
+                referenceScatterByWidth(route, data.data(), n, width, use_swwc, worker.ref_scratch);
+                break;
+            case Kind::Key8:
+                seedRef(worker.ref_scratch, worker.bases);
+                referenceScatterByWidth(
+                    RouteFromKey<8>{data.data(), shift, mask, worker.pids_out.data()}, data.data(), n, width, use_swwc,
+                    worker.ref_scratch);
+                break;
+            case Kind::StrL8:
+                /// No reference arm exists for the two-stream String job (no in-tree var-len kernel;
+                /// it would run the identical module kernel) — only the mod arm is registered, and
+                /// String parity is established by the 1T literal-basis cells (review U4-simplicity-4).
+                throw std::runtime_error("MtFixture: StrL8 has no reference arm");
+            case Kind::Null8:
+                seedRef(worker.ref_scratch, worker.null_bases);
+                seedRef(worker.ref_scratch2, worker.bases);
+                scatterOne<1>(route, null_bytes.data(), n, use_swwc, worker.ref_scratch);
+                scatterOne<8>(route, data.data(), n, use_swwc, worker.ref_scratch2);
+                worker.ref_scratch.drain();
+                worker.ref_scratch2.drain();
+                break;
+        }
+    }
+
+    void runModWorker(Worker & worker)
+    {
+        switch (kind)
+        {
+            case Kind::Pid8:
+            case Kind::W1:
+            case Kind::W4:
+            case Kind::W16:
+            case Kind::W32:
+                seedMod(worker.mod_scratch, worker.bases);
+                ColumnsScatter::scatterPidChunk(width, pids.data(), data.data(), n, use_swwc, worker.mod_scratch);
+                worker.mod_scratch.drain();
+                break;
+            case Kind::Key8:
+                seedMod(worker.mod_scratch, worker.bases);
+                ColumnsScatter::scatterKeyChunk(8, data.data(), n, shift, mask, worker.pids_out.data(), use_swwc, worker.mod_scratch);
+                worker.mod_scratch.drain();
+                break;
+            case Kind::StrL8:
+                seedString(worker);
+                ColumnsScatter::scatterStringChunk(data.data(), string_offsets.data(), pids.data(), n, worker.string_state);
+                break;
+            case Kind::Null8:
+                seedMod(worker.mod_scratch, worker.null_bases);
+                seedMod(worker.mod_scratch2, worker.bases);
+                ColumnsScatter::scatterPidChunk(1, pids.data(), null_bytes.data(), n, use_swwc, worker.mod_scratch);
+                ColumnsScatter::scatterPidChunk(8, pids.data(), data.data(), n, use_swwc, worker.mod_scratch2);
+                worker.mod_scratch.drain();
+                worker.mod_scratch2.drain();
+                break;
+        }
+    }
+
+    void seedRef(ScatterScratch & scratch, const std::vector<char *> & shard_bases)
+    {
+        for (size_t p = 0; p < fanout; ++p)
+            scratch.seed(p, shard_bases[p]);
+    }
+
+    void seedMod(ColumnsScatter::ScatterScratch & scratch, const std::vector<char *> & shard_bases)
+    {
+        for (size_t p = 0; p < fanout; ++p)
+            scratch.seed(p, shard_bases[p]);
+    }
+
+    void seedString(Worker & worker)
+    {
+        for (size_t p = 0; p < fanout; ++p)
+            worker.string_state.seed(p, worker.bases[p], worker.offsets_bases[p], 0);
+    }
+
+    /// In-harness oracle (review U4-corr-1): run each arm once on worker 0 and content-check every
+    /// output stream against a scalar walk of the shared input. Destinations are poisoned before
+    /// each arm so the second check proves genuine writes (review U4-corr-2). Worker state is
+    /// re-seeded by every run, so the timed runs start from the same state as without the oracle.
+    void verify()
+    {
+        Worker & worker = workers[0];
+        if (kind != Kind::StrL8) /// StrL8 registers only the module arm (see runRefWorker)
+        {
+            poisonWorker(worker);
+            runRefWorker(worker);
+            checkWorker(worker, "ref");
+        }
+        poisonWorker(worker);
+        runModWorker(worker);
+        checkWorker(worker, "mod");
+    }
+
+    void poisonWorker(Worker & worker) const
+    {
+        for (auto & part : worker.parts)
+            if (!part.empty())
+                std::memset(part.data(), 0xAA, part.size());
+        for (auto & part : worker.null_parts)
+            if (!part.empty())
+                std::memset(part.data(), 0xAA, part.size());
+        if (!worker.pids_out.empty())
+            std::memset(worker.pids_out.data(), 0xAA, worker.pids_out.size() * sizeof(UInt16));
+        if (!worker.offsets_out.empty())
+            std::memset(worker.offsets_out.data(), 0xAA, worker.offsets_out.size() * sizeof(UInt64));
+    }
+
+    void checkWorker(const Worker & worker, const char * arm) const
+    {
+        auto fail = [&](const char * what)
+        { throw std::runtime_error(std::string("MtFixture oracle (") + arm + "): " + what); };
+        std::vector<size_t> row_cursor(fanout, 0);
+        for (size_t i = 0; i < n; ++i)
+        {
+            const size_t p = pids[i];
+            const size_t r = row_cursor[p];
+            if (std::memcmp(worker.parts[p].data() + r * width, data.data() + i * width, width) != 0)
+                fail(kind == Kind::StrL8 ? "bad chars" : "bad payload");
+            if (kind == Kind::StrL8 && worker.offsets_bases[p][r] != (r + 1) * 8)
+                fail("bad rebased offset");
+            if (kind == Kind::Key8 && worker.pids_out[i] != pids[i])
+                fail("bad emitted pid");
+            if (kind == Kind::Null8 && worker.null_parts[p][r] != null_bytes[i])
+                fail("bad null byte");
+            ++row_cursor[p];
+        }
+    }
+};
+
+void registerThreadSweepBenchmarks()
+{
+    struct Family
+    {
+        const char * name;
+        MtFixture::Kind kind;
+    };
+    static constexpr Family families[] = {
+        {"pid8", MtFixture::Kind::Pid8},
+        {"key8", MtFixture::Kind::Key8},
+        {"w1", MtFixture::Kind::W1},
+        {"w4", MtFixture::Kind::W4},
+        {"w16", MtFixture::Kind::W16},
+        {"w32", MtFixture::Kind::W32},
+        {"strL8", MtFixture::Kind::StrL8},
+        {"null8", MtFixture::Kind::Null8},
+    };
+    for (size_t fanout : {64uz, 256uz, 8192uz})
+    {
+        for (const auto & family : families)
+        {
+            for (size_t threads : {1uz, 16uz, 32uz, 64uz, 96uz})
+            {
+                /// Constructed lazily on the cell's first use (review U4-simplicity-1): eager
+                /// construction of the full matrix at registration cost ~60 GB and ~24 s per
+                /// invocation, including `--benchmark_list_tests`. The holder is shared by both
+                /// arms of the pair so they see the same input and destinations.
+                auto holder = std::make_shared<std::unique_ptr<MtFixture>>();
+                const MtFixture::Kind kind = family.kind;
+                for (bool module_arm : {false, true})
+                {
+                    /// String has no distinct in-tree arm (see `runRefWorker`); register mod only.
+                    if (!module_arm && kind == MtFixture::Kind::StrL8)
+                        continue;
+                    benchmark::RegisterBenchmark(
+                        (std::string("BM_mt_") + (module_arm ? "mod_" : "ref_") + family.name + "/F" + std::to_string(fanout) + "/T"
+                         + std::to_string(threads))
+                            .c_str(),
+                        [holder, kind, fanout, threads, module_arm](benchmark::State & state)
+                        {
+                            if (!*holder)
+                                *holder = std::make_unique<MtFixture>(kind, fanout, threads);
+                            MtFixture & fixture = **holder;
+                            for (auto _ : state)
+                            {
+                                fixture.runArm(module_arm);
+                                benchmark::ClobberMemory();
+                            }
+                            state.SetBytesProcessed(
+                                static_cast<int64_t>(state.iterations()) * fixture.bytesPerWorker() * fixture.threads);
+                            state.counters["threads"] = static_cast<double>(fixture.threads);
+                        })
+                        /// The driver thread only waits on barriers; its CPU time is meaningless —
+                        /// aggregate bandwidth must be computed over wall time.
+                        ->UseRealTime();
+                }
+            }
+        }
+    }
+}
+
 void registerFallbackBenchmarks()
 {
     for (size_t fanout : {64uz, 256uz})
@@ -889,11 +1392,301 @@ void registerFallbackBenchmarks()
     }
 }
 
+
+/// Fill a fixed-width column with random bytes via its raw-insert API.
+MutableColumnPtr fillRandomFixed(MutableColumnPtr column, size_t rows)
+{
+    auto raw = column->insertRawUninitialized(rows);
+    pcg64 rng(49);
+    for (auto & byte : raw)
+        byte = static_cast<char>(rng());
+    return column;
+}
+
+/// U4: width-matched cells. Same shape as the 8-byte cells: for each width w in {1,2,4,16}, the
+/// reference arm runs the U0-frozen verbatim `scatterOne` at width w and the module arm runs
+/// `scatterPidChunk` with the same runtime width into the SAME preallocated per-shard buffers —
+/// the D-0006 basis for narrow fixed widths in the Gate-1 table.
+struct WidthFixture
+{
+    size_t fanout;
+    size_t width;
+    size_t n;
+    bool use_swwc;
+    PaddedPODArray<char> data;
+    PaddedPODArray<UInt16> pids;
+    std::vector<PaddedPODArray<char>> parts;
+    std::vector<char *> bases;
+    ScatterScratch ref_scratch;
+    ColumnsScatter::ScatterScratch mod_scratch;
+
+    WidthFixture(size_t fanout_, size_t width_)
+        : fanout(fanout_)
+        , width(width_)
+        , n(scatterBatchRowsTarget(fanout_))
+        , use_swwc(fanout_ >= SWWC_MIN_FANOUT && widthSupportsSwwc(width_))
+    {
+        data.resize(n * width);
+        pids.resize(n);
+        pcg64 rng(45);
+        for (auto & byte : data)
+            byte = static_cast<char>(rng());
+        const UInt32 shift = static_cast<UInt32>(32 - std::countr_zero(fanout));
+        const UInt32 mask = static_cast<UInt32>(fanout - 1);
+        for (size_t i = 0; i < n; ++i)
+            pids[i] = static_cast<UInt16>((routeWord(rng()) >> shift) & mask);
+
+        std::vector<size_t> counts(fanout, 0);
+        for (size_t i = 0; i < n; ++i)
+            ++counts[pids[i]];
+        parts.resize(fanout);
+        bases.resize(fanout);
+        for (size_t p = 0; p < fanout; ++p)
+        {
+            parts[p].resize(counts[p] * width);
+            bases[p] = parts[p].data();
+        }
+        ref_scratch.init(fanout, use_swwc);
+        mod_scratch.init(fanout, use_swwc);
+        verify();
+    }
+
+    void runRef()
+    {
+        for (size_t p = 0; p < fanout; ++p)
+            ref_scratch.seed(p, bases[p]);
+        referenceScatterByWidth(RouteFromPids{pids.data()}, data.data(), n, width, use_swwc, ref_scratch);
+    }
+
+    void runMod()
+    {
+        for (size_t p = 0; p < fanout; ++p)
+            mod_scratch.seed(p, bases[p]);
+        ColumnsScatter::scatterPidChunk(width, pids.data(), data.data(), n, use_swwc, mod_scratch);
+        mod_scratch.drain();
+    }
+
+    void verify()
+    {
+        /// Destinations are poisoned before each arm so the second check proves genuine writes
+        /// (review U4-corr-2: without it a no-op mod arm would pass on the stale ref output).
+        auto poison = [&]
+        {
+            for (auto & part : parts)
+                if (!part.empty())
+                    std::memset(part.data(), 0xAA, part.size());
+        };
+        auto check = [&](const char * mode)
+        {
+            std::vector<size_t> cursor(fanout, 0);
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t p = pids[i];
+                if (std::memcmp(bases[p] + cursor[p] * width, data.data() + i * width, width) != 0)
+                    throw std::runtime_error(std::string("width fixture oracle: bad content in ") + mode);
+                ++cursor[p];
+            }
+        };
+        poison();
+        runRef();
+        check("ref");
+        poison();
+        runMod();
+        check("mod");
+    }
+};
+
+/// U4: generic Layer-1 full-call cell for composite types (informational per D-0004/D-0005: the
+/// one-shot surface owns allocation; the leaf streams are gated by the width-matched cells).
+struct Layer1Fixture
+{
+    size_t fanout;
+    size_t n;
+    size_t bytes_per_iteration;
+    MutableColumnPtr column;
+    PaddedPODArray<UInt16> pids;
+    std::vector<UInt32> counts;
+
+    Layer1Fixture(size_t fanout_, MutableColumnPtr column_, size_t bytes_per_iteration_)
+        : fanout(fanout_), n(column_->size()), bytes_per_iteration(bytes_per_iteration_), column(std::move(column_))
+    {
+        pids.resize(n);
+        pcg64 rng(46);
+        const UInt32 shift = static_cast<UInt32>(32 - std::countr_zero(fanout));
+        const UInt32 mask = static_cast<UInt32>(fanout - 1);
+        for (size_t i = 0; i < n; ++i)
+            pids[i] = static_cast<UInt16>((routeWord(rng()) >> shift) & mask);
+        counts.assign(fanout, 0);
+        for (size_t i = 0; i < n; ++i)
+            ++counts[pids[i]];
+    }
+
+    MutableColumns run(bool with_counts) const
+    {
+        const IColumn * source = column.get();
+        std::span<const UInt16> pid_span(pids.data(), n);
+        return ColumnsScatter::scatter(
+            std::span<const IColumn * const>(&source, 1),
+            std::span<const std::span<const UInt16>>(&pid_span, 1),
+            fanout,
+            with_counts ? std::span<const UInt32>(counts.data(), counts.size()) : std::span<const UInt32>{});
+    }
+};
+
+/// Registers one informational Layer-1 full-call cell. The fixture is built lazily on first use
+/// (review U4-simplicity-1), so `make` must be a self-contained factory.
+void registerLayer1Cell(const std::string & label, std::function<std::unique_ptr<Layer1Fixture>()> make)
+{
+    auto holder = std::make_shared<std::unique_ptr<Layer1Fixture>>();
+    benchmark::RegisterBenchmark(
+        label.c_str(),
+        [holder, make](benchmark::State & state)
+        {
+            if (!*holder)
+                *holder = make();
+            Layer1Fixture & fixture = **holder;
+            for (auto _ : state)
+            {
+                auto shards = fixture.run(true);
+                benchmark::DoNotOptimize(shards.data());
+            }
+            state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * fixture.bytes_per_iteration);
+        });
+}
+
+void registerGateTableBenchmarks()
+{
+    static constexpr size_t fanouts[] = {64, 256, 2048, 8192};
+
+    /// Width-matched reference + module parity cells.
+    /// Cell-name caveat (review U4-corr-4, frozen into the formal raws): `BM_ref_pid{N}` is
+    /// payload width N bytes with 16-bit pids and pairs with `BM_mod0_pid16_w{N}`; it is UNRELATED
+    /// to the U1 cells `BM_mod0_pid{16,32}`, whose suffix is the pid integer width.
+    for (size_t fanout : fanouts)
+    {
+        for (size_t width : {1uz, 2uz, 4uz, 16uz, 32uz})
+        {
+            auto holder = std::make_shared<std::unique_ptr<WidthFixture>>();
+            auto register_cell = [&](const char * arm, auto run)
+            {
+                benchmark::RegisterBenchmark(
+                    (std::string(arm) + std::to_string(width) + "/F" + std::to_string(fanout)).c_str(),
+                    [holder, fanout, width, run](benchmark::State & state)
+                    {
+                        if (!*holder)
+                            *holder = std::make_unique<WidthFixture>(fanout, width);
+                        WidthFixture & fixture = **holder;
+                        for (auto _ : state)
+                        {
+                            run(fixture);
+                            benchmark::ClobberMemory();
+                        }
+                        state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * fixture.n * fixture.width);
+                        state.counters["rows"] = static_cast<double>(fixture.n);
+                        state.counters["swwc"] = fixture.use_swwc ? 1 : 0;
+                    });
+            };
+            register_cell("BM_ref_pid", [](WidthFixture & f) { f.runRef(); });
+            register_cell("BM_mod0_pid16_w", [](WidthFixture & f) { f.runMod(); });
+        }
+    }
+
+    /// Composite Layer-1 cells (informational; genuine bytes moved counted per type).
+    static constexpr size_t rows = 256 << 10;
+    for (size_t fanout : {64uz, 256uz})
+    {
+        registerLayer1Cell(
+            "BM_mod1_tuple/F" + std::to_string(fanout),
+            [fanout]
+            {
+                MutableColumns elements;
+                elements.push_back(fillRandomFixed(ColumnUInt64::create(), rows));
+                elements.push_back(fillRandomFixed(ColumnUInt32::create(), rows));
+                return std::make_unique<Layer1Fixture>(fanout, ColumnTuple::create(std::move(elements)), rows * 12);
+            });
+        registerLayer1Cell(
+            "BM_mod1_array/F" + std::to_string(fanout),
+            [fanout]
+            {
+                auto offsets = ColumnArray::ColumnOffsets::create();
+                pcg64 rng(47);
+                size_t total = 0;
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    total += rng() % 8;
+                    offsets->insert(total);
+                }
+                return std::make_unique<Layer1Fixture>(
+                    fanout,
+                    ColumnArray::create(fillRandomFixed(ColumnUInt64::create(), total), std::move(offsets)),
+                    total * 8 + rows * 8);
+            });
+        registerLayer1Cell(
+            "BM_mod1_lc8/F" + std::to_string(fanout),
+            [fanout]
+            {
+                auto lc = DataTypeFactory::instance().get("LowCardinality(String)")->createColumn();
+                pcg64 rng(48);
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    std::string value = "v_" + std::to_string(rng() % 64);
+                    lc->insertData(value.data(), value.size());
+                }
+                /// 64-entry dictionary => UInt8 indexes: 1 genuine byte moved per row.
+                return std::make_unique<Layer1Fixture>(fanout, std::move(lc), rows * 1);
+            });
+    }
+
+    /// Entry-cost isolation (review lead U1-perf-3): a zero-row Layer-1 call isolates the per-call
+    /// entry work; the with/without-precomputed-counts pair isolates the internal counting pass.
+    for (size_t fanout : {64uz, 8192uz})
+    {
+        auto empty_fixture = std::make_shared<Layer1Fixture>(fanout, ColumnUInt64::create(), 0);
+        benchmark::RegisterBenchmark(
+            ("BM_entry_zero_rows/F" + std::to_string(fanout)).c_str(),
+            [empty_fixture](benchmark::State & state)
+            {
+                for (auto _ : state)
+                {
+                    auto shards = empty_fixture->run(false);
+                    benchmark::DoNotOptimize(shards.data());
+                }
+            });
+        auto counting_fixture = std::make_shared<Layer1Fixture>(fanout, fillRandomFixed(ColumnUInt64::create(), rows), rows * 8);
+        for (bool with_counts : {true, false})
+        {
+            benchmark::RegisterBenchmark(
+                (std::string("BM_mod1_") + (with_counts ? "counts" : "nocounts") + "/F" + std::to_string(fanout)).c_str(),
+                [counting_fixture, with_counts](benchmark::State & state)
+                {
+                    for (auto _ : state)
+                    {
+                        auto shards = counting_fixture->run(with_counts);
+                        benchmark::DoNotOptimize(shards.data());
+                    }
+                    state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * counting_fixture->bytes_per_iteration);
+                });
+        }
+    }
+}
+
 void registerNullableBenchmarks(const std::vector<std::shared_ptr<ReferenceFixture>> & ref_fixtures)
 {
     for (const auto & ref : ref_fixtures)
     {
         auto fixture = std::make_shared<NullableFixture>(*ref);
+        auto ref_fixture = std::make_shared<NullableRefFixture>(*fixture);
+        benchmark::RegisterBenchmark(
+            ("BM_ref_null_interleaved/F" + std::to_string(ref->fanout)).c_str(),
+            [fixture, ref_fixture, ref](benchmark::State & state)
+            {
+                for (auto _ : state)
+                {
+                    ref_fixture->run();
+                    benchmark::ClobberMemory();
+                }
+                state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * ref->n * 9);
+            });
         benchmark::RegisterBenchmark(
             ("BM_mod0_null8/F" + std::to_string(ref->fanout)).c_str(),
             [fixture, ref](benchmark::State & state)
@@ -918,6 +1711,8 @@ int main(int argc, char ** argv)
     registerStringBenchmarks();
     registerNullableBenchmarks(reference_fixtures);
     registerFallbackBenchmarks();
+    registerGateTableBenchmarks();
+    registerThreadSweepBenchmarks();
     benchmark::Initialize(&argc, argv);
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
