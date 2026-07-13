@@ -20,6 +20,8 @@
 
 #include <benchmark/benchmark.h>
 
+#include <Columns/ColumnsNumber.h>
+#include <Columns/ColumnsScatter.h>
 #include <Common/PODArray.h>
 
 #include <base/defines.h>
@@ -467,6 +469,133 @@ struct ReferenceFixture
     }
 };
 
+/// Module arms (U1+): the same cells driven through DB::ColumnsScatter. The Layer-0 arms write into
+/// the SAME preallocated partition buffers as the reference arm (identical timed-region definition:
+/// seed + scatter + drain, allocation untimed) — a kernel-parity measurement. The Layer-1 arm times
+/// the full one-shot `scatter` call (dispatch + normalization gate + exact allocation + kernel +
+/// result teardown) — a definitionally different, informational cell (PREREG P-U1-2).
+struct ModuleFixture
+{
+    ReferenceFixture & ref;
+    PaddedPODArray<UInt32> pids32;
+    ColumnsScatter::ScatterScratch scratch;
+    /// Layer-1 inputs: a real column mirroring the reference keys + precomputed shard counts.
+    MutableColumnPtr source_column;
+    std::vector<UInt32> counts32;
+
+    explicit ModuleFixture(ReferenceFixture & ref_) : ref(ref_)
+    {
+        pids32.resize(ref.n);
+        for (size_t i = 0; i < ref.n; ++i)
+            pids32[i] = ref.pids[i];
+        scratch.init(ref.fanout, ref.use_swwc);
+
+        auto column = ColumnUInt64::create();
+        auto raw = column->insertRawUninitialized(ref.n);
+        std::memcpy(raw.data(), ref.keys.data(), ref.n * sizeof(UInt64));
+        source_column = std::move(column);
+        counts32.assign(ref.fanout, 0);
+        for (size_t i = 0; i < ref.n; ++i)
+            ++counts32[ref.pids[i]];
+
+        verify();
+    }
+
+    void seedAll()
+    {
+        for (size_t p = 0; p < ref.fanout; ++p)
+            scratch.seed(p, ref.bases[p]);
+    }
+
+    void runPid16()
+    {
+        seedAll();
+        ColumnsScatter::scatterPidChunk(8, ref.pids.data(), reinterpret_cast<const char *>(ref.keys.data()), ref.n, ref.use_swwc, scratch);
+        scratch.drain();
+    }
+
+    void runPid32()
+    {
+        seedAll();
+        ColumnsScatter::scatterPidChunk(8, pids32.data(), reinterpret_cast<const char *>(ref.keys.data()), ref.n, ref.use_swwc, scratch);
+        scratch.drain();
+    }
+
+    void runKey16()
+    {
+        seedAll();
+        ColumnsScatter::scatterKeyChunk(
+            8, reinterpret_cast<const char *>(ref.keys.data()), ref.n, ref.shift, ref.mask, ref.pids_out.data(), ref.use_swwc, scratch);
+        scratch.drain();
+    }
+
+    MutableColumns runLayer1()
+    {
+        const IColumn * source = source_column.get();
+        std::span<const UInt16> pid_span(ref.pids.data(), ref.n);
+        return ColumnsScatter::scatter(
+            std::span<const IColumn * const>(&source, 1),
+            std::span<const std::span<const UInt16>>(&pid_span, 1),
+            ref.fanout,
+            std::span<const UInt32>(counts32.data(), counts32.size()));
+    }
+
+    /// Same oracle as the reference arm, applied to every module path.
+    void verify()
+    {
+        std::vector<size_t> expected_count(ref.fanout, 0);
+        std::vector<UInt64> expected_sum(ref.fanout, 0);
+        for (size_t i = 0; i < ref.n; ++i)
+        {
+            ++expected_count[ref.pids[i]];
+            expected_sum[ref.pids[i]] += ref.keys[i];
+        }
+
+        auto check_parts = [&](const char * mode)
+        {
+            for (size_t p = 0; p < ref.fanout; ++p)
+            {
+                const size_t count = ref.parts[p].size() / sizeof(UInt64);
+                UInt64 sum = 0;
+                for (size_t i = 0; i < count; ++i)
+                {
+                    UInt64 v = 0;
+                    std::memcpy(&v, ref.parts[p].data() + i * sizeof(UInt64), sizeof(v));
+                    sum += v;
+                }
+                if (count != expected_count[p] || sum != expected_sum[p])
+                    throw std::runtime_error(std::string("scatter module oracle: bad partition in mode ") + mode);
+            }
+        };
+
+        runPid16();
+        check_parts("mod0_pid16");
+        runPid32();
+        check_parts("mod0_pid32");
+        runKey16();
+        check_parts("mod0_key16");
+        for (size_t i = 0; i < ref.n; ++i)
+            if (ref.pids_out[i] != ref.pids[i])
+                throw std::runtime_error("scatter module oracle: key mode emitted wrong pids");
+
+        auto shards = runLayer1();
+        for (size_t p = 0; p < ref.fanout; ++p)
+        {
+            const auto raw = shards[p]->getRawData();
+            const size_t count = raw.size() / sizeof(UInt64);
+            UInt64 sum = 0;
+            for (size_t i = 0; i < count; ++i)
+            {
+                UInt64 v = 0;
+                std::memcpy(&v, raw.data() + i * sizeof(UInt64), sizeof(v));
+                sum += v;
+            }
+            if (count != expected_count[p] || sum != expected_sum[p])
+                throw std::runtime_error("scatter module oracle: bad shard in mode mod1_layer1");
+        }
+    }
+};
+
 void registerReferenceBenchmarks()
 {
     static constexpr size_t fanouts[] = {64, 256, 2048, 8192};
@@ -498,6 +627,34 @@ void registerReferenceBenchmarks()
                 state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * fixture->n * sizeof(UInt64));
                 state.counters["rows"] = static_cast<double>(fixture->n);
                 state.counters["swwc"] = fixture->use_swwc ? 1 : 0;
+            });
+
+        auto module_fixture = std::make_shared<ModuleFixture>(*fixture);
+        auto register_module_cell = [&](const char * name, auto run)
+        {
+            benchmark::RegisterBenchmark(
+                (std::string(name) + "/F" + std::to_string(fanout)).c_str(),
+                [fixture, module_fixture, run](benchmark::State & state)
+                {
+                    for (auto _ : state)
+                    {
+                        run(*module_fixture);
+                        benchmark::ClobberMemory();
+                    }
+                    state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * fixture->n * sizeof(UInt64));
+                    state.counters["rows"] = static_cast<double>(fixture->n);
+                    state.counters["swwc"] = fixture->use_swwc ? 1 : 0;
+                });
+        };
+        register_module_cell("BM_mod0_pid16", [](ModuleFixture & f) { f.runPid16(); });
+        register_module_cell("BM_mod0_pid32", [](ModuleFixture & f) { f.runPid32(); });
+        register_module_cell("BM_mod0_key16", [](ModuleFixture & f) { f.runKey16(); });
+        register_module_cell(
+            "BM_mod1_full",
+            [](ModuleFixture & f)
+            {
+                auto shards = f.runLayer1();
+                benchmark::DoNotOptimize(shards.data());
             });
     }
 }
