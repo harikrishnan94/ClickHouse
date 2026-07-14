@@ -131,11 +131,19 @@ ALWAYS_INLINE void copyRowExact(char * __restrict dst, const char * __restrict s
 {
     if (w >= 16)
     {
+        /// 32-byte chunk stride: wide enough for the backend to pair the loads/stores per chunk
+        /// (ldp/stp on AArch64), while the barrier per chunk still stops the loop-idiom re-merge.
         size_t i = 0;
-        for (; i + 16 <= w; i += 16)
+        for (; i + 32 <= w; i += 32)
+        {
+            __builtin_memcpy_inline(dst + i, src + i, 32);
+            __asm__ __volatile__("" : : : "memory");
+        }
+        if (i + 16 <= w)
         {
             __builtin_memcpy_inline(dst + i, src + i, 16);
             __asm__ __volatile__("" : : : "memory");
+            i += 16;
         }
         if (i != w)
             __builtin_memcpy_inline(dst + w - 16, src + w - 16, 16);

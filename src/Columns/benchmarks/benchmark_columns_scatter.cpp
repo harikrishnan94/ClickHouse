@@ -993,7 +993,7 @@ void referenceScatterByWidth(const Route & route, const char * data, size_t n, s
 /// module exports — identical shapes.
 struct MtFixture
 {
-    enum class Kind : uint8_t { Pid8, Key8, W1, W4, W7, W16, W32, W33, StrL8, Null8 };
+    enum class Kind : uint8_t { Pid8, Key8, W1, W4, W7, W16, W32, W33, W48, StrL8, Null8 };
 
     Kind kind;
     size_t fanout;
@@ -1038,11 +1038,11 @@ struct MtFixture
         return *it->second;
     }
 
-    MtFixture(Kind kind_, size_t fanout_, size_t threads_)
+    MtFixture(Kind kind_, size_t fanout_, size_t threads_, size_t n_override = 0)
         : kind(kind_)
         , fanout(fanout_)
         , threads(threads_)
-        , n(scatterBatchRowsTarget(fanout_))
+        , n(n_override ? n_override : scatterBatchRowsTarget(fanout_))
         , width(kindWidth(kind_))
         , use_swwc(fanout_ >= SWWC_MIN_FANOUT && widthSupportsSwwc(width))
         , shift(static_cast<UInt32>(32 - std::countr_zero(fanout_)))
@@ -1137,6 +1137,7 @@ struct MtFixture
             case Kind::W16: return 16;
             case Kind::W32: return 32;
             case Kind::W33: return 33;
+            case Kind::W48: return 48;
             /// Explicit so a new Kind trips -Wswitch here, not silently width 8 (review U4-simplicity-2).
             case Kind::Pid8:
             case Kind::Key8:
@@ -1181,6 +1182,7 @@ struct MtFixture
             case Kind::W16:
             case Kind::W32:
             case Kind::W33:
+            case Kind::W48:
                 seedRef(worker.ref_scratch, worker.bases);
                 referenceScatterByWidth(route, data.data(), n, width, use_swwc, worker.ref_scratch);
                 break;
@@ -1217,6 +1219,7 @@ struct MtFixture
             case Kind::W16:
             case Kind::W32:
             case Kind::W33:
+            case Kind::W48:
                 seedMod(worker.mod_scratch, worker.bases);
                 ColumnsScatter::scatterPidChunk(width, pids.data(), data.data(), n, use_swwc, worker.mod_scratch);
                 worker.mod_scratch.drain();
@@ -1329,6 +1332,7 @@ void registerThreadSweepBenchmarks()
         {"w16", MtFixture::Kind::W16},
         {"w32", MtFixture::Kind::W32},
         {"w33", MtFixture::Kind::W33},
+        {"w48", MtFixture::Kind::W48},
         {"strL8", MtFixture::Kind::StrL8},
         {"null8", MtFixture::Kind::Null8},
     };
@@ -1371,6 +1375,57 @@ void registerThreadSweepBenchmarks()
                         /// aggregate bandwidth must be computed over wall time.
                         ->UseRealTime();
                 }
+            }
+        }
+    }
+}
+
+/// R8: long-iteration variants of the MT cells (~16.8M rows per worker), sized so one iteration
+/// runs for hundreds of ms. Same arms and oracle as the normal MT cells, only `n` is overridden.
+void registerBigThreadSweepBenchmarks()
+{
+    static constexpr size_t BIG_ROWS = 16 << 20;
+    struct BigCell
+    {
+        const char * name;
+        MtFixture::Kind kind;
+        size_t fanout;
+    };
+    static constexpr BigCell cells[] = {
+        {"w16big", MtFixture::Kind::W16, 8192},
+        {"w32big", MtFixture::Kind::W32, 8192},
+        {"w33big", MtFixture::Kind::W33, 8192},
+        {"w48big", MtFixture::Kind::W48, 8192},
+        {"w48big", MtFixture::Kind::W48, 64},
+    };
+    for (const auto & cell : cells)
+    {
+        for (size_t threads : {1uz, 64uz})
+        {
+            auto holder = std::make_shared<std::unique_ptr<MtFixture>>();
+            const MtFixture::Kind kind = cell.kind;
+            const size_t fanout = cell.fanout;
+            for (bool module_arm : {false, true})
+            {
+                benchmark::RegisterBenchmark(
+                    (std::string("BM_mt_") + (module_arm ? "mod_" : "ref_") + cell.name + "/F" + std::to_string(fanout) + "/T"
+                     + std::to_string(threads))
+                        .c_str(),
+                    [holder, kind, fanout, threads, module_arm](benchmark::State & state)
+                    {
+                        if (!*holder)
+                            *holder = std::make_unique<MtFixture>(kind, fanout, threads, BIG_ROWS);
+                        MtFixture & fixture = **holder;
+                        for (auto _ : state)
+                        {
+                            fixture.runArm(module_arm);
+                            benchmark::ClobberMemory();
+                        }
+                        state.SetBytesProcessed(
+                            static_cast<int64_t>(state.iterations()) * fixture.bytesPerWorker() * fixture.threads);
+                        state.counters["threads"] = static_cast<double>(fixture.threads);
+                    })
+                    ->UseRealTime();
             }
         }
     }
@@ -1722,6 +1777,7 @@ int main(int argc, char ** argv)
     registerFallbackBenchmarks();
     registerGateTableBenchmarks();
     registerThreadSweepBenchmarks();
+    registerBigThreadSweepBenchmarks();
     benchmark::Initialize(&argc, argv);
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
