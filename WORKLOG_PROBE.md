@@ -267,3 +267,38 @@ No floor red. Liveness oracle (asan) + early-termination gate next; commit only 
   (binary = E2 candidate `4b55481c22d0…`): 3x early_stop PASS (exit 0, LIMIT row), 3x exc PASS
   (exit 241, `MEMORY_LIMIT_EXCEEDED` at client), nothing left running -> 6/6.
 Verdict: **KEEP** — committed as the E2 change.
+
+### E2 mechanism check (instr branch merged with E2; logs `tmp/rhj-probe-perf/u1/logs/acct_e2_*.err`)
+C@T96 (instrumented): pushes 393216 -> 50881, wave drain 7712 -> 4313 ms, wall 7884 ms —
+the quantum-count model verified directly. Post-E2 drain composition: producers now 53% busy
+(match+merge+materialize 220.6 s CPU-sum vs push-wait 196.5 s) and consumers HALF-IDLE
+(pop-wait 24.8 s across the crew of 12) — the drain flipped from consumer-quantum-bound to
+mixed/producer-side. `EXPLAIN PIPELINE` shows `SimpleSquashingTransform x 96` above the join;
+`Squashing::generateUsingOneMinBound` passes any block >= min_joined_block_size_bytes (512 KB
+default) through as a single chunk, and single-chunk squash is zero-copy (`IColumn::mutate` on
+refcount-1 columns) — E2's 2 MiB blocks already pass through.
+Post-E2 next-lever ranking (C@T96, wall 7884): wave scatter 1949 ms (24.7%) — the largest
+serial segment; drain 4313 ms (54.7%, mixed-bound); build 573 ms; delayed 269 ms; gaps 176 ms.
+A@T96: scatter 339 ms of 1340 ms (25.3%), drain scan-hidden.
+
+### E3 preregistration — LEAF_TARGET_BYTES 1 MiB -> 2 MiB (written BEFORE implementation)
+Preregistered 2026-07-14 ~23:30.
+- Motivating evidence: wave scatter is 25% of wall on both A@T96 (339 ms) and C@T96 (1949 ms)
+  post-E2; A-class fanouts exceed the 8192 per-pass cap (D=268435456 bp=1 -> fanout 16384),
+  forcing TWO radix passes — the window is read+written twice. With a 2 MiB leaf target,
+  D=268435456 bp=1 plans fanout 8192 = ONE pass (halves A-shape scatter traffic);
+  D=268435456 bp=7 goes 32768 -> 16384 (still 2 passes — C scatter roughly unchanged);
+  D=67108864 bp=1 goes 4096 -> 2048 (already single-pass; leaf working set grows ~1.5 MB,
+  which fits the Neoverse-V2 2 MB per-core L2). Leaf match may slow (bigger hash tables);
+  producers have idle capacity at T>=32, but at T1/T16 match is nearer the critical path.
+- Mechanism: one constant, `LEAF_TARGET_BYTES` 1<<20 -> 2<<20 in RadixHashJoin.cpp (planning
+  only; leaf configuration stays as-is).
+- Expected effect: target cell D=268435456 r=2 bp=pp=1 T96 improves >= 5% (scatter nearly
+  halves: ~170 of 1340 ms) — this is also a protected cell, so the floor set doubles as the
+  regression guard; C@T96 within band; D=67108864 T1/T16 floors are the match-slowdown
+  canaries.
+- Gate invocation: paired protocol as E2 (target `--cardinalities 268435456 --ratios 2
+  --build-payload-columns 1 --probe-payload-columns 1 --threads 96`); floors + liveness +
+  early-termination before keep.
+- Refuting outcome: target within band (scatter saving offset by slower leaf match), or any
+  floor red -> revert and record.
