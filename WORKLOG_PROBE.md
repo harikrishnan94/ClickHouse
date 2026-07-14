@@ -332,3 +332,50 @@ Preregistered 2026-07-15 ~00:10.
 - Gate invocation: paired protocol, target `--cardinalities 268435456 --ratios 4
   --build-payload-columns 7 --probe-payload-columns 7 --threads 96` vs the tip-with-E2
   reference (`4b55481c22d0…`).
+
+### E5 preregistration — delayed-path output merging (written BEFORE implementation)
+Preregistered 2026-07-15 ~00:20, before any E5 code.
+- Motivating Unit-1 evidence: the delayed path returns exactly one per-partition block per
+  `nextImpl` call (B: 1024 blocks for 16.7M rows; C flush: 32768). On B@T96 the delayed drain
+  is 13.1 ms of an 85 ms wall (15%) with lanes only ~47% busy inside `nextImpl` (in_call
+  599 ms across 96 lanes) — consistent with per-call executor turnaround overhead, the same
+  mechanism E2 attacked on the wave path. At B@T16 the drain is leaf-work-bound instead
+  (in_call 480 ms / 16 lanes ~= 30 ms ~ the 32.7 ms wall), so no effect is expected there.
+- Mechanism: inside `RadixDelayedBlocks::nextImpl`, accumulate result blocks across the
+  work-stealing loop and return a merged block at >= MERGE_TARGET_ROWS / MERGE_TARGET_BYTES
+  (or at stream end), mirroring the wave-path merge. Same lane does the work either way; the
+  saving is fewer executor round-trips per byte.
+- Expected effect: B@T96 improves >= 5% (halving 13 ms of an 85 ms wall) — marginal by
+  design; B@T16 unchanged. Refuting outcome: B@T96 within band -> per-call turnaround is not
+  the binding cost on the delayed path (or the merge copy offsets it) -> revert.
+- Gate invocation: paired protocol, target `--cardinalities 16777216 --ratios 1
+  --build-payload-columns 1 --probe-payload-columns 1 --threads 96` vs the tip-with-E2
+  reference; floors + liveness + early-termination before any keep.
+
+### E4 result — NO-RESULT (within band), REVERTED (2026-07-15 00:40)
+Paired C@T96 (`tmp/rhj-probe-perf/u2/e4_C_T96_*.log`): ref (tip with E2) 7921/7761/7790/7733/
+7738 median 7761 (sd 77.4); candidate (`308b6596a85b…`, MERGE_TARGET_BYTES 8 MiB)
+7615/7722/7663/7722/7625 median 7663; delta **−1.26%**, win threshold 7372.9 — within band,
+the preregistered refuting outcome. Reverted. DISCRIMINATION VALUE: a 4x further reduction of
+consumer quanta moved the wall ~1% -> post-E2 the wave drain is **producer-bound** (leaf match
++ merge copy on the workers), not consumer-quantum-bound. Any further drain lever must attack
+producer-side work or overlap the scatter; consumer-side tuning is exhausted.
+
+### E5 result — NO-RESULT (within band), REVERTED (2026-07-15 01:00)
+Paired B@T96 (`tmp/rhj-probe-perf/u2/e5_B_T96_*.log`): ref (tip with E2) 82/84/85/85/83
+median 84 (sd 1.3); candidate (`e9f082a1c2a9…`, delayed-path merge) 81/85/85/82/80 median 82;
+delta **−2.38%**, win threshold 79.8 — within band, the preregistered refuting outcome.
+Reverted. Consistent with the delayed drain being partially leaf-bound even at T96 and only
+~15% of an already-small wall.
+
+### Unit 2 close-out
+Five preregistered experiments implemented and measured (preregistration demonstrably before
+implementation in this file's history): E1 lazy-indexing default (refuted, −1.17%… +band),
+E2 wave-worker output merging (**KEPT**: target −33.9%, four protected cells improved outright,
+committed `a8b4c058483`), E3 LEAF_TARGET_BYTES 2 MiB (refuted, −3.21% sub-band, lead),
+E4 merge target 8 MiB (refuted, −1.26% — discriminated the post-E2 drain as producer-bound),
+E5 delayed-path merging (refuted, −2.38%). Top risk-accepted lead (not attempted, design
+analysis in REPORT_PROBE.md): pipelining the next wave's scatter under the current wave's
+drain — blocked tonight by pool-capacity coupling (wave workers hold all pool slots while
+push-blocked, so scatter sub-jobs cannot run until the drain tail) and the associated
+liveness/teardown redesign.
