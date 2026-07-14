@@ -399,3 +399,24 @@ with exact counts; early-termination 6/6; stateless 5/5 against the scratch serv
 `/proc/<pid>/exe` hash-verified. A first correctness-gate invocation failed on a missing
 output directory before any query ran (`bhtuvpw8e`) and was rerun (`bk1zfk810`) — plumbing
 only, recorded. Cumulative comparison and evidence matrix written into REPORT_PROBE.md.
+
+## Independent verification (host times ~22:15–23:29) — VERDICT: SHIP
+Fresh subagent, adversarial instructions; report `tmp/rhj-probe-perf/u3/independent_verification.md`.
+Target win reproduced −33.68% (ref 11789 -> cand 7818, full sample separation); floors green;
+byte-determinism proven for both binaries; Unit-1 tables recomputed by hand for two cells
+exactly; all gates green on the tip; reverts clean. Accepted findings (recorded in
+REPORT_PROBE.md): E5 preregistration is file-order but not commit-order attested (E1–E4 are
+commit-proven; E5 was refuted, nothing kept relies on it); the earlier timestamp-correction
+entry itself misstated E4's window (actual 21:42–21:52 per `driver.log`); the D67@T96 floor's
+−5.66% read −3.77% on re-measurement (floor green both times — only the target cell and
+D268r2@T96 are quoted as beyond-noise wins); two E2 hardening notes (byte-cap undercount on
+lazily-replicated blocks; theoretical `ColumnConst` positional-append hazard) recorded as
+leads.
+
+## Campaign close
+Decision: the wave-pipelining lead (E6) is NOT attempted in this session — the deliverable is
+complete and SHIP-verified; reopening Unit 2 would require the full gate chain plus a fresh
+verification pass, and the design analysis puts honest implementation risk beyond the
+remaining unattended budget. It is documented as the top risk-accepted lead with the measured
+motivation (scatter = 25% of the post-E2 wide-shape wall) and the pool-capacity blocker
+analysis.

@@ -18,7 +18,7 @@ Branch `radix-join-probe-perf`, baseline `b1fa64c7286`. Full per-iteration recor
   shapes and on the wide shape at quarter scale; assertions PASS everywhere; zero mismatches/
   errors/fallbacks), liveness 10/10, lifecycle large-shape PASS with exact counts,
   early-termination 6/6, stateless 5/5 — all on the final binary `4b55481c…`.
-- **Independent verification:** appended at the bottom when complete.
+- **Independent verification: SHIP** (fresh subagent; target win reproduced at −33.68%; all gates re-run green; findings section at the bottom).
 
 ## Flags / deviations (none hidden)
 
@@ -259,6 +259,41 @@ fresh rebuild, `build/reldeb/build_final_tip.log`); raw outputs under `tmp/rhj-p
 | Lifecycle (early termination) | `tmp/radix-wave-deadlock/run_early_termination_gate.sh build/reldeb/programs/clickhouse` | 6/6: 3× early_stop PASS (exit 0, LIMIT row), 3× exc PASS (exit 241, `MEMORY_LIMIT_EXCEEDED`), nothing left running | GREEN |
 | Stateless tests | scratch server on 9131/8161 (`/proc/<pid>/exe` sha256 = `4b55481c…`), `CLICKHOUSE_PORT_TCP=9131 CLICKHOUSE_PORT_HTTP=8161 ./tests/clickhouse-test -b build/reldeb/programs/clickhouse 04508… 04512…` (`tmp/rhj-probe-perf/u3/stateless.log`) | `5 tests passed. 0 tests skipped. 1.60 s elapsed` | GREEN |
 
-## Independent verification
+## Independent verification — VERDICT: SHIP
 
-(pending — appended when complete)
+Performed by a fresh subagent that did none of the work, instructed to refute it; full
+findings at `tmp/rhj-probe-perf/u3/independent_verification.md`, raw artifacts under
+`tmp/rhj-probe-perf/u3/indep/`.
+
+Reproduced (refutation attempts failed):
+- **Target win real**: fresh paired run ref 11789 -> cand 7818 ms = **−33.68%** (claimed
+  −33.9%), all five candidate samples below all five reference samples; floors re-measured
+  green (D268r2@T96 −6.11%, D67@T96 −3.77%, D67@T16 +0.43%).
+- **Provenance proven both ways**: forced recompile of the tip reproduces `4b55481c…`
+  byte-identically, and rebuilding the baseline source reproduces `cf662d4c…` — both sides of
+  every paired comparison are proven builds of their claimed sources; the adopted T16 remedy
+  patch-id-matches the preserved patch.
+- **Accounting recomputes**: by-hand recomputation of A@T96 and B@T96 from the raw `RADIX*`
+  timestamps matches every report row; tiling telescopes to 100.0%.
+- **Gates on the tip binary**: liveness 10/10, early-termination 6/6, wide-shape hash
+  verification PASS, stateless 5/5 with the server binary hash-verified; the src diff since
+  baseline is the E2 change only (reverts clean).
+
+Verifier findings accepted and recorded (none invalidating):
+1. **E5 preregistration is file-order but not commit-order attested**: the E5 preregistration
+   text was appended before the E5 build (per this campaign's sequence), but the commit that
+   carries it also carries the E5 result, so git history alone cannot prove the ordering for
+   E5 the way it does for E1–E4. E5 was refuted and reverted, so no kept change relies on it.
+   Process fix for future campaigns: commit each preregistration entry before implementing.
+2. The worklog's timestamp-correction entry itself misstated E4's measurement window
+   (said 21:19–21:45; the driver log shows 21:42–21:52).
+3. The D=67108864 r=2 T96 floor improvement re-measured at −3.77% (sub-band) vs the E2-batch's
+   −5.66% — cross-suite drift; the cell is a protected floor and stays green in both
+   measurements, but only the target-cell −33.9% and the re-reproduced D268r2@T96 win should
+   be quoted as beyond-noise wins.
+4. E2 hardening notes: the merge byte-cap undercounts lazily-replicated blocks (the row cap
+   still bounds memory), and a theoretical `ColumnConst` positional-append hazard exists that
+   no current leaf output can trigger — both recorded for a follow-up hardening pass.
+
+Both documented deviations (T16-remedy adoption; correctness SKIP-by-cap for the full-size
+wide shape) were judged sound and honestly reported.
