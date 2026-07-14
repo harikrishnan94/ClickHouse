@@ -228,13 +228,6 @@ void foldKeyColumnRows(const char * base, size_t n, UInt64 * acc)
         acc[i] = foldBytes(acc[i], base + i * width, width);
 }
 
-template <size_t width>
-void foldKeyColumnRowsInit(const char * base, size_t n, UInt64 * acc)
-{
-    for (size_t i = 0; i < n; ++i)
-        acc[i] = foldBytes(0, base + i * width, width);
-}
-
 /// Composite-key route materialization for one chunk of `n` rows: fold every key column's bytes
 /// into per-row accumulators (`foldBytes`), then finalize each accumulator into a route word.
 /// `get_key_column_base` maps a key column position to its raw data pointer. `acc` is caller-owned
@@ -247,21 +240,8 @@ void materializeCompositeRoutes(
     const SideLayout & layout, const GetKeyColumnBase & get_key_column_base, size_t n, PaddedPODArray<UInt64> & acc, UInt32 * routes)
 {
     acc.resize(n);
-    const size_t first_width = layout.key_widths[0];
-    const char * first_base = get_key_column_base(layout.key_positions[0]);
-    switch (first_width)
-    {
-        case 1: foldKeyColumnRowsInit<1>(first_base, n, acc.data()); break;
-        case 2: foldKeyColumnRowsInit<2>(first_base, n, acc.data()); break;
-        case 4: foldKeyColumnRowsInit<4>(first_base, n, acc.data()); break;
-        case 8: foldKeyColumnRowsInit<8>(first_base, n, acc.data()); break;
-        case 16: foldKeyColumnRowsInit<16>(first_base, n, acc.data()); break;
-        default:
-            for (size_t i = 0; i < n; ++i)
-                acc[i] = foldBytes(0, first_base + i * first_width, first_width);
-    }
-
-    for (size_t k = 1; k < layout.key_positions.size(); ++k)
+    memset(acc.data(), 0, n * sizeof(UInt64));
+    for (size_t k = 0; k < layout.key_positions.size(); ++k)
     {
         const size_t w = layout.key_widths[k];
         const char * base = get_key_column_base(layout.key_positions[k]);
