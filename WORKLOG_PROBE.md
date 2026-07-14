@@ -218,3 +218,52 @@ Preregistered before implementation, 2026-07-14 ~19:45.
   gates before keep).
 - Refuting outcome: C_T96 within band -> consumer cost is not the lazy unwrap (or producer
   materialization offsets it) -> revert and fall back to E2 (block merge) as the lever.
+
+### Unit-1 gate: accounting — GREEN (2026-07-14 20:27)
+- Phase tables recompute from raw logs (paths in REPORT_PROBE.md); attribution 91.0–104.3% on
+  14/15 cells; B_T96 85.4% of a 25 ms delta with the 3.7 ms residual explicitly attributed to
+  the 1 ms `--time` quantization.
+- Instrumentation overhead: paired 5+5 position-balanced, all five subset cells GREEN
+  (`tmp/rhj-probe-perf/u1/overhead/verdicts.txt`): A_T96 1447->1429 (-1.2%), B_T96 84->84,
+  C_T96 11790->11822 (+0.27%), A_T16 3438->3493 (+1.6%), A_T1 61409->60929 (-0.78%);
+  band max(5%, 1 stdev) in every cell.
+
+### E1 result — REFUTED, REVERTED (2026-07-14 20:55)
+Paired target cell C@T96 (order R C C R R C C R R C, logs `tmp/rhj-probe-perf/u2/e1_C_T96_*.log`):
+ref (fresh tip build, byte-identical to baseline `cf662d4c9619…`) 11818/11502/11472/11277/11391,
+median 11472, stdev 202; candidate (`e8b66689…`, lazy-indexing default false)
+11606/11604/11845/11364/11741, median 11606; delta +1.17%; band max(5%, 1 sd) = 573.6;
+verdict **NO-RESULT (within band)** — the preregistered refuting outcome. Reverted
+(`git checkout` of the one-line change); candidate binary preserved at
+`tmp/rhj-probe-perf/bin/e1_lazyoff/`.
+Interpretation: the per-quantum consumer cost is NOT the lazy left-column materialization
+(moving it to producers changed nothing) — consistent with a per-BLOCK executor turnaround
+cost (task re-scheduling and port round-trip per popped block), which is E2's premise. The
+byte-proportionality observed in Unit 1 was coincidental across two shapes (block bytes and
+count co-vary).
+
+### E2 result — target cell WIN (2026-07-14 21:30)
+Paired C@T96 (`tmp/rhj-probe-perf/u2/e2_C_T96_*.log`, order R C C R R C C R R C):
+ref 11498/11785/11831/11791/11646 median 11785 (sd 137.7); candidate (`4b55481c22d0…`,
+worker-side merge to 65409 rows / 2 MiB) 7945/7847/7790/7719/7755 median 7790;
+**delta −33.90%**, win threshold 11195.8 — every candidate sample beats every reference
+sample by ~3.7 s. Confirms the consumer-quantum-bound drain attribution (and E1's refutation
+of the materialization variant). Floors + liveness + early-termination gates next; keep
+decision only after all are green.
+
+### E2 floors — ALL GREEN, 4 outright wins (2026-07-14 22:20)
+`tmp/rhj-probe-perf/u2/e2_floors_verdicts.txt` (paired, band max(5%, 1 sd)):
+D=67108864 r=2 T96 371->350 (**-5.66%, WIN**), T64 401->379 (**-5.49%, WIN**),
+T32 663->646 (-2.56%, within band), T16 895->904 (+1.01%, within band),
+T1 14164->14205 (+0.29%, within band — the threads>1 guard holds);
+D=268435456 r=2 T96 1433->1324 (**-7.61%, WIN**); r=4 bp=pp=1 T96 2705->2459 (**-9.09%, WIN**).
+No floor red. Liveness oracle (asan) + early-termination gate next; commit only after both.
+
+### E2 keep gates — liveness 10/10, early termination 6/6 (2026-07-14 22:45) -> KEEP
+- `ninja -C build/asan unit_tests_dbms` clean (`build/asan/build_e2_asan.log`); 10 consecutive
+  runs of the deadlock oracle all rc=0 with exactly `[  PASSED  ] 1 test`
+  (`build/asan/e2_liveness_run_{1..10}.log`).
+- `tmp/radix-wave-deadlock/run_early_termination_gate.sh build/reldeb/programs/clickhouse`
+  (binary = E2 candidate `4b55481c22d0…`): 3x early_stop PASS (exit 0, LIMIT row), 3x exc PASS
+  (exit 241, `MEMORY_LIMIT_EXCEEDED` at client), nothing left running -> 6/6.
+Verdict: **KEEP** — committed as the E2 change.

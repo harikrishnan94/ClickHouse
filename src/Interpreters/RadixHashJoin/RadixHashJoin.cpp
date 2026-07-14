@@ -86,6 +86,11 @@ using ColumnsScatter::MAX_FANOUT_PER_PASS;
 constexpr size_t LEAF_TARGET_BYTES = 1 << 20;
 constexpr size_t HT_CELL_BYTES = 16;
 
+/// Wave-worker output merging targets: the usual joined-block row count, with a byte cap so wide
+/// rows keep the queue's resident footprint bounded ((2 * threads + 1 + threads) * cap).
+constexpr size_t MERGE_TARGET_ROWS = 65409;
+constexpr size_t MERGE_TARGET_BYTES = 2 << 20;
+
 /// The fixed-width layout of one side (build or probe): column widths in bytes and the key columns.
 struct SideLayout
 {
@@ -805,17 +810,75 @@ struct ActiveWave
         try
         {
             ThreadGroupSwitcher switcher(shared.thread_group, ThreadName::RADIX_JOIN);
+
+            /// A partition's probe output is one small block (window rows / fanout), and one popped
+            /// block costs a consumer lane a full executor quantum — at high thread counts a few
+            /// hundred microseconds of turnaround regardless of block size, which bounds the drain
+            /// once partitions outnumber consumers by orders of magnitude. Merge each worker's
+            /// output up to the usual joined-block size before pushing; the copy runs on the
+            /// producers, which the queue back-pressure keeps mostly idle exactly when merging
+            /// matters. At threads == 1 there is no consumer crew to relieve and the producer is
+            /// the critical path, so the extra copy would be pure cost.
+            const bool merge_output = shared.threads > 1;
+            Block merged_header;
+            MutableColumns merged;
+            size_t merged_rows = 0;
+            size_t merged_bytes = 0;
+
+            auto flush_merged = [&]
+            {
+                if (merged_rows == 0)
+                    return true;
+                Block out = merged_header.cloneWithColumns(std::move(merged));
+                merged.clear();
+                merged_rows = 0;
+                merged_bytes = 0;
+                return output_queue.push(std::move(out));
+            };
+
+            bool stop = false;
             for (size_t i = next_partition.fetch_add(1, std::memory_order_relaxed); i < drain_order.size();
                  i = next_partition.fetch_add(1, std::memory_order_relaxed))
             {
                 const size_t p = drain_order[i];
-                bool stop = false;
                 probePartition(
                     *shared.partition_joins[p],
                     parts[p].toBlock(shared.left_header),
                     [&](Block out)
                     {
-                        if (!output_queue.push(std::move(out)))
+                        if (!merge_output)
+                        {
+                            if (!output_queue.push(std::move(out)))
+                            {
+                                stop = true;
+                                return false;
+                            }
+                            return true;
+                        }
+
+                        const size_t rows = out.rows();
+                        /// Lazily-replicated columns do not support appending; normalize to full.
+                        Columns columns = out.getColumns();
+                        for (auto & column : columns)
+                            column = column->convertToFullColumnIfReplicated();
+
+                        if (merged_rows == 0)
+                        {
+                            merged_header = out.cloneEmpty();
+                            merged.clear();
+                            merged.reserve(columns.size());
+                            for (auto & column : columns)
+                                merged.push_back(IColumn::mutate(std::move(column)));
+                        }
+                        else
+                        {
+                            for (size_t j = 0; j < merged.size(); ++j)
+                                merged[j]->insertRangeFrom(*columns[j], 0, rows);
+                        }
+                        merged_rows += rows;
+                        merged_bytes += out.bytes();
+
+                        if ((merged_rows >= MERGE_TARGET_ROWS || merged_bytes >= MERGE_TARGET_BYTES) && !flush_merged())
                         {
                             stop = true;
                             return false;
@@ -825,6 +888,8 @@ struct ActiveWave
                 if (stop)
                     break;
             }
+            if (!stop)
+                flush_merged();
         }
         catch (...)
         {
