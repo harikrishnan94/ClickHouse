@@ -872,11 +872,12 @@ struct ActiveWave
     std::exception_ptr exception; /// set under exception_mutex, read after joinWorkers
     std::mutex exception_mutex;
     std::atomic<bool> torn_down{false};
+    std::atomic<size_t> consumers{0}; /// attached consumer lanes, bounded by WaveJoinResult::max_consumers
     Stopwatch watch;
 };
 
 /// One probe lane's view of the mid-stream wave machinery. The lane that finds no wave active starts
-/// one from the shared window (when it has reached the budget); every lane, owner or not, then drains
+/// one from the shared window (when it has reached the budget); lanes that arrive meanwhile drain
 /// the active wave's queue — cross-lane output emission is fine for this INNER join and is exactly
 /// what RadixDelayedBlocks already does across the delayed-worker transforms. This is what fixes the
 /// deadlock without a busy wait: the old design parked every other lane on a mutex whose release
@@ -884,6 +885,22 @@ struct ActiveWave
 /// CPU. The file-wide liveness invariant: no executor lane ever waits on progress that only another
 /// executor lane can make. Waiting on the queue is safe (producers are dedicated pool workers), and
 /// waiting on the coordinator mutex is safe (its holder only scatters on the pool, then publishes).
+///
+/// The consumer set of one wave is bounded (max_consumers). Consumership is sticky — an attached
+/// lane pulls no input until it sees no-wave-and-below-budget — so unbounded attachment converts
+/// every probe lane into a queue consumer and starves the scan that must feed the next wave,
+/// exposing a full window refill on the critical path once per captured generation (measured at
+/// mid thread counts). A handful of consumers already saturates the drain: one pop costs a lane a
+/// work quantum, an order of magnitude less than producing the block costs a pool worker, so the
+/// surplus lanes serve the join better by pulling input — but only while that input is needed.
+/// The governing invariant: a surplus lane scans iff the shared window is below budget. Below
+/// budget, a capped-out lane reports end-of-result exactly like the below-budget path (its rows
+/// are already in the shared window; a later wave or the delayed flush probes them) and goes back
+/// to the input; once the window is staged to budget it attaches past the cap and stops pulling —
+/// the same back-pressure as draining-only designs, bounding the window overshoot at one in-flight
+/// block per lane. Over-cap consumers dissolve at the wave switch: they fail the attach on the
+/// next wave and, with its window freshly swapped below budget, return to the input. No lane ever
+/// waits on any of this.
 class WaveJoinResult : public IJoinResult
 {
 public:
@@ -903,11 +920,16 @@ public:
     {
     }
 
-    /// The result owns nothing: waves belong to the coordinator (and their workers), and an abandoned
-    /// active wave is torn down by ~RadixHashJoin. An inert destructor is load-bearing — results are
-    /// destroyed in arbitrary order at pipeline teardown, possibly while another lane's wave still has
-    /// parked producers.
-    ~WaveJoinResult() override = default;
+    /// The result owns nothing but its consumer slot: waves belong to the coordinator (and their
+    /// workers), and an abandoned active wave is torn down by ~RadixHashJoin. An inert destructor is
+    /// load-bearing — results are destroyed in arbitrary order at pipeline teardown, possibly while
+    /// another lane's wave still has parked producers — and detach keeps it inert: a plain atomic
+    /// decrement, no waiting, no teardown. Releasing the slot on destruction keeps an abandoned
+    /// consumer from pinning the cap while the query is still draining other lanes.
+    ~WaveJoinResult() override
+    {
+        detach();
+    }
 
     JoinResultBlock next() override
     {
@@ -934,6 +956,30 @@ public:
                     coordinator.active_wave = startWave(std::move(window));
                 }
                 wave = coordinator.active_wave;
+            }
+
+            if (attached_wave != wave)
+            {
+                detach();
+                /// Slots only read full with max_consumers lanes attached, and an attached lane keeps
+                /// draining until the wave is torn down, so a live wave always has a consumer.
+                if (!tryAttach(*wave))
+                {
+                    /// A surplus lane scans while the next window is below budget and stops pulling
+                    /// input once it is staged. Going back to the input here with a full window would
+                    /// grow it by scan-rate x wave-duration — unbounded; instead attach past the cap,
+                    /// which is exactly the pre-cap back-pressure (the window overshoots the budget by
+                    /// at most the blocks already in flight, one per lane).
+                    bool window_staged;
+                    {
+                        std::lock_guard window_lock(window_mutex);
+                        window_staged = shared_window_bytes >= probe_window_budget;
+                    }
+                    if (!window_staged)
+                        return {Block{}, nullptr, true};
+                    wave->consumers.fetch_add(1, std::memory_order_relaxed);
+                }
+                attached_wave = wave;
             }
 
             Block block;
@@ -1001,12 +1047,34 @@ private:
         return wave;
     }
 
+    bool tryAttach(ActiveWave & wave)
+    {
+        size_t current = wave.consumers.load(std::memory_order_relaxed);
+        while (current < max_consumers)
+            if (wave.consumers.compare_exchange_weak(current, current + 1, std::memory_order_relaxed))
+                return true;
+        return false;
+    }
+
+    void detach()
+    {
+        if (attached_wave)
+        {
+            attached_wave->consumers.fetch_sub(1, std::memory_order_relaxed);
+            attached_wave.reset();
+        }
+    }
+
     ProbeShared shared;
     WaveCoordinator & coordinator;
     std::mutex & window_mutex; /// State::window_mutex, guarding the two shared-window fields below
     std::vector<Block> & shared_window;
     size_t & shared_window_bytes;
     const size_t probe_window_budget;
+    /// Enough consumers to keep the drain ahead of the producers (a pop is ~10x cheaper than the
+    /// probe that produced the block), few enough to leave most lanes pulling input.
+    const size_t max_consumers = std::max<size_t>(2, shared.threads / 8);
+    std::shared_ptr<ActiveWave> attached_wave; /// the wave this result currently consumes
 };
 
 /// The final flush: the leftover probe window is scattered once (on the pool) and then probed by the
