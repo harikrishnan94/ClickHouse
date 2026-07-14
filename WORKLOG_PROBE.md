@@ -302,3 +302,33 @@ Preregistered 2026-07-14 ~23:30.
   early-termination before keep.
 - Refuting outcome: target within band (scatter saving offset by slower leaf match), or any
   floor red -> revert and record.
+
+### E3 result — NO-RESULT (within band), REVERTED (2026-07-15 00:05)
+Paired target A-shape D=268435456 r=2 bp=pp=1 T96 (`tmp/rhj-probe-perf/u2/e3_A_T96_*.log`):
+ref (tip with E2, `4b55481c22d0…`) 1353/1343/1323/1339/1337 median 1339 (sd 10.9); candidate
+(`83a4dff76176…`, LEAF_TARGET_BYTES 2 MiB) 1296/1311/1313/1284/1290 median 1296;
+delta **−3.21%**, win threshold 1272 — inside the 5% band, the preregistered refuting outcome.
+Reverted (one constant, `git checkout`). LEAD recorded: the effect looks real (all candidate
+samples below all reference samples) but sub-band; the single-pass scatter saved ~43 ms of
+the predicted ~170 ms — pass elimination bought less than the traffic model suggested (the
+[7,7] two-pass plan runs both passes below the SWWC fanout threshold, the single [13] pass
+above it; per-byte costs differ). Not kept per protocol; worth a future sweep on a host where
+a 3% wall effect can clear a band.
+
+### E4 preregistration — MERGE_TARGET_BYTES 2 MiB -> 8 MiB (written BEFORE implementation)
+Preregistered 2026-07-15 ~00:10.
+- Motivating evidence: post-E2 mechanism check (`acct_e2_C_T96.err`): 50881 pushes remain at
+  C@T96 with ~1 ms consumer turnaround per 2 MiB block; consumers are half-idle (pop-wait
+  24.8 s across the crew) and producers 53% busy — the drain looks producer-bound now, but a
+  4x further quantum reduction is the direct discriminator: if any consumer-side quantum
+  sensitivity remains, fewer/bigger blocks show it; if the drain is fully producer-bound,
+  nothing moves.
+- Mechanism: one constant, `MERGE_TARGET_BYTES` 2<<20 -> 8<<20 (rows cap 65409 then binds at
+  ~8.3 MiB for the C shape; A-shape blocks already row-capped at ~1 MiB, unaffected). Memory
+  bound: (2T+1 + T) x 8.3 MiB ~ 2.4 GiB at T96 — within the 100 GB gate budget.
+- Expected effect: C@T96 improves >= 5% if consumer quanta still bind; refuting outcome:
+  within band -> the drain is producer-bound post-E2 (settles the pipelining design input);
+  revert either way unless the win clears the band and floors hold.
+- Gate invocation: paired protocol, target `--cardinalities 268435456 --ratios 4
+  --build-payload-columns 7 --probe-payload-columns 7 --threads 96` vs the tip-with-E2
+  reference (`4b55481c22d0…`).
