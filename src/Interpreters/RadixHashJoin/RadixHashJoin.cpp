@@ -26,6 +26,7 @@
 #include <cstring>
 #include <limits>
 #include <list>
+#include <condition_variable>
 #include <mutex>
 #include <shared_mutex>
 
@@ -171,13 +172,23 @@ struct PartitionOutput
 /// Runs `fn(tid)` on `threads` pool workers and waits (rethrows the first worker exception).
 void parallelRun(ThreadPool & pool, size_t threads, const ThreadGroupPtr & thread_group, const std::function<void(size_t)> & fn)
 {
-    for (size_t t = 0; t < threads; ++t)
-        pool.scheduleOrThrow(
-            [&fn, t, thread_group]
-            {
-                ThreadGroupSwitcher switcher(thread_group, ThreadName::RADIX_JOIN);
-                fn(t);
-            });
+    try
+    {
+        for (size_t t = 0; t < threads; ++t)
+            pool.scheduleOrThrow(
+                [&fn, t, thread_group]
+                {
+                    ThreadGroupSwitcher switcher(thread_group, ThreadName::RADIX_JOIN);
+                    fn(t);
+                });
+    }
+    catch (...)
+    {
+        /// Unwinding without the wait would free `fn` and the caller's stack while the jobs that did
+        /// get scheduled still reference both.
+        pool.wait();
+        throw;
+    }
     pool.wait();
 }
 
@@ -638,6 +649,21 @@ std::vector<PartitionOutput> scatterToPartitions(
 /// State
 /// -------------------------------------------------------------------------------------------------
 
+namespace
+{
+
+struct ActiveWave;
+
+/// Admits one wave at a time. Every probe lane's result drains the active wave cooperatively, so a
+/// lane that arrives while a wave is in flight becomes one of its consumers instead of waiting.
+struct WaveCoordinator
+{
+    std::mutex mutex;
+    std::shared_ptr<ActiveWave> active_wave;
+};
+
+}
+
 struct RadixHashJoin::State
 {
     Names left_key_names;
@@ -664,8 +690,9 @@ struct RadixHashJoin::State
     size_t probe_window_budget = 0;
 
     /// The shared probe window (one wave = one budget's worth of input). window_mutex guards only the
-    /// push_back and counters; the wave scatter/probe run outside it. wave_mutex admits one wave at a
-    /// time (waves are sequential, as in the benchmark). Left layout is resolved from the first block.
+    /// push_back and counters; the wave scatter/probe run outside it. Waves are sequential (the
+    /// coordinator holds at most one), and no lane is ever parked behind one: whichever lanes call in
+    /// while a wave runs help drain it. Left layout is resolved from the first block.
     std::mutex window_mutex;
     std::vector<Block> window_blocks;
     size_t window_bytes = 0;
@@ -673,11 +700,16 @@ struct RadixHashJoin::State
     SideLayout left_layout;
     bool left_ready = false;
 
-    std::mutex wave_mutex;
+    WaveCoordinator wave;
     std::mutex delayed_mutex;
     bool delayed_flushed = false;
 
     std::unique_ptr<HashJoin> schema_join;
+    /// The dedicated radix pool. Wave liveness depends on an invariant: while a wave has queued or
+    /// running workers, no job that can let an exception escape may share this pool. An escaped job
+    /// exception shuts the pool down and destroys still-queued jobs unrun, so a destroyed wave worker
+    /// would never report its exit and the wave's consumers would wait forever. Wave workers swallow
+    /// everything; scatter/build/teardown jobs run only while no wave is active.
     std::unique_ptr<ThreadPool> pool;
     bool enable_lazy_columns_indexing = true;
 };
@@ -754,66 +786,25 @@ std::vector<UInt32> probeDrainOrder(const std::vector<PartitionOutput> & parts, 
     return order;
 }
 
-/// One mid-stream wave: scatter the window on the pool, then probe touched partitions with
-/// work-stealing pool workers that stream output blocks through a bounded queue. Waves are sequential
-/// (wave_mutex, held for the result's lifetime), so transient memory stays ~2x the budget.
-class WaveJoinResult : public IJoinResult
+/// One scattered, worker-fed wave, shared by every probe lane. Workers hold the owning shared_ptr,
+/// so the wave survives any consumer teardown order; the coordinator holds it while the wave is the
+/// active one.
+struct ActiveWave
 {
-public:
-    WaveJoinResult(ProbeShared shared_, std::vector<Block> window, std::unique_lock<std::mutex> wave_lock_)
+    ActiveWave(ProbeShared shared_, size_t threads)
         : shared(std::move(shared_))
-        , wave_lock(std::move(wave_lock_))
-        , output_queue(2 * shared.threads + 1)
+        , output_queue(2 * threads + 1)
     {
-        {
-            ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
-            parts = scatterToPartitions(
-                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.pass_bits);
-        }
-        drain_order = probeDrainOrder(parts, shared.partition_joins);
-
-        active_workers.store(shared.threads);
-        for (size_t t = 0; t < shared.threads; ++t)
-        {
-            shared.pool.scheduleOrThrow(
-                [this]
-                {
-                    ThreadGroupSwitcher switcher(shared.thread_group, ThreadName::RADIX_JOIN);
-                    worker();
-                });
-        }
     }
 
-    ~WaveJoinResult() override
-    {
-        /// Unblock any worker parked on a full queue and join them before members are destroyed.
-        output_queue.clearAndFinish();
-        shared.pool.wait();
-    }
-
-    JoinResultBlock next() override
-    {
-        Block block;
-        if (output_queue.pop(block))
-            return {std::move(block), nullptr, false};
-
-        /// Queue finished and empty: every worker has returned.
-        shared.pool.wait();
-        if (wave_exception)
-        {
-            auto e = wave_exception;
-            wave_exception = nullptr;
-            std::rethrow_exception(e);
-        }
-        ProfileEvents::increment(ProfileEvents::RadixHashJoinProbeMicroseconds, watch.elapsedMicroseconds());
-        return {Block{}, nullptr, true};
-    }
-
-private:
     void worker()
     {
+        /// Everything, including the thread-group switch, stays inside the try: an exception escaping
+        /// a job body would poison the pool (shutdown_on_exception) and rethrow from an arbitrary
+        /// later wait.
         try
         {
+            ThreadGroupSwitcher switcher(shared.thread_group, ThreadName::RADIX_JOIN);
             for (size_t i = next_partition.fetch_add(1, std::memory_order_relaxed); i < drain_order.size();
                  i = next_partition.fetch_add(1, std::memory_order_relaxed))
             {
@@ -838,23 +829,184 @@ private:
         catch (...)
         {
             std::lock_guard lock(exception_mutex);
-            if (!wave_exception)
-                wave_exception = std::current_exception();
+            if (!exception)
+                exception = std::current_exception();
         }
-        if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        onWorkerExit(1);
+    }
+
+    /// The last worker to exit finishes the queue, so consumers see finished-and-empty exactly when
+    /// all output is delivered. Never called with the mutex held.
+    void onWorkerExit(size_t count)
+    {
+        bool last = false;
+        {
+            std::lock_guard lock(workers_mutex);
+            active_workers -= count;
+            last = (active_workers == 0);
+        }
+        if (last)
+        {
             output_queue.finish();
+            workers_cv.notify_all();
+        }
+    }
+
+    /// Waits for this wave's workers only — not pool-wide, so it cannot entangle with another wave's
+    /// scatter or with the leaf teardown. Bounded: once the queue is finished (or cleared), workers
+    /// exit on their next push.
+    void joinWorkers()
+    {
+        std::unique_lock lock(workers_mutex);
+        workers_cv.wait(lock, [this] { return active_workers == 0; });
     }
 
     ProbeShared shared;
-    std::unique_lock<std::mutex> wave_lock;
     std::vector<PartitionOutput> parts;
     std::vector<UInt32> drain_order;
     ConcurrentBoundedQueue<Block> output_queue;
     std::atomic<size_t> next_partition{0};
-    std::atomic<size_t> active_workers{0};
-    std::exception_ptr wave_exception;
+    std::mutex workers_mutex;
+    std::condition_variable workers_cv;
+    size_t active_workers = 0; /// under workers_mutex
+    std::exception_ptr exception; /// set under exception_mutex, read after joinWorkers
     std::mutex exception_mutex;
+    std::atomic<bool> torn_down{false};
     Stopwatch watch;
+};
+
+/// One probe lane's view of the mid-stream wave machinery. The lane that finds no wave active starts
+/// one from the shared window (when it has reached the budget); every lane, owner or not, then drains
+/// the active wave's queue — cross-lane output emission is fine for this INNER join and is exactly
+/// what RadixDelayedBlocks already does across the delayed-worker transforms. This is what fixes the
+/// deadlock without a busy wait: the old design parked every other lane on a mutex whose release
+/// needed an executor-driven drain, and a spin-instead-of-park variant starved the pool workers of
+/// CPU. The file-wide liveness invariant: no executor lane ever waits on progress that only another
+/// executor lane can make. Waiting on the queue is safe (producers are dedicated pool workers), and
+/// waiting on the coordinator mutex is safe (its holder only scatters on the pool, then publishes).
+class WaveJoinResult : public IJoinResult
+{
+public:
+    WaveJoinResult(
+        ProbeShared shared_,
+        WaveCoordinator & coordinator_,
+        std::mutex & window_mutex_,
+        std::vector<Block> & shared_window_,
+        size_t & shared_window_bytes_,
+        size_t probe_window_budget_)
+        : shared(std::move(shared_))
+        , coordinator(coordinator_)
+        , window_mutex(window_mutex_)
+        , shared_window(shared_window_)
+        , shared_window_bytes(shared_window_bytes_)
+        , probe_window_budget(probe_window_budget_)
+    {
+    }
+
+    /// The result owns nothing: waves belong to the coordinator (and their workers), and an abandoned
+    /// active wave is torn down by ~RadixHashJoin. An inert destructor is load-bearing — results are
+    /// destroyed in arbitrary order at pipeline teardown, possibly while another lane's wave still has
+    /// parked producers.
+    ~WaveJoinResult() override = default;
+
+    JoinResultBlock next() override
+    {
+        while (true)
+        {
+            std::shared_ptr<ActiveWave> wave;
+            {
+                std::lock_guard lock(coordinator.mutex);
+                if (!coordinator.active_wave)
+                {
+                    std::vector<Block> window;
+                    {
+                        std::lock_guard window_lock(window_mutex);
+                        if (shared_window_bytes >= probe_window_budget)
+                        {
+                            window.swap(shared_window);
+                            shared_window_bytes = 0;
+                        }
+                    }
+                    /// Below budget means another wave already took the rows this result was created
+                    /// for; whatever remains keeps accumulating for a later wave or the delayed flush.
+                    if (window.empty())
+                        return {Block{}, nullptr, true};
+                    coordinator.active_wave = startWave(std::move(window));
+                }
+                wave = coordinator.active_wave;
+            }
+
+            Block block;
+            if (wave->output_queue.pop(block))
+                return {std::move(block), nullptr, false};
+
+            /// Finished and empty. One lane tears the wave down; the others yield this quantum and
+            /// re-check once the winner has cleared it (bounded by the winner joining already-exiting
+            /// workers).
+            if (wave->torn_down.exchange(true))
+                return {Block{}, nullptr, false};
+
+            wave->joinWorkers();
+            {
+                std::lock_guard lock(coordinator.mutex);
+                if (coordinator.active_wave == wave)
+                    coordinator.active_wave.reset();
+            }
+            if (wave->exception)
+                std::rethrow_exception(wave->exception);
+            ProfileEvents::increment(ProfileEvents::RadixHashJoinProbeMicroseconds, wave->watch.elapsedMicroseconds());
+            /// Loop: start the next wave if a full window accumulated meanwhile, else report end.
+        }
+    }
+
+private:
+    /// Scatter the window and schedule the probe workers. Runs under the coordinator mutex: lanes
+    /// arriving meanwhile park there, waiting only on the pool-driven scatter. On failure — scatter
+    /// throw, or scheduleOrThrow stopping after k < threads workers — the worker count is corrected
+    /// for the never-scheduled remainder, the queue is finished-and-cleared so the k live workers
+    /// observe push() == false and exit, and the error propagates with the wave unpublished.
+    std::shared_ptr<ActiveWave> startWave(std::vector<Block> window)
+    {
+        auto wave = std::make_shared<ActiveWave>(shared, shared.threads);
+        {
+            ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+            wave->parts = scatterToPartitions(
+                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.pass_bits);
+        }
+        wave->drain_order = probeDrainOrder(wave->parts, shared.partition_joins);
+
+        {
+            std::lock_guard lock(wave->workers_mutex);
+            wave->active_workers = shared.threads;
+        }
+        size_t scheduled = 0;
+        try
+        {
+            for (; scheduled < shared.threads; ++scheduled)
+            {
+                shared.pool.scheduleOrThrow(
+                    [wave]
+                    {
+                        wave->worker();
+                    });
+            }
+        }
+        catch (...)
+        {
+            wave->output_queue.clearAndFinish();
+            wave->onWorkerExit(shared.threads - scheduled);
+            wave->joinWorkers();
+            throw;
+        }
+        return wave;
+    }
+
+    ProbeShared shared;
+    WaveCoordinator & coordinator;
+    std::mutex & window_mutex; /// State::window_mutex, guarding the two shared-window fields below
+    std::vector<Block> & shared_window;
+    size_t & shared_window_bytes;
+    const size_t probe_window_budget;
 };
 
 /// The final flush: the leftover probe window is scattered once (on the pool) and then probed by the
@@ -1020,6 +1172,27 @@ RadixHashJoin::RadixHashJoin(
 
 RadixHashJoin::~RadixHashJoin()
 {
+    /// A cancelled query can leave the active wave undrained, its workers parked on the full output
+    /// queue. Unpark and join them (per-wave, dropping the output) before anything else needs the
+    /// pool. Waves cannot exist without a pool.
+    if (state->pool)
+    {
+        std::shared_ptr<ActiveWave> wave;
+        {
+            std::lock_guard lock(state->wave.mutex);
+            wave.swap(state->wave.active_wave);
+        }
+        if (wave)
+        {
+            wave->output_queue.clearAndFinish();
+            wave->joinWorkers();
+            /// Nobody drained this wave to completion, so a stored probe error has no consumer;
+            /// the query is already ending, but leave a trace.
+            if (wave->exception)
+                tryLogException(wave->exception, getLogger("RadixHashJoin"), "Abandoned wave had failed: ");
+        }
+    }
+
     /// Hash-table destruction can be very time-consuming; parallelise it over the pool, matching
     /// ConcurrentHashJoin's teardown.
     if (!state->pool || state->partition_joins.empty())
@@ -1042,8 +1215,15 @@ RadixHashJoin::~RadixHashJoin()
     catch (...)
     {
         tryLogCurrentException(__PRETTY_FUNCTION__);
-        if (state->pool)
-            state->pool->wait();
+        try
+        {
+            if (state->pool)
+                state->pool->wait();
+        }
+        catch (...) /// wait() rethrows escaped job exceptions; nothing may escape a destructor
+        {
+            tryLogCurrentException(__PRETTY_FUNCTION__);
+        }
     }
 }
 
@@ -1260,7 +1440,6 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t /*lane*/)
             block.setColumns(columns);
     }
 
-    std::vector<Block> window;
     {
         std::lock_guard lock(state->window_mutex);
         if (!state->left_ready)
@@ -1274,8 +1453,6 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t /*lane*/)
         state->window_bytes += appended_bytes;
         if (state->window_bytes < state->probe_window_budget)
             return IJoinResult::createFromBlock(Block{});
-        window.swap(state->window_blocks);
-        state->window_bytes = 0;
     }
 
     ProbeShared shared{
@@ -1288,8 +1465,16 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t /*lane*/)
         state->fanout,
         state->pass_bits};
 
-    std::unique_lock<std::mutex> wave_lock(state->wave_mutex);
-    return std::make_unique<WaveJoinResult>(std::move(shared), std::move(window), std::move(wave_lock));
+    /// The window is not swapped here: the result stays weightless until its next() either starts a
+    /// wave from the shared window or joins in draining the wave someone else started. Meanwhile this
+    /// lane keeps the result and pulls no further input, which bounds the shared window's overshoot.
+    return std::make_unique<WaveJoinResult>(
+        std::move(shared),
+        state->wave,
+        state->window_mutex,
+        state->window_blocks,
+        state->window_bytes,
+        state->probe_window_budget);
 }
 
 IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
@@ -1307,6 +1492,15 @@ IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
     }
     if (window.empty() || !state->left_ready || state->build_rows.load(std::memory_order_relaxed) == 0)
         return {};
+
+    /// A transform cannot finish while it still holds an undrained wave result, and the delayed flush
+    /// starts only after every transform finished, so no wave is active here. Scattering on the shared
+    /// pool while a wave still held workers parked on its full queue would wait forever; catch any
+    /// future wiring change that makes this reachable.
+    {
+        std::lock_guard wave_lock(state->wave.mutex);
+        chassert(!state->wave.active_wave);
+    }
 
     /// The scatter is a sub-phase of the overall radix probe time.
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
