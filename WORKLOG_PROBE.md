@@ -379,3 +379,23 @@ analysis in REPORT_PROBE.md): pipelining the next wave's scatter under the curre
 drain — blocked tonight by pool-capacity coupling (wave workers hold all pool slots while
 push-blocked, so scatter sub-jobs cannot run until the drain tail) and the associated
 liveness/teardown redesign.
+
+### Timestamp correction (recorded 2026-07-14 22:02 host time)
+The narrative timestamps written for E2's gates through E5's result ("2026-07-14 22:20/22:45",
+"2026-07-15 00:05/00:10/00:40/01:00") were estimates and drifted ~3 h ahead of host time. The
+authoritative sequence and times are in `tmp/rhj-probe-perf/u2/driver.log` (e.g. E4 pairs ran
+21:19–21:45, E5 pairs 21:53–21:56 on 2026-07-14) and the shell logs cited per entry. Ordering
+of entries (preregistration before implementation) is unaffected; it is fixed by the git
+history of this file and the build/measurement log mtimes.
+
+## Unit 3 — consolidation (host times 2026-07-14 22:05–22:35)
+Final tip `ea8da8ed924`; fresh rebuild byte-identical to the E2 candidate `4b55481c22d0…`
+(`build/reldeb/build_final_tip.log`), so all E2 paired measurements are measurements of the
+shipped binary. Gates, in order (all green; raw outputs under `tmp/rhj-probe-perf/u3/`):
+correctness verification (A cap 600M PASS, B cap 20M PASS, C full-size assertions +
+SKIP-by-cap with the 120 GB sort rationale, wide-shape-at-D67 cap 300M PASS; all summaries
+`fallback=0 invalid=0 errors=0 hash_mismatch=0`); liveness 10/10; large lifecycle gate exit 0
+with exact counts; early-termination 6/6; stateless 5/5 against the scratch server with
+`/proc/<pid>/exe` hash-verified. A first correctness-gate invocation failed on a missing
+output directory before any query ran (`bhtuvpw8e`) and was rerun (`bk1zfk810`) — plumbing
+only, recorded. Cumulative comparison and evidence matrix written into REPORT_PROBE.md.

@@ -3,13 +3,22 @@
 Branch `radix-join-probe-perf`, baseline `b1fa64c7286`. Full per-iteration record:
 `WORKLOG_PROBE.md`. Raw artifacts: `tmp/rhj-probe-perf/`.
 
-## Verdicts (updated as units complete)
+## Verdicts
 
 - **Unit 0 (wait and orient): DONE.** WAIT MODE honored (poll log
   `tmp/rhj-probe-perf/wait_poll.log`); see deviations.
-- **Unit 1 (accounting): tables below; instrumentation-overhead gate PENDING.**
-- **Unit 2 (experiments): not started.**
-- **Unit 3 (consolidation): not started.**
+- **Unit 1 (accounting): GREEN.** Delta-over-floor attribution 91.0–104.3% on 14/15 cells
+  (B@T96: 85.4% of a 25 ms delta, residual explicitly attributed to the 1 ms `--time`
+  quantization); probe-period tiling 98.8–101.3% everywhere; instrumentation overhead within
+  band on all five paired subset cells.
+- **Unit 2 (experiments): DONE — five preregistered, implemented, measured.** One kept:
+  E2 wave-worker output merging, target cell **−33.9%** plus four protected cells improved
+  outright; E1/E3/E4/E5 refuted within band and reverted (numbers in their sections).
+- **Unit 3 (consolidation): GREEN.** Correctness (hash verification PASS at full size on two
+  shapes and on the wide shape at quarter scale; assertions PASS everywhere; zero mismatches/
+  errors/fallbacks), liveness 10/10, lifecycle large-shape PASS with exact counts,
+  early-termination 6/6, stateless 5/5 — all on the final binary `4b55481c…`.
+- **Independent verification:** appended at the bottom when complete.
 
 ## Flags / deviations (none hidden)
 
@@ -143,8 +152,113 @@ Hypothesis verdicts and refuters: WORKLOG_PROBE.md Unit 1. Instrumentation overh
 
 ## Unit 2 — experiments
 
-(preregistrations and results land here)
+Five experiments, each preregistered in `WORKLOG_PROBE.md` before implementation (the file's
+git history orders preregistration ahead of each implementation commit). Paired protocol
+throughout: 5 position-balanced invocations per binary per cell (order R C C R R C C R R C),
+band = max(5%, 1 stdev) of the reference samples, judged on `radix_join` `median_ms`;
+references rebuilt fresh in-session and hashed (builds were byte-deterministic:
+the fresh tip rebuilds reproduced `cf662d4c…` and `4b55481c…` exactly).
+
+### E1 — disable the radix-only lazy-columns-indexing default: REFUTED
+Motivation: consumer-side drain cost ~1.6–1.9 us/KB; `RadixHashJoin` alone defaults
+`enable_lazy_columns_indexing = true` (planner opt-in only for every other join), wrapping
+left columns as `ColumnReplicated` whose unwrap was suspected on the consumer crew.
+Change: one-line default flip (candidate `e8b66689…`). Result: C@T96 ref median 11472
+(sd 202) -> cand 11606, **+1.17%, within band** -> reverted. Value: eliminated
+materialization placement as the drain mechanism.
+
+### E2 — merge wave-worker output blocks before queueing: KEPT (commit `a8b4c058483`)
+Motivation: exactly one output block per (partition, wave) — 393216 blocks of ~2.6k rows at
+C@T96 — with ~235 us consumer turnaround per popped block (~6.6 us inside `next`), producers
+89% blocked on the full queue. Change: per-worker merge to 65409 rows / 2 MiB before pushing
+(threads > 1 only; T1 is producer-critical). Result (candidate `4b55481c…`):
+**target C@T96 11785 -> 7790 ms (−33.9%)**; floors all green with outright wins on
+D=67108864 r=2 T96 (−5.66%) and T64 (−5.49%), D=268435456 r=2 T96 (−7.61%) and r=4 bp=pp=1
+T96 (−9.09%); T32 −2.56%, T16 +1.01%, T1 +0.29% within band. Liveness oracle 10/10;
+early-termination 6/6. Mechanism verified with the instrumented build: pushes 393216 -> 50881,
+drain wall 7712 -> 4313 ms.
+
+### E3 — LEAF_TARGET_BYTES 1 MiB -> 2 MiB (single-pass scatter for A-class fanouts): REFUTED
+Motivation: wave scatter = 25% of wall post-E2 on A and C; fanout 16384 forces two radix
+passes on the A shape. Change: one constant (candidate `83a4dff7…`). Result: target A@T96
+ref 1339 (sd 10.9) -> cand 1296, **−3.21%, within the 5% band** -> reverted per protocol.
+LEAD: all five candidate samples sit below all five reference samples — a real-looking
+sub-band effect; the [7,7] two-pass plan runs below the SWWC fanout threshold while the
+single [13] pass runs above it, so pass elimination bought less than the traffic model
+predicted.
+
+### E4 — MERGE_TARGET_BYTES 2 MiB -> 8 MiB (consumer-quantum discriminator): REFUTED
+Motivation: post-E2, were consumers still a partial bound? Change: one constant (candidate
+`308b6596…`). Result: C@T96 ref 7761 (sd 77.4) -> cand 7663, **−1.26%, within band** ->
+reverted. Discrimination value: a 4x further quantum reduction moved the wall ~1% — the
+post-E2 drain is **producer-bound**; consumer-side tuning is exhausted.
+
+### E5 — delayed-path output merging: REFUTED
+Motivation: the delayed path returns one per-partition block per `nextImpl` call; at B@T96
+the delayed drain is 15% of the wall with lanes half-idle inside the stream. Change: the E2
+merge applied inside `RadixDelayedBlocks::nextImpl` (candidate `e9f082a1…`). Result: B@T96
+ref 84 (sd 1.3) -> cand 82, **−2.38%, within band** -> reverted (delayed drain is partially
+leaf-bound and small in absolute terms).
+
+## Cumulative comparison (final branch state vs baseline vs `parallel_hash`)
+
+Kept set = E2 only; final tip `ea8da8ed924` rebuilds byte-identical to the E2 candidate
+`4b55481c…`, so the numbers below are measurements of the shipped binary
+(`tmp/rhj-probe-perf/u2/e2_*_{ref,cand}_*.log`; `parallel_hash` medians from the same
+harness invocations, pooled across both binaries' logs since the join under test does not
+affect them):
+
+| cell | baseline radix (`cf662d4c`) | kept set radix (`4b55481c`) | delta | `parallel_hash` |
+|---|---|---|---|---|
+| D=67108864 r=2 bp=pp=1 T96 | 371 | 350 | −5.66% | 784 |
+| D=67108864 r=2 bp=pp=1 T64 | 401 | 379 | −5.49% | 723 |
+| D=67108864 r=2 bp=pp=1 T32 | 663 | 646 | −2.56% | 802 |
+| D=67108864 r=2 bp=pp=1 T16 | 895 | 904 | +1.01% | 1307 |
+| D=67108864 r=2 bp=pp=1 T1 | 14164 | 14205 | +0.29% | 14246 |
+| D=268435456 r=2 bp=pp=1 T96 | 1433 | 1324 | −7.61% | 2588 |
+| D=268435456 r=4 bp=pp=1 T96 | 2705 | 2459 | −9.09% | 3948 |
+| D=268435456 r=4 bp=pp=7 T96 (target) | 11785 | 7790 | −33.90% | 16914 |
+
+`radix_join` beats `parallel_hash` on every protected cell; the kept set widens the
+wide-payload margin to 2.17x.
+
+## Risk-accepted leads (not attempted or sub-band)
+
+1. **Pipelining the next wave's scatter under the current wave's drain** — the largest
+   remaining lever (scatter is a serial 19–25% of wall: 1949 ms at C@T96, 339 ms at A@T96
+   post-E2). Not attempted: the naive design is blocked by pool-capacity coupling (all
+   `max_threads` pool slots are held by wave workers parked on the full output queue, so
+   scatter sub-jobs queued on the same pool cannot run until the drain tail) and needs a
+   worker-budget split plus staged-wave teardown paths in `~RadixHashJoin`; liveness analysis
+   sketched in WORKLOG_PROBE.md. Producers measured ~50% idle post-E2 — capacity for a split
+   exists.
+2. **LEAF_TARGET_BYTES 2 MiB** (E3): consistent −3.2% at A@T96, sub-band; worth a sweep
+   where a 3% effect can clear a noise band, jointly with the SWWC fanout threshold.
+3. **T1 in-join scan excess** (Unit 1): the probe scan runs 16–30% slower inside the join
+   than scan-only at T1 (A +3.8 s, C +23.2 s), vanishing at T>=16 — unexplained interleaving
+   effect, diagnosis would start with alternating-phase cache/TLB behavior.
+4. Wave-drain producer work is now half leaf match, half merge-copy + materialization
+   (220 s CPU-sum at C@T96); fusing the materialize+append double copy would need an
+   append-from-index primitive on `IColumn` (out of scope here).
 
 ## Evidence matrix
 
-(final gate table lands here in Unit 3)
+All rows measured on the final branch state `ea8da8ed924` (binary `4b55481c22d0…`, byte-identical
+fresh rebuild, `build/reldeb/build_final_tip.log`); raw outputs under `tmp/rhj-probe-perf/`.
+
+| Criterion | Gate invocation (command) | Result (raw) | Verdict |
+| --- | --- | --- | --- |
+| Accounting recomputes | `python3 tmp/rhj-probe-perf/u1/acct_report.py tmp/rhj-probe-perf/u1/logs` over `acct_*.err` + `floor_*.err` | attribution 91.0–104.3% (14/15 cells); B@T96 85.4% of 25 ms with residual attributed; tiling 98.8–101.3% | GREEN |
+| Instrumentation overhead | 5+5 paired, unmodified harness, cells A@{T1,T16,T96}, B@T96, C@T96 (`tmp/rhj-probe-perf/u1/overhead/verdicts.txt`) | −1.2%…+1.6%, all within max(5%, 1 sd) | GREEN |
+| ≥5 preregistered experiments | WORKLOG_PROBE.md entries (preregistration precedes implementation in git history) | E1 −1.17% refuted; E2 −33.9% KEPT; E3 −3.21% refuted; E4 −1.26% refuted; E5 −2.38% refuted | GREEN |
+| Kept win (E2 target) | `run_paired.sh e2_C_T96 …` D=268435456 r=4 bp=pp=7 T96, 5 pairs (`tmp/rhj-probe-perf/u2/e2_C_T96_*.log`) | ref median 11785 (sd 137.7) → 7790; band 589.2; every cand sample < every ref sample | GREEN (WIN) |
+| Protected floors | `run_floors_e.sh e2 …` 7 cells (`tmp/rhj-probe-perf/u2/e2_floors_verdicts.txt`) | D67 T96 −5.66%, T64 −5.49%, T32 −2.56%, T16 +1.01%, T1 +0.29%; D268 r2 T96 −7.61%; r4 T96 −9.09% — no red | GREEN |
+| Correctness (verification on) | harness runs with `--verify-max-output-rows` raised (A 600M, B 20M, wide-at-D67 300M) + full-size C at default cap (`tmp/rhj-probe-perf/u3/verify{A,B,Cfull,Cscaled}.log`) | verify PASS/PASS/PASS + SKIP-by-cap (documented); assertions PASS ×4; `fallback=0 invalid=0 errors=0 hash_mismatch=0` ×4 | GREEN |
+| Liveness oracle | `ninja -C build/asan unit_tests_dbms` then 10× `timeout --signal=TERM --kill-after=10s 30s build/asan/src/unit_tests_dbms --gtest_filter=RadixHashJoin.ConcurrentJoiningQuantumDoesNotWaitForPreviousWave` (`build/asan/u3_liveness_run_{1..10}.log`) | 10/10 rc=0, each log exactly `[  PASSED  ] 1 test` | GREEN |
+| Lifecycle (large shape) | `tmp/radix-wave-deadlock/run_large_fixed_gate.sh build/reldeb/programs/clickhouse 268435456 4` | exit 0; `Assertions: PASS`; probe/build/joined = 1073741824/268435456/1073741824; clean summary (~60 s) | GREEN |
+| Lifecycle (early termination) | `tmp/radix-wave-deadlock/run_early_termination_gate.sh build/reldeb/programs/clickhouse` | 6/6: 3× early_stop PASS (exit 0, LIMIT row), 3× exc PASS (exit 241, `MEMORY_LIMIT_EXCEEDED`), nothing left running | GREEN |
+| Stateless tests | scratch server on 9131/8161 (`/proc/<pid>/exe` sha256 = `4b55481c…`), `CLICKHOUSE_PORT_TCP=9131 CLICKHOUSE_PORT_HTTP=8161 ./tests/clickhouse-test -b build/reldeb/programs/clickhouse 04508… 04512…` (`tmp/rhj-probe-perf/u3/stateless.log`) | `5 tests passed. 0 tests skipped. 1.60 s elapsed` | GREEN |
+
+## Independent verification
+
+(pending — appended when complete)
