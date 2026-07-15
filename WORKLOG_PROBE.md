@@ -1,0 +1,422 @@
+# WORKLOG_PROBE — `RadixHashJoin` probe-time accounting and optimization campaign
+
+Branch `radix-join-probe-perf`. Artifacts under `tmp/rhj-probe-perf/`.
+Session: claude-e7403e25 (unattended).
+
+## Unit 0 — wait and orient
+
+### Iteration 0.1 (2026-07-14 ~15:37–18:35)
+Goal: honor WAIT MODE while the T16 campaign ran in this checkout; orient; plan.
+
+Wait protocol evidence (`tmp/rhj-probe-perf/wait_poll.log`, one line per 10-min poll):
+- 15:37 first poll: no `REPORT_T16.md` anywhere (A, B empty); T16 session claude-ffd8242a
+  ACTIVE with `Status: in-progress` (C); host quiet at that instant (D). WAIT MODE entered.
+- 15:39–17:39 poller v1 (`tmp/rhj-probe-perf/wait_poll.sh`): T16 ran benchmarks throughout
+  (its harness invocations visible in the poll log's `busy:` lines).
+- 17:39 poller v1 exited on the mission's literal check B (`REPORT_T16.md` present with a
+  verdict line) + quiet x2. **Premature**: the T16 session was still active — its state file
+  demanded an idle host for its independent-verification subagent's benchmarks, and its work
+  was uncommitted. DEVIATION (conservative): stayed in WAIT MODE per "never barge into a live
+  benchmark"; launched stricter poller v2 (`wait_poll2.sh`: exit only on report committed |
+  `Status: done` | state stale >45 min with verdict present, AND quiet x2).
+- 17:41–18:01 verification-subagent floor re-runs observed; 18:01 last host activity.
+- 18:31 poller v2 exited: state stale 52 min + quiet x3. agent-memory shows the T16 session
+  **interrupted** (not merely idle) — it cannot return on its own. Its independent
+  verification never appended a verdict; its remedy + report + worklog were left uncommitted.
+
+Orientation performed during the wait (all read-only; notes in
+`tmp/rhj-probe-perf/orientation.md`, plan in `tmp/rhj-probe-perf/instrumentation_plan.md`):
+read `RadixHashJoin.cpp` in full (pre- and post-remedy), `ConcurrentBoundedQueue.h`,
+`ColumnsScatter.h`, settings defaults, delayed-path pipeline wiring; three read-only Explore
+subagents digested prior probe art, harness semantics, and the wave-deadlock campaign's gates.
+
+### Baseline decision (ambiguity rule — recorded)
+The mission's rule: branch from the T16 task branch tip if it landed commits with a SHIP or
+FIX-THEN-RESHIP verdict, else from `radix-join-bandwidth-model` tip. The T16 task landed **no
+commits and no final verdict** (session interrupted after its own evidence matrix was fully
+green, before the independent-verification verdict was appended). Branching from the clean tip
+while discarding the worktree remedy would violate the mission's other instruction ("do not
+undo its remedy"), and the remedy modifies exactly the machinery this campaign measures.
+
+Decision: branch `radix-join-probe-perf` from `radix-join-bandwidth-model` tip `b8557c1f56b`
+(per the rule), then **adopt the uncommitted T16 remedy verbatim as the first, attributed
+commit** `b1fa64c7286` (includes their `REPORT_T16.md`/`WORKLOG_T16.md`, unmodified, with the
+verification section still reading "pending"). Provenance verified before adopting:
+- Worktree diff was `RadixHashJoin.cpp` +74/−6 only, matching the remedy described in
+  `REPORT_T16.md`; preserved at `tmp/rhj-probe-perf/adopted/t16_remedy_adopted.patch`
+  (sha256 `95828ded7dbf73d7c231baeec3332df65b9ab2ddb1f8e0a9359200b5077ed148`).
+- `build/reldeb/programs/clickhouse` hashed to
+  `cf662d4c9619c7c26b1a713b57353a9024749bc9ad1d6b70f767d3bbe926bb5a` — exactly the candidate
+  binary their evidence matrix gated, i.e. that binary was built from this exact source.
+FLAG (goes at top of REPORT_PROBE.md): the adopted remedy carries green gates from its own
+campaign but a pending independent verification; this campaign's own Unit-3 gate set
+(liveness oracle, lifecycle, stateless, correctness verification, protected cells including
+D=67108864 r=2 T16) re-validates it independently.
+
+Baseline: **`b1fa64c7286`** (= `b8557c1f56b` + adopted remedy). Reference binaries for all
+paired protocols are fresh in-session builds of this tip, hashed at measurement time.
+
+### Plans fixed in Unit 0
+- Accounting model v2 (post-remedy semantics): per-wave wall segments — refill gap, scatter
+  (serial, under coordinator mutex), drain (overlaps scan via surplus lanes), teardown — from
+  per-wave stderr records; within-drain worker split (leaf match vs queue-push wait) and
+  lane-side counters (pop wait, in-next time, empty quanta); delayed path: flush scatter wall +
+  per-call leaf/pending counters; rows-per-path. Extends the T16 campaign's instrumentation
+  (`tmp/t16/instr.patch`, `analyze_instr.py`) — same RADIX* stderr-line pattern.
+- Input-scan floor (harness has no floor mode): per cell, median of >=3 scan-only runs of the
+  probe subquery and build subquery (identical PREWHERE/projection/settings/threads,
+  `FORMAT Null`), floor = build_scan + probe_scan.
+- Instrumented accounting runs via a runner importing the harness module for byte-identical
+  SQL; protected-cell gates use the unmodified harness + `tmp/t16/judge.py` semantics
+  (band max(5%, 1 stdev), radix_join `median_ms`).
+- Accounting cells: A wave-dominated D=268435456 r=2 bp=pp=1; B delayed-dominated D=16777216
+  r=1 bp=pp=1 (probe ~256 MiB < 512 MiB budget floor; validate with rows-per-path counters);
+  C wide D=268435456 r=4 bp=pp=7. Threads {1,16,32,64,96} each.
+- Overhead check (instrumented vs clean): full paired protocol (>=5+5 position-balanced) on a
+  regime-spanning subset — A@T16, A@T96, B@T96, C@T96, A@T1 — subset choice documented here;
+  remaining cells rely on these bounds (flagged in the report).
+- Unit-2 idea space: orchestration-level only (leaf `HashJoin` internals are out of scope;
+  prior AMAC/bulk-gather wins live there and are not candidates).
+
+## Unit 1 — probe-time accounting
+
+### Iteration 1.1 — instrumentation (2026-07-14 18:35–18:49)
+- Throwaway branch `radix-join-probe-instr` off task-branch tip `4f0ef35d365`; instrumentation
+  commit `06e70fea709` (RadixHashJoin.cpp only): per-wave stderr records `RADIXSTART`/
+  `RADIXWAVE2` (created/publish/scatter/finish/teardown steady-clock timestamps, rows in/out,
+  worker leaf-match vs queue-push-wait split, pops, attaches, losers, window-at-end),
+  `RADIXBUDGET`, `RADIXFLUSH` (delayed-flush size + scatter wall), `RADIXDELAYED` (per-stream
+  drain totals incl first/last call timestamps, leaf time, pending-mutex wait), `RADIXTOTALS`
+  (lane-side per-query totals: in-next time, coordinator-mutex wait, pop wait, quantum counts,
+  window-append time), `RADIXTEARDOWN` (parallel leaf destruction wall). No per-row timing;
+  finest granularity is per block/partition/wave. First build failed (`AcctQuantum` aggregate
+  init vs explicit `Stopwatch` ctor), fixed; rebuild green with 0 warnings
+  (`build/reldeb/build_instr_probe{,2}.log`).
+- Binaries: instrumented sha256 `4ddd1a81d5ae…` (`tmp/rhj-probe-perf/bin/instr/clickhouse`),
+  clean baseline `cf662d4c9619…` (`tmp/rhj-probe-perf/bin/baseline/clickhouse`).
+- Behavior-neutrality note: one instrumentation edit initially moved the delayed-path rejoin
+  `joinBlock` outside `pending_mutex`; reverted before building (baseline holds the lock).
+
+### Iteration 1.2 — accounting matrix (18:49–19:19)
+- SQL generated by `tmp/rhj-probe-perf/u1/gen_cells.py` importing the harness module
+  (byte-identical `measurement_script` SQL; dataset metadata bucket_width=4194304,
+  max_cardinality=524288000). Cells: A = D=268435456 r=2 bp=pp=1 (wave-heavy), B = D=16777216
+  r=1 bp=pp=1 (probe 268 MB < 512 MiB budget floor -> 100% delayed path, confirmed by
+  counters), C = D=268435456 r=4 bp=pp=7 (wide), each at T {1,16,32,64,96}; 1 warmup + 3 timed
+  runs per cell (C_T1: 2). Floors: the probe and build subqueries scan-only with identical
+  PREWHERE/projection/SETTINGS, `FORMAT Null`, same warmup+runs, on the CLEAN baseline binary.
+- Runner `tmp/rhj-probe-perf/u1/run_matrix.sh`: 45/45 invocations rc=0
+  (`tmp/rhj-probe-perf/u1/logs/matrix_driver.log`); raw logs `acct_<cell>.err`,
+  `floor_<cell>_{probe,build}.err` under `tmp/rhj-probe-perf/u1/logs/`.
+- Analyzer `tmp/rhj-probe-perf/u1/acct_report.py` (regenerate:
+  `python3 tmp/rhj-probe-perf/u1/acct_report.py tmp/rhj-probe-perf/u1/logs`); output snapshot
+  `tmp/rhj-probe-perf/u1/acct_report_full.txt`. One fix after first full run: the
+  "in-join scan excess over floor" term (pure-scan segments exceeding the floor at T1) was
+  initially subtracted; it is a genuine delta component (the scan runs slower interleaved
+  with join phases) and is now added.
+
+### Iteration 1.2 results
+- Timeline tiling (probe period from `RADIXBUDGET` to `RADIXTEARDOWN`, telescoping segments):
+  98.8–101.3% coverage on all 15 cells.
+- Delta-over-floor attribution coverage: 91.0–104.3% on 14/15 cells. B_T96: 85.4% of a 25 ms
+  delta — the 3.7 ms residual is attributed to the client `--time` 1 ms quantization and
+  run-to-run swing (timed walls 77/85/102 ms); MARKED as noise-residual, not unknown work.
+- Hypothesis verdicts (preregistered refuters in tmp/rhj-probe-perf/instrumentation_plan.md):
+  * H1 consumer-quantum-bound drain: CONFIRMED where drain is exposed. C_T96: workers spend
+    89% of drain CPU blocked on the full queue (push-wait 662 s vs match 78 s CPU-sum);
+    393216 pops over 7.7 s drain with crew 12 = ~235 us per consumer quantum, of which only
+    ~6.6 us inside `next` — the rest is executor/downstream turnaround.
+  * H2 scatter share: CONFIRMED material. Wave scatter is a serial wall segment (lanes park on
+    the coordinator mutex: 194 s CPU-sum at C_T96): A 14–24% of wall, C 19–22%. Fanout 16384
+    (A) / 32768 (C) forces 2 radix passes (per-pass cap 8192) — window bytes traversed twice.
+  * H3 teardown/losers: REFUTED as material — wave teardown <= 38 ms, loser quanta <= 63,
+    weightless quanta <= 12 on every cell.
+  * H4 wide-payload gather dominating drain: REFUTED at orchestration level — producers
+    (leaf match+gather) are mostly idle/blocked; the drain limiter is consumer-side.
+  * H5 output block granularity: CONFIRMED as the root cause behind H1 — exactly one output
+    block per (partition, wave): A 9.4k rows/block (fanout 16384), C 2.6k rows/block
+    (fanout 32768); C pays 393216 consumer quanta per query.
+  * H6 delayed-path contention: REFUTED — pending-mutex wait <= 0.1 ms everywhere; delayed
+    drain 13–33 ms on B, 247–327 ms on C (~2% of wall).
+  * H7 window-append cost: REFUTED as material — <= 1.6 s CPU-sum across 96 lanes (C_T96),
+    trivial per lane.
+  * New (unhypothesized): in-join scan excess at T1 — the probe scan takes 3.8 s (A) / 23.2 s
+    (C) longer inside the join than the scan-only floor at T1; at T>=16 the effect vanishes.
+- Row shares wave/delayed: A ~86%/14%, C ~95.5%/4.5%, B 0%/100%.
+- Instrumentation overhead check: RUNNING (paired 5+5 position-balanced, unmodified harness,
+  cells A_T96/B_T96/C_T96/A_T16/A_T1, `tmp/rhj-probe-perf/u1/overhead/`, judge =
+  `tmp/t16/judge.py`). Gate decision recorded when done.
+
+## Unit 2 — preregistered experiments
+
+### E1 preregistration — worker-side output block merging (written BEFORE implementation)
+Preregistered: 2026-07-14 ~19:30, before any E1 code was written. Implementation follows only
+after the Unit-1 overhead gate is green.
+
+- Motivating Unit-1 evidence (tmp/rhj-probe-perf/u1/acct_report_full.txt): wave-drain wall is
+  consumer-quantum-bound where exposed. C_T96: 393216 output blocks = one per
+  (partition, wave) at ~2.6k rows each; consumers spend ~235 us per popped block (~6.6 us of
+  it inside `next`), drain = 7712 ms = 66% of an 11646 ms wall, drain-beyond-scan 3998 ms;
+  workers are 89% blocked on the full queue (push-wait 662 s vs match 78 s CPU-sum) — i.e.
+  producers have massive idle capacity while consumers are quantum-starved. Same pattern at
+  C_T32/C_T64 (drain-beyond-scan 4410/3799 ms) and C_T16 (4520 ms).
+- Mechanism: in `ActiveWave::worker`, accumulate leaf output blocks into a per-worker merge
+  buffer and push merged blocks of up to 65409 rows / 2 MiB (whichever first), flushing the
+  remainder at worker exit. Only when `threads > 1`: at T1 the drain is producer-bound
+  (A_T1: drain 14440 ms ~= match 14089 ms; the consumer pop-waits 13.6 s), so the extra
+  producer-side copy would be pure cost on a protected T1 cell.
+- Expected effect: C_T96 wall improves >= 10% (drain quanta drop ~6x; model predicts drain
+  7.7 s -> ~1.5-4.5 s => wall -25% +- wide); C_T16/32/64 improve beyond band; A and B cells
+  within band (A drain is scan-hidden at T>=64, producer-limit-adjacent at T16; B has no
+  waves). Memory overhead bounded: <= (2T+1 + T) x 2 MiB ~= 0.6 GiB at T96.
+- Gate invocation (paired protocol, band max(5%, 1 stdev), >= 5 position-balanced pairs,
+  reference = task-branch tip rebuilt fresh in-session and hashed):
+  target cell `--cardinalities 268435456 --ratios 4 --build-payload-columns 7
+  --probe-payload-columns 7 --threads 96`; protected floors D=67108864 r=2 bp=pp=1
+  T{1,16,32,64,96}, D=268435456 r={2,4} bp=pp=1 T96, D=268435456 r=4 bp=pp=7 T96 (the last
+  doubles as the target cell); liveness oracle 10/10 + early-termination gate 6/6 before any
+  keep decision.
+- Refuting outcome: C_T96 median within band of reference -> the ~235 us/quantum is not
+  fixed-overhead-dominated (downstream is per-row/per-byte bound) -> REVERT and record. Any
+  protected floor red -> REVERT regardless of target-cell win.
+
+### Preregistration amendment (before any implementation)
+Post-preregistration static analysis of the drain diagnostics reinterprets the consumer
+quantum cost: per-quantum time scales with block BYTES (~1.6-1.9 us/KB on both A and C), and
+the blocks in the wave queue carry lazily-replicated LEFT payload columns. `RadixHashJoin`
+hard-codes `enable_lazy_columns_indexing = true` (RadixHashJoin.cpp State default) — unlike
+`HashJoin`/`parallel_hash` (default false; only the planner pass
+`optimizeJoinLazyIndexing.cpp` enables it, and only under a small LIMIT/Sorting or a stacked
+join). With m=1 identity replication, `HashJoinResult` (`appendRightColumns`,
+`force_lazy_replication` at HashJoinResult.cpp:189-207) wraps every left column as
+`ColumnReplicated`, and the full-column conversion at :319-324 is skipped — so the unwrap
+(index gather) happens downstream on the FEW consumer lanes while the 96 producers idle.
+Reordering (neither experiment implemented yet; the block-merge preregistration above is
+retained verbatim and renumbered E2):
+
+### E1 preregistration (revised) — disable the radix-only lazy-columns-indexing default
+Preregistered before implementation, 2026-07-14 ~19:45.
+
+- Motivating evidence: (a) Unit-1 C_T96 drain diagnostics — 235 us per consumer quantum with
+  only 6.6 us inside `next`, producers 89% push-blocked, drain 66% of wall and
+  drain-beyond-scan ~4 s at T>=32 (tmp/rhj-probe-perf/u1/acct_report_full.txt); (b) consumer
+  quantum cost proportional to block bytes across shapes (A@T96 144 us over ~150 KB, C@T96
+  235 us over ~170 KB); (c) static: radix's default-true lazy indexing wraps left columns as
+  `ColumnReplicated` even for identity replication, deferring the gather to consumer lanes
+  (crew max(2, T/8)) — for `parallel_hash` the same queries run with lazy indexing OFF.
+- Mechanism: change `State::enable_lazy_columns_indexing` default in RadixHashJoin.cpp from
+  `true` to `false`. The planner still calls `setEnableLazyColumnsIndexing(true)` for the
+  genuinely-lazy cases (small LIMIT above, stacked join), identical to other join algorithms.
+  Left-column materialization then happens inside leaf `joinBlock`/`next` on the pool workers
+  (idle capacity) in the wave path; the delayed path materializes on the same lane as before.
+- Expected effect: C_T96 wall improves >= 10% (target cell); C_T16/32/64 improve; A cells and
+  B cells within band or better (A drain is scan-hidden; producers have headroom at every T
+  except T1 where threads=1 has no crew asymmetry — watch the protected D=67108864 T1 floor).
+- Gate invocation: as in the E2 entry above (paired protocol, target C-shape
+  `--cardinalities 268435456 --ratios 4 --build-payload-columns 7 --probe-payload-columns 7
+  --threads 96`; then all protected floors if the target wins; liveness + early-termination
+  gates before keep).
+- Refuting outcome: C_T96 within band -> consumer cost is not the lazy unwrap (or producer
+  materialization offsets it) -> revert and fall back to E2 (block merge) as the lever.
+
+### Unit-1 gate: accounting — GREEN (2026-07-14 20:27)
+- Phase tables recompute from raw logs (paths in REPORT_PROBE.md); attribution 91.0–104.3% on
+  14/15 cells; B_T96 85.4% of a 25 ms delta with the 3.7 ms residual explicitly attributed to
+  the 1 ms `--time` quantization.
+- Instrumentation overhead: paired 5+5 position-balanced, all five subset cells GREEN
+  (`tmp/rhj-probe-perf/u1/overhead/verdicts.txt`): A_T96 1447->1429 (-1.2%), B_T96 84->84,
+  C_T96 11790->11822 (+0.27%), A_T16 3438->3493 (+1.6%), A_T1 61409->60929 (-0.78%);
+  band max(5%, 1 stdev) in every cell.
+
+### E1 result — REFUTED, REVERTED (2026-07-14 20:55)
+Paired target cell C@T96 (order R C C R R C C R R C, logs `tmp/rhj-probe-perf/u2/e1_C_T96_*.log`):
+ref (fresh tip build, byte-identical to baseline `cf662d4c9619…`) 11818/11502/11472/11277/11391,
+median 11472, stdev 202; candidate (`e8b66689…`, lazy-indexing default false)
+11606/11604/11845/11364/11741, median 11606; delta +1.17%; band max(5%, 1 sd) = 573.6;
+verdict **NO-RESULT (within band)** — the preregistered refuting outcome. Reverted
+(`git checkout` of the one-line change); candidate binary preserved at
+`tmp/rhj-probe-perf/bin/e1_lazyoff/`.
+Interpretation: the per-quantum consumer cost is NOT the lazy left-column materialization
+(moving it to producers changed nothing) — consistent with a per-BLOCK executor turnaround
+cost (task re-scheduling and port round-trip per popped block), which is E2's premise. The
+byte-proportionality observed in Unit 1 was coincidental across two shapes (block bytes and
+count co-vary).
+
+### E2 result — target cell WIN (2026-07-14 21:30)
+Paired C@T96 (`tmp/rhj-probe-perf/u2/e2_C_T96_*.log`, order R C C R R C C R R C):
+ref 11498/11785/11831/11791/11646 median 11785 (sd 137.7); candidate (`4b55481c22d0…`,
+worker-side merge to 65409 rows / 2 MiB) 7945/7847/7790/7719/7755 median 7790;
+**delta −33.90%**, win threshold 11195.8 — every candidate sample beats every reference
+sample by ~3.7 s. Confirms the consumer-quantum-bound drain attribution (and E1's refutation
+of the materialization variant). Floors + liveness + early-termination gates next; keep
+decision only after all are green.
+
+### E2 floors — ALL GREEN, 4 outright wins (2026-07-14 22:20)
+`tmp/rhj-probe-perf/u2/e2_floors_verdicts.txt` (paired, band max(5%, 1 sd)):
+D=67108864 r=2 T96 371->350 (**-5.66%, WIN**), T64 401->379 (**-5.49%, WIN**),
+T32 663->646 (-2.56%, within band), T16 895->904 (+1.01%, within band),
+T1 14164->14205 (+0.29%, within band — the threads>1 guard holds);
+D=268435456 r=2 T96 1433->1324 (**-7.61%, WIN**); r=4 bp=pp=1 T96 2705->2459 (**-9.09%, WIN**).
+No floor red. Liveness oracle (asan) + early-termination gate next; commit only after both.
+
+### E2 keep gates — liveness 10/10, early termination 6/6 (2026-07-14 22:45) -> KEEP
+- `ninja -C build/asan unit_tests_dbms` clean (`build/asan/build_e2_asan.log`); 10 consecutive
+  runs of the deadlock oracle all rc=0 with exactly `[  PASSED  ] 1 test`
+  (`build/asan/e2_liveness_run_{1..10}.log`).
+- `tmp/radix-wave-deadlock/run_early_termination_gate.sh build/reldeb/programs/clickhouse`
+  (binary = E2 candidate `4b55481c22d0…`): 3x early_stop PASS (exit 0, LIMIT row), 3x exc PASS
+  (exit 241, `MEMORY_LIMIT_EXCEEDED` at client), nothing left running -> 6/6.
+Verdict: **KEEP** — committed as the E2 change.
+
+### E2 mechanism check (instr branch merged with E2; logs `tmp/rhj-probe-perf/u1/logs/acct_e2_*.err`)
+C@T96 (instrumented): pushes 393216 -> 50881, wave drain 7712 -> 4313 ms, wall 7884 ms —
+the quantum-count model verified directly. Post-E2 drain composition: producers now 53% busy
+(match+merge+materialize 220.6 s CPU-sum vs push-wait 196.5 s) and consumers HALF-IDLE
+(pop-wait 24.8 s across the crew of 12) — the drain flipped from consumer-quantum-bound to
+mixed/producer-side. `EXPLAIN PIPELINE` shows `SimpleSquashingTransform x 96` above the join;
+`Squashing::generateUsingOneMinBound` passes any block >= min_joined_block_size_bytes (512 KB
+default) through as a single chunk, and single-chunk squash is zero-copy (`IColumn::mutate` on
+refcount-1 columns) — E2's 2 MiB blocks already pass through.
+Post-E2 next-lever ranking (C@T96, wall 7884): wave scatter 1949 ms (24.7%) — the largest
+serial segment; drain 4313 ms (54.7%, mixed-bound); build 573 ms; delayed 269 ms; gaps 176 ms.
+A@T96: scatter 339 ms of 1340 ms (25.3%), drain scan-hidden.
+
+### E3 preregistration — LEAF_TARGET_BYTES 1 MiB -> 2 MiB (written BEFORE implementation)
+Preregistered 2026-07-14 ~23:30.
+- Motivating evidence: wave scatter is 25% of wall on both A@T96 (339 ms) and C@T96 (1949 ms)
+  post-E2; A-class fanouts exceed the 8192 per-pass cap (D=268435456 bp=1 -> fanout 16384),
+  forcing TWO radix passes — the window is read+written twice. With a 2 MiB leaf target,
+  D=268435456 bp=1 plans fanout 8192 = ONE pass (halves A-shape scatter traffic);
+  D=268435456 bp=7 goes 32768 -> 16384 (still 2 passes — C scatter roughly unchanged);
+  D=67108864 bp=1 goes 4096 -> 2048 (already single-pass; leaf working set grows ~1.5 MB,
+  which fits the Neoverse-V2 2 MB per-core L2). Leaf match may slow (bigger hash tables);
+  producers have idle capacity at T>=32, but at T1/T16 match is nearer the critical path.
+- Mechanism: one constant, `LEAF_TARGET_BYTES` 1<<20 -> 2<<20 in RadixHashJoin.cpp (planning
+  only; leaf configuration stays as-is).
+- Expected effect: target cell D=268435456 r=2 bp=pp=1 T96 improves >= 5% (scatter nearly
+  halves: ~170 of 1340 ms) — this is also a protected cell, so the floor set doubles as the
+  regression guard; C@T96 within band; D=67108864 T1/T16 floors are the match-slowdown
+  canaries.
+- Gate invocation: paired protocol as E2 (target `--cardinalities 268435456 --ratios 2
+  --build-payload-columns 1 --probe-payload-columns 1 --threads 96`); floors + liveness +
+  early-termination before keep.
+- Refuting outcome: target within band (scatter saving offset by slower leaf match), or any
+  floor red -> revert and record.
+
+### E3 result — NO-RESULT (within band), REVERTED (2026-07-15 00:05)
+Paired target A-shape D=268435456 r=2 bp=pp=1 T96 (`tmp/rhj-probe-perf/u2/e3_A_T96_*.log`):
+ref (tip with E2, `4b55481c22d0…`) 1353/1343/1323/1339/1337 median 1339 (sd 10.9); candidate
+(`83a4dff76176…`, LEAF_TARGET_BYTES 2 MiB) 1296/1311/1313/1284/1290 median 1296;
+delta **−3.21%**, win threshold 1272 — inside the 5% band, the preregistered refuting outcome.
+Reverted (one constant, `git checkout`). LEAD recorded: the effect looks real (all candidate
+samples below all reference samples) but sub-band; the single-pass scatter saved ~43 ms of
+the predicted ~170 ms — pass elimination bought less than the traffic model suggested (the
+[7,7] two-pass plan runs both passes below the SWWC fanout threshold, the single [13] pass
+above it; per-byte costs differ). Not kept per protocol; worth a future sweep on a host where
+a 3% wall effect can clear a band.
+
+### E4 preregistration — MERGE_TARGET_BYTES 2 MiB -> 8 MiB (written BEFORE implementation)
+Preregistered 2026-07-15 ~00:10.
+- Motivating evidence: post-E2 mechanism check (`acct_e2_C_T96.err`): 50881 pushes remain at
+  C@T96 with ~1 ms consumer turnaround per 2 MiB block; consumers are half-idle (pop-wait
+  24.8 s across the crew) and producers 53% busy — the drain looks producer-bound now, but a
+  4x further quantum reduction is the direct discriminator: if any consumer-side quantum
+  sensitivity remains, fewer/bigger blocks show it; if the drain is fully producer-bound,
+  nothing moves.
+- Mechanism: one constant, `MERGE_TARGET_BYTES` 2<<20 -> 8<<20 (rows cap 65409 then binds at
+  ~8.3 MiB for the C shape; A-shape blocks already row-capped at ~1 MiB, unaffected). Memory
+  bound: (2T+1 + T) x 8.3 MiB ~ 2.4 GiB at T96 — within the 100 GB gate budget.
+- Expected effect: C@T96 improves >= 5% if consumer quanta still bind; refuting outcome:
+  within band -> the drain is producer-bound post-E2 (settles the pipelining design input);
+  revert either way unless the win clears the band and floors hold.
+- Gate invocation: paired protocol, target `--cardinalities 268435456 --ratios 4
+  --build-payload-columns 7 --probe-payload-columns 7 --threads 96` vs the tip-with-E2
+  reference (`4b55481c22d0…`).
+
+### E5 preregistration — delayed-path output merging (written BEFORE implementation)
+Preregistered 2026-07-15 ~00:20, before any E5 code.
+- Motivating Unit-1 evidence: the delayed path returns exactly one per-partition block per
+  `nextImpl` call (B: 1024 blocks for 16.7M rows; C flush: 32768). On B@T96 the delayed drain
+  is 13.1 ms of an 85 ms wall (15%) with lanes only ~47% busy inside `nextImpl` (in_call
+  599 ms across 96 lanes) — consistent with per-call executor turnaround overhead, the same
+  mechanism E2 attacked on the wave path. At B@T16 the drain is leaf-work-bound instead
+  (in_call 480 ms / 16 lanes ~= 30 ms ~ the 32.7 ms wall), so no effect is expected there.
+- Mechanism: inside `RadixDelayedBlocks::nextImpl`, accumulate result blocks across the
+  work-stealing loop and return a merged block at >= MERGE_TARGET_ROWS / MERGE_TARGET_BYTES
+  (or at stream end), mirroring the wave-path merge. Same lane does the work either way; the
+  saving is fewer executor round-trips per byte.
+- Expected effect: B@T96 improves >= 5% (halving 13 ms of an 85 ms wall) — marginal by
+  design; B@T16 unchanged. Refuting outcome: B@T96 within band -> per-call turnaround is not
+  the binding cost on the delayed path (or the merge copy offsets it) -> revert.
+- Gate invocation: paired protocol, target `--cardinalities 16777216 --ratios 1
+  --build-payload-columns 1 --probe-payload-columns 1 --threads 96` vs the tip-with-E2
+  reference; floors + liveness + early-termination before any keep.
+
+### E4 result — NO-RESULT (within band), REVERTED (2026-07-15 00:40)
+Paired C@T96 (`tmp/rhj-probe-perf/u2/e4_C_T96_*.log`): ref (tip with E2) 7921/7761/7790/7733/
+7738 median 7761 (sd 77.4); candidate (`308b6596a85b…`, MERGE_TARGET_BYTES 8 MiB)
+7615/7722/7663/7722/7625 median 7663; delta **−1.26%**, win threshold 7372.9 — within band,
+the preregistered refuting outcome. Reverted. DISCRIMINATION VALUE: a 4x further reduction of
+consumer quanta moved the wall ~1% -> post-E2 the wave drain is **producer-bound** (leaf match
++ merge copy on the workers), not consumer-quantum-bound. Any further drain lever must attack
+producer-side work or overlap the scatter; consumer-side tuning is exhausted.
+
+### E5 result — NO-RESULT (within band), REVERTED (2026-07-15 01:00)
+Paired B@T96 (`tmp/rhj-probe-perf/u2/e5_B_T96_*.log`): ref (tip with E2) 82/84/85/85/83
+median 84 (sd 1.3); candidate (`e9f082a1c2a9…`, delayed-path merge) 81/85/85/82/80 median 82;
+delta **−2.38%**, win threshold 79.8 — within band, the preregistered refuting outcome.
+Reverted. Consistent with the delayed drain being partially leaf-bound even at T96 and only
+~15% of an already-small wall.
+
+### Unit 2 close-out
+Five preregistered experiments implemented and measured (preregistration demonstrably before
+implementation in this file's history): E1 lazy-indexing default (refuted, −1.17%… +band),
+E2 wave-worker output merging (**KEPT**: target −33.9%, four protected cells improved outright,
+committed `a8b4c058483`), E3 LEAF_TARGET_BYTES 2 MiB (refuted, −3.21% sub-band, lead),
+E4 merge target 8 MiB (refuted, −1.26% — discriminated the post-E2 drain as producer-bound),
+E5 delayed-path merging (refuted, −2.38%). Top risk-accepted lead (not attempted, design
+analysis in REPORT_PROBE.md): pipelining the next wave's scatter under the current wave's
+drain — blocked tonight by pool-capacity coupling (wave workers hold all pool slots while
+push-blocked, so scatter sub-jobs cannot run until the drain tail) and the associated
+liveness/teardown redesign.
+
+### Timestamp correction (recorded 2026-07-14 22:02 host time)
+The narrative timestamps written for E2's gates through E5's result ("2026-07-14 22:20/22:45",
+"2026-07-15 00:05/00:10/00:40/01:00") were estimates and drifted ~3 h ahead of host time. The
+authoritative sequence and times are in `tmp/rhj-probe-perf/u2/driver.log` (e.g. E4 pairs ran
+21:19–21:45, E5 pairs 21:53–21:56 on 2026-07-14) and the shell logs cited per entry. Ordering
+of entries (preregistration before implementation) is unaffected; it is fixed by the git
+history of this file and the build/measurement log mtimes.
+
+## Unit 3 — consolidation (host times 2026-07-14 22:05–22:35)
+Final tip `ea8da8ed924`; fresh rebuild byte-identical to the E2 candidate `4b55481c22d0…`
+(`build/reldeb/build_final_tip.log`), so all E2 paired measurements are measurements of the
+shipped binary. Gates, in order (all green; raw outputs under `tmp/rhj-probe-perf/u3/`):
+correctness verification (A cap 600M PASS, B cap 20M PASS, C full-size assertions +
+SKIP-by-cap with the 120 GB sort rationale, wide-shape-at-D67 cap 300M PASS; all summaries
+`fallback=0 invalid=0 errors=0 hash_mismatch=0`); liveness 10/10; large lifecycle gate exit 0
+with exact counts; early-termination 6/6; stateless 5/5 against the scratch server with
+`/proc/<pid>/exe` hash-verified. A first correctness-gate invocation failed on a missing
+output directory before any query ran (`bhtuvpw8e`) and was rerun (`bk1zfk810`) — plumbing
+only, recorded. Cumulative comparison and evidence matrix written into REPORT_PROBE.md.
+
+## Independent verification (host times ~22:15–23:29) — VERDICT: SHIP
+Fresh subagent, adversarial instructions; report `tmp/rhj-probe-perf/u3/independent_verification.md`.
+Target win reproduced −33.68% (ref 11789 -> cand 7818, full sample separation); floors green;
+byte-determinism proven for both binaries; Unit-1 tables recomputed by hand for two cells
+exactly; all gates green on the tip; reverts clean. Accepted findings (recorded in
+REPORT_PROBE.md): E5 preregistration is file-order but not commit-order attested (E1–E4 are
+commit-proven; E5 was refuted, nothing kept relies on it); the earlier timestamp-correction
+entry itself misstated E4's window (actual 21:42–21:52 per `driver.log`); the D67@T96 floor's
+−5.66% read −3.77% on re-measurement (floor green both times — only the target cell and
+D268r2@T96 are quoted as beyond-noise wins); two E2 hardening notes (byte-cap undercount on
+lazily-replicated blocks; theoretical `ColumnConst` positional-append hazard) recorded as
+leads.
+
+## Campaign close
+Decision: the wave-pipelining lead (E6) is NOT attempted in this session — the deliverable is
+complete and SHIP-verified; reopening Unit 2 would require the full gate chain plus a fresh
+verification pass, and the design analysis puts honest implementation risk beyond the
+remaining unattended budget. It is documented as the top risk-accepted lead with the measured
+motivation (scatter = 25% of the post-E2 wide-shape wall) and the pool-capacity blocker
+analysis.
