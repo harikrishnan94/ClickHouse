@@ -31,6 +31,11 @@ Branch `radix-join-probe-perf`, baseline `b1fa64c7286`. Full per-iteration recor
   `cf662d4c9619…` hash-matched the built tree). This campaign's Unit-3 gate set re-validates
   the remedy independently. Rationale: discarding the worktree diff would have violated
   "do not undo its remedy".
+  RECONCILIATION (post-campaign): the T16 session was later resumed and landed its own
+  commits on `radix-join-bandwidth-model` (`3fccb389f77` remedy — byte-identical to the
+  adopted `b1fa64c7286` — and `9f985d69105` docs including its completed independent
+  verification, VERDICT: SHIP). The merge `9c56f97e008` keeps that branch's REPORT_T16.md /
+  WORKLOG_T16.md as authoritative; the remedy is thus verified by both campaigns.
 - **WAIT MODE poller v1 fired prematurely** on the mission's literal check B (report present
   with a verdict line) while the T16 verification was still benchmarking; waiting continued
   under a stricter condition until the T16 session was confirmed interrupted and the host
