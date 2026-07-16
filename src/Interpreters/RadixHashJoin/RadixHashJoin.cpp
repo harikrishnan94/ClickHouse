@@ -702,6 +702,9 @@ struct WaveWorker
     Blocks merged;
     size_t merged_rows = 0;
     size_t merged_bytes = 0;
+    /// Reused across this worker's scatter jobs (allocated once per worker, not once per job).
+    ScatterScratch scratch;
+    PaddedPODArray<UInt16> pids;
 };
 
 /// Probe drain order: the ids of the partitions worth probing (non-empty on both sides), largest
@@ -996,7 +999,7 @@ struct ProbeWave
 
     /// Stable scatter of one admitted block into the precomputed disjoint ranges; the input block
     /// is released here, by its one job, exactly once.
-    void runScatter(size_t b)
+    void runScatter(WaveWorker & w, size_t b)
     {
         auto & adm = admitted[b];
         const size_t n = adm.block.rows();
@@ -1007,29 +1010,28 @@ struct ProbeWave
         const bool composite = !layout->single_key;
         const bool need_pids = composite || layout->num_columns > 1;
 
-        ScatterScratch scratch;
-        scratch.init(fanout, use_swwc_fanout);
-        PaddedPODArray<UInt16> pids;
+        if (w.scratch.fanout != fanout)
+            w.scratch.init(fanout, use_swwc_fanout);
         if (need_pids)
-            pids.resize(n);
+            w.pids.resize(n);
         if (composite)
             for (size_t i = 0; i < n; ++i)
-                pids[i] = static_cast<UInt16>((adm.routes[i] >> shift) & mask);
+                w.pids[i] = static_cast<UInt16>((adm.routes[i] >> shift) & mask);
 
         for (size_t j : makeScatterOrder(*layout))
         {
             const size_t width = layout->col_widths[j];
             const bool use_swwc = use_swwc_fanout && widthSupportsSwwc(width);
-            scratch.setUseSwwc(use_swwc);
+            w.scratch.setUseSwwc(use_swwc);
             for (size_t p = 0; p < fanout; ++p)
-                scratch.seed(p, groups[p].rows ? groups[p].bases[j] + offsets[b * fanout + p] * width : nullptr);
+                w.scratch.seed(p, groups[p].rows ? groups[p].bases[j] + offsets[b * fanout + p] * width : nullptr);
 
             const char * data = adm.block.getByPosition(j).column->getRawData().data();
             if (!composite && j == layout->key_pos)
-                scatterKeyChunk(layout->key_width, data, n, shift, mask, need_pids ? pids.data() : nullptr, use_swwc, scratch);
+                scatterKeyChunk(layout->key_width, data, n, shift, mask, need_pids ? w.pids.data() : nullptr, use_swwc, w.scratch);
             else
-                scatterPidChunk(width, pids.data(), data, n, use_swwc, scratch);
-            scratch.drain();
+                scatterPidChunk(width, w.pids.data(), data, n, use_swwc, w.scratch);
+            w.scratch.drain();
         }
         adm = {};
     }
@@ -1182,7 +1184,7 @@ struct ProbeWave
                         }
                         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
                         if (ph == WavePhase::Scattering)
-                            runScatter(indexOf(word));
+                            runScatter(w, indexOf(word));
                         else
                             runRefine(indexOf(word));
                         finishJob();

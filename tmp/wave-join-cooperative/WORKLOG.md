@@ -506,6 +506,72 @@ ENV-DRIFT (in-run baseline arm deviating > 2x band from the frozen median =>
 UNSETTLED); scaling gate failing. The verdict script (frozen at
 `e725eedc528`, null-tested) reports all failures and nulls as failures.
 
+### Gate 9 first run: RED — refutation honored; structural root cause proven
+
+The suite's A-shape sweep (before shape C, run aborted there to save the
+machine; raw data archived as
+`tmp/wave-join-cooperative/evidence/diag_u3_prebatch_Asweep.{jsonl,log}` —
+this is DIAGNOSTIC data, not acceptance data) measured, candidate vs frozen
+baseline medians:
+
+| cell | candidate | baseline | delta |
+| --- | ---: | ---: | ---: |
+| A_T96 | 1.485 | 1.339 | +10.9% |
+| A_T64 | 1.63 | 1.36 | +20% |
+| A_T32 | 2.55 | 2.18 | +17% |
+| A_T16 | 4.25 | 3.27 | +30% |
+| A_T1 (2 pairs) | 61.43 / 62.23 | 61.53 / 60.81 | PARITY |
+
+Root cause (proven by the thread-count-inverse pattern plus T1 parity plus
+the event data — candidate RealTime 154 thread-s vs baseline 209 thread-s at
+A_T96): the OLD design runs its wave scatter and probe on a DEDICATED radix
+pool of `max_threads` threads IN ADDITION to the `max_threads` executor
+lanes (the lanes pop/scan concurrently). At T16 the baseline therefore uses
+~32 threads of compute on this 96-core host; at T96 it oversubscribes
+192->96. The cooperative contract forbids the probe side from using the pool
+("An existing radix pool may remain only where required by the build-side
+contract"), so the candidate runs on exactly the T lanes. T1 parity proves
+the candidate's per-row work equals the old design's; the mid-thread
+regressions are the missing pool threads, not inefficiency.
+
+Also applied and kept (correct regardless; 6/6 focused tests green): scatter
+batching — worker-held `ScatterScratch`/pid buffers instead of per-job
+allocations, and batched consecutive-block scatter claims with column-major
+kernel driving (the per-(block, partition) offsets are prefix sums, so a
+batch's ranges are contiguous per partition). Ad-hoc A/B at A_T16 shows the
+batching does not move the cell (4.28 vs 4.24) — thread asymmetry dominates.
+
+Consequence: the frozen per-cell goal gates (beat EVERY cell by more than
+its band, including T1 by 1.08%) are structurally unwinnable for ANY
+implementation that honors the no-probe-pool rule: identical kernels cannot
+beat a 2x-thread baseline at CPU-bound cells, and parity at T1 is not a
+1.08% win. Additionally the mission statement ("probe threads alternate
+between filling the one active wave and draining the one sealed wave")
+admits a two-wave-slot reading (one filling while one drains) that the
+requirements section's "exactly one shared wave exists" forecloses — the
+pipelined reading would restore the refill/drain overlap without any pool,
+queue, or dedicated crews. Escalated to the user with options; no gate
+weakened unilaterally.
+
+### USER RULING on gates 9/10 (2026-07-16): Report UNSETTLED
+
+The user was offered: (a) a two-wave pipeline contract amendment (one wave
+filling while one drains; recommended as the best odds of going green),
+(b) pool participation in the drain's data-plane stages, (c) reporting
+UNSETTLED with the gates exactly as frozen. The user chose (c): the contract
+and the frozen gates stand; gates 9 and 10 are reported RED/UNSETTLED with
+the structural evidence; per the task's definition of done the task ends
+NOT DONE on the performance axis, with the formal, correctness, removal and
+(amended) structural gates green.
+
+Post-ruling code decision: the scatter batching (which measurably did not
+move the thread-asymmetry-dominated cells and pushed the amended Gate A over
+its limit, 748 > 716) is dropped; only the worker-held scatter scratch reuse
+is kept (allocation hygiene, no protocol change). Final state: Gate 8
+amended PASS (714 <= 716; sync declarations 11 <= 15), build OK, focused
+tests 6/6 green, stateless 5/5 green on the final binary, removal grep and
+`git diff --check` clean.
+
 ### REGISTER AMENDMENT v2 — Gate 8, USER SIGN-OFF (2026-07-16)
 
 The user was asked with the exact numbers above and chose
