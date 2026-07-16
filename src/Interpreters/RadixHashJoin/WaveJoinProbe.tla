@@ -6,9 +6,8 @@ CONSTANTS
     Bytes(_), Pass0(_), LeafOf(_), ProbeResult(_, _),
     P0, PL, BUDGET, WORKERS,
     FailLeaves, ErrorOf(_),
-    NoRow, NoResult, NoError, PreError,
-    DisjointRowWritesSafe, LeafHTIsolated,
-    ProbeResultRetainable, FreeNoThrow
+    NoRow, NoError, PreError,
+    DisjointRowWritesSafe, LeafHTIsolated, FreeNoThrow
 
 VARIABLE st
 
@@ -111,14 +110,26 @@ IsPrefix(a, b) ==
     /\ Len(a) <= Len(b)
     /\ \A i \in DOMAIN a : a[i] = b[i]
 
+ResultCount(s, r) ==
+    Cardinality({i \in DOMAIN s : s[i] = r})
+
+BagSubset(a, b) ==
+    \A r \in Result : ResultCount(a, r) <= ResultCount(b, r)
+
+BagEqual(a, b) ==
+    \A r \in Result : ResultCount(a, r) = ResultCount(b, r)
+
 CurrentCanonicalWave ==
     IF Len(st.doneWaves) < Len(CanonicalWaves)
     THEN CanonicalWaves[Len(st.doneWaves) + 1]
     ELSE <<>>
 
 WaveRows == RowsOfBlocks(st.queue)
-Outstanding ==
-    {l \in Leaves : st.probeState[l] \in {"run", "ok", "err"}}
+CurrentWaveOutput ==
+    IF Len(st.queue) = 0
+    THEN <<>>
+    ELSE LeavesOutput(st.queue, P0 * PL)
+ExpectedOutput == WavesOutput(st.doneWaves) \o CurrentWaveOutput
 
 PreJob(p) == [kind |-> "pre", id |-> p]
 ScatterJob(o) == [kind |-> "scatter", id |-> o]
@@ -149,22 +160,70 @@ Footprint(j) ==
              {<<"a1", j.id>>, <<"ht", j.id>>, <<"result", j.id>>}
     []   OTHER -> {}
 
-DisjointFromRunning(j) ==
-    \A k \in st.running : Footprint(j) \cap Footprint(k) = {}
+NonProbePhases == {"pre", "scatter", "refalloc", "refine"}
 
-EligibleNonProbe ==
-    CASE st.phase = "pre" ->
-             {PreJob(p) : p \in Passes \ st.preDone} \ st.running
-    []   st.phase = "scatter" ->
-             {ScatterJob(o) : o \in SeqSet(WaveRows) \ st.scatterDone}
-             \ st.running
-    []   st.phase = "refalloc" ->
-             {RefAllocJob(p) : p \in Passes \ st.refAllocDone}
-             \ st.running
-    []   st.phase = "refine" ->
-             {RefineJob(o) : o \in SeqSet(WaveRows) \ st.refineDone}
-             \ st.running
+PreJobs(done) == {PreJob(p) : p \in Passes \ done}
+ScatterJobs(done) ==
+    {ScatterJob(o) : o \in SeqSet(WaveRows) \ done}
+RefAllocJobs(done) == {RefAllocJob(p) : p \in Passes \ done}
+RefineJobs(done) ==
+    {RefineJob(o) : o \in SeqSet(WaveRows) \ done}
+
+Take(s, n) ==
+    CHOOSE t \in SUBSET s : Cardinality(t) = Min(n, Cardinality(s))
+
+Fill(running, pending) ==
+    running \cup Take(pending \ running,
+                       WORKERS - Cardinality(running))
+
+RemainingProbe(next) ==
+    IF next < P0 * PL THEN P0 * PL - next ELSE 0
+
+ProbeDispatch(running, next) ==
+    LET count == Min(WORKERS - Cardinality(running),
+                     RemainingProbe(next))
+        leaves == IF count = 0 THEN {} ELSE next .. (next + count - 1)
+    IN  [running |-> running \cup {ProbeJob(l) : l \in leaves},
+         leaves |-> leaves,
+         next |-> next + count]
+
+PendingWorkerJobs ==
+    CASE st.phase = "pre" -> PreJobs(st.preDone)
+    []   st.phase = "scatter" -> ScatterJobs(st.scatterDone)
+    []   st.phase = "refalloc" -> RefAllocJobs(st.refAllocDone)
+    []   st.phase = "refine" -> RefineJobs(st.refineDone)
+    []   st.phase = "probe" ->
+             st.running
+             \cup {ProbeJob(l) :
+                       l \in {x \in Leaves : st.nextAdmit <= x}}
     []   OTHER -> {}
+
+WorkerIds == 0 .. (WORKERS - 1)
+DrainPhases ==
+    NonProbePhases \cup {"probe", "cancelPre", "cancelProbe"}
+
+RemainingInput ==
+    IF st.nextBlock <= Len(Input)
+    THEN Len(Input) - st.nextBlock + 1
+    ELSE 0
+
+ScanWorkers == Take(WorkerIds, Min(WORKERS, RemainingInput))
+DrainWorkers == Take(WorkerIds, Cardinality(st.running))
+
+WorkerRole(w) ==
+    CASE st.phase = "acc" /\ w \in ScanWorkers -> "scan"
+    []   st.phase \in DrainPhases /\ w \in DrainWorkers -> "drain"
+    []   OTHER -> "idle"
+
+BusyWorkers == {w \in WorkerIds : WorkerRole(w) # "idle"}
+
+WorkerDemand ==
+    CASE st.phase = "acc" -> RemainingInput
+    []   st.phase \in (NonProbePhases \cup {"probe"}) ->
+             Cardinality(PendingWorkerJobs)
+    []   st.phase \in {"cancelPre", "cancelProbe"} ->
+             Cardinality(st.running)
+    []   OTHER -> 0
 
 Init ==
     st = [phase |-> "acc",
@@ -181,21 +240,17 @@ Init ==
           refineDone |-> {},
           running |-> {},
           probeState |-> [l \in Leaves |-> "idle"],
-          probeResult |-> [l \in Leaves |-> NoResult],
-          probeError |-> [l \in Leaves |-> NoError],
           nextAdmit |-> 0,
-          nextEmit |-> 0,
-          admitLimit |-> P0 * PL,
           output |-> <<>>,
           waveOutputPrefix |-> 0,
           primary |-> NoError,
           liveEntries |-> {},
           liveA0 |-> {},
-          liveA1 |-> {},
-          liveResults |-> {}]
+          liveA1 |-> {}]
 
-Accumulate ==
+AccumulateBy(w) ==
     /\ st.phase = "acc"
+    /\ WorkerRole(w) = "scan"
     /\ st.nextBlock <= Len(Input)
     /\ LET b == st.nextBlock
            close == st.mem + Bytes(b) >= BUDGET
@@ -210,8 +265,11 @@ Accumulate ==
                       ELSE st.hashCount[o]],
               !.liveEntries = @ \cup {b},
               !.phase = IF close THEN "pre" ELSE "acc",
+              !.running = IF close THEN Fill({}, PreJobs({})) ELSE @,
               !.waveOutputPrefix =
                   IF close THEN Len(st.output) ELSE @]
+
+Accumulate == \E w \in WorkerIds : AccumulateBy(w)
 
 CloseFinal ==
     /\ st.phase = "acc"
@@ -219,6 +277,7 @@ CloseFinal ==
     /\ Len(st.queue) > 0
     /\ st' = [st EXCEPT
            !.phase = "pre",
+           !.running = Fill({}, PreJobs({})),
            !.waveOutputPrefix = Len(st.output)]
 
 FinishInput ==
@@ -227,29 +286,27 @@ FinishInput ==
     /\ st.queue = <<>>
     /\ st' = [st EXCEPT !.phase = "done"]
 
-AccFault ==
+AccFaultBy(w) ==
     /\ st.phase = "acc"
+    /\ WorkerRole(w) = "scan"
     /\ st.nextBlock <= Len(Input)
     /\ st' = [st EXCEPT
            !.phase = "failed",
            !.primary = PreError,
            !.liveEntries = {},
            !.liveA0 = {},
-           !.liveA1 = {},
-           !.liveResults = {}]
+           !.liveA1 = {}]
 
-StartJob(j) ==
-    /\ j \in EligibleNonProbe
-    /\ Cardinality(st.running) < WORKERS
-    /\ DisjointFromRunning(j)
-    /\ st' = [st EXCEPT !.running = @ \cup {j}]
+AccFault == \E w \in WorkerIds : AccFaultBy(w)
 
 FinishPre(p) ==
     LET j == PreJob(p)
+        done == st.preDone \cup {p}
+        running == st.running \ {j}
     IN  /\ j \in st.running
         /\ st' = [st EXCEPT
-             !.running = @ \ {j},
-             !.preDone = @ \cup {p},
+             !.running = Fill(running, PreJobs(done)),
+             !.preDone = done,
              !.arena0[p] = EmptySeq(Len(ExpectedPass(st.queue, p))),
              !.liveA0 = @ \cup {p}]
 
@@ -257,17 +314,21 @@ PreBarrier ==
     /\ st.phase = "pre"
     /\ st.preDone = Passes
     /\ st.running = {}
-    /\ st' = [st EXCEPT !.phase = "scatter"]
+    /\ st' = [st EXCEPT
+           !.phase = "scatter",
+           !.running = Fill({}, ScatterJobs({}))]
 
 FinishScatter(o) ==
     LET j == ScatterJob(o)
         p == Pid(o)
         k == Rank0(WaveRows, o)
+        done == st.scatterDone \cup {o}
+        running == st.running \ {j}
     IN  /\ j \in st.running
         /\ st.arena0[p][k] = NoRow
         /\ st' = [st EXCEPT
-             !.running = @ \ {j},
-             !.scatterDone = @ \cup {o},
+             !.running = Fill(running, ScatterJobs(done)),
+             !.scatterDone = done,
              !.arena0[p][k] = o]
 
 ScatterBarrier ==
@@ -275,23 +336,34 @@ ScatterBarrier ==
     /\ st.scatterDone = SeqSet(WaveRows)
     /\ st.running = {}
     /\ IF PL = 1
-       THEN st' = [st EXCEPT
-                !.phase = "probe",
-                !.arena1 = [l \in Leaves |-> st.arena0[l]],
-                !.liveEntries = {},
-                !.liveA0 = {},
-                !.liveA1 = Leaves]
+       THEN LET dispatch == ProbeDispatch({}, 0)
+            IN  st' = [st EXCEPT
+                    !.phase = "probe",
+                    !.running = dispatch.running,
+                    !.probeState =
+                        [l \in Leaves |->
+                            IF l \in dispatch.leaves
+                            THEN "run"
+                            ELSE st.probeState[l]],
+                    !.nextAdmit = dispatch.next,
+                    !.arena1 = [l \in Leaves |-> st.arena0[l]],
+                    !.liveEntries = {},
+                    !.liveA0 = {},
+                    !.liveA1 = Leaves]
        ELSE st' = [st EXCEPT
                 !.phase = "refalloc",
+                !.running = Fill({}, RefAllocJobs({})),
                 !.liveEntries = {}]
 
 FinishRefAlloc(p) ==
     LET j == RefAllocJob(p)
         ls == LeavesOfPass(p)
+        done == st.refAllocDone \cup {p}
+        running == st.running \ {j}
     IN  /\ j \in st.running
         /\ st' = [st EXCEPT
-             !.running = @ \ {j},
-             !.refAllocDone = @ \cup {p},
+             !.running = Fill(running, RefAllocJobs(done)),
+             !.refAllocDone = done,
              !.arena1 =
                  [l \in Leaves |->
                      IF l \in ls
@@ -303,26 +375,38 @@ RefAllocBarrier ==
     /\ st.phase = "refalloc"
     /\ st.refAllocDone = Passes
     /\ st.running = {}
-    /\ st' = [st EXCEPT !.phase = "refine"]
+    /\ st' = [st EXCEPT
+           !.phase = "refine",
+           !.running = Fill({}, RefineJobs({}))]
 
 FinishRefine(o) ==
     LET j == RefineJob(o)
         l == Lid(o)
         k == Rank1(WaveRows, o)
+        done == st.refineDone \cup {o}
+        running == st.running \ {j}
     IN  /\ j \in st.running
         /\ st.arena1[l][k] = NoRow
         /\ st' = [st EXCEPT
-             !.running = @ \ {j},
-             !.refineDone = @ \cup {o},
+             !.running = Fill(running, RefineJobs(done)),
+             !.refineDone = done,
              !.arena1[l][k] = o]
 
 RefineBarrier ==
     /\ st.phase = "refine"
     /\ st.refineDone = SeqSet(WaveRows)
     /\ st.running = {}
-    /\ st' = [st EXCEPT
-           !.phase = "probe",
-           !.liveA0 = {}]
+    /\ LET dispatch == ProbeDispatch({}, 0)
+       IN  st' = [st EXCEPT
+              !.phase = "probe",
+              !.running = dispatch.running,
+              !.probeState =
+                  [l \in Leaves |->
+                      IF l \in dispatch.leaves
+                      THEN "run"
+                      ELSE st.probeState[l]],
+              !.nextAdmit = dispatch.next,
+              !.liveA0 = {}]
 
 NonProbeFault(j) ==
     /\ st.phase \in {"pre", "scatter", "refalloc", "refine"}
@@ -344,66 +428,45 @@ FinishNonProbeFailure ==
            !.phase = "failed",
            !.liveEntries = {},
            !.liveA0 = {},
-           !.liveA1 = {},
-           !.liveResults = {}]
-
-StartProbe(l) ==
-    LET j == ProbeJob(l)
-    IN  /\ st.phase = "probe"
-        /\ l = st.nextAdmit
-        /\ l \in Leaves
-        /\ l < st.admitLimit
-        /\ st.probeState[l] = "idle"
-        /\ l \in st.liveA1
-        /\ Cardinality(st.running) < WORKERS
-        /\ Cardinality(Outstanding) < WORKERS
-        /\ DisjointFromRunning(j)
-        /\ st' = [st EXCEPT
-             !.running = @ \cup {j},
-             !.probeState[l] = "run",
-             !.nextAdmit = @ + 1]
+           !.liveA1 = {}]
 
 FinishProbe(l) ==
     LET j == ProbeJob(l)
-    IN  /\ j \in st.running
+        running == st.running \ {j}
+    IN  /\ st.phase = "probe"
+        /\ j \in st.running
         /\ IF l \in FailLeaves
-           THEN st' = [st EXCEPT
-                    !.running = @ \ {j},
-                    !.probeState[l] = "err",
-                    !.probeError[l] = ErrorOf(l),
-                    !.admitLimit = Min(@, l + 1)]
-           ELSE st' = [st EXCEPT
-                    !.running = @ \ {j},
-                    !.probeState[l] = "ok",
-                    !.probeResult[l] =
-                        ProbeResult(l, ExpectedLeaf(st.queue, l)),
-                    !.liveResults = @ \cup {l}]
-
-EmitLeaf(l) ==
-    /\ st.phase = "probe"
-    /\ l = st.nextEmit
-    /\ st.probeState[l] = "ok"
-    /\ st' = [st EXCEPT
-           !.output = @ \o st.probeResult[l],
-           !.probeState[l] = "emitted",
-           !.probeResult[l] = NoResult,
-           !.nextEmit = @ + 1,
-           !.liveResults = @ \ {l},
-           !.liveA1 = @ \ {l}]
-
-ObserveProbeFailure(l) ==
-    /\ st.phase = "probe"
-    /\ l = st.nextEmit
-    /\ st.probeState[l] = "err"
-    /\ st' = [st EXCEPT
-           !.phase = "cancelProbe",
-           !.primary = st.probeError[l],
-           !.probeState =
-               [x \in Leaves |->
-                   IF x > l /\ st.probeState[x] # "run"
-                   THEN "cancel"
-                   ELSE st.probeState[x]],
-           !.liveResults = {x \in st.liveResults : x <= l}]
+           THEN LET live == {x \in Leaves : ProbeJob(x) \in running}
+                IN  st' = [st EXCEPT
+                        !.phase = "cancelProbe",
+                        !.running = running,
+                        !.probeState =
+                            [x \in Leaves |->
+                                IF x = l
+                                THEN "err"
+                                ELSE IF st.probeState[x] = "emitted"
+                                     THEN "emitted"
+                                     ELSE IF ProbeJob(x) \in running
+                                          THEN "run"
+                                          ELSE "cancel"],
+                        !.primary = ErrorOf(l),
+                        !.liveA1 = live]
+           ELSE LET dispatch ==
+                        ProbeDispatch(running, st.nextAdmit)
+                IN  st' = [st EXCEPT
+                        !.running = dispatch.running,
+                        !.probeState =
+                            [x \in Leaves |->
+                                IF x = l
+                                THEN "emitted"
+                                ELSE IF x \in dispatch.leaves
+                                     THEN "run"
+                                     ELSE st.probeState[x]],
+                        !.nextAdmit = dispatch.next,
+                        !.output =
+                            @ \o ProbeResult(
+                                l, ExpectedLeaf(st.queue, l)),
+                        !.liveA1 = @ \ {l}]
 
 CancelProbe(l) ==
     LET j == ProbeJob(l)
@@ -411,7 +474,8 @@ CancelProbe(l) ==
         /\ j \in st.running
         /\ st' = [st EXCEPT
              !.running = @ \ {j},
-             !.probeState[l] = "cancel"]
+             !.probeState[l] = "cancel",
+             !.liveA1 = @ \ {l}]
 
 FinishProbeFailure ==
     /\ st.phase = "cancelProbe"
@@ -420,13 +484,12 @@ FinishProbeFailure ==
            !.phase = "failed",
            !.liveEntries = {},
            !.liveA0 = {},
-           !.liveA1 = {},
-           !.liveResults = {}]
+           !.liveA1 = {}]
 
 CompleteWave ==
     /\ st.phase = "probe"
-    /\ st.nextEmit = P0 * PL
     /\ st.running = {}
+    /\ \A l \in Leaves : st.probeState[l] = "emitted"
     /\ st' = [st EXCEPT
            !.phase = "acc",
            !.queue = <<>>,
@@ -439,24 +502,18 @@ CompleteWave ==
            !.refAllocDone = {},
            !.refineDone = {},
            !.probeState = [l \in Leaves |-> "idle"],
-           !.probeResult = [l \in Leaves |-> NoResult],
-           !.probeError = [l \in Leaves |-> NoError],
            !.nextAdmit = 0,
-           !.nextEmit = 0,
-           !.admitLimit = P0 * PL,
            !.waveOutputPrefix = Len(st.output),
            !.primary = NoError,
            !.liveEntries = {},
            !.liveA0 = {},
-           !.liveA1 = {},
-           !.liveResults = {}]
+           !.liveA1 = {}]
 
 Next ==
     \/ Accumulate
     \/ CloseFinal
     \/ FinishInput
     \/ AccFault
-    \/ \E j \in AllJobs : StartJob(j)
     \/ \E p \in Passes : FinishPre(p)
     \/ PreBarrier
     \/ \E o \in Occ : FinishScatter(o)
@@ -468,10 +525,7 @@ Next ==
     \/ \E j \in AllJobs : NonProbeFault(j)
     \/ \E j \in AllJobs : CancelNonProbe(j)
     \/ FinishNonProbeFailure
-    \/ \E l \in Leaves : StartProbe(l)
     \/ \E l \in Leaves : FinishProbe(l)
-    \/ \E l \in Leaves : EmitLeaf(l)
-    \/ \E l \in Leaves : ObserveProbeFailure(l)
     \/ \E l \in Leaves : CancelProbe(l)
     \/ FinishProbeFailure
     \/ CompleteWave
@@ -494,14 +548,14 @@ EnvironmentOK ==
            \A l \in Leaves :
                ProbeResult(l, ExpectedLeaf(bs, l)) \in Seq(Result)
     /\ FailLeaves \subseteq Leaves
-    /\ \A l \in Leaves : ErrorOf(l) \in Error
+    /\ \A l \in Leaves :
+           /\ ErrorOf(l) \in Error
+           /\ ErrorOf(l) # PreError
     /\ PreError \in Error
     /\ NoError \notin Error
     /\ NoRow \notin Occ
-    /\ NoResult \notin Seq(Result)
     /\ DisjointRowWritesSafe
     /\ LeafHTIsolated
-    /\ ProbeResultRetainable
     /\ FreeNoThrow
 
 ASSUME EnvironmentOK
@@ -510,7 +564,7 @@ Phases ==
     {"acc", "pre", "scatter", "refalloc", "refine", "probe",
      "cancelPre", "cancelProbe", "done", "failed"}
 
-ProbeStates == {"idle", "run", "ok", "err", "emitted", "cancel"}
+ProbeStates == {"idle", "run", "err", "emitted", "cancel"}
 
 TypeOK ==
     /\ st.phase \in Phases
@@ -527,18 +581,13 @@ TypeOK ==
     /\ st.refineDone \subseteq Occ
     /\ st.running \subseteq AllJobs
     /\ st.probeState \in [Leaves -> ProbeStates]
-    /\ st.probeResult \in [Leaves -> (Seq(Result) \cup {NoResult})]
-    /\ st.probeError \in [Leaves -> (Error \cup {NoError})]
     /\ st.nextAdmit \in 0 .. (P0 * PL)
-    /\ st.nextEmit \in 0 .. (P0 * PL)
-    /\ st.admitLimit \in 0 .. (P0 * PL)
     /\ st.output \in Seq(Result)
     /\ st.waveOutputPrefix \in Nat
     /\ st.primary \in Error \cup {NoError}
     /\ st.liveEntries \subseteq 1 .. Len(Input)
     /\ st.liveA0 \subseteq Passes
     /\ st.liveA1 \subseteq Leaves
-    /\ st.liveResults \subseteq Leaves
 
 WaveExact ==
     /\ Len(st.doneWaves) <= Len(CanonicalWaves)
@@ -590,28 +639,51 @@ StableAtBarriers ==
 
 WorkerBound == Cardinality(st.running) <= WORKERS
 
+WorkerState ==
+    /\ st.phase = "pre" =>
+           st.running \subseteq PreJobs(st.preDone)
+    /\ st.phase = "scatter" =>
+           st.running \subseteq ScatterJobs(st.scatterDone)
+    /\ st.phase = "refalloc" =>
+           st.running \subseteq RefAllocJobs(st.refAllocDone)
+    /\ st.phase = "refine" =>
+           st.running \subseteq RefineJobs(st.refineDone)
+    /\ st.phase \in {"probe", "cancelProbe"} =>
+           st.running =
+               {ProbeJob(l) :
+                   l \in {x \in Leaves : st.probeState[x] = "run"}}
+    /\ st.phase \notin
+           (NonProbePhases \cup {"probe", "cancelPre", "cancelProbe"})
+       => st.running = {}
+
+CooperativeParticipation ==
+    /\ st.phase = "acc" => BusyWorkers = ScanWorkers
+    /\ st.phase \in DrainPhases => BusyWorkers = DrainWorkers
+    /\ st.phase \in {"done", "failed"} => BusyWorkers = {}
+
+WorkConserving ==
+    Cardinality(BusyWorkers) = Min(WORKERS, WorkerDemand)
+
 RaceFree ==
     \A j, k \in st.running :
         j # k => Footprint(j) \cap Footprint(k) = {}
 
-ProbeOrder ==
-    /\ st.nextEmit <= st.nextAdmit
-    /\ \A l \in Leaves :
-           st.probeState[l] = "emitted" => l < st.nextEmit
-    /\ \A l \in {x \in Leaves : x < st.nextEmit} :
-           st.probeState[l] = "emitted"
-    /\ Cardinality(Outstanding) <= WORKERS
-    /\ st.liveResults = {l \in Leaves : st.probeState[l] = "ok"}
+ProbeProgress ==
+    /\ st.phase = "probe" =>
+           /\ st.nextAdmit =
+                  Cardinality(
+                      {l \in Leaves : st.probeState[l] # "idle"})
+           /\ st.liveA1 =
+                  {l \in Leaves :
+                      st.probeState[l] \in {"idle", "run"}}
+    /\ st.phase = "cancelProbe" =>
+           st.liveA1 =
+               {l \in Leaves : st.probeState[l] = "run"}
 
 MemoryBound ==
-    /\ ~(st.liveEntries # {} /\ st.liveA1 # {})
-    /\ ~(st.liveEntries # {} /\ st.liveResults # {})
-    /\ ~(st.liveA0 # {} /\ st.liveResults # {})
-    /\ Cardinality(st.liveResults) <= WORKERS
+    ~(st.liveEntries # {} /\ st.liveA1 # {})
 
-OutputRefinement ==
-    st.output = WavesOutput(st.doneWaves)
-                \o LeavesOutput(st.queue, st.nextEmit)
+OutputRefinement == BagSubset(st.output, ExpectedOutput)
 
 FailureSafety ==
     /\ st.phase = "failed" => st.running = {}
@@ -619,10 +691,10 @@ FailureSafety ==
            /\ st.liveEntries = {}
            /\ st.liveA0 = {}
            /\ st.liveA1 = {}
-           /\ st.liveResults = {}
     /\ st.primary = PreError => Len(st.output) = st.waveOutputPrefix
     /\ \A l \in Leaves :
-           st.primary = ErrorOf(l) => st.nextEmit = l
+           st.primary = ErrorOf(l) =>
+               st.phase \in {"cancelProbe", "failed"}
 
 Safety ==
     /\ TypeOK
@@ -633,14 +705,18 @@ Safety ==
     /\ CapacityExact
     /\ StableAtBarriers
     /\ WorkerBound
+    /\ WorkerState
+    /\ CooperativeParticipation
+    /\ WorkConserving
     /\ RaceFree
-    /\ ProbeOrder
+    /\ ProbeProgress
     /\ MemoryBound
     /\ OutputRefinement
     /\ FailureSafety
 
 FinalRefinement ==
-    st.phase = "done" => st.output = WavesOutput(CanonicalWaves)
+    st.phase = "done" =>
+        BagEqual(st.output, WavesOutput(CanonicalWaves))
 
 StopCondition == ~EnvironmentOK
 
@@ -648,7 +724,6 @@ Fairness ==
     /\ WF_vars(Accumulate)
     /\ WF_vars(CloseFinal)
     /\ WF_vars(FinishInput)
-    /\ \A j \in AllJobs : WF_vars(StartJob(j))
     /\ \A p \in Passes : WF_vars(FinishPre(p))
     /\ WF_vars(PreBarrier)
     /\ \A o \in Occ : WF_vars(FinishScatter(o))
@@ -659,10 +734,7 @@ Fairness ==
     /\ WF_vars(RefineBarrier)
     /\ \A j \in AllJobs : WF_vars(CancelNonProbe(j))
     /\ WF_vars(FinishNonProbeFailure)
-    /\ \A l \in Leaves : WF_vars(StartProbe(l))
     /\ \A l \in Leaves : WF_vars(FinishProbe(l))
-    /\ \A l \in Leaves : WF_vars(EmitLeaf(l))
-    /\ \A l \in Leaves : WF_vars(ObserveProbeFailure(l))
     /\ \A l \in Leaves : WF_vars(CancelProbe(l))
     /\ WF_vars(FinishProbeFailure)
     /\ WF_vars(CompleteWave)
@@ -671,6 +743,9 @@ FairSpec == Spec /\ Fairness
 Termination == <>(st.phase \in {"done", "failed"})
 
 THEOREM SafetyTheorem == Spec => []Safety
+THEOREM CooperativeParticipationTheorem ==
+    Spec => []CooperativeParticipation
+THEOREM WorkConservationTheorem == Spec => []WorkConserving
 THEOREM RefinementTheorem == Spec => []FinalRefinement
 THEOREM TerminationTheorem == FairSpec => Termination
 
