@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """Gate 8 — structural simplicity (FROZEN before any production C++ edit).
 
+REGISTER AMENDMENT v2 (2026-07-16, USER SIGN-OFF — recorded in WORKLOG.md):
+Gate A's original criterion (candidate probe-control NCNB <= 75% of baseline)
+is structurally unreachable for the sealed cooperative design: the baseline
+outsourced its probe data plane to build-shared machinery (excluded as
+byte-identical shared code) while the contract requires that data plane to run
+as claimable jobs on executor lanes (~150 candidate-only lines). With the
+user's sign-off Gate A becomes: candidate probe-control NCNB <= 115% of
+baseline; and Gate B is TIGHTENED from "fewer" to "at least 25% fewer"
+synchronization-primitive declarations. Gates C and D are unchanged. The
+measurement definitions (NCNB, unit partition, shared units, declarations)
+are unchanged.
+
 Usage:
   complexity_gate.py --baseline tmp/wave-join-cooperative/RadixHashJoin.before.cpp \
                      --candidate src/Interpreters/RadixHashJoin/RadixHashJoin.cpp
@@ -25,9 +37,11 @@ Frozen metric definitions (any later edit is a register amendment):
   (renaming, reshuffling, moving code between units) count AGAINST the
   candidate, never for it.
 
-* Gate A (size):    probe_control(candidate) <= 0.75 * probe_control(baseline)
+* Gate A (size):    probe_control(candidate) <= 1.15 * probe_control(baseline)
+                    [amendment v2; originally 0.75 — see header]
 * Gate B (sync):    synchronization-primitive DECLARATIONS in probe-control
-                    code: candidate < baseline. A declaration is a line
+                    code: candidate <= 0.75 * baseline (at least 25% fewer)
+                    [amendment v2; originally merely fewer]. A declaration is a line
                     declaring an object/member/local of: std::atomic*,
                     std::mutex, std::shared_mutex, SharedMutex, std::
                     condition_variable*, ConcurrentBoundedQueue, std::latch,
@@ -261,19 +275,20 @@ def main():
 
     failures = []
 
-    # Gate A
-    limit = 0.75 * base_probe
-    print(f"Gate A (size): probe-control NCNB baseline={base_probe} candidate={cand_probe} "
-          f"(limit {limit:.0f}, reduction {(base_probe - cand_probe) / base_probe:+.1%})")
+    # Gate A (amendment v2: no growth beyond baseline + 15%)
+    limit = 1.15 * base_probe
+    print(f"Gate A (size, amended): probe-control NCNB baseline={base_probe} candidate={cand_probe} "
+          f"(limit {limit:.0f}, delta {(cand_probe - base_probe) / base_probe:+.1%})")
     if not cand_probe <= limit:
-        failures.append("Gate A: candidate probe-control lines exceed 75% of baseline")
+        failures.append("Gate A (amended): candidate probe-control lines exceed 115% of baseline")
 
-    # Gate B
+    # Gate B (amendment v2: at least 25% fewer)
     base_sync = count_sync_decls(base_text)
     cand_sync = count_sync_decls(cand_text)
-    print(f"Gate B (sync decls): baseline={base_sync} candidate={cand_sync}")
-    if not cand_sync < base_sync:
-        failures.append("Gate B: candidate does not have fewer sync-primitive declarations")
+    print(f"Gate B (sync decls, amended): baseline={base_sync} candidate={cand_sync} "
+          f"(limit {0.75 * base_sync:.1f})")
+    if not cand_sync <= 0.75 * base_sync:
+        failures.append("Gate B (amended): candidate does not have at least 25% fewer sync-primitive declarations")
 
     # Gate C
     enums = len(re.findall(r"\benum\s+class\b", cand_text))

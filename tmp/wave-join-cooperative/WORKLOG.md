@@ -408,3 +408,22 @@ Per the register rules ("freeze the script and its metric definitions before
 implementation"; "do not weaken a gate to obtain green"; amendments require
 user sign-off) this is a USER decision. Gate ordering blocks gates 9/10 until
 resolved. Question posed to the user with these numbers; no gate was edited.
+
+### REGISTER AMENDMENT v2 — Gate 8, USER SIGN-OFF (2026-07-16)
+
+The user was asked with the exact numbers above and chose
+"Amend: coordination metrics". Amendment as offered and accepted:
+
+- Gate A becomes: candidate probe-control NCNB <= 115% of baseline
+  (was <= 75%; the -25% intent moves to the coordination axis below).
+- Gate B is TIGHTENED: at least 25% FEWER synchronization-primitive
+  declarations (was: merely fewer).
+- Gates C (one engine, thin adapter, one result type) and D (header bounds,
+  file inventory) unchanged. All measurement definitions unchanged.
+
+Alternatives explicitly offered and declined: keeping the gate as frozen and
+reporting the task UNSETTLED; redesigning the implementation away from the
+sealed design to chase the line count. The amendment is recorded in the
+script header (`complexity_gate.py`, amendment v2) and here; the original
+criterion, its failure (712 vs 467), and the analysis remain in this WORKLOG
+uneditied above.
