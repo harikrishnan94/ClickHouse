@@ -45,13 +45,17 @@ class TableJoin;
   *   runPostBuildPhase   the heavy post-build, parallelised over a dedicated `ThreadPool`: the radix
   *                       scatter of the whole build side to its leaf chunks, and one exactly-reserved
   *                       `HashJoin` built per non-empty partition.
-  *   joinBlock           buffer the probe block; when the buffered window reaches the probe budget the
-  *                       triggering call runs one wave (scatter on the pool, probe touched partitions
-  *                       work-stealing) and streams its output. Before the build barrier (the header/
-  *                       planning path) it delegates to a schema-only `HashJoin`.
-  *   getDelayedBlocks    after all probe input, flushes the final partial window through the standard
-  *                       delayed-blocks mechanism (the `GraceHashJoin` path), whose stream probes
-  *                       partitions work-stealing across the executor's delayed-worker transforms.
+  *   joinBlock           admit the probe block into the one shared wave against the byte budget; the
+  *                       admission that crosses the budget seals the wave, and the same probe lanes
+  *                       that admit also drain it cooperatively: each result's next() claims pending
+  *                       wave work (sizing, stable scatter, refine passes, per-leaf probes) and
+  *                       returns that lane's own output. No probe-side pool, queue, or dedicated
+  *                       worker crews exist. Before the build barrier (the header/planning path) it
+  *                       delegates to a schema-only `HashJoin`.
+  *   getDelayedBlocks    after all probe input, seals the final partial wave and drains it through
+  *                       the standard delayed-blocks mechanism (the `GraceHashJoin` path) — a thin
+  *                       stream over the same wave machine, pulled concurrently by the executor's
+  *                       delayed-worker transforms.
   */
 class RadixHashJoin : public IJoin
 {

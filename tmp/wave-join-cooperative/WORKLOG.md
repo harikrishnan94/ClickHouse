@@ -321,6 +321,90 @@ the gtest, the stateless tests and `PlannerJoins.cpp` wiring have been read.
    fixed between those hashes; the contract assertion is unchanged.
 8. Environment note (from project memory, relevant to Unit 3): the old design
    has a known baseline defect — early termination mid-wave with >= 2 probe
-   streams can hang (`WaveJoinResult` holds a wave mutex across scheduler
+   streams can hang (the old result type held a wave mutex across scheduler
    steps). The cooperative design removes that class (no lock is ever held
    across a quantum boundary; abandoned results poison the wave instead).
+
+---
+
+## Unit 3 — Replacement implementation (2026-07-16)
+
+### What was built
+
+The probe coordination in `RadixHashJoin.cpp` is replaced by the sealed
+cooperative machine (`ProbeWave` + `CooperativeWaveResult` +
+`CooperativeDelayedBlocks`):
+
+- Admission: one packed atomic word `[seal:1 | in-flight:15 | bytes:48]` — the
+  budget check, reservation, and in-flight count are a single CAS, so the drain
+  can only begin after every granted reservation lands; the crossing admission
+  seals; overshoot is bounded by one block.
+- Drain: one packed control word `[phase:8 | generation:32 | job index:24]` —
+  claiming a job is one CAS bound to the phase and generation it read, so a
+  claim can never cross a stage boundary; each stage's last finisher runs the
+  barrier inline; the sealing transition does the pre-scatter accounting/range
+  allocation; stages are stable per-block scatter -> per-group refine passes
+  (reusing `scatterRefineGroup`) -> per-leaf probes in LPT order.
+- Output: workers merge only their OWN leaf output up to
+  min(joined-block target, `maxJoinedBlockRows`) and return it from their own
+  `next()`; no shared output buffer exists. The delayed-blocks stream is an
+  18-NCNB-line adapter running the same machine; split leaf probes park in a
+  shared in-progress list (the established GraceHashJoin open-results pattern).
+- Failure: first exception wins into one primary slot; the control word turns
+  Poisoned; every entry point rethrows; a result abandoned while owing work
+  poisons the wave with a `LOGICAL_ERROR` (fail-close, never silent row loss).
+  A poisoned wave's memory is released exactly once by State destruction.
+- The probe path uses no thread pool; the radix pool remains for the build
+  side only (post-build scatter, leaf builds, destructor teardown).
+
+Deviations within the sealed ownership model, recorded per the design's own
+allowance: (a) refalloc+refine fused into one exactly-once job per group and
+generalized to the plan's N-1 refine stages (a legal scheduling of the TLA
+model); (b) the pre-scatter sizing runs in the sealing transition (the sealer
+executing every TLA `pre` job before publishing scatter — also a legal
+scheduling, sub-ms at the production fanouts); (c) admission itself happens in
+the result's first `next()` (same executor quantum as `joinBlock`).
+
+### Evidence
+
+- Builds: `build/reldeb/build_wave_join_u3_try{1..5}.log` (try1: two compile
+  errors — initializer-list pointer-type conflict, `Block` bool-conversion,
+  both fixed; try2: private-State access + vector-of-immutable assign, fixed;
+  try3: `-Wshadow` on nested-struct params, fixed; try4/5: clean).
+- Focused tests, all green including the previously red contract test:
+  `build/reldeb/test_wave_join_u3_gtest_squeezed.log` — 5/5
+  (`ConcurrentJoiningQuantumDoesNotWaitForPreviousWave`,
+  `SealedWaveDrainIsClaimableByOtherLanes` (RED before, GREEN after),
+  `MultipleWavesAndFinalPartialWaveExactMultiset`,
+  `MultiPassRefineExactMultiset`, `AbandonedResultPoisonsJoin`).
+- Gate 7 (old coordination removal): PASS (the banned-token grep is clean).
+- Style: `ci/jobs/scripts/check_style/check_cpp.sh` reports nothing for the
+  changed files; `git diff --check` clean.
+
+### Structural gate status (Gate 8): A RED — escalated to the user
+
+`python3 tmp/wave-join-cooperative/complexity_gate.py ...` after squeezing
+(unified worker loop, prepare folded into the seal transition, plan bound into
+the engine, `concatenateBlocks` merging):
+
+- Gate B PASS: synchronization-primitive declarations 11 vs baseline 20 (-45%).
+- Gate C PASS: one drain machine (single `enum class`), exactly one
+  `IJoinResult` subclass, delayed adapter 18 NCNB lines.
+- Gate D PASS: header within frozen bounds, no new files.
+- Gate A FAIL: candidate probe-control 712 NCNB vs baseline 623 (limit 467,
+  i.e. -25%); the squeeze took it from 799 to 712 with all tests green.
+
+Analysis (refutation-grade, from the script's own unit dump): the baseline's
+623 lines are almost pure coordination because the old design outsourced its
+probe data plane to the build-shared `scatterToPartitions` (excluded as
+byte-identical shared code), while the cooperative contract REQUIRES the data
+plane to run as claimable jobs on executor lanes — admission histograms,
+per-block stable scatter, refine-job and leaf-run bodies are ~150 lines that
+exist only in the candidate. `ProbeWave` is 453 NCNB; meeting the 467 total
+would require halving it, which no honest restructuring of the sealed design
+achieves; even a coordination-only accounting does not reach -25%.
+
+Per the register rules ("freeze the script and its metric definitions before
+implementation"; "do not weaken a gate to obtain green"; amendments require
+user sign-off) this is a USER decision. Gate ordering blocks gates 9/10 until
+resolved. Question posed to the user with these numbers; no gate was edited.

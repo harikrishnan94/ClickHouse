@@ -286,3 +286,357 @@ TEST(RadixHashJoin, ConcurrentJoiningQuantumDoesNotWaitForPreviousWave)
     EXPECT_EQ(drained_all.size(), 64u);
     EXPECT_TRUE(drained_all == expected) << "joined output multiset does not match the expected probe x build identity";
 }
+
+/// Cooperative-participation contract (WaveJoinProbe.tla, `ParticipationLive`): while one lane's
+/// sealed wave is mid-drain with claimable leaf work, another lane's joinBlock + next() quantum must
+/// CLAIM part of that drain and emit a nonempty output block of the sealed wave — not merely return
+/// control with an empty result. Lane A seals a wave whose probe output is far larger than one
+/// block and stalls after a single next(); lane B then joins with a block too small to trigger
+/// anything on its own. A design with dedicated wave producers and a buffered window hands lane B
+/// an empty result (its rows wait for a later window) while the sealed wave still holds unclaimed
+/// leaves; the cooperative contract requires lane B's first quantum to yield sealed-wave output.
+TEST(RadixHashJoin, SealedWaveDrainIsClaimableByOtherLanes)
+{
+    UInt64 key_for_partition[2] = {0, 0};
+    bool found[2] = {false, false};
+    for (UInt64 v = 1; !(found[0] && found[1]); ++v)
+    {
+        const UInt32 p = partitionForKey(v);
+        if (!found[p])
+        {
+            key_for_partition[p] = v;
+            found[p] = true;
+        }
+    }
+    const UInt64 k0 = key_for_partition[0];
+    const UInt64 k1 = key_for_partition[1];
+
+    /// Build side: each key duplicated 4 times, so every probe row joins to 4 output rows.
+    const std::vector<UInt64> build_keys{k0, k0, k0, k0, k1, k1, k1, k1};
+    const std::vector<UInt64> build_ids{100, 101, 102, 103, 104, 105, 106, 107};
+
+    /// Lane A: a large block (both partitions populated) that crosses the budget by itself.
+    /// Lane B: a tiny block that stays below the budget on its own.
+    std::vector<UInt64> probe_keys_a(4096);
+    std::vector<UInt64> probe_ids_a(4096);
+    for (size_t i = 0; i < probe_keys_a.size(); ++i)
+    {
+        probe_keys_a[i] = (i % 2 == 0) ? k0 : k1;
+        probe_ids_a[i] = i;
+    }
+    const std::vector<UInt64> probe_keys_b{k0, k0, k0, k0, k1, k1, k1, k1};
+    const std::vector<UInt64> probe_ids_b{5000, 5001, 5002, 5003, 5004, 5005, 5006, 5007};
+
+    Block probe_a = twoColumnBlock("k", "probe_id", probe_keys_a, probe_ids_a);
+    Block probe_b = twoColumnBlock("k", "probe_id", probe_keys_b, probe_ids_b);
+
+    /// Budget between the two block sizes, measured (not guessed): B alone stays below it, A alone
+    /// crosses it, whatever the columns' allocation granularity is.
+    const size_t budget = 2 * probe_b.allocatedBytes();
+    ASSERT_LT(probe_b.allocatedBytes(), budget);
+    ASSERT_GE(probe_a.allocatedBytes(), 2 * budget);
+
+    JoinedRows expected;
+    auto add_expected = [&](const std::vector<UInt64> & keys, const std::vector<UInt64> & ids)
+    {
+        for (size_t i = 0; i < keys.size(); ++i)
+            for (size_t j = 0; j < build_keys.size(); ++j)
+                if (keys[i] == build_keys[j])
+                    expected.emplace(keys[i], ids[i], build_keys[j], build_ids[j]);
+    };
+    add_expected(probe_keys_a, probe_ids_a);
+    add_expected(probe_keys_b, probe_ids_b);
+    ASSERT_EQ(expected.size(), 4096u * 4 + 8u * 4);
+
+    const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
+    const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
+
+    auto table_join = makeTableJoin(left_header, right_header);
+    auto join = std::make_shared<RadixHashJoin>(
+        table_join,
+        std::make_shared<const Block>(right_header),
+        /*max_threads*/ 2,
+        /*rhs_size_estimation*/ std::nullopt,
+        /*max_partitions_per_pass*/ 8,
+        /*size_tables_by_distinct_estimate*/ false,
+        /*probe_buffer_fraction*/ 0.0,
+        /*probe_buffer_min_bytes*/ budget,
+        /*probe_buffer_max_bytes*/ budget,
+        StatsCollectingParams{});
+
+    ASSERT_TRUE(join->addBlockToJoin(twoColumnBlock("rk", "build_id", build_keys, build_ids), /*check_limits*/ false));
+    join->onBuildPhaseFinish();
+    join->runPostBuildPhase();
+
+    /// Lane A seals the wave and pops exactly one block, then stalls: the wave is mid-drain, with
+    /// (with max_joined_block_size_rows = 1) thousands of output blocks still unproduced and at
+    /// least one whole leaf unclaimed.
+    auto result_a = join->joinBlock(std::move(probe_a), 0);
+    ASSERT_NE(result_a, nullptr);
+    JoinedRows drained_a;
+    size_t rows_a = 0;
+    {
+        auto first = result_a->next();
+        ASSERT_FALSE(first.is_last);
+        ASSERT_GT(first.block.rows(), 0u);
+        rows_a += first.block.rows();
+        accumulateRows(first.block, drained_a);
+    }
+
+    /// Lane B: one joinBlock + next() quantum on another thread while lane A is stalled.
+    struct LaneBFirstQuantum
+    {
+        JoinResultPtr result;
+        Block first_block;
+        bool first_is_last = false;
+    };
+    auto lane_b = std::async(
+        std::launch::async,
+        [&]() -> LaneBFirstQuantum
+        {
+            LaneBFirstQuantum outcome;
+            outcome.result = join->joinBlock(std::move(probe_b), 1);
+            auto r = outcome.result->next();
+            outcome.first_block = std::move(r.block);
+            outcome.first_is_last = r.is_last;
+            return outcome;
+        });
+
+    const bool lane_b_returned = lane_b.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    EXPECT_TRUE(lane_b_returned) << "lane B's joinBlock+next quantum did not return while lane A's sealed wave was mid-drain";
+    if (!lane_b_returned)
+    {
+        /// Unwedge without asserting anything further: complete the wave on lane A and let B finish.
+        JoinedRows ignored;
+        drainResult(*result_a, ignored);
+        result_a.reset();
+        auto outcome = lane_b.get();
+        if (outcome.result && !outcome.first_is_last)
+            drainResult(*outcome.result, ignored);
+        return;
+    }
+
+    auto outcome = lane_b.get();
+    ASSERT_NE(outcome.result, nullptr);
+
+    /// THE contract assertion: lane B's first quantum must have claimed sealed-wave drain work.
+    EXPECT_GT(outcome.first_block.rows(), 0u)
+        << "lane B's first quantum produced no drain output while lane A's sealed wave held claimable leaves";
+
+    if (outcome.first_block.rows() == 0)
+    {
+        /// Non-cooperative design: finish cleanly (the failure is already recorded above).
+        JoinedRows ignored;
+        if (!outcome.first_is_last)
+            drainResult(*outcome.result, ignored);
+        outcome.result.reset();
+        drainResult(*result_a, ignored);
+        result_a.reset();
+        return;
+    }
+
+    /// Cooperative design: drain both lanes concurrently, flush the leftover input through the
+    /// delayed-blocks stream, and check the exact output multiset.
+    JoinedRows drained_b;
+    size_t rows_b = outcome.first_block.rows();
+    accumulateRows(outcome.first_block, drained_b);
+
+    auto drain_a = std::async(std::launch::async, [&]() -> size_t { return drainResult(*result_a, drained_a); });
+    if (!outcome.first_is_last)
+        rows_b += drainResult(*outcome.result, drained_b);
+    rows_a += drain_a.get();
+    result_a.reset();
+    outcome.result.reset();
+
+    JoinedRows drained_delayed;
+    size_t rows_delayed = 0;
+    if (auto delayed = join->getDelayedBlocks())
+    {
+        while (true)
+        {
+            Block block = delayed->next();
+            if (block.empty())
+                break;
+            rows_delayed += block.rows();
+            accumulateRows(block, drained_delayed);
+        }
+    }
+
+    EXPECT_EQ(rows_a + rows_b + rows_delayed, expected.size());
+    JoinedRows drained_all = drained_a;
+    drained_all.insert(drained_b.begin(), drained_b.end());
+    drained_all.insert(drained_delayed.begin(), drained_delayed.end());
+    EXPECT_EQ(drained_all.size(), expected.size());
+    EXPECT_TRUE(drained_all == expected) << "joined output multiset does not match the expected probe x build identity";
+}
+
+namespace
+{
+
+/// Shared scaffolding for the multiset contract tests below: build 8 rows (each key duplicated
+/// 4 times), probe blocks constructed by the caller, all output drained through the results and
+/// the delayed-blocks stream, compared as an exact multiset.
+struct WaveHarness
+{
+    UInt64 k0 = 0;
+    UInt64 k1 = 0;
+    std::vector<UInt64> build_keys;
+    std::vector<UInt64> build_ids;
+    std::shared_ptr<TableJoin> table_join;
+    std::shared_ptr<RadixHashJoin> join;
+    JoinedRows expected;
+
+    WaveHarness(size_t max_threads, UInt64 max_partitions_per_pass, size_t probe_budget)
+    {
+        bool found[2] = {false, false};
+        UInt64 key_for_partition[2] = {0, 0};
+        for (UInt64 v = 1; !(found[0] && found[1]); ++v)
+        {
+            const UInt32 p = partitionForKey(v);
+            if (!found[p])
+            {
+                key_for_partition[p] = v;
+                found[p] = true;
+            }
+        }
+        k0 = key_for_partition[0];
+        k1 = key_for_partition[1];
+        build_keys = {k0, k0, k0, k0, k1, k1, k1, k1};
+        build_ids = {100, 101, 102, 103, 104, 105, 106, 107};
+
+        const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
+        const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
+        table_join = makeTableJoin(left_header, right_header);
+        join = std::make_shared<RadixHashJoin>(
+            table_join,
+            std::make_shared<const Block>(right_header),
+            max_threads,
+            /*rhs_size_estimation*/ std::nullopt,
+            max_partitions_per_pass,
+            /*size_tables_by_distinct_estimate*/ false,
+            /*probe_buffer_fraction*/ 0.0,
+            /*probe_buffer_min_bytes*/ probe_budget,
+            /*probe_buffer_max_bytes*/ probe_budget,
+            StatsCollectingParams{});
+        EXPECT_TRUE(join->addBlockToJoin(twoColumnBlock("rk", "build_id", build_keys, build_ids), /*check_limits*/ false));
+        join->onBuildPhaseFinish();
+        join->runPostBuildPhase();
+    }
+
+    Block makeProbe(size_t rows, UInt64 first_id, std::vector<UInt64> * keys_out = nullptr)
+    {
+        std::vector<UInt64> keys(rows);
+        std::vector<UInt64> ids(rows);
+        for (size_t i = 0; i < rows; ++i)
+        {
+            keys[i] = (i % 2 == 0) ? k0 : k1;
+            ids[i] = first_id + i;
+            for (size_t j = 0; j < build_keys.size(); ++j)
+                if (keys[i] == build_keys[j])
+                    expected.emplace(keys[i], ids[i], build_keys[j], build_ids[j]);
+        }
+        if (keys_out)
+            *keys_out = keys;
+        return twoColumnBlock("k", "probe_id", keys, ids);
+    }
+
+    /// Joins one block on one lane and drains its result to completion.
+    size_t joinAndDrain(Block block, size_t lane, JoinedRows & rows)
+    {
+        auto result = join->joinBlock(std::move(block), lane);
+        return drainResult(*result, rows);
+    }
+
+    size_t drainDelayed(JoinedRows & rows)
+    {
+        size_t drained = 0;
+        if (auto delayed = join->getDelayedBlocks())
+        {
+            while (true)
+            {
+                Block block = delayed->next();
+                if (block.empty())
+                    break;
+                drained += block.rows();
+                accumulateRows(block, rows);
+            }
+        }
+        return drained;
+    }
+};
+
+}
+
+/// Multiple budget-sealed waves followed by a final partial wave through the delayed-blocks
+/// stream, all on the one shared machine: the total output multiset must be exact — every probe
+/// row of every wave joined exactly once, none dropped at wave boundaries, none duplicated.
+TEST(RadixHashJoin, MultipleWavesAndFinalPartialWaveExactMultiset)
+{
+    Block probe = twoColumnBlock("k", "probe_id", std::vector<UInt64>(64, 1), std::vector<UInt64>(64, 0));
+    const size_t block_bytes = probe.allocatedBytes();
+    WaveHarness h(/*max_threads*/ 2, /*max_partitions_per_pass*/ 8, /*probe_budget*/ 2 * block_bytes);
+
+    JoinedRows drained;
+    size_t rows = 0;
+    /// 7 equal blocks: waves {b1,b2}, {b3,b4}, {b5,b6} seal on their second admission; b7 stays
+    /// as the final partial wave for the delayed flush.
+    for (size_t b = 0; b < 7; ++b)
+        rows += h.joinAndDrain(h.makeProbe(64, 1000 * (b + 1)), b % 2, drained);
+    rows += h.drainDelayed(drained);
+
+    EXPECT_EQ(rows, h.expected.size());
+    EXPECT_TRUE(drained == h.expected) << "multiset mismatch across waves and the delayed flush";
+}
+
+/// Multi-pass refinement: a 4-leaf plan with a per-pass fanout cap of 2 forces two radix passes
+/// (scatter + one refine stage) through the same machine; the output multiset must be exact.
+TEST(RadixHashJoin, MultiPassRefineExactMultiset)
+{
+    Block probe = twoColumnBlock("k", "probe_id", std::vector<UInt64>(64, 1), std::vector<UInt64>(64, 0));
+    const size_t block_bytes = probe.allocatedBytes();
+    WaveHarness h(/*max_threads*/ 4, /*max_partitions_per_pass*/ 2, /*probe_budget*/ block_bytes);
+
+    JoinedRows drained;
+    size_t rows = 0;
+    for (size_t b = 0; b < 3; ++b)
+        rows += h.joinAndDrain(h.makeProbe(64, 1000 * (b + 1)), b % 4, drained);
+    rows += h.drainDelayed(drained);
+
+    EXPECT_EQ(rows, h.expected.size());
+    EXPECT_TRUE(drained == h.expected) << "multiset mismatch on the multi-pass plan";
+}
+
+/// Fail-close on early caller destruction: a result destroyed while it still owes work (here a
+/// half-probed leaf) must poison the wave so no lane can silently lose rows — the next quantum on
+/// any other lane observes the first error, claims no new work, and the failure propagates.
+TEST(RadixHashJoin, AbandonedResultPoisonsJoin)
+{
+    Block tiny_probe = twoColumnBlock("k", "probe_id", std::vector<UInt64>(8, 1), std::vector<UInt64>(8, 0));
+    const size_t tiny_bytes = tiny_probe.allocatedBytes();
+    WaveHarness h(/*max_threads*/ 2, /*max_partitions_per_pass*/ 8, /*probe_budget*/ 2 * tiny_bytes);
+
+    Block big = h.makeProbe(4096, 1000);
+    ASSERT_GE(big.allocatedBytes(), 2 * 2 * tiny_bytes);
+
+    /// Seal a wave and take exactly one output block: the result now owns a half-probed leaf.
+    auto result = h.join->joinBlock(std::move(big), 0);
+    {
+        auto first = result->next();
+        ASSERT_FALSE(first.is_last);
+        ASSERT_GT(first.block.rows(), 0u);
+    }
+    result.reset();
+
+    /// Any further quantum on any lane must observe the poisoned wave and throw.
+    auto late = h.join->joinBlock(h.makeProbe(8, 100000), 1);
+    EXPECT_THROW(
+        {
+            while (true)
+            {
+                auto r = late->next();
+                if (r.is_last)
+                    break;
+            }
+        },
+        DB::Exception);
+}

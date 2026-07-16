@@ -6,13 +6,11 @@
 #include <Interpreters/HashJoin/ScatteredBlock.h>
 #include <Interpreters/TableJoin.h>
 
-#include <Common/ConcurrentBoundedQueue.h>
 #include <Common/CurrentThread.h>
 #include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/Exception.h>
 #include <Common/PODArray.h>
 #include <Common/ProfileEvents.h>
-#include <Common/SharedMutex.h>
 #include <Common/Stopwatch.h>
 #include <Common/ThreadGroupSwitcher.h>
 #include <Common/ThreadPool.h>
@@ -25,10 +23,9 @@
 #include <bit>
 #include <cstring>
 #include <limits>
-#include <list>
 #include <condition_variable>
 #include <mutex>
-#include <shared_mutex>
+#include <utility>
 
 namespace ProfileEvents
 {
@@ -86,8 +83,9 @@ using ColumnsScatter::MAX_FANOUT_PER_PASS;
 constexpr size_t LEAF_TARGET_BYTES = 1 << 20;
 constexpr size_t HT_CELL_BYTES = 16;
 
-/// Wave-worker output merging targets: the usual joined-block row count, with a byte cap so wide
-/// rows keep the queue's resident footprint bounded ((2 * threads + 1 + threads) * cap).
+/// Own-output merging targets: a worker merges the blocks of the leaves it probes up to the usual
+/// joined-block row count (respecting `max_joined_block_size_rows`) before returning them, so one
+/// executor quantum is not spent per tiny per-leaf block; the byte cap keeps wide rows bounded.
 constexpr size_t MERGE_TARGET_ROWS = 65409;
 constexpr size_t MERGE_TARGET_BYTES = 2 << 20;
 
@@ -651,20 +649,617 @@ std::vector<PartitionOutput> scatterToPartitions(
 }
 
 /// -------------------------------------------------------------------------------------------------
-/// State
+/// The cooperative wave engine (formal contract: WaveJoinProbe.tla)
+///
+/// Exactly one shared probe wave exists. While it is FILLING, the probe lanes admit their blocks
+/// against the byte budget; the reservation whose atomic addition crosses the budget seals it, and
+/// once every in-flight admission has landed, the same lanes drain it cooperatively by claiming
+/// jobs from the explicit work graph
+///
+///     prepare (per first-pass partition: exact sizing + per-block write ranges)
+///  -> scatter (per admitted block, stable: disjoint precomputed ranges)
+///  -> refine  (per group, one refine stage per remaining radix pass)
+///  -> probe   (per leaf: the smallest task; output goes to the CLAIMING worker's own result)
+///
+/// There are no dedicated producer or drain crews, no probe-side thread pool, no shared queue of
+/// completed output, and no central scheduler: any worker claims any job with one CAS, barriers are
+/// run inline by each stage's last finisher, and the delayed-blocks stream is a thin adapter that
+/// runs this same machine for the final partial wave. The budget bounds only the ACCOUNTED wave
+/// bytes (admitted + in-flight, overshoot at most one block); drain arenas, route words, in-flight
+/// input and output live outside it.
 /// -------------------------------------------------------------------------------------------------
 
 namespace
 {
 
-struct ActiveWave;
-
-/// Admits one wave at a time. Every probe lane's result drains the active wave cooperatively, so a
-/// lane that arrives while a wave is in flight becomes one of its consumers instead of waiting.
-struct WaveCoordinator
+/// Filling accepts admissions; Sealing waits for in-flight admissions to land; the drain phases
+/// follow the work graph above; Poisoned is terminal (first error wins, or an abandoned mid-drain
+/// result — fail-close, never silent truncation).
+enum class WavePhase : UInt8
 {
-    std::mutex mutex;
-    std::shared_ptr<ActiveWave> active_wave;
+    Filling,
+    Sealing,
+    Scattering,
+    Refining,
+    Probing,
+    Poisoned,
+};
+
+/// One leaf probe in flight: the leaf's result chain (`max_joined_block` splitting included).
+struct LeafRun
+{
+    HashJoin * leaf = nullptr;
+    JoinResultPtr res;
+};
+
+/// One participating worker's call-local state: its not-yet-admitted input, the leaf it currently
+/// probes, and its own output merged up to the flush target. Output never crosses workers: what a
+/// context accumulates is returned only by its own caller.
+struct WaveWorker
+{
+    Block pending;
+    LeafRun run;
+    Blocks merged;
+    size_t merged_rows = 0;
+    size_t merged_bytes = 0;
+};
+
+/// Probe drain order: the ids of the partitions worth probing (non-empty on both sides), largest
+/// probe partition first. One worker probes one partition, so a wave's wall time is lower-bounded
+/// by its largest partition; starting the largest first (LPT scheduling) keeps it off the tail
+/// under imbalance, and draining the biggest buffers first also releases the most memory earliest
+/// (a partition's columns are moved out when probed). Ties break by partition id for determinism.
+std::vector<UInt32> probeDrainOrder(const std::vector<PartitionOutput> & parts, const std::vector<std::unique_ptr<HashJoin>> & partition_joins)
+{
+    std::vector<UInt32> order;
+    order.reserve(parts.size());
+    for (size_t p = 0; p < parts.size(); ++p)
+        if (parts[p].rows && partition_joins[p])
+            order.push_back(static_cast<UInt32>(p));
+    std::sort(
+        order.begin(),
+        order.end(),
+        [&](UInt32 a, UInt32 b)
+        {
+            if (parts[a].rows != parts[b].rows)
+                return parts[a].rows > parts[b].rows;
+            return a < b;
+        });
+    return order;
+}
+
+struct ProbeWave
+{
+    /// Admission word [seal:1 | in-flight:15 | reserved bytes:48]: one CAS is both the budget check
+    /// and the in-flight count, so the drain can only begin after every granted reservation has
+    /// landed. The seal bit exists for the EOF seal of a below-budget final wave.
+    static constexpr UInt64 ADMIT_SEAL = 1ULL << 63;
+    static constexpr UInt64 ADMIT_INFLIGHT = 1ULL << 48;
+    static constexpr UInt64 ADMIT_BYTES_MASK = ADMIT_INFLIGHT - 1;
+
+    /// Control word [phase:8 | stage generation:32 | next job index:24]: a claim is one CAS bound to
+    /// the phase and generation it read, so it can never cross a stage boundary; every transition
+    /// bumps the generation, which is also the only thing waiters need to watch.
+    static constexpr UInt64 CTRL_PHASE_SHIFT = 56;
+    static constexpr UInt64 CTRL_GEN_SHIFT = 24;
+    static constexpr UInt64 CTRL_INDEX_MASK = (1ULL << 24) - 1;
+
+    static constexpr UInt64 pack(WavePhase ph, UInt64 gen, UInt64 index)
+    {
+        return (static_cast<UInt64>(ph) << CTRL_PHASE_SHIFT) | ((gen & 0xFFFFFFFFULL) << CTRL_GEN_SHIFT) | index;
+    }
+    static constexpr WavePhase phaseOf(UInt64 word) { return static_cast<WavePhase>(word >> CTRL_PHASE_SHIFT); }
+    static constexpr UInt64 genOf(UInt64 word) { return (word >> CTRL_GEN_SHIFT) & 0xFFFFFFFFULL; }
+    static constexpr UInt64 indexOf(UInt64 word) { return word & CTRL_INDEX_MASK; }
+
+    std::atomic<UInt64> admission{0};
+    std::atomic<UInt64> control{pack(WavePhase::Filling, 0, 0)};
+    std::atomic<UInt32> stage_jobs{0};
+    std::atomic<UInt32> stage_remaining{0};
+
+    std::mutex mutex; /// admissions list, primary error, delayed runs, left-side init, completion
+    std::condition_variable cv; /// sealed-tail and bounded phase-transition waits
+    std::exception_ptr primary; /// first exception, under mutex
+
+    /// Plan and shared references, bound once under mutex before the first admission; they point
+    /// into State, which outlives every result and the delayed stream.
+    const Block * header = nullptr;
+    const SideLayout * layout = nullptr;
+    const std::vector<size_t> * pass_bits = nullptr;
+    std::vector<std::unique_ptr<HashJoin>> * leaves = nullptr;
+    size_t budget = 0;
+    size_t lane_merge_rows = 1; /// own-output flush threshold in rows; 1 returns blocks as produced
+
+    struct Admission
+    {
+        Block block;
+        PaddedPODArray<UInt32> routes; /// composite keys only
+        PaddedPODArray<UInt32> hist; /// first-pass histogram
+    };
+    std::vector<Admission> admitted;
+
+    /// Stage data: written only by the single barrier owner (or the sealer) before the release
+    /// store of `control`, read by claimers after their acquire load.
+    size_t refine_pass = 0;
+    size_t bits_done = 0;
+    PaddedPODArray<UInt32> offsets; /// per (admission, first-pass partition) start rows
+    std::vector<PartitionOutput> groups; /// the stage being written
+    std::vector<PartitionOutput> prev; /// the refine stage's input groups
+    std::vector<UInt32> probe_order;
+    std::vector<LeafRun> delayed_runs; /// split leaf probes of delayed pulls, under mutex
+    bool delayed_taken = false;
+
+    /// --- admission (TLA Reserve / Admit / Seal) ---
+
+    bool tryReserve(size_t bytes, bool & crossed)
+    {
+        UInt64 cur = admission.load(std::memory_order_relaxed);
+        while (true)
+        {
+            if ((cur & ADMIT_SEAL) || (cur & ADMIT_BYTES_MASK) >= budget)
+                return false;
+            const UInt64 next = cur + bytes + ADMIT_INFLIGHT;
+            if (admission.compare_exchange_weak(cur, next, std::memory_order_acq_rel))
+            {
+                crossed = (next & ADMIT_BYTES_MASK) >= budget;
+                return true;
+            }
+        }
+    }
+
+    void admit(Block block, bool crossed)
+    {
+        Admission adm;
+        adm.block = std::move(block);
+        const size_t n = adm.block.rows();
+        const size_t fanout = size_t(1) << pass_bits->front();
+        const UInt32 shift = static_cast<UInt32>(32 - pass_bits->front());
+        const UInt32 mask = static_cast<UInt32>(fanout - 1);
+        adm.hist.resize_fill(fanout);
+        {
+            ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+            if (layout->single_key)
+            {
+                const char * keys = adm.block.getByPosition(layout->key_pos).column->getRawData().data();
+                histogramKeyChunk(layout->key_width, keys, n, shift, mask, adm.hist.data(), nullptr, fanout);
+            }
+            else
+            {
+                adm.routes.resize(n);
+                PaddedPODArray<UInt64> acc;
+                materializeCompositeRoutes(
+                    *layout,
+                    [&](size_t pos) { return adm.block.getByPosition(pos).column->getRawData().data(); },
+                    n,
+                    acc,
+                    adm.routes.data());
+                histogramRouteChunk(adm.routes.data(), n, shift, mask, adm.hist.data(), nullptr, fanout);
+            }
+        }
+
+        /// The crossing admission seals; a Poisoned or already-Sealing control word stands.
+        if (crossed)
+        {
+            UInt64 cur = control.load(std::memory_order_relaxed);
+            while (phaseOf(cur) == WavePhase::Filling
+                   && !control.compare_exchange_weak(cur, pack(WavePhase::Sealing, genOf(cur) + 1, 0), std::memory_order_acq_rel))
+                ;
+        }
+        {
+            std::lock_guard lock(mutex);
+            admitted.push_back(std::move(adm));
+        }
+        /// The admission that lands last while sealed begins the drain: its in-flight decrement is
+        /// ordered after the Sealing store above (its own or an earlier one).
+        const UInt64 prev_word = admission.fetch_sub(ADMIT_INFLIGHT, std::memory_order_acq_rel);
+        if (((prev_word >> 48) & 0x7FFF) == 1 && phaseOf(control.load(std::memory_order_acquire)) == WavePhase::Sealing)
+            beginDrain();
+    }
+
+    /// --- the drain stage machine (TLA barriers; run by the sealer / each stage's last finisher) ---
+
+    void publishStage(WavePhase ph, size_t jobs)
+    {
+        chassert(jobs <= CTRL_INDEX_MASK);
+        stage_jobs.store(static_cast<UInt32>(jobs), std::memory_order_relaxed);
+        stage_remaining.store(static_cast<UInt32>(jobs), std::memory_order_relaxed);
+        const UInt64 gen = genOf(control.load(std::memory_order_relaxed));
+        control.store(pack(ph, gen + 1, 0), std::memory_order_release);
+        {
+            std::lock_guard lock(mutex);
+        }
+        cv.notify_all();
+    }
+
+    /// Pre-scatter accounting and range allocation (the sealing transition, single owner): exact
+    /// per-partition sizes and per-(block, partition) write ranges from the admission histograms —
+    /// this is what keeps the scatter stable and the arenas exactly sized.
+    void beginDrain()
+    {
+        const size_t fanout = size_t(1) << pass_bits->front();
+        const size_t blocks = admitted.size();
+        offsets.resize(blocks * fanout);
+        groups.clear();
+        groups.resize(fanout);
+        {
+            ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+            for (size_t p = 0; p < fanout; ++p)
+            {
+                size_t total = 0;
+                for (size_t b = 0; b < blocks; ++b)
+                {
+                    offsets[b * fanout + p] = static_cast<UInt32>(total);
+                    total += admitted[b].hist[p];
+                }
+                if (total)
+                    groups[p].allocate(*header, layout->col_widths, total);
+            }
+        }
+        bits_done = pass_bits->front();
+        refine_pass = 0;
+        publishStage(WavePhase::Scattering, blocks);
+    }
+
+    void advanceStage()
+    {
+        switch (phaseOf(control.load(std::memory_order_relaxed)))
+        {
+            case WavePhase::Scattering:
+            case WavePhase::Refining:
+                if (refine_pass + 1 < pass_bits->size())
+                {
+                    ++refine_pass;
+                    bits_done += (*pass_bits)[refine_pass];
+                    prev.swap(groups);
+                    groups.clear();
+                    groups.resize(prev.size() << (*pass_bits)[refine_pass]);
+                    publishStage(WavePhase::Refining, prev.size());
+                }
+                else
+                {
+                    prev.clear();
+                    probe_order = probeDrainOrder(groups, *leaves);
+                    /// Probe rows in partitions with no build partner produce nothing; release them.
+                    for (size_t p = 0; p < groups.size(); ++p)
+                        if (groups[p].rows && !(*leaves)[p])
+                            groups[p] = {};
+                    if (probe_order.empty())
+                        completeWave();
+                    else
+                        publishStage(WavePhase::Probing, probe_order.size());
+                }
+                break;
+            case WavePhase::Probing:
+                completeWave();
+                break;
+            default:
+                break; /// Poisoned: the wave stays wherever it was; State teardown releases it
+        }
+    }
+
+    void completeWave()
+    {
+        std::unique_lock lock(mutex);
+        admitted.clear();
+        offsets.clear();
+        groups.clear();
+        prev.clear();
+        probe_order.clear();
+        const UInt64 gen = genOf(control.load(std::memory_order_relaxed));
+        admission.store(0, std::memory_order_release);
+        control.store(pack(WavePhase::Filling, gen + 1, 0), std::memory_order_release);
+        lock.unlock();
+        cv.notify_all();
+    }
+
+    void poison(std::exception_ptr e)
+    {
+        std::unique_lock lock(mutex);
+        if (!primary)
+            primary = std::move(e);
+        const UInt64 gen = genOf(control.load(std::memory_order_relaxed));
+        control.store(pack(WavePhase::Poisoned, gen + 1, 0), std::memory_order_release);
+        lock.unlock();
+        cv.notify_all();
+    }
+
+    [[noreturn]] void rethrowPrimary()
+    {
+        std::exception_ptr e;
+        {
+            std::lock_guard lock(mutex);
+            e = primary;
+        }
+        chassert(e);
+        std::rethrow_exception(e);
+    }
+
+    /// --- claims and job bodies (TLA Claim / Finish*) ---
+
+    /// Claims job `indexOf(word)` iff the control word is still exactly `word`: one CAS, bound to
+    /// the phase and generation the caller dispatched on.
+    bool claim(UInt64 & word)
+    {
+        if (indexOf(word) >= stage_jobs.load(std::memory_order_relaxed))
+            return false;
+        return control.compare_exchange_strong(word, word + 1, std::memory_order_acq_rel);
+    }
+
+    void finishJob()
+    {
+        if (stage_remaining.fetch_sub(1, std::memory_order_acq_rel) == 1)
+            advanceStage();
+    }
+
+    /// Stable scatter of one admitted block into the precomputed disjoint ranges; the input block
+    /// is released here, by its one job, exactly once.
+    void runScatter(size_t b)
+    {
+        auto & adm = admitted[b];
+        const size_t n = adm.block.rows();
+        const size_t fanout = size_t(1) << pass_bits->front();
+        const UInt32 shift = static_cast<UInt32>(32 - pass_bits->front());
+        const UInt32 mask = static_cast<UInt32>(fanout - 1);
+        const bool use_swwc_fanout = fanout >= SWWC_MIN_FANOUT;
+        const bool composite = !layout->single_key;
+        const bool need_pids = composite || layout->num_columns > 1;
+
+        ScatterScratch scratch;
+        scratch.init(fanout, use_swwc_fanout);
+        PaddedPODArray<UInt16> pids;
+        if (need_pids)
+            pids.resize(n);
+        if (composite)
+            for (size_t i = 0; i < n; ++i)
+                pids[i] = static_cast<UInt16>((adm.routes[i] >> shift) & mask);
+
+        for (size_t j : makeScatterOrder(*layout))
+        {
+            const size_t width = layout->col_widths[j];
+            const bool use_swwc = use_swwc_fanout && widthSupportsSwwc(width);
+            scratch.setUseSwwc(use_swwc);
+            for (size_t p = 0; p < fanout; ++p)
+                scratch.seed(p, groups[p].rows ? groups[p].bases[j] + offsets[b * fanout + p] * width : nullptr);
+
+            const char * data = adm.block.getByPosition(j).column->getRawData().data();
+            if (!composite && j == layout->key_pos)
+                scatterKeyChunk(layout->key_width, data, n, shift, mask, need_pids ? pids.data() : nullptr, use_swwc, scratch);
+            else
+                scatterPidChunk(width, pids.data(), data, n, use_swwc, scratch);
+            scratch.drain();
+        }
+        adm = {};
+    }
+
+    void runRefine(size_t g)
+    {
+        if (!prev[g].rows)
+            return;
+        const size_t bits = (*pass_bits)[refine_pass];
+        if (prev[g].rows <= std::numeric_limits<UInt32>::max())
+            scatterRefineGroup<UInt32>(*header, *layout, prev[g], bits, bits_done - bits, groups, g << bits);
+        else
+            scatterRefineGroup<UInt64>(*header, *layout, prev[g], bits, bits_done - bits, groups, g << bits);
+    }
+
+    /// --- probing: leaf runs and own-output merging ---
+
+    static void mergeOwn(WaveWorker & w, Block out)
+    {
+        w.merged_rows += out.rows();
+        w.merged_bytes += out.bytes();
+        /// Lazily-replicated columns do not support appending; normalize before the concat.
+        Columns columns = out.getColumns();
+        for (auto & column : columns)
+            column = column->convertToFullColumnIfReplicated();
+        out.setColumns(columns);
+        w.merged.push_back(std::move(out));
+    }
+
+    static Block flushOwn(WaveWorker & w)
+    {
+        if (w.merged.empty())
+            return {};
+        Block out = w.merged.size() == 1 ? std::move(w.merged.front()) : concatenateBlocks(w.merged);
+        w.merged.clear();
+        w.merged_rows = 0;
+        w.merged_bytes = 0;
+        return out;
+    }
+
+    LeafRun openLeaf(size_t index)
+    {
+        const size_t p = probe_order[index];
+        LeafRun run;
+        run.leaf = (*leaves)[p].get();
+        run.res = run.leaf->joinBlock(groups[p].toBlock(*header));
+        return run;
+    }
+
+    /// Drives the current leaf by one inner block into the worker's own output; true iff the leaf
+    /// completed (the caller then finishes the probe job).
+    static bool stepLeaf(WaveWorker & w)
+    {
+        auto r = w.run.res->next();
+        if (r.block.rows())
+            mergeOwn(w, std::move(r.block));
+        if (!r.is_last)
+            return false;
+        if (r.next_block)
+        {
+            r.next_block->filterBySelector();
+            Block next_block = std::move(*r.next_block).getSourceBlock();
+            if (next_block.rows())
+            {
+                w.run.res = w.run.leaf->joinBlock(std::move(next_block));
+                return false;
+            }
+        }
+        w.run = {};
+        return true;
+    }
+
+    /// --- the worker loop (shared by the lane results and the delayed-blocks stream) ---
+
+    /// One participation quantum. A lane admits its pending input when the wave accepts it and
+    /// otherwise claims sealed-wave drain work; the first delayed pull seals the final partial
+    /// wave instead (TLA EOFSeal) and parks split leaf probes in `delayed_runs` for any pull to
+    /// continue. Returns this worker's own output; sets `is_last` when a lane owes nothing more
+    /// (a delayed pull instead returns empty exactly when the machine is finished). The only
+    /// blocking wait is the bounded sealed-tail / phase-transition wait.
+    Block pull(WaveWorker & w, bool delayed, bool & is_last)
+    {
+        try
+        {
+            while (true)
+            {
+                UInt64 word = control.load(std::memory_order_acquire);
+                const WavePhase ph = phaseOf(word);
+                switch (ph)
+                {
+                    case WavePhase::Poisoned:
+                        w.run = {};
+                        w.pending = {};
+                        rethrowPrimary();
+
+                    case WavePhase::Filling:
+                    case WavePhase::Sealing:
+                    {
+                        if (delayed)
+                        {
+                            {
+                                std::lock_guard lock(mutex);
+                                if (admitted.empty())
+                                    return {};
+                            }
+                            if (ph == WavePhase::Filling
+                                && control.compare_exchange_strong(
+                                    word, pack(WavePhase::Sealing, genOf(word) + 1, 0), std::memory_order_acq_rel))
+                            {
+                                admission.fetch_or(ADMIT_SEAL, std::memory_order_acq_rel);
+                                beginDrain();
+                            }
+                            else
+                                tailOrWait(w, word, delayed, is_last);
+                            break;
+                        }
+                        if (w.pending.empty())
+                        {
+                            is_last = true;
+                            return flushOwn(w);
+                        }
+                        bool crossed = false;
+                        if (ph == WavePhase::Filling && tryReserve(w.pending.allocatedBytes(), crossed))
+                        {
+                            admit(std::exchange(w.pending, {}), crossed);
+                            break;
+                        }
+                        /// Sealed (or sealing): wait out the bounded transition, then help drain.
+                        Block out = tailOrWait(w, word, delayed, is_last);
+                        if (!out.empty() || is_last)
+                            return out;
+                        break;
+                    }
+
+                    case WavePhase::Scattering:
+                    case WavePhase::Refining:
+                    {
+                        if (!claim(word))
+                        {
+                            Block out = tailOrWait(w, word, delayed, is_last);
+                            if (!out.empty() || is_last)
+                                return out;
+                            break;
+                        }
+                        ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+                        if (ph == WavePhase::Scattering)
+                            runScatter(indexOf(word));
+                        else
+                            runRefine(indexOf(word));
+                        finishJob();
+                        break;
+                    }
+
+                    case WavePhase::Probing:
+                    {
+                        if (!w.run.res && delayed)
+                        {
+                            std::lock_guard lock(mutex);
+                            if (!delayed_runs.empty())
+                            {
+                                w.run = std::move(delayed_runs.back());
+                                delayed_runs.pop_back();
+                            }
+                        }
+                        if (!w.run.res && claim(word))
+                            w.run = openLeaf(indexOf(word));
+                        if (!w.run.res)
+                        {
+                            Block out = tailOrWait(w, word, delayed, is_last);
+                            if (!out.empty() || is_last)
+                                return out;
+                            break;
+                        }
+                        if (stepLeaf(w))
+                            finishJob();
+                        else if (delayed)
+                        {
+                            std::lock_guard lock(mutex);
+                            delayed_runs.push_back(std::exchange(w.run, {}));
+                            cv.notify_one();
+                        }
+                        const size_t flush_rows = delayed ? 1 : lane_merge_rows;
+                        if (w.merged_rows >= flush_rows || w.merged_bytes >= MERGE_TARGET_BYTES)
+                        {
+                            is_last = false;
+                            return flushOwn(w);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        catch (...)
+        {
+            w.run = {};
+            poison(std::current_exception());
+            throw;
+        }
+    }
+
+    /// Nothing is claimable in the current stage. A lane with no obligations leaves (its owed
+    /// output flushed); a lane still holding pending input first returns any merged output and
+    /// then waits for the next transition — bounded by the stage's last in-flight jobs. Delayed
+    /// pulls always wait (their end is the machine finishing, observed as Filling-and-empty).
+    Block tailOrWait(WaveWorker & w, UInt64 word, bool delayed, bool & is_last)
+    {
+        if (!delayed)
+        {
+            if (w.pending.empty())
+            {
+                is_last = true;
+                return flushOwn(w);
+            }
+            Block out = flushOwn(w);
+            if (!out.empty())
+                return out;
+        }
+        std::unique_lock lock(mutex);
+        cv.wait(lock, [&] { return (delayed && !delayed_runs.empty()) || control.load(std::memory_order_relaxed) != word; });
+        return {};
+    }
+
+    /// A result abandoned while it still owes work (pending input or a half-probed leaf) would
+    /// silently drop rows; fail close instead. Abandonment after an error keeps the first error.
+    void abandon(WaveWorker & w)
+    {
+        if (w.pending.empty() && !w.run.res)
+            return;
+        w.run = {};
+        w.pending = {};
+        poison(std::make_exception_ptr(
+            Exception(ErrorCodes::LOGICAL_ERROR, "RadixHashJoin: probe result abandoned mid-wave; its rows would be lost")));
+    }
 };
 
 }
@@ -694,29 +1289,38 @@ struct RadixHashJoin::State
     size_t post_build_bytes = 0;
     size_t probe_window_budget = 0;
 
-    /// The shared probe window (one wave = one budget's worth of input). window_mutex guards only the
-    /// push_back and counters; the wave scatter/probe run outside it. Waves are sequential (the
-    /// coordinator holds at most one), and no lane is ever parked behind one: whichever lanes call in
-    /// while a wave runs help drain it. Left layout is resolved from the first block.
-    std::mutex window_mutex;
-    std::vector<Block> window_blocks;
-    size_t window_bytes = 0;
+    /// The one shared probe wave; left layout is resolved from the first probe block under its
+    /// mutex. Everything the wave holds is released either at wave completion (by its last probe
+    /// job) or, after poisoning, here at State destruction — exactly once either way.
+    ProbeWave wave_state;
     Block left_header;
     SideLayout left_layout;
     bool left_ready = false;
 
-    WaveCoordinator wave;
-    std::mutex delayed_mutex;
-    bool delayed_flushed = false;
-
     std::unique_ptr<HashJoin> schema_join;
-    /// The dedicated radix pool. Wave liveness depends on an invariant: while a wave has queued or
-    /// running workers, no job that can let an exception escape may share this pool. An escaped job
-    /// exception shuts the pool down and destroys still-queued jobs unrun, so a destroyed wave worker
-    /// would never report its exit and the wave's consumers would wait forever. Wave workers swallow
-    /// everything; scatter/build/teardown jobs run only while no wave is active.
+    /// The dedicated radix pool, used only by the build side (post-build scatter, leaf builds,
+    /// destructor teardown). The probe path runs entirely on the executor's own lanes.
     std::unique_ptr<ThreadPool> pool;
     bool enable_lazy_columns_indexing = true;
+
+    /// Binds the wave's plan references once the left side is known (under the wave mutex). A
+    /// worker merges its own output only where a returned block costs an executor quantum: on the
+    /// lanes, and only when more than one thread runs (at one thread the copy is pure cost). The
+    /// joined-block row cap is respected, unlike a merge behind a shared buffer could.
+    void bindWave(const TableJoin & table_join_, size_t max_threads_)
+    {
+        wave_state.header = &left_header;
+        wave_state.layout = &left_layout;
+        wave_state.pass_bits = &pass_bits;
+        wave_state.leaves = &partition_joins;
+        wave_state.budget = probe_window_budget;
+        if (max_threads_ > 1)
+        {
+            wave_state.lane_merge_rows = MERGE_TARGET_ROWS;
+            if (const size_t cap = table_join_.maxJoinedBlockRows())
+                wave_state.lane_merge_rows = std::min<size_t>(wave_state.lane_merge_rows, cap);
+        }
+    }
 };
 
 /// -------------------------------------------------------------------------------------------------
@@ -726,512 +1330,58 @@ struct RadixHashJoin::State
 namespace
 {
 
-/// Shared references the probe path needs; all point into State, which outlives the results.
-struct ProbeShared
-{
-    ThreadPool & pool;
-    ThreadGroupPtr thread_group;
-    size_t threads;
-    std::vector<std::unique_ptr<HashJoin>> & partition_joins;
-    const Block & left_header;
-    const SideLayout & left_layout;
-    size_t fanout;
-    const std::vector<size_t> & pass_bits;
-};
-
-/// Drives one leaf partition's probe, forwarding output blocks through `emit` (which returns false to
-/// stop early). Handles the leaf's `max_joined_block_rows` splitting via the next_block chain.
-template <typename Emit>
-void probePartition(HashJoin & leaf, Block probe_block, const Emit & emit)
-{
-    JoinResultPtr res = leaf.joinBlock(std::move(probe_block));
-    while (res)
-    {
-        auto r = res->next();
-        Block out = std::move(r.block);
-        if (r.is_last)
-        {
-            if (r.next_block)
-            {
-                r.next_block->filterBySelector();
-                Block next_block = std::move(*r.next_block).getSourceBlock();
-                res = next_block.rows() ? leaf.joinBlock(std::move(next_block)) : nullptr;
-            }
-            else
-            {
-                res = nullptr;
-            }
-        }
-        if (out.rows() && !emit(std::move(out)))
-            return;
-    }
-}
-
-/// Probe drain order: the ids of the partitions worth probing (non-empty on both sides), largest
-/// probe partition first. One worker probes one partition, so a wave's wall time is lower-bounded
-/// by its largest partition; starting the largest first (LPT scheduling) keeps it off the tail
-/// under imbalance, and draining the biggest buffers first also releases the most memory earliest
-/// (a partition's columns are moved out when probed). Ties break by partition id for determinism.
-std::vector<UInt32> probeDrainOrder(const std::vector<PartitionOutput> & parts, const std::vector<std::unique_ptr<HashJoin>> & partition_joins)
-{
-    std::vector<UInt32> order;
-    order.reserve(parts.size());
-    for (size_t p = 0; p < parts.size(); ++p)
-        if (parts[p].rows && partition_joins[p])
-            order.push_back(static_cast<UInt32>(p));
-    std::sort(
-        order.begin(),
-        order.end(),
-        [&](UInt32 a, UInt32 b)
-        {
-            if (parts[a].rows != parts[b].rows)
-                return parts[a].rows > parts[b].rows;
-            return a < b;
-        });
-    return order;
-}
-
-/// One scattered, worker-fed wave, shared by every probe lane. Workers hold the owning shared_ptr,
-/// so the wave survives any consumer teardown order; the coordinator holds it while the wave is the
-/// active one.
-struct ActiveWave
-{
-    ActiveWave(ProbeShared shared_, size_t threads)
-        : shared(std::move(shared_))
-        , output_queue(2 * threads + 1)
-    {
-    }
-
-    void worker()
-    {
-        /// Everything, including the thread-group switch, stays inside the try: an exception escaping
-        /// a job body would poison the pool (shutdown_on_exception) and rethrow from an arbitrary
-        /// later wait.
-        try
-        {
-            ThreadGroupSwitcher switcher(shared.thread_group, ThreadName::RADIX_JOIN);
-
-            /// A partition's probe output is one small block (window rows / fanout), and one popped
-            /// block costs a consumer lane a full executor quantum — at high thread counts a few
-            /// hundred microseconds of turnaround regardless of block size, which bounds the drain
-            /// once partitions outnumber consumers by orders of magnitude. Merge each worker's
-            /// output up to the usual joined-block size before pushing; the copy runs on the
-            /// producers, which the queue back-pressure keeps mostly idle exactly when merging
-            /// matters. At threads == 1 there is no consumer crew to relieve and the producer is
-            /// the critical path, so the extra copy would be pure cost.
-            const bool merge_output = shared.threads > 1;
-            Block merged_header;
-            MutableColumns merged;
-            size_t merged_rows = 0;
-            size_t merged_bytes = 0;
-
-            auto flush_merged = [&]
-            {
-                if (merged_rows == 0)
-                    return true;
-                Block out = merged_header.cloneWithColumns(std::move(merged));
-                merged.clear();
-                merged_rows = 0;
-                merged_bytes = 0;
-                return output_queue.push(std::move(out));
-            };
-
-            bool stop = false;
-            for (size_t i = next_partition.fetch_add(1, std::memory_order_relaxed); i < drain_order.size();
-                 i = next_partition.fetch_add(1, std::memory_order_relaxed))
-            {
-                const size_t p = drain_order[i];
-                probePartition(
-                    *shared.partition_joins[p],
-                    parts[p].toBlock(shared.left_header),
-                    [&](Block out)
-                    {
-                        if (!merge_output)
-                        {
-                            if (!output_queue.push(std::move(out)))
-                            {
-                                stop = true;
-                                return false;
-                            }
-                            return true;
-                        }
-
-                        const size_t rows = out.rows();
-                        /// Lazily-replicated columns do not support appending; normalize to full.
-                        Columns columns = out.getColumns();
-                        for (auto & column : columns)
-                            column = column->convertToFullColumnIfReplicated();
-
-                        if (merged_rows == 0)
-                        {
-                            merged_header = out.cloneEmpty();
-                            merged.clear();
-                            merged.reserve(columns.size());
-                            for (auto & column : columns)
-                                merged.push_back(IColumn::mutate(std::move(column)));
-                        }
-                        else
-                        {
-                            for (size_t j = 0; j < merged.size(); ++j)
-                                merged[j]->insertRangeFrom(*columns[j], 0, rows);
-                        }
-                        merged_rows += rows;
-                        merged_bytes += out.bytes();
-
-                        if ((merged_rows >= MERGE_TARGET_ROWS || merged_bytes >= MERGE_TARGET_BYTES) && !flush_merged())
-                        {
-                            stop = true;
-                            return false;
-                        }
-                        return true;
-                    });
-                if (stop)
-                    break;
-            }
-            if (!stop)
-                flush_merged();
-        }
-        catch (...)
-        {
-            std::lock_guard lock(exception_mutex);
-            if (!exception)
-                exception = std::current_exception();
-        }
-        onWorkerExit(1);
-    }
-
-    /// The last worker to exit finishes the queue, so consumers see finished-and-empty exactly when
-    /// all output is delivered. Never called with the mutex held.
-    void onWorkerExit(size_t count)
-    {
-        bool last = false;
-        {
-            std::lock_guard lock(workers_mutex);
-            active_workers -= count;
-            last = (active_workers == 0);
-        }
-        if (last)
-        {
-            output_queue.finish();
-            workers_cv.notify_all();
-        }
-    }
-
-    /// Waits for this wave's workers only — not pool-wide, so it cannot entangle with another wave's
-    /// scatter or with the leaf teardown. Bounded: once the queue is finished (or cleared), workers
-    /// exit on their next push.
-    void joinWorkers()
-    {
-        std::unique_lock lock(workers_mutex);
-        workers_cv.wait(lock, [this] { return active_workers == 0; });
-    }
-
-    ProbeShared shared;
-    std::vector<PartitionOutput> parts;
-    std::vector<UInt32> drain_order;
-    ConcurrentBoundedQueue<Block> output_queue;
-    std::atomic<size_t> next_partition{0};
-    std::mutex workers_mutex;
-    std::condition_variable workers_cv;
-    size_t active_workers = 0; /// under workers_mutex
-    std::exception_ptr exception; /// set under exception_mutex, read after joinWorkers
-    std::mutex exception_mutex;
-    std::atomic<bool> torn_down{false};
-    std::atomic<size_t> consumers{0}; /// attached consumer lanes, bounded by WaveJoinResult::max_consumers
-    Stopwatch watch;
-};
-
-/// One probe lane's view of the mid-stream wave machinery. The lane that finds no wave active starts
-/// one from the shared window (when it has reached the budget); lanes that arrive meanwhile drain
-/// the active wave's queue — cross-lane output emission is fine for this INNER join and is exactly
-/// what RadixDelayedBlocks already does across the delayed-worker transforms. This is what fixes the
-/// deadlock without a busy wait: the old design parked every other lane on a mutex whose release
-/// needed an executor-driven drain, and a spin-instead-of-park variant starved the pool workers of
-/// CPU. The file-wide liveness invariant: no executor lane ever waits on progress that only another
-/// executor lane can make. Waiting on the queue is safe (producers are dedicated pool workers), and
-/// waiting on the coordinator mutex is safe (its holder only scatters on the pool, then publishes).
-///
-/// The consumer set of one wave is bounded (max_consumers). Consumership is sticky — an attached
-/// lane pulls no input until it sees no-wave-and-below-budget — so unbounded attachment converts
-/// every probe lane into a queue consumer and starves the scan that must feed the next wave,
-/// exposing a full window refill on the critical path once per captured generation (measured at
-/// mid thread counts). A handful of consumers already saturates the drain: one pop costs a lane a
-/// work quantum, an order of magnitude less than producing the block costs a pool worker, so the
-/// surplus lanes serve the join better by pulling input — but only while that input is needed.
-/// The governing invariant: a surplus lane scans iff the shared window is below budget. Below
-/// budget, a capped-out lane reports end-of-result exactly like the below-budget path (its rows
-/// are already in the shared window; a later wave or the delayed flush probes them) and goes back
-/// to the input; once the window is staged to budget it attaches past the cap and stops pulling —
-/// the same back-pressure as draining-only designs, bounding the window overshoot at one in-flight
-/// block per lane. Over-cap consumers dissolve at the wave switch: they fail the attach on the
-/// next wave and, with its window freshly swapped below budget, return to the input. No lane ever
-/// waits on any of this.
-class WaveJoinResult : public IJoinResult
+/// One probe lane's result: a participating worker. Its next() admits the lane's block when the
+/// wave accepts input, claims sealed-wave drain work otherwise, and returns only this worker's own
+/// output — one bounded quantum per call, no lock ever held between calls.
+class CooperativeWaveResult : public IJoinResult
 {
 public:
-    WaveJoinResult(
-        ProbeShared shared_,
-        WaveCoordinator & coordinator_,
-        std::mutex & window_mutex_,
-        std::vector<Block> & shared_window_,
-        size_t & shared_window_bytes_,
-        size_t probe_window_budget_)
-        : shared(std::move(shared_))
-        , coordinator(coordinator_)
-        , window_mutex(window_mutex_)
-        , shared_window(shared_window_)
-        , shared_window_bytes(shared_window_bytes_)
-        , probe_window_budget(probe_window_budget_)
+    CooperativeWaveResult(ProbeWave & wave_, Block block)
+        : wave(wave_)
     {
+        worker.pending = std::move(block);
     }
 
-    /// The result owns nothing but its consumer slot: waves belong to the coordinator (and their
-    /// workers), and an abandoned active wave is torn down by ~RadixHashJoin. An inert destructor is
-    /// load-bearing — results are destroyed in arbitrary order at pipeline teardown, possibly while
-    /// another lane's wave still has parked producers — and detach keeps it inert: a plain atomic
-    /// decrement, no waiting, no teardown. Releasing the slot on destruction keeps an abandoned
-    /// consumer from pinning the cap while the query is still draining other lanes.
-    ~WaveJoinResult() override
+    /// Destroying a result that still owes work poisons the wave (fail-close); see ProbeWave::abandon.
+    ~CooperativeWaveResult() override
     {
-        detach();
+        wave.abandon(worker);
     }
 
     JoinResultBlock next() override
     {
-        while (true)
-        {
-            std::shared_ptr<ActiveWave> wave;
-            {
-                std::lock_guard lock(coordinator.mutex);
-                if (!coordinator.active_wave)
-                {
-                    std::vector<Block> window;
-                    {
-                        std::lock_guard window_lock(window_mutex);
-                        if (shared_window_bytes >= probe_window_budget)
-                        {
-                            window.swap(shared_window);
-                            shared_window_bytes = 0;
-                        }
-                    }
-                    /// Below budget means another wave already took the rows this result was created
-                    /// for; whatever remains keeps accumulating for a later wave or the delayed flush.
-                    if (window.empty())
-                        return {Block{}, nullptr, true};
-                    coordinator.active_wave = startWave(std::move(window));
-                }
-                wave = coordinator.active_wave;
-            }
-
-            if (attached_wave != wave)
-            {
-                detach();
-                /// Slots only read full with max_consumers lanes attached, and an attached lane keeps
-                /// draining until the wave is torn down, so a live wave always has a consumer.
-                if (!tryAttach(*wave))
-                {
-                    /// A surplus lane scans while the next window is below budget and stops pulling
-                    /// input once it is staged. Going back to the input here with a full window would
-                    /// grow it by scan-rate x wave-duration — unbounded; instead attach past the cap,
-                    /// which is exactly the pre-cap back-pressure (the window overshoots the budget by
-                    /// at most the blocks already in flight, one per lane).
-                    bool window_staged;
-                    {
-                        std::lock_guard window_lock(window_mutex);
-                        window_staged = shared_window_bytes >= probe_window_budget;
-                    }
-                    if (!window_staged)
-                        return {Block{}, nullptr, true};
-                    wave->consumers.fetch_add(1, std::memory_order_relaxed);
-                }
-                attached_wave = wave;
-            }
-
-            Block block;
-            if (wave->output_queue.pop(block))
-                return {std::move(block), nullptr, false};
-
-            /// Finished and empty. One lane tears the wave down; the others yield this quantum and
-            /// re-check once the winner has cleared it (bounded by the winner joining already-exiting
-            /// workers).
-            if (wave->torn_down.exchange(true))
-                return {Block{}, nullptr, false};
-
-            wave->joinWorkers();
-            {
-                std::lock_guard lock(coordinator.mutex);
-                if (coordinator.active_wave == wave)
-                    coordinator.active_wave.reset();
-            }
-            if (wave->exception)
-                std::rethrow_exception(wave->exception);
-            ProfileEvents::increment(ProfileEvents::RadixHashJoinProbeMicroseconds, wave->watch.elapsedMicroseconds());
-            /// Loop: start the next wave if a full window accumulated meanwhile, else report end.
-        }
+        ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
+        bool is_last = false;
+        Block block = wave.pull(worker, /*delayed*/ false, is_last);
+        return {std::move(block), nullptr, is_last};
     }
 
 private:
-    /// Scatter the window and schedule the probe workers. Runs under the coordinator mutex: lanes
-    /// arriving meanwhile park there, waiting only on the pool-driven scatter. On failure — scatter
-    /// throw, or scheduleOrThrow stopping after k < threads workers — the worker count is corrected
-    /// for the never-scheduled remainder, the queue is finished-and-cleared so the k live workers
-    /// observe push() == false and exit, and the error propagates with the wave unpublished.
-    std::shared_ptr<ActiveWave> startWave(std::vector<Block> window)
-    {
-        auto wave = std::make_shared<ActiveWave>(shared, shared.threads);
-        {
-            ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
-            wave->parts = scatterToPartitions(
-                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.pass_bits);
-        }
-        wave->drain_order = probeDrainOrder(wave->parts, shared.partition_joins);
-
-        {
-            std::lock_guard lock(wave->workers_mutex);
-            wave->active_workers = shared.threads;
-        }
-        size_t scheduled = 0;
-        try
-        {
-            for (; scheduled < shared.threads; ++scheduled)
-            {
-                shared.pool.scheduleOrThrow(
-                    [wave]
-                    {
-                        wave->worker();
-                    });
-            }
-        }
-        catch (...)
-        {
-            wave->output_queue.clearAndFinish();
-            wave->onWorkerExit(shared.threads - scheduled);
-            wave->joinWorkers();
-            throw;
-        }
-        return wave;
-    }
-
-    bool tryAttach(ActiveWave & wave)
-    {
-        size_t current = wave.consumers.load(std::memory_order_relaxed);
-        while (current < max_consumers)
-            if (wave.consumers.compare_exchange_weak(current, current + 1, std::memory_order_relaxed))
-                return true;
-        return false;
-    }
-
-    void detach()
-    {
-        if (attached_wave)
-        {
-            attached_wave->consumers.fetch_sub(1, std::memory_order_relaxed);
-            attached_wave.reset();
-        }
-    }
-
-    ProbeShared shared;
-    WaveCoordinator & coordinator;
-    std::mutex & window_mutex; /// State::window_mutex, guarding the two shared-window fields below
-    std::vector<Block> & shared_window;
-    size_t & shared_window_bytes;
-    const size_t probe_window_budget;
-    /// Enough consumers to keep the drain ahead of the producers (a pop is ~10x cheaper than the
-    /// probe that produced the block), few enough to leave most lanes pulling input.
-    const size_t max_consumers = std::max<size_t>(2, shared.threads / 8);
-    std::shared_ptr<ActiveWave> attached_wave; /// the wave this result currently consumes
+    ProbeWave & wave;
+    WaveWorker worker;
 };
 
-/// The final flush: the leftover probe window is scattered once (on the pool) and then probed by the
-/// executor's delayed-worker transforms, which call nextImpl() concurrently. Work-stealing over
-/// partitions with the GraceHashJoin open-results pattern so multi-block leaf outputs are not lost.
-class RadixDelayedBlocks : public IBlocksStream
+/// The final flush: a thin adapter over the same wave machine, pulled concurrently by the
+/// executor's delayed-worker transforms.
+class CooperativeDelayedBlocks : public IBlocksStream
 {
 public:
-    RadixDelayedBlocks(ProbeShared shared_, std::vector<PartitionOutput> parts_)
-        : shared(std::move(shared_))
-        , parts(std::move(parts_))
-        , drain_order(probeDrainOrder(parts, shared.partition_joins))
+    explicit CooperativeDelayedBlocks(ProbeWave & wave_)
+        : wave(wave_)
     {
     }
 
 protected:
     Block nextImpl() override
     {
-        /// Per-call leaf probe time; the whole radix probe (across all delayed workers) sums here.
         ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
-        std::shared_lock shared_guard(eof_mutex);
-
-        while (true)
-        {
-            HashJoin * leaf = nullptr;
-            JoinResultPtr res;
-            {
-                std::lock_guard lock(pending_mutex);
-                if (!pending.empty())
-                {
-                    leaf = pending.front().leaf;
-                    res = std::move(pending.front().res);
-                    pending.pop_front();
-                }
-            }
-
-            if (!res)
-            {
-                const size_t i = next_partition.fetch_add(1, std::memory_order_relaxed);
-                if (i >= drain_order.size())
-                {
-                    /// No new partitions. Make sure no in-flight probe is about to leave pending rows.
-                    shared_guard.unlock();
-                    bool more = false;
-                    {
-                        std::unique_lock exclusive(eof_mutex);
-                        std::lock_guard lock(pending_mutex);
-                        more = !pending.empty();
-                    }
-                    return more ? nextImpl() : Block{};
-                }
-                const size_t p = drain_order[i];
-                leaf = shared.partition_joins[p].get();
-                res = leaf->joinBlock(parts[p].toBlock(shared.left_header));
-            }
-
-            auto r = res->next();
-            if (!r.is_last)
-            {
-                std::lock_guard lock(pending_mutex);
-                pending.push_back({leaf, std::move(res)});
-            }
-            else if (r.next_block)
-            {
-                r.next_block->filterBySelector();
-                Block next_block = std::move(*r.next_block).getSourceBlock();
-                if (next_block.rows())
-                {
-                    std::lock_guard lock(pending_mutex);
-                    pending.push_back({leaf, leaf->joinBlock(std::move(next_block))});
-                }
-            }
-
-            if (r.block.rows())
-                return std::move(r.block);
-        }
+        WaveWorker worker;
+        bool is_last = false;
+        return wave.pull(worker, /*delayed*/ true, is_last);
     }
 
 private:
-    struct Pending
-    {
-        HashJoin * leaf;
-        JoinResultPtr res;
-    };
-
-    ProbeShared shared;
-    std::vector<PartitionOutput> parts;
-    std::vector<UInt32> drain_order;
-    std::atomic<size_t> next_partition{0};
-    std::mutex pending_mutex;
-    std::list<Pending> pending TSA_GUARDED_BY(pending_mutex);
-    SharedMutex eof_mutex;
+    ProbeWave & wave;
 };
 
 }
@@ -1305,26 +1455,10 @@ RadixHashJoin::RadixHashJoin(
 
 RadixHashJoin::~RadixHashJoin()
 {
-    /// A cancelled query can leave the active wave undrained, its workers parked on the full output
-    /// queue. Unpark and join them (per-wave, dropping the output) before anything else needs the
-    /// pool. Waves cannot exist without a pool.
-    if (state->pool)
-    {
-        std::shared_ptr<ActiveWave> wave;
-        {
-            std::lock_guard lock(state->wave.mutex);
-            wave.swap(state->wave.active_wave);
-        }
-        if (wave)
-        {
-            wave->output_queue.clearAndFinish();
-            wave->joinWorkers();
-            /// Nobody drained this wave to completion, so a stored probe error has no consumer;
-            /// the query is already ending, but leave a trace.
-            if (wave->exception)
-                tryLogException(wave->exception, getLogger("RadixHashJoin"), "Abandoned wave had failed: ");
-        }
-    }
+    /// Split leaf probes parked by the delayed stream hold results referencing the leaf joins;
+    /// release them before the joins are torn down. Whatever else the wave still holds (a poisoned
+    /// query's arenas and admissions) is released by the State members' own destructors.
+    state->wave_state.delayed_runs.clear();
 
     /// Hash-table destruction can be very time-consuming; parallelise it over the pool, matching
     /// ConcurrentHashJoin's teardown.
@@ -1574,88 +1708,39 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t /*lane*/)
     }
 
     {
-        std::lock_guard lock(state->window_mutex);
+        std::lock_guard lock(state->wave_state.mutex);
         if (!state->left_ready)
         {
             state->left_header = block.cloneEmpty();
             state->left_layout = makeSideLayout(state->left_header, state->left_key_names);
+            state->bindWave(*table_join, max_threads);
             state->left_ready = true;
         }
-        const size_t appended_bytes = block.allocatedBytes();
-        state->window_blocks.push_back(std::move(block));
-        state->window_bytes += appended_bytes;
-        if (state->window_bytes < state->probe_window_budget)
-            return IJoinResult::createFromBlock(Block{});
     }
 
-    ProbeShared shared{
-        *state->pool,
-        CurrentThread::getGroup(),
-        max_threads,
-        state->partition_joins,
-        state->left_header,
-        state->left_layout,
-        state->fanout,
-        state->pass_bits};
-
-    /// The window is not swapped here: the result stays weightless until its next() either starts a
-    /// wave from the shared window or joins in draining the wave someone else started. Meanwhile this
-    /// lane keeps the result and pulls no further input, which bounds the shared window's overshoot.
-    return std::make_unique<WaveJoinResult>(
-        std::move(shared),
-        state->wave,
-        state->window_mutex,
-        state->window_blocks,
-        state->window_bytes,
-        state->probe_window_budget);
+    /// The block travels inside the result: its first next() admits it (possibly sealing the wave
+    /// and beginning the drain) or, when the wave is already sealed, first helps drain it. The
+    /// admission itself bounds the wave's accounted bytes; nothing is buffered per lane.
+    return std::make_unique<CooperativeWaveResult>(state->wave_state, std::move(block));
 }
 
 IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
 {
-    std::lock_guard lock(state->delayed_mutex);
-    if (state->delayed_flushed)
-        return {};
-    state->delayed_flushed = true;
-
-    std::vector<Block> window;
+    auto & wave = state->wave_state;
     {
-        std::lock_guard wlock(state->window_mutex);
-        window.swap(state->window_blocks);
-        state->window_bytes = 0;
+        std::lock_guard lock(wave.mutex);
+        if (wave.delayed_taken)
+            return {};
+        wave.delayed_taken = true;
+        if (!state->left_ready || state->build_rows.load(std::memory_order_relaxed) == 0)
+            return {};
+        /// Every probe transform reached its result's end before the delayed flush starts, so the
+        /// wave can only be filling (the final partial window) — or already poisoned, which the
+        /// stream's first pull will surface. The stream itself seals and drains it: same machine.
+        if (wave.admitted.empty() && !wave.primary)
+            return {};
     }
-    if (window.empty() || !state->left_ready || state->build_rows.load(std::memory_order_relaxed) == 0)
-        return {};
-
-    /// A transform cannot finish while it still holds an undrained wave result, and the delayed flush
-    /// starts only after every transform finished, so no wave is active here. Scattering on the shared
-    /// pool while a wave still held workers parked on its full queue would wait forever; catch any
-    /// future wiring change that makes this reachable.
-    {
-        std::lock_guard wave_lock(state->wave.mutex);
-        chassert(!state->wave.active_wave);
-    }
-
-    /// The scatter is a sub-phase of the overall radix probe time.
-    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::RadixHashJoinProbeMicroseconds);
-    auto thread_group = CurrentThread::getGroup();
-    std::vector<PartitionOutput> parts;
-    {
-        ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
-        parts = scatterToPartitions(
-            *state->pool, max_threads, thread_group, state->left_header, window, state->left_layout, state->pass_bits);
-    }
-
-    ProbeShared shared{
-        *state->pool,
-        std::move(thread_group),
-        max_threads,
-        state->partition_joins,
-        state->left_header,
-        state->left_layout,
-        state->fanout,
-        state->pass_bits};
-
-    return std::make_shared<RadixDelayedBlocks>(std::move(shared), std::move(parts));
+    return std::make_shared<CooperativeDelayedBlocks>(wave);
 }
 
 size_t RadixHashJoin::getTotalRowCount() const
