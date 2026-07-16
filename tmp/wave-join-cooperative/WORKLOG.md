@@ -469,6 +469,43 @@ including 04509 at 0.34 s
 | 10 verdict | pending | — |
 | 11 diff check | pre-check PASS | re-run at the end |
 
+### Unit 4 performance preregistration (committed BEFORE the suite run)
+
+Invocation (exactly the frozen Gate-9 command):
+
+    python3 tmp/wave-join-impl/suite.py \
+      --binary-a /mnt/ch/ClickHouse/build/reldeb/programs/clickhouse \
+      --binary-b /mnt/ch/ClickHouse/tmp/wave-join-cooperative/baseline/clickhouse \
+      --cells all --reps 5 \
+      --expect-sha256-b 4b55481c22d025ae364d36df39cd662bd986fd5878e711d89e1d76b08ea59cce \
+      --out /mnt/ch/ClickHouse/tmp/wave-join-cooperative/candidate_u3.jsonl
+
+Candidate binary at run time: the fixed cooperative build (sha256 recorded in
+the run log and the JSONL header by the suite itself; the working tree equals
+commit `a02a024c904`).
+
+Preregistered expectations:
+- Every frozen guard passes: integrity snapshots, foreign-process/loadavg,
+  per-shape count assertions and radix-vs-parallel_hash fingerprints, A/B
+  radix fingerprint equality, binary stability footer.
+- ENGAGEMENT: the candidate arm's expected leaf count is UNCHANGED from the
+  baseline (A: 16384, C: 32768) — this change is probe-side only; the build
+  plan is untouched.
+- Verdict (Gate 10, frozen `candidate_verdict.py`): every one of the 10 cells
+  beats its frozen baseline median by MORE than its frozen band; no cell
+  slower; T16->T96 scaling improves beyond combined noise for both shapes.
+- Mechanism for the predicted win: mid-stream waves no longer funnel output
+  through a bounded queue with a capped drain crew; every lane claims leaf
+  work directly, phase transitions are lock-free CASes, and the wave scatter
+  is spread across the lanes rather than serialized behind a coordinator
+  mutex on the pool.
+
+Refuted by: any guard failure or suite non-completion; any cell not beating
+its band (goal gate fails => result reported as failure, not softened);
+ENV-DRIFT (in-run baseline arm deviating > 2x band from the frozen median =>
+UNSETTLED); scaling gate failing. The verdict script (frozen at
+`e725eedc528`, null-tested) reports all failures and nulls as failures.
+
 ### REGISTER AMENDMENT v2 — Gate 8, USER SIGN-OFF (2026-07-16)
 
 The user was asked with the exact numbers above and chose
