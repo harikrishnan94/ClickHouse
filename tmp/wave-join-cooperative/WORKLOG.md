@@ -134,3 +134,39 @@ Decision record (reversible, in scope): probe/refine outputs in the corrected sp
 are computed from the ACTUAL arena contents (not `ExpectedLeaf`), so a modeled
 scatter/refine defect propagates to a `FinalRefinement` violation; the old spec's
 definitional output made refinement unfalsifiable on the output path.
+
+### Adversarial panel round 1 (2026-07-16): 3 confirmed findings, all fixed
+
+Workflow `wf_c4e003a2-de5`: 4 independent review lenses (tautology, budget,
+refinement, protocol), 12 raw findings, each adversarially verified by a fresh
+agent instructed to refute it; 3 confirmed, 9 refuted (raw results in the
+workflow journal). Confirmed and fixed:
+
+1. HIGH — `PrimaryStable` was unfalsifiable: no configuration could reach a
+   state where a second fault carries a DIFFERENT error, so a last-exception-
+   wins spec would have passed identically (zero mutation adequacy).
+   Fix: `MC_Fail` now fails leaves {1, 3} (both populated, distinct errors
+   `eL1`/`eOther`, concurrently ownable by the two workers), and
+   `verify_tla.sh` gained a MUTATION WITNESS: a scratch copy of the spec with
+   FaultProbe's first-wins guard removed must make TLC report a violation of
+   `PrimaryStable` — the gate is red if the mutant passes.
+2. MEDIUM — leaf-arena release exactly-once was asserted in comments but not
+   verifiable (`liveA1` set-removal is idempotent; `FreedOnce` covered only
+   entries/pass-arenas). Fix: per-leaf `freedA1 \in [Leaves -> Nat]` counter,
+   incremented at FinishProbe/FaultProbe/Teardown-of-still-live, reset at
+   CompleteWave, bounded by `FreedOnce`.
+3. MEDIUM — cancellation/faults never coexisted with wave completion in any
+   configuration (verified by the panel with an exhaustive TLC run: MC_Fail
+   never reaches `CompleteWave`, `done`, `doneWaves # <<>>`, or an EOFSeal
+   pre-state). Fix: new positive configuration `MC_CancelRace` (two waves,
+   one budget-sealed + one EOF partial, external cancellation enabled, no
+   faults) makes cancellation race Seal, the barriers, CompleteWave, EOFSeal,
+   FinishInput and the second wave's drain with history present.
+
+### Gate 2 re-run after fixes (2026-07-16): GREEN
+
+`bash tmp/wave-join-cooperative/verify_tla.sh` exit 0, 13/13 checks as
+expected; raw log `build/reldeb/test_wave_join_tla.log`. Deltas vs round 1:
+MC_Fail now 2,697 generated / 1,152 distinct (earlier fault cutoffs with two
+failing leaves), MC_CancelRace 27,087 / 10,944, mutation witness reports
+`PrimaryStable` violated as expected; all other counts unchanged.

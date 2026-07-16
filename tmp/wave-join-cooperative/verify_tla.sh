@@ -4,17 +4,25 @@
 # Exits 0 only when ALL of the following hold:
 #   1. SANY parses src/Interpreters/RadixHashJoin/WaveJoinProbe.tla cleanly.
 #   2. TLC finds no error on the positive configurations:
-#        MC_Normal    (PL>1, budget-sealed wave + EOF final partial wave)
-#        MC_PL1       (PL=1, refine stages skipped by the same machine)
-#        MC_MultiWave (two budget-sealed waves, 3 workers, duplicate results)
-#        MC_Fail      (probe fault, scan/pre faults, external cancellation)
-#      Every positive configuration checks the full safety battery; the three
+#        MC_Normal     (PL>1, budget-sealed wave + EOF final partial wave)
+#        MC_PL1        (PL=1, refine stages skipped by the same machine)
+#        MC_MultiWave  (two budget-sealed waves, 3 workers, duplicate results)
+#        MC_Fail       (two distinct-error probe faults that can race,
+#                       scan/pre faults, external cancellation)
+#        MC_CancelRace (cancellation racing NORMAL completion across two
+#                       waves: Seal, barriers, CompleteWave, EOFSeal,
+#                       FinishInput, second-wave drain with history)
+#      Every positive configuration checks the full safety battery; the
 #      completing configurations explicitly check FinalRefinement (verified
 #      textually below) plus Termination and ParticipationLive.
 #   3. The negative work-conservation witness MC_NoSteal (dedicated scanner
 #      crew + leaf affinity) makes TLC report a TEMPORAL VIOLATION — the
 #      participation property is falsifiable, not a tautology.
-#   4. The three reachability configurations FAIL as expected, proving the
+#   4. The first-exception-wins mutation witness: a copy of the spec whose
+#      FaultProbe overwrites `primary` UNCONDITIONALLY (last-exception-wins)
+#      must make TLC report a violation of PrimaryStable on MC_Fail — the
+#      property is falsifiable, not a tautology.
+#   5. The three reachability configurations FAIL as expected, proving the
 #      cooperative states are actually exercised:
 #        MC_ReachOwn      — a state where EVERY worker owns a drain job
 #        MC_ReachInflight — two concurrent in-flight budget reservations
@@ -62,10 +70,10 @@ fi
 
 step "Textual: completing configurations explicitly check FinalRefinement"
 fr_ok=1
-for cfg in MC_Normal MC_PL1 MC_MultiWave; do
+for cfg in MC_Normal MC_PL1 MC_MultiWave MC_CancelRace; do
     grep -q '^[[:space:]]*FinalRefinement$' "$TLADIR/$cfg.cfg" || { echo "FinalRefinement missing from $cfg.cfg"; fr_ok=0; }
 done
-[ $fr_ok -eq 1 ] && verdict PASS "FinalRefinement is a checked invariant in MC_Normal, MC_PL1, MC_MultiWave" \
+[ $fr_ok -eq 1 ] && verdict PASS "FinalRefinement is a checked invariant in MC_Normal, MC_PL1, MC_MultiWave, MC_CancelRace" \
                  || verdict FAIL "FinalRefinement missing from a completing configuration"
 
 run_tlc() { # $1 = cfg name, $2 = root module, $3... = extra TLC flags
@@ -77,7 +85,7 @@ run_tlc() { # $1 = cfg name, $2 = root module, $3... = extra TLC flags
     echo "$out"
 }
 
-for cfg in MC_Normal MC_PL1 MC_MultiWave MC_Fail; do
+for cfg in MC_Normal MC_PL1 MC_MultiWave MC_Fail MC_CancelRace; do
     step "TLC positive: $cfg (expect: no error)"
     out="$(run_tlc "$cfg" "$cfg")"
     grep -E "Model checking completed|states generated|Error:|violated|Finished in" "$out" | head -20
@@ -102,6 +110,32 @@ if grep -q "Temporal properties were violated" "$out"; then
 else
     echo "---- full TLC output (MC_NoSteal) ----"; cat "$out"
     verdict FAIL "MC_NoSteal did NOT fail as expected (participation property would be vacuous)"
+fi
+
+step "TLC mutation witness: last-exception-wins mutant (expect: PrimaryStable violated)"
+# Mutate ONLY FaultProbe's primary update in a scratch copy: drop the
+# first-wins guard so a second distinct-error fault overwrites primary.
+# MC_Fail has two concurrently-ownable failing leaves with distinct errors
+# (eL1 vs eOther), so the mutant must fail PrimaryStable; if it passes, the
+# property is vacuous and this gate goes red.
+MUT="$WORK/mutation"
+mkdir -p "$MUT"
+sed 's/!.primary = IF st.primary = NoError THEN ErrorOf(l) ELSE @,/!.primary = ErrorOf(l),/' \
+    "$WORK/WaveJoinProbe.tla" > "$MUT/WaveJoinProbe.tla"
+cp "$WORK/MC_Fail.tla" "$WORK/MC_Fail.cfg" "$MUT/"
+if cmp -s "$WORK/WaveJoinProbe.tla" "$MUT/WaveJoinProbe.tla"; then
+    verdict FAIL "mutation did not apply (sed pattern found nothing)"
+else
+    mut_out="$MUT/MC_Fail_mutant.out"
+    (cd "$MUT" && timeout "$TIMEOUT_S" "$JAVA" -XX:+UseParallelGC -Xmx8g -cp "$JAR" \
+        tlc2.TLC -workers auto -config MC_Fail.cfg -metadir "$MUT/meta" MC_Fail) >"$mut_out" 2>&1
+    grep -E "Action property.*violated|Temporal properties were violated|Model checking completed|Error:" "$mut_out" | head -5
+    if grep -Eq "Action property PrimaryStable is violated|Temporal properties were violated" "$mut_out"; then
+        verdict PASS "last-exception-wins mutant fails PrimaryStable as expected"
+    else
+        echo "---- full TLC output (mutant) ----"; cat "$mut_out"
+        verdict FAIL "mutant did NOT fail (PrimaryStable would be vacuous)"
+    fi
 fi
 
 reach() { # $1 = cfg, $2 = invariant name

@@ -238,7 +238,8 @@ Init ==
           liveA0 |-> {},
           liveA1 |-> {},
           freedEntries |-> 0,
-          freedA0 |-> 0]
+          freedA0 |-> 0,
+          freedA1 |-> [l \in Leaves |-> 0]]
 
 (***************************** Scan (active wave) ****************************)
 
@@ -423,7 +424,8 @@ FinishProbe(w, l) ==
            !.wk[w].job = NoJob,
            !.probeDone = @ \cup {l},
            !.out[w] = @ \o ConcatResults(DropNoRow(st.arena1[l])),
-           !.liveA1 = @ \ {l}]
+           !.liveA1 = @ \ {l},
+           !.freedA1[l] = @ + 1]
 
 CompleteWave ==
     /\ st.phase = "probe"
@@ -444,7 +446,8 @@ CompleteWave ==
            !.refineDone = {},
            !.probeDone = {},
            !.freedEntries = 0,
-           !.freedA0 = 0]
+           !.freedA0 = 0,
+           !.freedA1 = [l \in Leaves |-> 0]]
 
 (********************* Failure, cancellation, teardown ***********************)
 
@@ -479,7 +482,8 @@ FaultProbe(w, l) ==
            !.wk[w].stopped = TRUE,
            !.cancelled = TRUE,
            !.primary = IF st.primary = NoError THEN ErrorOf(l) ELSE @,
-           !.liveA1 = @ \ {l}]
+           !.liveA1 = @ \ {l},
+           !.freedA1[l] = @ + 1]
 
 (* External cooperative cancellation: no error, just a visible request. *)
 ExternalCancel ==
@@ -519,6 +523,8 @@ Teardown ==
            !.phase = "failed",
            !.freedEntries = @ + (IF st.liveEntries # {} THEN 1 ELSE 0),
            !.freedA0 = @ + (IF st.liveA0 # {} THEN 1 ELSE 0),
+           !.freedA1 = [l \in Leaves |->
+                           IF l \in st.liveA1 THEN @[l] + 1 ELSE @[l]],
            !.liveEntries = {},
            !.liveA0 = {},
            !.liveA1 = {}]
@@ -629,6 +635,7 @@ TypeOK ==
     /\ st.liveA1 \subseteq Leaves
     /\ st.freedEntries \in Nat
     /\ st.freedA0 \in Nat
+    /\ st.freedA1 \in [Leaves -> Nat]
 
 (* F5: the accounted bytes are exactly the admitted wave plus in-flight
    reservations, the threshold overshoot is bounded by one block, and the
@@ -746,6 +753,7 @@ FinalRefinement ==
 FreedOnce ==
     /\ st.freedEntries <= 1
     /\ st.freedA0 <= 1
+    /\ \A l \in Leaves : st.freedA1[l] <= 1
 
 TerminalClean ==
     /\ st.phase = "done" =>
