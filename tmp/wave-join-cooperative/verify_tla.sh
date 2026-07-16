@@ -18,10 +18,15 @@
 #   3. The negative work-conservation witness MC_NoSteal (dedicated scanner
 #      crew + leaf affinity) makes TLC report a TEMPORAL VIOLATION — the
 #      participation property is falsifiable, not a tautology.
-#   4. The first-exception-wins mutation witness: a copy of the spec whose
-#      FaultProbe overwrites `primary` UNCONDITIONALLY (last-exception-wins)
-#      must make TLC report a violation of PrimaryStable on MC_Fail — the
-#      property is falsifiable, not a tautology.
+#   4. Two mutation witnesses on scratch copies of the spec:
+#      - first-exception-wins: FaultProbe overwriting `primary`
+#        UNCONDITIONALLY (last-exception-wins) must make TLC report a
+#        violation of PrimaryStable on MC_Fail;
+#      - budget admission: removing Reserve's `st.mem < BUDGET` guard must
+#        make TLC report a violation of MemBound on MC_MultiWave (the one
+#        config whose total input bytes exceed BUDGET + MaxBlockBytes —
+#        established by the round-1 independent verifier).
+#      Either mutant surviving means the property is vacuous: gate red.
 #   5. The three reachability configurations FAIL as expected, proving the
 #      cooperative states are actually exercised:
 #        MC_ReachOwn      — a state where EVERY worker owns a drain job
@@ -135,6 +140,26 @@ else
     else
         echo "---- full TLC output (mutant) ----"; cat "$mut_out"
         verdict FAIL "mutant did NOT fail (PrimaryStable would be vacuous)"
+    fi
+fi
+
+step "TLC mutation witness: budget-ignoring Reserve mutant (expect: MemBound violated)"
+MUT2="$WORK/mutation2"
+mkdir -p "$MUT2"
+sed '/\/\\ st.mem < BUDGET$/d' "$WORK/WaveJoinProbe.tla" > "$MUT2/WaveJoinProbe.tla"
+cp "$WORK/MC_MultiWave.tla" "$WORK/MC_MultiWave.cfg" "$MUT2/"
+if cmp -s "$WORK/WaveJoinProbe.tla" "$MUT2/WaveJoinProbe.tla"; then
+    verdict FAIL "budget mutation did not apply (sed pattern found nothing)"
+else
+    mut2_out="$MUT2/MC_MultiWave_mutant.out"
+    (cd "$MUT2" && timeout "$TIMEOUT_S" "$JAVA" -XX:+UseParallelGC -Xmx8g -cp "$JAR" \
+        tlc2.TLC -workers auto -config MC_MultiWave.cfg -metadir "$MUT2/meta" MC_MultiWave) >"$mut2_out" 2>&1
+    grep -E "Invariant .* is violated|Model checking completed|Error:" "$mut2_out" | head -5
+    if grep -q "Invariant MemBound is violated" "$mut2_out"; then
+        verdict PASS "budget-ignoring mutant fails MemBound as expected"
+    else
+        echo "---- full TLC output (budget mutant) ----"; cat "$mut2_out"
+        verdict FAIL "budget mutant did NOT fail (MemBound would be vacuous)"
     fi
 fi
 

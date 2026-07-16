@@ -163,6 +163,35 @@ workflow journal). Confirmed and fixed:
    faults) makes cancellation race Seal, the barriers, CompleteWave, EOFSeal,
    FinishInput and the second wave's drain with history present.
 
+### Independent verifier round 1 (2026-07-16): verdict SHIP
+
+Fresh independent subagent (not the author), given only the task's binding
+requirements, the artifacts and the recorded evidence. It re-ran Gate 1 and
+Gate 2 from a clean state (both green, state counts reproduced exactly),
+confirmed the old spec's F1/F5/F6 defects directly at `af54d1acc00`, injected
+five mutants of its own choosing (scatter row drop, double-claim, budget-check
+removal, seal-during-inflight, output drop) — all caught by the battery,
+including a `FinalRefinement` violation proving the F6 property is live — and
+verified witness honesty (restoring eligibility makes the MC_NoSteal
+counterexample disappear; `-deadlock` justified). Full report:
+`tmp/wave-join-cooperative/verifier-round1/REPORT.md` (persisted by the session
+agent because the subagent harness rejects report-file writes); the verifier's
+raw TLC logs are in the same directory. Findings, all Low/Info:
+
+1. Prereg ordering unverifiable (prereg text and artifacts in one commit).
+   ACTION ADOPTED: from Unit 2 on, each unit's prereg is committed in its own
+   commit BEFORE the work it governs.
+2. The budget-check mutant survives 4 of 5 positive configs (bound equals
+   total input bytes everywhere but MC_MultiWave). ACTION TAKEN: the mutant is
+   now a permanent second mutation witness in `verify_tla.sh` (expect
+   `MemBound` violated on MC_MultiWave); gate re-run green (exit 0, 13 checks).
+3. `MemAccounted` scoped away from `failed` (defensible; no action).
+4. The fairness-to-executor mapping is an assumption the formal stage cannot
+   discharge — Units 2-4 must discharge it (JoinResult early destruction must
+   release/finish the owned task; lanes/delayed stream keep pulling).
+5. Panel round 1's journal was not in the repo. ACTION TAKEN: archived at
+   `tmp/wave-join-cooperative/evidence/panel_round1_journal.jsonl`.
+
 ### Gate 2 re-run after fixes (2026-07-16): GREEN
 
 `bash tmp/wave-join-cooperative/verify_tla.sh` exit 0, 13/13 checks as
