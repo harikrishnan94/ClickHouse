@@ -265,3 +265,62 @@ the gtest, the stateless tests and `PlannerJoins.cpp` wiring have been read.
   ordering of artifacts is machine-checkable).
 - Red-test evidence: build log + failing-test log + subagent summaries recorded
   in this WORKLOG with the failure text quoted.
+
+### Unit 2 results (2026-07-16)
+
+1. `INDEPENDENT_DESIGN.md` sealed and committed at `dd4e15b434f`, strictly before
+   the first `RadixHashJoin.cpp` open (prereg commit `e8227fee213` precedes it).
+2. `RadixHashJoin.before.cpp` captured byte-identical (sha256
+   `7e669b72313d53021620067e4010de7445e69670b19e9571c6d7d105cf50f4a3`) and
+   `complexity_gate.py` frozen, both committed at `f64a7e45d05` before any
+   production C++ edit.
+3. Compatibility mapping after the first open (constraints only, no design
+   retrofit): the old probe machinery is the forbidden producer/consumer shape
+   (pool-worker producers -> `ConcurrentBoundedQueue(2*threads+1)` -> capped
+   sticky consumer lanes via `max_consumers`; a separate work-stealing
+   `RadixDelayedBlocks` machine for the final wave). Kept per the sealed design
+   §10: build-side scatter machinery (`scatterFirstPass`/`scatterRefineGroup`/
+   `scatterRefinePass`/`scatterToPartitions`, `SideLayout`, `PartitionOutput`,
+   `parallelRun`, plan constants), `probePartition`, profile-event names,
+   settings plumbing, constructor gates, pre-build delegation. The scatter
+   kernels already support concurrent disjoint-range SWWC writes (barrier 3 of
+   `scatterFirstPass` does exactly that), so per-block scatter jobs are safe.
+4. Implementation refinements recorded within the sealed ownership model (not
+   retrofits): (a) refalloc+refine fuse into one exactly-once job per group —
+   a legal scheduling of the TLA model where one worker executes both stages'
+   jobs for a pass; the C++ generalizes the model's single refine stage to the
+   plan's N-1 refine stages, same barriered machine per stage; (b) workers
+   merge THEIR OWN leaf outputs up to
+   min(joined-block target, `maxJoinedBlockRows`) before returning — the block
+   required for the call to return, never a shared buffer (the old design's
+   queue-side merging violated the block cap; the new one respects it);
+   (c) `seal_requested` and `cancelled` fold into the phase word (fewer
+   primitives, same protocol).
+5. Red contract test `RadixHashJoin.SealedWaveDrainIsClaimableByOtherLanes`
+   written (test-file sha256 recorded below); first build attempt FAILED with
+   two compile errors (initializer-list type conflict; `Block` has no bool
+   conversion) — caught by the log-inspection subagent, fixed, rebuilt clean
+   (`build/reldeb/build_wave_join_red_test.log`, 3 lines, link OK).
+6. RED RUN (before any implementation change), raw log
+   `build/reldeb/test_wave_join_red_before.log` (19 lines, quoted):
+   `Expected: (outcome.first_block.rows()) > (0u), actual: 0 vs 0 — lane B's
+   first quantum produced no drain output while lane A's sealed wave held
+   claimable leaves`; exit 1, 18 ms, no hang, no crash — exactly the
+   preregistered intended reason (the old design hands lane B an empty result
+   while the sealed wave still holds unclaimed leaves).
+   The pre-existing `ConcurrentJoiningQuantumDoesNotWaitForPreviousWave`
+   still passes on the same binary
+   (`build/reldeb/test_wave_join_existing_check.log`).
+7. Decision (recorded): the red test is NOT committed alone ("never commit red
+   work") — it lands in the Unit-3 commit together with the implementation
+   that turns it green. Freeze evidence for the test as written at red time:
+   sha256(src/Interpreters/tests/gtest_radix_hash_join.cpp) =
+   `d0b2aa9674086e5e39c0c879c8d7cb1b4acbb4c4dce077983a86708037d69298` is the
+   PRE-fix hash; the post-fix (compiling) test file hash is recorded at the
+   Unit-3 commit. Deviation note: only the two compile errors above were
+   fixed between those hashes; the contract assertion is unchanged.
+8. Environment note (from project memory, relevant to Unit 3): the old design
+   has a known baseline defect — early termination mid-wave with >= 2 probe
+   streams can hang (`WaveJoinResult` holds a wave mutex across scheduler
+   steps). The cooperative design removes that class (no lock is ever held
+   across a quantum boundary; abandoned results poison the wave instead).
