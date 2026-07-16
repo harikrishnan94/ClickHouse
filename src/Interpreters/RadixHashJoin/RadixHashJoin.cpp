@@ -977,8 +977,11 @@ struct ProbeWave
     /// --- claims and job bodies (TLA Claim / Finish*) ---
 
     /// Claims job `indexOf(word)` iff the control word is still exactly `word`: one CAS, bound to
-    /// the phase and generation the caller dispatched on.
-    bool claim(UInt64 & word)
+    /// the phase and generation the caller dispatched on. Takes the word BY VALUE: a failed CAS
+    /// must never overwrite the caller's loop snapshot, because `tailOrWait` waits for the control
+    /// word to differ from that snapshot — waiting on the post-failure CURRENT value would sleep
+    /// through a transition that already happened (the 04509 delayed-seal deadlock).
+    bool claim(UInt64 word)
     {
         if (indexOf(word) >= stage_jobs.load(std::memory_order_relaxed))
             return false;
@@ -1132,9 +1135,15 @@ struct ProbeWave
                                 if (admitted.empty())
                                     return {};
                             }
+                            /// The seal CAS works on a COPY: a failed CAS must not overwrite the
+                            /// loop snapshot `word`, or the wait below would use the current value
+                            /// and sleep through the transition it is waiting for — lethal when the
+                            /// winner drains the whole wave to the terminal state in the meantime
+                            /// (the 04509 deadlock; stacks in evidence/deadlock_04509_gdb_bt.txt).
+                            UInt64 expected = word;
                             if (ph == WavePhase::Filling
                                 && control.compare_exchange_strong(
-                                    word, pack(WavePhase::Sealing, genOf(word) + 1, 0), std::memory_order_acq_rel))
+                                    expected, pack(WavePhase::Sealing, genOf(word) + 1, 0), std::memory_order_acq_rel))
                             {
                                 admission.fetch_or(ADMIT_SEAL, std::memory_order_acq_rel);
                                 beginDrain();

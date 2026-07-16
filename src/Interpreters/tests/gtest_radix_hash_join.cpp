@@ -606,6 +606,64 @@ TEST(RadixHashJoin, MultiPassRefineExactMultiset)
     EXPECT_TRUE(drained == h.expected) << "multiset mismatch on the multi-pass plan";
 }
 
+/// Regression for a real deadlock found by the 04509 stateless test: concurrent delayed-blocks
+/// pulls race on sealing the final partial wave, and one pull's failed seal CAS used to overwrite
+/// its control-word snapshot with the CURRENT value — if the winning pull had already drained the
+/// whole (tiny) wave to the terminal state, the loser then waited for a further transition that
+/// never comes. Many rounds of tiny final waves pulled by many threads must always terminate; a
+/// wedged round trips the deadline instead of hanging the suite.
+TEST(RadixHashJoin, ConcurrentDelayedPullsTerminate)
+{
+    constexpr size_t rounds = 256;
+    constexpr size_t pullers = 32;
+
+    for (size_t round = 0; round < rounds; ++round)
+    {
+        /// A budget far above the probe bytes: nothing seals mid-stream, everything becomes the
+        /// final partial wave, sealed by whichever delayed pull wins the race. A tiny wave makes
+        /// the winner reach the terminal state almost instantly, inside the losers' race window.
+        WaveHarness h(/*max_threads*/ pullers, /*max_partitions_per_pass*/ 8, /*probe_budget*/ 1ULL << 30);
+        JoinedRows drained;
+        size_t rows = h.joinAndDrain(h.makeProbe(8, 1000), 0, drained);
+        ASSERT_EQ(rows, 0u); /// below budget: the lane's result owes nothing yet
+
+        auto delayed = h.join->getDelayedBlocks();
+        ASSERT_NE(delayed, nullptr);
+
+        std::vector<std::future<std::pair<size_t, JoinedRows>>> futures;
+        futures.reserve(pullers);
+        for (size_t t = 0; t < pullers; ++t)
+            futures.push_back(std::async(
+                std::launch::async,
+                [&]() -> std::pair<size_t, JoinedRows>
+                {
+                    size_t pulled = 0;
+                    JoinedRows mine;
+                    while (true)
+                    {
+                        Block block = delayed->next();
+                        if (block.empty())
+                            break;
+                        pulled += block.rows();
+                        accumulateRows(block, mine);
+                    }
+                    return {pulled, mine};
+                }));
+
+        for (auto & future : futures)
+        {
+            ASSERT_EQ(future.wait_for(std::chrono::seconds(30)), std::future_status::ready)
+                << "delayed pull wedged in round " << round << " — cooperative EOF-seal deadlock";
+            auto [pulled, mine] = future.get();
+            rows += pulled;
+            drained.insert(mine.begin(), mine.end());
+        }
+
+        ASSERT_EQ(rows, h.expected.size()) << "round " << round;
+        ASSERT_TRUE(drained == h.expected) << "multiset mismatch in round " << round;
+    }
+}
+
 /// Fail-close on early caller destruction: a result destroyed while it still owes work (here a
 /// half-probed leaf) must poison the wave so no lane can silently lose rows — the next quantum on
 /// any other lane observes the first error, claims no new work, and the failure propagates.

@@ -409,6 +409,66 @@ implementation"; "do not weaken a gate to obtain green"; amendments require
 user sign-off) this is a USER decision. Gate ordering blocks gates 9/10 until
 resolved. Question posed to the user with these numbers; no gate was edited.
 
+## Unit 4 — Gates (2026-07-16)
+
+USER DIRECTIVE (mid-run): Gate 6 (ASan build + focused tests) is SKIPPED at
+the user's explicit instruction ("Skip asan build gate"). It is reported as
+SKIPPED-BY-USER, not as green.
+
+### Deadlock found by Gate 5 and fixed (implementation cycle 2 of 5)
+
+Gate 5's first run wedged: `04509_radix_join_distinct_estimate` timed out at
+600 s. The user attached gdb to the hung server and provided full stacks
+(archived: `tmp/wave-join-cooperative/evidence/deadlock_04509_gdb_bt.txt`):
+two threads stuck in `ProbeWave::tailOrWait` from `CooperativeDelayedBlocks`
+pulls, all other pipeline threads idle.
+
+ROOT CAUSE (confirmed against the stacks, not guessed): the stuck waiter's
+`word` argument was `67108864` = control word `(phase=Filling, gen=4, idx=0)`
+— exactly the machine's TERMINAL state after the final wave completed
+(`Sealing(1) -> Scattering(2) -> Probing(3) -> Filling(4)`).
+`compare_exchange_strong` writes the CURRENT value into its expected argument
+on failure; in the delayed EOF-seal branch a pull that lost the seal race to
+a pull that then drained the whole (tiny) wave got its loop snapshot
+overwritten with the terminal word, and `tailOrWait` then waited for
+`control != terminal` — a transition that never comes. The formal model could
+not catch this: it lives below the spec's atomic-action granularity (a stale
+snapshot inside the C++ implementation of Claim/wait).
+
+FIX (minimal, root cause): `claim` takes the control word BY VALUE, and the
+EOF-seal CAS operates on a local `expected` copy — `tailOrWait` only ever
+receives the pristine loop-top snapshot, so a lost race wakes immediately and
+re-dispatches.
+
+Red-evidence note (honest): a new regression test
+`RadixHashJoin.ConcurrentDelayedPullsTerminate` (32 concurrent pulls x 256
+rounds of a tiny final wave, 30 s deadlines) was written FIRST but did not
+reproduce the hang pre-fix in two attempts (8x64, 32x256) — the natural race
+window is nanoseconds at gtest scale, while the stateless repro ran 96
+pipeline threads. The authoritative red evidence for this defect is the
+04509 hang itself plus the archived gdb stacks; the test is kept as a broad
+termination guard. Post-fix: 6/6 focused tests green
+(`build/reldeb/test_wave_join_cooperative_gtest.log`), Gate 5 green in 1.6 s
+including 04509 at 0.34 s
+(`build/reldeb/test_wave_join_cooperative_stateless.log`), plus five extra
+04509 repetitions green (`build/reldeb/test_wave_join_04509_repeat.log`).
+
+### Gate status after the fix
+
+| gate | status | evidence |
+| --- | --- | --- |
+| 1 baseline identity | PASS | sha equality re-run before candidate build |
+| 2 formal | PASS (13/13) | build/reldeb/test_wave_join_tla.log |
+| 3 reldeb build | PASS | build_wave_join_cooperative.log (relink; compile logs in build_wave_join_u3_try*.log and build_wave_join_deadlock_fix.log) |
+| 4 focused gtests | PASS 6/6 | test_wave_join_cooperative_gtest.log |
+| 5 stateless | PASS 5/5 | test_wave_join_cooperative_stateless.log |
+| 6 ASan | SKIPPED-BY-USER | user instruction mid-run |
+| 7 removal grep | PASS | re-run after fix |
+| 8 structural (amended v2) | PASS | re-run after fix |
+| 9 paired suite | pending | — |
+| 10 verdict | pending | — |
+| 11 diff check | pre-check PASS | re-run at the end |
+
 ### REGISTER AMENDMENT v2 — Gate 8, USER SIGN-OFF (2026-07-16)
 
 The user was asked with the exact numbers above and chose
