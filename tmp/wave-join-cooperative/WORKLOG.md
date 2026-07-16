@@ -199,3 +199,69 @@ expected; raw log `build/reldeb/test_wave_join_tla.log`. Deltas vs round 1:
 MC_Fail now 2,697 generated / 1,152 distinct (earlier fault cutoffs with two
 failing leaves), MC_CancelRace 27,087 / 10,944, mutation witness reports
 `PrimaryStable` violated as expected; all other counts unchanged.
+
+---
+
+## Unit 2 — Independent design and failing tests (preregistered 2026-07-16, committed BEFORE the unit's work)
+
+Attestation at prereg time: `src/Interpreters/RadixHashJoin/RadixHashJoin.cpp`
+has not been opened in this session (clean-room intact). Only the corrected
+TLA+ contract, `RadixHashJoin.h`, `IJoin.h`, `JoiningTransform` drive points,
+the gtest, the stateless tests and `PlannerJoins.cpp` wiring have been read.
+
+### Expected outcome
+
+1. `tmp/wave-join-cooperative/INDEPENDENT_DESIGN.md` sealing, from the corrected
+   TLA+ contract and public interfaces only: the C++ state machine (one shared
+   wave; fetch-add Reserve/Admit; decentralized last-finisher barriers over the
+   pre -> scatter -> [refalloc -> refine] -> probe job graph with atomic stage
+   cursors), ownership rules (claims via cursor fetch-add, one owned task per
+   worker, per-task continuation), synchronization (no probe-side pool, no
+   output queue, no reorder buffer, no central scheduler; the only blocking
+   wait is the bounded sealed-tail/phase-transition wait on wave completion),
+   memory accounting (BUDGET = admission threshold, overshoot <= one block,
+   arenas/hash columns outside BUDGET), output contract (workers emit their own
+   blocks through their own `IJoinResult`/delayed-stream pulls; correctness =
+   exact multiset), cancellation (first exception wins via one primary slot;
+   cancelled flag stops claims; owners unwind; last participant out performs
+   teardown exactly once), cleanup (exactly-once arena/wave release), the
+   EOF/delayed-blocks path as a thin adapter running the SAME machine, and the
+   discharge of the verifier's fairness-mapping finding (executor keeps calling
+   `next` per lane until `is_last`; result destruction with an incomplete owned
+   task poisons the wave = cooperative cancel, so no work is silently lost).
+   Committed BEFORE the first `RadixHashJoin.cpp` open.
+2. Only after that commit: capture `tmp/wave-join-cooperative/RadixHashJoin.before.cpp`
+   (byte-identical to HEAD's `src/Interpreters/RadixHashJoin/RadixHashJoin.cpp`,
+   recorded hash) and freeze `tmp/wave-join-cooperative/complexity_gate.py`
+   (metric definitions inside the script; frozen before any production C++ edit).
+3. New deterministic contract tests in `src/Interpreters/tests/gtest_radix_hash_join.cpp`
+   (no sleeps; deadlines/futures/failpoints only). At least the cooperative-help
+   test must be RED on the unmodified implementation:
+   `RadixHashJoin.SealedWaveDrainIsClaimableByOtherLanes` — lane A seals a wave
+   and stalls after one `next()`; lane B's `joinBlock` + successive `next()`
+   calls must yield at least one NONEMPTY drain output block while A is stalled.
+   Prediction for the red run (intended reason): the old implementation routes
+   the whole wave's output through the admitting lane's result (bounded shared
+   output queue), so lane B returns an empty/is_last result with zero drain
+   output rows (or, if the old code instead blocks B, the test's bounded
+   deadline records that); either recorded outcome is the intended red. A crash
+   or an unrelated assertion is NOT the intended red and stops the unit.
+4. The red run happens on a build of `unit_tests_dbms` that contains the new
+   test but ZERO production-code changes; log preserved under
+   `build/reldeb/test_wave_join_red_before.log` plus a subagent summary.
+
+### Refuted by
+
+- The design turning out to require public API changes (stop and ask user).
+- The new contract test passing on the unmodified implementation (would mean
+  it does not pin the cooperative contract).
+- before.cpp capture differing from HEAD, or complexity_gate.py edited after
+  the first production C++ edit.
+
+### Gates for Unit 2
+
+- Design-seal ordering: git history shows INDEPENDENT_DESIGN.md committed
+  before any RadixHashJoin.cpp modification (non-openness is attested above;
+  ordering of artifacts is machine-checkable).
+- Red-test evidence: build log + failing-test log + subagent summaries recorded
+  in this WORKLOG with the failure text quoted.
