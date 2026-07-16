@@ -1,0 +1,9 @@
+server 2823617 exe 554d8310a4d237e3
+client 3: 50/50 done
+client 1: 50/50 done
+client 4: 50/50 done
+hammer rc=124 elapsed=300s <-- TIMED OUT (defect manifested)
+--- stuck query threads ---
+09173eb4-7e7b-4072-bcfd-06ab34356e21	298.055518
+32e9ddff-17f7-4f4f-a6c5-6c0376f63fa8	0.000941
+SERVER_KILLED

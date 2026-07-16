@@ -1,0 +1,6 @@
+2026-07-16T14:28:58 shape C: oracles at T96
+2026-07-16T14:29:53 cell C_T96: 1 pairs, timeout 900s
+2026-07-16T14:30:24   C_T96 pair 0 arm A: wall 11.058s (session 30.7s)
+2026-07-16T14:30:48   C_T96 pair 0 arm B: wall 8.281s (session 24.1s)
+2026-07-16T14:30:48 summary C_T96: median 9.669s n=2 band=None
+2026-07-16T14:30:55 suite complete
