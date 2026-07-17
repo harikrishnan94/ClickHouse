@@ -679,6 +679,7 @@ enum class WavePhase : UInt8
 {
     Filling,
     Sealing,
+    Preparing,
     Scattering,
     Refining,
     Probing,
@@ -874,39 +875,44 @@ struct ProbeWave
         cv.notify_all();
     }
 
-    /// Pre-scatter accounting and range allocation (the sealing transition, single owner): exact
-    /// per-partition sizes and per-(block, partition) write ranges from the admission histograms —
-    /// this is what keeps the scatter stable and the arenas exactly sized.
+    /// The sealing transition only publishes the prepare stage; the sizing itself is claimable
+    /// per-partition jobs (the contract's PreJob), so the exact-allocation work — dominated by the
+    /// allocator recycling the previous wave's extents — is spread across every participating lane
+    /// instead of serializing on the sealer while the other lanes wait.
     void beginDrain()
     {
         const size_t fanout = size_t(1) << pass_bits->front();
-        const size_t blocks = admitted.size();
-        offsets.resize(blocks * fanout);
+        offsets.resize(admitted.size() * fanout);
         groups.clear();
         groups.resize(fanout);
-        {
-            ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
-            for (size_t p = 0; p < fanout; ++p)
-            {
-                size_t total = 0;
-                for (size_t b = 0; b < blocks; ++b)
-                {
-                    offsets[b * fanout + p] = static_cast<UInt32>(total);
-                    total += admitted[b].hist[p];
-                }
-                if (total)
-                    groups[p].allocate(*header, layout->col_widths, total);
-            }
-        }
         bits_done = pass_bits->front();
         refine_pass = 0;
-        publishStage(WavePhase::Scattering, blocks);
+        publishStage(WavePhase::Preparing, fanout);
+    }
+
+    /// One prepare job: partition p's per-(block, partition) write ranges from the admission
+    /// histograms and its exactly-sized allocation — this is what keeps the scatter stable and the
+    /// arenas exactly sized. Jobs touch disjoint offset slots and disjoint groups.
+    void runPrepare(size_t p)
+    {
+        const size_t fanout = size_t(1) << pass_bits->front();
+        size_t total = 0;
+        for (size_t b = 0; b < admitted.size(); ++b)
+        {
+            offsets[b * fanout + p] = static_cast<UInt32>(total);
+            total += admitted[b].hist[p];
+        }
+        if (total)
+            groups[p].allocate(*header, layout->col_widths, total);
     }
 
     void advanceStage()
     {
         switch (phaseOf(control.load(std::memory_order_relaxed)))
         {
+            case WavePhase::Preparing:
+                publishStage(WavePhase::Scattering, admitted.size());
+                break;
             case WavePhase::Scattering:
             case WavePhase::Refining:
                 if (refine_pass + 1 < pass_bits->size())
@@ -1172,6 +1178,7 @@ struct ProbeWave
                         break;
                     }
 
+                    case WavePhase::Preparing:
                     case WavePhase::Scattering:
                     case WavePhase::Refining:
                     {
@@ -1183,7 +1190,9 @@ struct ProbeWave
                             break;
                         }
                         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
-                        if (ph == WavePhase::Scattering)
+                        if (ph == WavePhase::Preparing)
+                            runPrepare(indexOf(word));
+                        else if (ph == WavePhase::Scattering)
                             runScatter(w, indexOf(word));
                         else
                             runRefine(indexOf(word));
