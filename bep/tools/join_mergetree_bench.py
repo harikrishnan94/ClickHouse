@@ -62,7 +62,11 @@ EVENTS = (
     "HashJoinProbeMatchMicroseconds",
     "HashJoinProbeGatherMicroseconds",
     "ConcurrentHashJoinProbeDispatchMicroseconds",
+    "MemoryTrackerPeakUsage",
 )
+# `MemoryTrackerPeakUsage` is a `(gauge)` snapshot of the query memory tracker's
+# peak, not a `(increment)` counter like the rest of `EVENTS`.
+GAUGE_EVENTS = frozenset({"MemoryTrackerPeakUsage"})
 WALL_TIME_EVENT = "WallTimeMicroseconds"
 
 ALGORITHMS = ("radix_join", "parallel_hash")
@@ -1200,8 +1204,9 @@ def parse_profile_events(
         if event_name not in tracked:
             continue
         assert current_seen is not None
-        if kind != "increment":
-            raise ValueError(f"profile event {event_name} is not an increment")
+        expected_kind = "gauge" if event_name in GAUGE_EVENTS else "increment"
+        if kind != expected_kind:
+            raise ValueError(f"profile event {event_name} is not a {expected_kind}")
         if value < 0:
             raise ValueError(f"profile event {event_name} is negative")
         if event_name in current_seen:
@@ -1624,6 +1629,10 @@ def _event_ms(events: dict[str, int], name: str) -> str:
     return _ms(events[name])
 
 
+def _event_mb(events: dict[str, int], name: str) -> str:
+    return f"{events[name] / (1024 * 1024):.3f}"
+
+
 def _print_point_results(
     point: BenchmarkPoint,
     verification: tuple[str, str],
@@ -1650,6 +1659,7 @@ def _print_point_results(
         "dispatch_ms",
         "selected_rows",
         "selected_bytes",
+        "peak_mem_mb",
     )
     rows: list[tuple[str, ...]] = []
     for result in results:
@@ -1685,6 +1695,7 @@ def _print_point_results(
                 _event_ms(events, "ConcurrentHashJoinProbeDispatchMicroseconds"),
                 str(events["SelectedRows"]),
                 str(events["SelectedBytes"]),
+                _event_mb(events, "MemoryTrackerPeakUsage"),
             )
         )
     widths = [
