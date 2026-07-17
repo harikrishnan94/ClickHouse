@@ -1218,6 +1218,10 @@ void reduceHistogramLanes(UInt64 * hist, const UInt64 * lanes, size_t fanout)
 std::pair<MutableColumnPtr, std::span<char>> allocateUninitializedFixed(const IColumn & sample, size_t rows)
 {
     auto column = sample.cloneEmpty();
+    /// `insertRawUninitialized` grows through the power-of-two resize policy (it serves append
+    /// loops); reserving first keeps this allocation EXACT, which is the documented contract
+    /// (fixed-width columns implement `reserve` via `reserve_exact`).
+    column->reserve(rows);
     auto raw = column->insertRawUninitialized(rows);
     chassert(raw.size() == rows * sample.sizeOfValueIfFixed());
     return {std::move(column), raw};
