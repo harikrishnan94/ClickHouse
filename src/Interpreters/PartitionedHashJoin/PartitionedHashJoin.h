@@ -65,6 +65,12 @@ public:
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;
 
+    /// With `supportParallelJoin` every parallel fill stream reports totals at its end-of-fill
+    /// (usually an empty block; at most one stream carries the real totals), so unlike the
+    /// unsynchronized base-class default this must be guarded (same as `ConcurrentHashJoin`).
+    void setTotals(const Block & block) override;
+    const Block & getTotals() const override;
+
     size_t getTotalRowCount() const override;
     size_t getTotalByteCount() const override;
     bool alwaysReturnsEmptySet() const override;
@@ -97,6 +103,8 @@ public:
         size_t bits = 0;
         size_t partitions = 0;
         double hll_estimate = 0;
+        /// Incremented at the slab allocation call sites, so the one-allocation assert counts
+        /// real allocations instead of deriving 1 from the slab pointer being set.
         UInt64 slab_allocations = 0;
         size_t slab_bytes = 0;
         UInt64 region_carves = 0;
@@ -185,6 +193,10 @@ private:
     /// preparation, the saved block sample, the shared row store (`StoredColumnsIndex`) and the
     /// output sample blocks. Its own map stays empty; the leaf maps below replace it.
     std::unique_ptr<HashJoin> leaf_join;
+
+    /// `IJoin::totals` is private, so the guarded overrides keep their own copy.
+    std::mutex totals_mutex;
+    Block totals;
 
     /// Fill phase.
     std::mutex fill_mutex;

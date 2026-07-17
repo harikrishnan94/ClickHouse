@@ -288,7 +288,6 @@ void PartitionedHashJoin::finishBuildPhase(bool all_values_unique)
     leaf_join->onBuildPhaseFinish();
     leaf_join->data->keys_to_join = getTotalRowCount();
     build_phase_finished = true;
-    stats.slab_allocations = ht_slab ? 1 : 0;
 }
 
 bool PartitionedHashJoin::postBuildSingleLeaf()
@@ -305,6 +304,7 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
 
     ht_slab_bytes = predicted_bytes;
     ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
+    ++stats.slab_allocations;
 
     leaf_maps.resize(1);
     build_arenas.emplace_back();
@@ -667,6 +667,7 @@ void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
     /// zeroed (each worker zeroes exactly its leaf region right before filling it).
     ht_slab_bytes = running;
     ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
+    ++stats.slab_allocations;
 
     leaf_maps.resize(partitions);
     ctx.leaf_order.resize(partitions);

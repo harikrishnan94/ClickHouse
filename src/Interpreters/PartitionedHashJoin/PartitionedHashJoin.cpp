@@ -193,6 +193,20 @@ void PartitionedHashJoin::checkTypesOfKeys(const Block & block) const
     leaf_join->checkTypesOfKeys(block);
 }
 
+void PartitionedHashJoin::setTotals(const Block & block)
+{
+    if (!block.empty())
+    {
+        std::lock_guard lock(totals_mutex);
+        totals = block;
+    }
+}
+
+const Block & PartitionedHashJoin::getTotals() const
+{
+    return totals;
+}
+
 void PartitionedHashJoin::storeBlocksInRowStore()
 {
     auto & data = *leaf_join->data;

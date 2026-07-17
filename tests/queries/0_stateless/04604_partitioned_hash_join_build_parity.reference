@@ -23,6 +23,10 @@ keys128 composite inner
 300000	18134721163343606830
 300000	18134721163343606830
 300000	18134721163343606830
+keys128 composite left
+600000	10278073057652280105
+600000	10278073057652280105
+600000	10278073057652280105
 keys256 composite inner
 300000	18134721163343606830
 300000	18134721163343606830
@@ -72,6 +76,7 @@ p3case fixedstring inner	1	1	1	0
 p3case hashed fixed inner	1	1	1	0
 p3case hashed generic inner	1	1	1	0
 p3case keys128 composite inner	1	1	1	0
+p3case keys128 composite left	1	1	1	0
 p3case keys256 composite inner	1	1	1	0
 p3case keys64 composite inner	1	1	1	0
 p3case lowcardinality inner	1	1	1	0

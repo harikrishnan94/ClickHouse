@@ -94,6 +94,11 @@ SELECT count(), sum(cityHash64(b.v, p.pv)) FROM t_probe AS p INNER JOIN t_build 
 SELECT count(), sum(cityHash64(b.v, p.pv)) FROM t_probe AS p INNER JOIN t_build AS b ON p.k64 = b.k64 AND p.k32 = b.k32 SETTINGS join_algorithm = 'parallel_hash';
 SELECT count(), sum(cityHash64(b.v, p.pv)) FROM t_probe AS p INNER JOIN t_build AS b ON p.k64 = b.k64 AND p.k32 = b.k32 SETTINGS join_algorithm = 'partitioned_hash', log_comment = 'p3case keys128 composite inner';
 
+SELECT 'keys128 composite left';
+SELECT count(), sum(cityHash64(ifNull(b.v, 0), p.pv)) FROM t_probe AS p LEFT JOIN t_build AS b ON p.k64 = b.k64 AND p.k32 = b.k32 SETTINGS join_algorithm = 'hash', join_use_nulls = 1;
+SELECT count(), sum(cityHash64(ifNull(b.v, 0), p.pv)) FROM t_probe AS p LEFT JOIN t_build AS b ON p.k64 = b.k64 AND p.k32 = b.k32 SETTINGS join_algorithm = 'parallel_hash', join_use_nulls = 1;
+SELECT count(), sum(cityHash64(ifNull(b.v, 0), p.pv)) FROM t_probe AS p LEFT JOIN t_build AS b ON p.k64 = b.k64 AND p.k32 = b.k32 SETTINGS join_algorithm = 'partitioned_hash', join_use_nulls = 1, log_comment = 'p3case keys128 composite left';
+
 SELECT 'keys256 composite inner';
 SELECT count(), sum(cityHash64(b.v, p.pv)) FROM t_probe AS p INNER JOIN t_build AS b ON p.k64 = b.k64 AND p.k64b = b.k64b AND p.k64c = b.k64c AND p.k32 = b.k32 SETTINGS join_algorithm = 'hash';
 SELECT count(), sum(cityHash64(b.v, p.pv)) FROM t_probe AS p INNER JOIN t_build AS b ON p.k64 = b.k64 AND p.k64b = b.k64b AND p.k64c = b.k64c AND p.k32 = b.k32 SETTINGS join_algorithm = 'parallel_hash';

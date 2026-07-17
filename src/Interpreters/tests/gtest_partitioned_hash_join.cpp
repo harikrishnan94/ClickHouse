@@ -268,6 +268,7 @@ TEST(PartitionedHashJoin, HeapFallbackOnUnderestimate)
     auto built = buildJoin(distinct_keys, /*duplicates=*/1, /*num_threads=*/4, /*reserve_safety_for_tests=*/0.001);
 
     const auto stats = built.join->getBuildStats();
+    EXPECT_EQ(stats.slab_allocations, 1u) << "growing out of the slab must not allocate another one";
     EXPECT_GT(stats.heap_fallbacks, 0u) << "the crippled estimate must force heap fallbacks";
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/1000);
@@ -278,9 +279,9 @@ TEST(PartitionedHashJoin, FixedRegionAllocatorCarveAndFallback)
     using Map = HashMap<UInt64, UInt64, HashCRC32<UInt64>, HashTableGrowerWithPrecalculation<>, FixedRegionAllocator>;
 
     constexpr size_t reserve = 1000;
-    typename Map::grower_type grower;
+    Map::grower_type grower;
     grower.set(reserve);
-    const size_t predicted_bytes = grower.bufSize() * sizeof(typename Map::cell_type);
+    const size_t predicted_bytes = grower.bufSize() * sizeof(Map::cell_type);
 
     Allocator<false, false> slab_allocator;
     void * slab = slab_allocator.alloc(predicted_bytes, 64);
