@@ -42,6 +42,7 @@
 #include <Interpreters/IKeyValueEntity.h>
 #include <Interpreters/JoinSwitcher.h>
 #include <Interpreters/MergeJoin.h>
+#include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/PasteJoin.h>
 #include <Interpreters/SpillingHashJoin.h>
 
@@ -1191,6 +1192,9 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
         algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
         algorithm == JoinAlgorithm::PARALLEL_HASH ||
+        /// partitioned_hash supports a narrow set of join shapes; everything else falls back to
+        /// parallel_hash (if enabled) or hash below - at plan time, never at execution time
+        algorithm == JoinAlgorithm::PARTITIONED_HASH ||
         algorithm == JoinAlgorithm::DEFAULT)
     {
         StatsCollectingParams stats_collecting_params{
@@ -1229,6 +1233,14 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 params.grace_hash_join_max_buckets,
                 stats_collecting_params,
                 params.join_any_take_last_row);
+        }
+
+        /// The partitioned hash join has no disk-spilling integration, so when automatic external
+        /// join is active the spilling-capable algorithms above take priority over it.
+        if (algorithm == JoinAlgorithm::PARTITIONED_HASH && PartitionedHashJoin::isSupported(*table_join))
+        {
+            return std::make_shared<PartitionedHashJoin>(
+                table_join, right_table_expression_header, params.join_any_take_last_row);
         }
 
         if (table_join->allowParallelHashJoin())
@@ -1385,6 +1397,8 @@ std::shared_ptr<IJoin> chooseJoinAlgorithm(
     if (table_join->getMixedJoinExpression()
         && !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH)
         && !table_join->isEnabledAlgorithm(JoinAlgorithm::PARALLEL_HASH)
+        /// partitioned_hash does not support mixed conditions itself, but it falls back to hash at plan time
+        && !table_join->isEnabledAlgorithm(JoinAlgorithm::PARTITIONED_HASH)
         && !table_join->isEnabledAlgorithm(JoinAlgorithm::GRACE_HASH))
     {
         throw Exception(ErrorCodes::NOT_IMPLEMENTED,

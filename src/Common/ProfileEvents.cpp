@@ -426,6 +426,11 @@
     M(JoinDelayedJoinedTransformBlockCount, "Number of blocks emitted by DelayedJoinedBlocksWorkerTransform.", ValueType::Number) \
     M(JoinDelayedJoinedTransformRowCount, "Number of rows emitted by DelayedJoinedBlocksWorkerTransform.", ValueType::Number) \
     M(JoinSpillingHashJoinSwitchedToGraceJoin, "Number of times a (Concurrent)HashJoin was switched to GraceHashJoin due to memory limit in SpillingHashJoin.", ValueType::Number) \
+    M(ConcurrentHashJoinBuildMicroseconds, "Time spent in the build phase of the parallel_hash JOIN algorithm (adding right-side blocks plus merging the per-slot hash tables), summed over all build threads.", ValueType::Microseconds) \
+    M(PartitionedHashJoinBuildMicroseconds, "Time spent in the build phase of the partitioned_hash JOIN algorithm (adding right-side blocks, the build barrier, and the post-build phase), summed over all build threads.", ValueType::Microseconds) \
+    M(PartitionedHashJoinProbeMicroseconds, "Time spent joining probe-side blocks in the partitioned_hash JOIN algorithm, summed over all probe threads.", ValueType::Microseconds) \
+    M(PartitionedHashJoinPartitions, "Number of leaf partitions chosen by partitioned_hash JOIN build barriers (one count per join; 1 means the degenerate single-leaf plan).", ValueType::Number) \
+    M(PartitionedHashJoinLeafRows, "Number of right-side rows fed into partitioned_hash JOIN leaf hash-table builds.", ValueType::Number) \
     M(JoinReorderMicroseconds, "Total time spent executing JOIN reordering algorithm.", ValueType::Microseconds) \
     M(JoinOptimizeMicroseconds, "Total time spent executing JOIN plan optimizations.", ValueType::Microseconds) \
     M(QueryPlanOptimizeMicroseconds, "Total time spent executing query plan optimizations.", ValueType::Microseconds) \

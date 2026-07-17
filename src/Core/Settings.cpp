@@ -3605,6 +3605,12 @@ Possible values:
 
  When using the `parallel_hash` algorithm, the right part of `JOIN` is uploaded into RAM.
 
+- partitioned_hash
+
+ An experimental variation of `hash` join that partitions the right table by a separate routing hash and builds one hash table per partition, while the left part of `JOIN` is probed without partitioning.
+
+ Currently supports only `INNER` and `LEFT` joins with `ALL` strictness and a single conjunction of equality keys; unsupported shapes fall back to the other enabled algorithms (or to `hash`) at query planning time.
+
 - partial_merge
 
  A variation of the [sort-merge algorithm](https://en.wikipedia.org/wiki/Sort-merge_join), where only the right table is fully sorted.
