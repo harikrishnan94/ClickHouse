@@ -12,3 +12,8 @@ clickhouse_add_executable(benchmark_columns_scatter benchmark_columns_scatter.cp
 target_link_libraries (benchmark_columns_scatter PRIVATE
     ch_contrib::gbenchmark_all
     dbms)
+
+clickhouse_add_executable(benchmark_partitioned_build_pipeline benchmark_partitioned_build_pipeline.cpp)
+target_link_libraries (benchmark_partitioned_build_pipeline PRIVATE
+    ch_contrib::gbenchmark_all
+    dbms)
