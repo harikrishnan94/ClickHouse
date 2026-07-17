@@ -76,11 +76,11 @@ void drainResult(IJoinResult & result, JoinedRows & rows)
     }
 }
 
-std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header)
+std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header, JoinKind kind = JoinKind::Inner)
 {
     Settings settings;
     auto table_join = std::make_shared<TableJoin>(settings, /*tmp_volume=*/nullptr, /*tmp_data=*/nullptr);
-    table_join->setKind(JoinKind::Inner);
+    table_join->setKind(kind);
     table_join->getTableJoin().strictness = JoinStrictness::All;
     table_join->addDisjunct();
     table_join->getClauses().back().addKey(
@@ -115,13 +115,18 @@ struct BuiltJoin
 /// IJoin build interface (fill -> barrier -> post-build). Blocks above 65536 rows exercise the
 /// wide 8-byte locator encoding; smaller ones the packed 4-byte form.
 BuiltJoin buildJoin(
-    size_t distinct_keys, size_t duplicates, size_t num_threads, double reserve_safety_for_tests = 0, size_t build_block_rows = block_rows)
+    size_t distinct_keys,
+    size_t duplicates,
+    size_t num_threads,
+    double reserve_safety_for_tests = 0,
+    size_t build_block_rows = block_rows,
+    JoinKind kind = JoinKind::Inner)
 {
     const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
     const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
 
     BuiltJoin result;
-    result.table_join = makeTableJoin(left_header, right_header);
+    result.table_join = makeTableJoin(left_header, right_header, kind);
     result.join = std::make_shared<PartitionedHashJoin>(result.table_join, std::make_shared<const Block>(right_header), num_threads);
     if (reserve_safety_for_tests > 0)
         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
@@ -272,6 +277,97 @@ TEST(PartitionedHashJoin, HeapFallbackOnUnderestimate)
     EXPECT_GT(stats.heap_fallbacks, 0u) << "the crippled estimate must force heap fallbacks";
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/1000);
+}
+
+TEST(PartitionedHashJoin, RightJoinFlagBaseAndNonJoined)
+{
+    /// RIGHT ALL over a partitioned build exercises the per-offset used flags shifted by the
+    /// per-leaf base offsets and the non-joined iteration over the leaf maps: a wrong base
+    /// offset marks (or reads) the wrong cell, which shows up as missing or duplicated rows in
+    /// the non-joined output below.
+    constexpr size_t distinct_keys = 300000;
+    constexpr size_t duplicates = 2;
+    constexpr size_t probed_keys = distinct_keys / 2;
+    auto built = buildJoin(distinct_keys, duplicates, /*num_threads=*/4, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Right);
+
+    const auto stats = built.join->getBuildStats();
+    EXPECT_GT(stats.partitions, 1u);
+    EXPECT_EQ(stats.leaf_rows, distinct_keys * duplicates);
+
+    /// flag_base arithmetic: prefix sums with a nonempty span (bucket count + 1) per leaf,
+    /// covering at least one flag slot per build key plus the per-leaf zero-value cells.
+    ASSERT_EQ(stats.flag_base.size(), stats.partitions + 1);
+    EXPECT_EQ(stats.flag_base.front(), 0u);
+    for (size_t leaf = 0; leaf < stats.partitions; ++leaf)
+        EXPECT_LT(stats.flag_base[leaf], stats.flag_base[leaf + 1]);
+    EXPECT_GE(stats.flag_base.back(), distinct_keys + stats.partitions);
+
+    /// Probe the first half of the keys: the matched output must be their exact tuple multiset
+    /// (RIGHT filters unmatched probe rows).
+    JoinedRows expected;
+    expected.reserve(probed_keys * duplicates);
+    for (size_t i = 0; i < probed_keys; ++i)
+    {
+        const UInt64 key = i * 2654435761ULL + 1;
+        for (size_t d = 0; d < duplicates; ++d)
+            expected.emplace_back(key, i, key, i * duplicates + d);
+    }
+    std::sort(expected.begin(), expected.end());
+
+    JoinedRows actual;
+    actual.reserve(expected.size());
+    {
+        std::vector<UInt64> keys;
+        std::vector<UInt64> ids;
+        for (size_t i = 0; i < probed_keys; ++i)
+        {
+            keys.push_back(i * 2654435761ULL + 1);
+            ids.push_back(i);
+            if (keys.size() == block_rows || i + 1 == probed_keys)
+            {
+                auto result = built.join->joinBlock(twoColumnBlock("k", "probe_id", keys, ids));
+                drainResult(*result, actual);
+                keys.clear();
+                ids.clear();
+            }
+        }
+    }
+    std::sort(actual.begin(), actual.end());
+    ASSERT_EQ(actual.size(), expected.size());
+    ASSERT_TRUE(actual == expected);
+
+    /// The non-joined stream must return exactly the build rows of the unprobed keys.
+    const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
+    Block result_sample = left_header.cloneEmpty();
+    result_sample.insert({ColumnUInt64::create(), std::make_shared<DataTypeUInt64>(), "build_id"});
+    result_sample.insert({ColumnUInt64::create(), std::make_shared<DataTypeUInt64>(), "rk"});
+
+    std::vector<std::pair<UInt64, UInt64>> expected_non_joined;
+    expected_non_joined.reserve((distinct_keys - probed_keys) * duplicates);
+    for (size_t i = probed_keys; i < distinct_keys; ++i)
+        for (size_t d = 0; d < duplicates; ++d)
+            expected_non_joined.emplace_back(i * 2654435761ULL + 1, i * duplicates + d);
+    std::sort(expected_non_joined.begin(), expected_non_joined.end());
+
+    std::vector<std::pair<UInt64, UInt64>> actual_non_joined;
+    actual_non_joined.reserve(expected_non_joined.size());
+    auto non_joined = built.join->getNonJoinedBlocks(left_header, result_sample, /*max_block_size=*/65536);
+    ASSERT_NE(non_joined, nullptr);
+    while (true)
+    {
+        Block block = non_joined->next();
+        if (block.empty())
+            break;
+        ColumnPtr rk_holder;
+        ColumnPtr build_holder;
+        const UInt64 * rk = columnData(block, "rk", rk_holder);
+        const UInt64 * build_id = columnData(block, "build_id", build_holder);
+        for (size_t i = 0; i < block.rows(); ++i)
+            actual_non_joined.emplace_back(rk[i], build_id[i]);
+    }
+    std::sort(actual_non_joined.begin(), actual_non_joined.end());
+    ASSERT_EQ(actual_non_joined.size(), expected_non_joined.size());
+    ASSERT_TRUE(actual_non_joined == expected_non_joined);
 }
 
 TEST(PartitionedHashJoin, FixedRegionAllocatorCarveAndFallback)

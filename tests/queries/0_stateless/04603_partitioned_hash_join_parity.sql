@@ -86,7 +86,12 @@ SELECT count(), sum(cityHash64(p.p, b.v)) FROM t_phj_probe AS p LEFT JOIN t_phj_
 SELECT count(), sum(cityHash64(p.p, b.v)) FROM t_phj_probe AS p LEFT JOIN t_phj_build AS b ON p.k = b.k SETTINGS join_algorithm = 'partitioned_hash';
 
 SELECT '-- unsupported shapes fall back at plan time and still work';
-SELECT count() FROM (EXPLAIN actions = 1 SELECT p.p FROM t_phj_probe AS p RIGHT JOIN t_phj_build AS b ON p.k = b.k SETTINGS join_algorithm = 'partitioned_hash') WHERE explain LIKE '%Algorithm: PartitionedHashJoin%';
+-- A mixed non-equi ON condition is planned with another algorithm (never at execution time).
+SELECT count() FROM (EXPLAIN actions = 1 SELECT p.p FROM t_phj_probe AS p LEFT JOIN t_phj_build AS b ON p.k = b.k AND p.p > b.k SETTINGS join_algorithm = 'partitioned_hash') WHERE explain LIKE '%Algorithm: PartitionedHashJoin%';
+SELECT count(), sum(cityHash64(p.p, b.v)) FROM t_phj_probe AS p LEFT JOIN t_phj_build AS b ON p.k = b.k AND p.p > b.k SETTINGS join_algorithm = 'partitioned_hash';
+SELECT count(), sum(cityHash64(p.p, b.v)) FROM t_phj_probe AS p LEFT JOIN t_phj_build AS b ON p.k = b.k AND p.p > b.k SETTINGS join_algorithm = 'hash';
+SELECT '-- shapes beyond INNER/LEFT ALL execute under partitioned_hash (covered in detail by later tests)';
+SELECT count() > 0 FROM (EXPLAIN actions = 1 SELECT p.p FROM t_phj_probe AS p RIGHT JOIN t_phj_build AS b ON p.k = b.k SETTINGS join_algorithm = 'partitioned_hash') WHERE explain LIKE '%Algorithm: PartitionedHashJoin%';
 SELECT count(), sum(cityHash64(p.p, b.v)) FROM t_phj_probe AS p RIGHT JOIN t_phj_build AS b ON p.k = b.k SETTINGS join_algorithm = 'partitioned_hash';
 SELECT count(), sum(cityHash64(p.p, b.v)) FROM t_phj_probe AS p RIGHT JOIN t_phj_build AS b ON p.k = b.k SETTINGS join_algorithm = 'hash';
 SELECT count() FROM t_phj_probe AS p ANY LEFT JOIN t_phj_build AS b ON p.k = b.k SETTINGS join_algorithm = 'partitioned_hash';

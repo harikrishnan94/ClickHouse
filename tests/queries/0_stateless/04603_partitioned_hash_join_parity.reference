@@ -42,6 +42,10 @@
 14150	11141292798321601391
 -- unsupported shapes fall back at plan time and still work
 0
+13250	13518375155117193963
+13250	13518375155117193963
+-- shapes beyond INNER/LEFT ALL execute under partitioned_hash (covered in detail by later tests)
+1
 13500	17148574693761175814
 13500	17148574693761175814
 2000
