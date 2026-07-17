@@ -431,6 +431,8 @@
     M(PartitionedHashJoinProbeMicroseconds, "Time spent joining probe-side blocks in the partitioned_hash JOIN algorithm, summed over all probe threads.", ValueType::Microseconds) \
     M(PartitionedHashJoinPartitions, "Number of leaf partitions chosen by partitioned_hash JOIN build barriers (one count per join; 1 means the degenerate single-leaf plan).", ValueType::Number) \
     M(PartitionedHashJoinLeafRows, "Number of right-side rows fed into partitioned_hash JOIN leaf hash-table builds.", ValueType::Number) \
+    M(PartitionedHashJoinHashTableBytes, "Bytes of the single contiguous allocation backing all leaf hash tables of a partitioned_hash JOIN build.", ValueType::Bytes) \
+    M(PartitionedHashJoinHashTableHeapFallbacks, "Number of partitioned_hash JOIN leaf hash-table allocations that fell back to the heap because a leaf outgrew its slab region (a distinct-estimate shortfall; correct but slower than the planned path).", ValueType::Number) \
     M(JoinReorderMicroseconds, "Total time spent executing JOIN reordering algorithm.", ValueType::Microseconds) \
     M(JoinOptimizeMicroseconds, "Total time spent executing JOIN plan optimizations.", ValueType::Microseconds) \
     M(QueryPlanOptimizeMicroseconds, "Total time spent executing query plan optimizations.", ValueType::Microseconds) \

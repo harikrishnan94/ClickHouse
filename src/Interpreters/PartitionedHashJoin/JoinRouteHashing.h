@@ -1,0 +1,21 @@
+#pragma once
+
+#include <Columns/IColumn.h>
+#include <base/types.h>
+
+namespace DB
+{
+
+/** Routing hash of `PartitionedHashJoin` (the imported `ColumnsScatter` route-word family):
+  * one 32-bit route word per row over the join key columns, deliberately independent of the
+  * CRC32C the leaf hash tables bucket by. The build fill saves the top 16 bits per row and the
+  * probe recomputes the word per row; a partition plan of `bits` partitions routes a row to leaf
+  * `word >> (32 - bits)` (MSB-first).
+  *
+  * `key_columns` are the prepared key columns after null-map extraction (nested, non-nullable);
+  * a live `ColumnLowCardinality` (the dictionary-aware map types) is routed by its value bytes,
+  * so it produces the same words as the plain column of the same values on the other join side.
+  */
+void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt32 * words);
+
+}
