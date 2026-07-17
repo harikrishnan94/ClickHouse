@@ -5,7 +5,9 @@
 
 SET enable_analyzer = 1;
 SET query_plan_join_swap_table = 0;
--- Automatic external join would route to SpillingHashJoin at plan time.
+-- Automatic external join would route to SpillingHashJoin at plan time (the absolute setting
+-- can also arrive through test-level randomization, so pin both).
+SET max_bytes_before_external_join = 0;
 SET max_bytes_ratio_before_external_join = 0;
 SET max_bytes_in_join = 0;
 -- The ProfileEvents assertions below read this server's query_log; with parallel replicas the
