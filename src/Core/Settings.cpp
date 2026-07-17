@@ -7919,7 +7919,7 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
 When hash-based join algorithm is applied, this threshold helps to decide between using `hash` and `parallel_hash` (only if estimation of the right table size is available).
 The former is used when we know that the right table size is below the threshold.
 )", 0) \
-    DECLARE(UInt64, radix_join_max_partitions_per_pass, 8192, R"(
+    DECLARE(UInt64, radix_join_max_partitions_per_pass, 1024, R"(
 For the `radix_join` algorithm, the maximum number of partitions (fanout) produced by a single radix scatter pass.
 The total number of leaf partitions is split into the minimum number of passes that respect this cap.
 )", 0) \
