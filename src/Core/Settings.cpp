@@ -3609,7 +3609,7 @@ Possible values:
 
  An experimental variation of `hash` join that partitions the right table by a separate routing hash and builds one hash table per partition, while the left part of `JOIN` is probed without partitioning.
 
- Currently supports only `INNER` and `LEFT` joins with `ALL` strictness and a single conjunction of equality keys; unsupported shapes fall back to the other enabled algorithms (or to `hash`) at query planning time.
+ Supports `INNER`/`LEFT`/`RIGHT`/`FULL` joins with `ALL`/`ANY`/`SEMI`/`ANTI` strictness, `ASOF` joins, and `ON` sections with single-side filter conditions or multiple `OR`-ed key sets. Unsupported shapes (e.g. mixed non-equality `ON` conditions, joins with special storages, spilling contexts) fall back to the other enabled algorithms (or to `hash`) at query planning time.
 
 - partial_merge
 

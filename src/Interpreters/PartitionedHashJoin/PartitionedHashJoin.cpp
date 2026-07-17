@@ -1,5 +1,6 @@
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 
+#include <Columns/ColumnsNumber.h>
 #include <Columns/ColumnsScatter.h>
 #include <DataTypes/NullableUtils.h>
 #include <Interpreters/HashJoin/HashJoin.h>
@@ -19,6 +20,7 @@ namespace ProfileEvents
 extern const Event PartitionedHashJoinBuildMicroseconds;
 extern const Event PartitionedHashJoinProbeMicroseconds;
 extern const Event PartitionedHashJoinPartitions;
+extern const Event PartitionedHashJoinLeafRows;
 }
 
 namespace DB
@@ -66,6 +68,8 @@ PartitionedHashJoin::PartitionedHashJoin(
     , any_take_last_row(any_take_last_row_)
     , num_threads(std::max<size_t>(1, num_threads_))
     , leaf_join(std::make_unique<HashJoin>(table_join, right_sample_block, any_take_last_row))
+    , delegate_mode(!table_join->oneDisjunct())
+    , maps_variant_index(leaf_join->data->maps.empty() ? 1 : leaf_join->data->maps.front().index())
     , log(getLogger("PartitionedHashJoin"))
 {
     if (!PartitionedJoinMaps::isSupportedType(leaf_join->data->type))
@@ -85,26 +89,50 @@ PartitionedHashJoin::~PartitionedHashJoin()
 
 bool PartitionedHashJoin::isSupported(const TableJoin & table_join)
 {
-    /// The supported set is deliberately narrow while the partitioned build/probe paths are
-    /// being brought up: INNER/LEFT ALL equi-joins with a single conjunction of keys and no
-    /// extra ON conditions. Everything else is planned with another algorithm.
-    if (!isInnerOrLeft(table_join.kind()))
+    /// Everything the single-level `HashJoin` machinery serves: INNER/LEFT/RIGHT/FULL x
+    /// ALL/ANY/RightAny/SEMI/ANTI plus ASOF, with null maps, per-clause ON-section filter
+    /// conditions, USING, and single or multiple disjuncts (the latter run the standard
+    /// machinery whole - see the class comment). Shapes that stay outside: special storages
+    /// (StorageJoin / dictionaries), Cross/Comma/Paste and ON-constant (routed before the
+    /// algorithm loop), spilling contexts (the SpillingHashJoin branch keeps plan-time
+    /// priority), and mixed non-equi ON conditions attached to the join - `parallel_hash`
+    /// serves those better than a delegated single-threaded build would.
+    const JoinKind kind = table_join.kind();
+    const JoinStrictness strictness = table_join.strictness();
+
+    if (!isInner(kind) && !isLeft(kind) && !isRight(kind) && !isFull(kind))
         return false;
-    if (table_join.strictness() != JoinStrictness::All)
-        return false;
-    if (!table_join.oneDisjunct())
-        return false;
+
+    switch (strictness)
+    {
+        case JoinStrictness::All:
+        case JoinStrictness::Any:
+        case JoinStrictness::RightAny:
+        case JoinStrictness::Semi:
+        case JoinStrictness::Anti:
+        case JoinStrictness::Asof: break;
+        default: return false;
+    }
+
     if (table_join.isSpecialStorage())
         return false;
     if (table_join.getMixedJoinExpression())
         return false;
 
-    const auto & clause = table_join.getOnlyClause();
-    if (clause.key_names_right.empty())
-        return false;
-    if (clause.on_filter_condition_left || clause.on_filter_condition_right || !clause.analyzer_left_filter_condition_column_name.empty()
-        || !clause.analyzer_right_filter_condition_column_name.empty())
-        return false;
+    if (strictness == JoinStrictness::Asof)
+    {
+        /// Mirrors the HashJoin restrictions: LEFT/INNER only, one disjunct, at least one
+        /// equi-join column besides the trailing inequality column.
+        if (!isInnerOrLeft(kind) || !table_join.oneDisjunct())
+            return false;
+        if (table_join.getOnlyClause().key_names_right.size() <= 1)
+            return false;
+    }
+
+    /// Keyless clauses (ON-constant shapes) are handled by dedicated plan-time routing.
+    for (const auto & clause : table_join.getClauses())
+        if (clause.key_names_right.empty())
+            return false;
 
     return true;
 }
@@ -130,6 +158,13 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
     if (build_phase_finished)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "PartitionedHashJoin: addBlockToJoin called after the build phase finished");
 
+    if (delegate_mode)
+    {
+        /// The standard machinery runs the join whole (single fill stream, see `supportParallelJoin`).
+        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinLeafRows, source_block.rows());
+        return leaf_join->addBlockToJoin(source_block, check_limits);
+    }
+
     Block materialized = leaf_join->materializeColumnsFromRightBlock(source_block);
     const size_t rows = materialized.rows();
     if (rows == 0)
@@ -144,26 +179,48 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
 
     /// Prepare the key columns the same way the probe side does (`JoinOnKeyColumns`): materialize,
     /// keep a live LowCardinality column only for the dictionary-aware map types, extract the
-    /// merged null map and strip the key columns to their nested form.
-    const auto & key_names_right = table_join->getOnlyClause().key_names_right;
+    /// merged null map and strip the key columns to their nested form. For ASOF the merged null
+    /// map covers the trailing inequality column too - rows with a NULL ASOF key never join.
+    const auto & clause = table_join->getOnlyClause();
     fill.keys_holder = HashJoin::isLowCardinalityType(leaf_join->data->type)
-        ? JoinCommon::materializeColumnsKeepLowCardinality(materialized, key_names_right)
-        : JoinCommon::materializeColumns(materialized, key_names_right);
+        ? JoinCommon::materializeColumnsKeepLowCardinality(materialized, clause.key_names_right)
+        : JoinCommon::materializeColumns(materialized, clause.key_names_right);
     fill.key_columns = JoinCommon::getRawPointers(fill.keys_holder);
     fill.null_map_holder = extractNestedColumnsAndNullMap(fill.key_columns, fill.null_map);
 
+    /// The right-side ON-section condition: rows it filters are not inserted into the leaf maps
+    /// (they are still saved for RIGHT/FULL non-joined output, see `storeBlocksInRowStore`).
+    fill.join_mask = JoinCommon::getColumnAsMask(materialized, clause.condColumnNames().second);
+    if (fill.join_mask.hasData() && fill.join_mask.getKind() != JoinCommon::JoinMask::Kind::AllTrue)
+    {
+        fill.skip_bytes.resize_exact(rows);
+        const NullMap * nulls = fill.null_map;
+        for (size_t i = 0; i < rows; ++i)
+            fill.skip_bytes[i] = ((nulls && (*nulls)[i]) || fill.join_mask.isRowFiltered(i)) ? 1 : 0;
+    }
+
     /// One route word per row (R4, R6): save the top 16 bits, feed the full word to the lane
-    /// sketch. Null-key rows are never inserted, so they do not contribute to the estimate.
+    /// sketch. Skipped rows (null keys, mask-filtered) are never inserted, so they do not
+    /// contribute to the estimate. ASOF routes and sketches by the equi-key prefix only - the
+    /// trailing inequality column goes into the per-key sorted lookup, not into the map key.
     fill.routes.resize_exact(rows);
     {
         PaddedPODArray<UInt32> words(rows);
-        computeJoinRouteWords(fill.key_columns, rows, words.data());
+        if (leaf_join->getStrictness() == JoinStrictness::Asof)
+        {
+            ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
+            computeJoinRouteWords(equi_columns, rows, words.data());
+        }
+        else
+        {
+            computeJoinRouteWords(fill.key_columns, rows, words.data());
+        }
         FillLane & lane = getFillLane();
-        const NullMap * nulls = fill.null_map;
+        const UInt8 * skip = fill.skipData();
         for (size_t i = 0; i < rows; ++i)
         {
             fill.routes[i] = static_cast<UInt16>(words[i] >> 16);
-            if (!nulls || !(*nulls)[i])
+            if (!skip || !skip[i])
                 lane.hll.add(words[i]);
         }
 
@@ -209,6 +266,7 @@ const Block & PartitionedHashJoin::getTotals() const
 
 void PartitionedHashJoin::storeBlocksInRowStore()
 {
+    const bool right_or_full = isRightOrFull(leaf_join->getKind());
     auto & data = *leaf_join->data;
     for (auto & fill : build_blocks)
     {
@@ -219,6 +277,42 @@ void PartitionedHashJoin::storeBlocksInRowStore()
         data.rows_to_join += fill.rows;
         fill.block_no = stored.block_no;
         fill.stored = Block{};
+
+        if (!right_or_full)
+            continue;
+
+        /// RIGHT/FULL non-joined output needs the rows that were never inserted into the maps:
+        /// null-key rows (the key null map) and rows filtered by the right-side ON condition
+        /// (a mask of filtered-and-not-null rows), exactly as the standard build saves them.
+        bool save_nullmap = false;
+        if (fill.null_map)
+            for (size_t i = 0; i < fill.rows && !save_nullmap; ++i)
+                save_nullmap = (*fill.null_map)[i];
+        if (save_nullmap)
+        {
+            auto & holder = data.nullmaps.emplace_back(&stored, fill.null_map_holder);
+            data.nullmaps_allocated_size += holder.allocatedBytes();
+        }
+
+        if (fill.join_mask.hasData() && fill.join_mask.getKind() != JoinCommon::JoinMask::Kind::AllTrue)
+        {
+            auto not_joined_map = ColumnUInt8::create(fill.rows, static_cast<UInt8>(0));
+            bool has_right_not_joined = false;
+            for (size_t i = 0; i < fill.rows; ++i)
+            {
+                if (!fill.join_mask.isRowFiltered(i))
+                    continue;
+                if (save_nullmap && (*fill.null_map)[i])
+                    continue; /// already covered by the null-keys map
+                not_joined_map->getData()[i] = 1;
+                has_right_not_joined = true;
+            }
+            if (has_right_not_joined)
+            {
+                auto & holder = data.nullmaps.emplace_back(&stored, std::move(not_joined_map));
+                data.nullmaps_allocated_size += holder.allocatedBytes();
+            }
+        }
     }
 }
 
@@ -226,8 +320,12 @@ void PartitionedHashJoin::decidePartitionPlan()
 {
     const HashJoin::Type type = leaf_join->data->type;
 
+    /// ASOF builds stay at the single-leaf plan: the mapped values are per-key sorted lookup
+    /// vectors whose insert wants the original (block, row) order, and the sorted-vector work
+    /// dominates the build - partitioning the equi-key map buys nothing worth a scattered
+    /// insert order. The single-leaf path inserts straight from the stored blocks.
     bits = 0;
-    if (!PartitionedJoinMaps::isFixedSizeType(type))
+    if (!PartitionedJoinMaps::isFixedSizeType(type) && leaf_join->getStrictness() != JoinStrictness::Asof)
     {
         /// The L2 rule with grower-exact rounding: the smallest number of bits such that the
         /// worst-case per-leaf reserve (the histogram clamp can only shrink it) produces a
@@ -239,7 +337,8 @@ void PartitionedHashJoin::decidePartitionPlan()
         const auto reserve_for = [&](size_t fanout)
         { return std::max<size_t>(1, static_cast<size_t>(std::ceil(hll_estimate * reserve_safety / static_cast<double>(fanout)))); };
 
-        while (bits < 16 && PartitionedJoinMaps::predictedBufferBytes(type, reserve_for(1uz << bits)) > leaf_budget_bytes)
+        while (bits < 16
+               && PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, reserve_for(1uz << bits)) > leaf_budget_bytes)
             ++bits;
 
         if (bits > 0)
@@ -273,6 +372,15 @@ void PartitionedHashJoin::decidePartitionPlan()
 void PartitionedHashJoin::onBuildPhaseFinish()
 {
     ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
+
+    if (delegate_mode)
+    {
+        /// The standard machinery ran the whole build during the fill; only its own barrier
+        /// (used-flags init, promotion, non-joined status) remains. The partition plan is 1.
+        leaf_join->onBuildPhaseFinish();
+        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinPartitions, partitions);
+        return;
+    }
 
     /// The cheap barrier (R5), run once by the last fill thread: concatenate the lanes, assign
     /// row-store block numbers, merge the sketches and pick the partition plan. The heavy work
@@ -319,13 +427,16 @@ JoinResultPtr PartitionedHashJoin::joinBlock(Block block)
     JoinResultPtr result;
     {
         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinProbeMicroseconds);
-        result = probeDispatch(std::move(block));
+        result = delegate_mode ? leaf_join->joinBlock(std::move(block)) : probeDispatch(std::move(block));
     }
     return std::make_unique<TimedJoinResult>(std::move(result), ProfileEvents::PartitionedHashJoinProbeMicroseconds);
 }
 
 size_t PartitionedHashJoin::getTotalRowCount() const
 {
+    if (delegate_mode)
+        return leaf_join->getTotalRowCount();
+
     if (!build_phase_finished)
         return accumulated_rows.load(std::memory_order_relaxed);
 
@@ -338,6 +449,9 @@ size_t PartitionedHashJoin::getTotalRowCount() const
 
 size_t PartitionedHashJoin::getTotalByteCount() const
 {
+    if (delegate_mode)
+        return leaf_join->getTotalByteCount();
+
     size_t res = accumulated_bytes.load(std::memory_order_relaxed);
     const HashJoin::Type type = leaf_join->data->type;
     for (const auto & maps : leaf_maps)
@@ -349,6 +463,8 @@ size_t PartitionedHashJoin::getTotalByteCount() const
 
 bool PartitionedHashJoin::alwaysReturnsEmptySet() const
 {
+    if (delegate_mode)
+        return leaf_join->alwaysReturnsEmptySet();
     return isInnerOrRight(table_join->kind()) && accumulated_rows.load(std::memory_order_relaxed) == 0;
 }
 
@@ -361,14 +477,8 @@ PartitionedHashJoin::BuildStats PartitionedHashJoin::getBuildStats() const
     res.slab_bytes = ht_slab_bytes;
     res.region_carves = region_carves.load(std::memory_order_relaxed);
     res.heap_fallbacks = heap_fallbacks.load(std::memory_order_relaxed);
+    res.flag_base = flag_base;
     return res;
-}
-
-IBlocksStreamPtr
-PartitionedHashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const
-{
-    /// Non-joined rows exist only for RIGHT/FULL kinds, which the plan-time gate rejects.
-    return leaf_join->getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size);
 }
 
 bool PartitionedHashJoin::isCloneSupported() const

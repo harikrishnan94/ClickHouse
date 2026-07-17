@@ -1,9 +1,11 @@
 #include <Columns/ColumnsScatter.h>
 #include <Interpreters/HashJoin/HashJoinMethodsImpl.h>
+#include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/KeyGetter.h>
 #include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/TableJoin.h>
+#include <Interpreters/joinDispatch.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/CurrentThread.h>
 #include <Common/ElapsedTimeProfileEventIncrement.h>
@@ -45,13 +47,17 @@ namespace
 constexpr size_t locator_piece_rows = 32768; /// locator synthesis scratch stays L2-resident
 
 /// Sequential locator-aware insert of one compact section, mirroring the semantics of
-/// `insertFromBlockImplTypeCase` + `Inserter::insertAll`: the map hash is computed inside
-/// `emplaceKey` (once per build row), an inserted key stores the encoded row ref inline, a
-/// duplicate appends to the arena list. The recorded ref comes from the scattered locator
-/// column - the encoded 8-byte word or the packed 4-byte form - or, on the single-leaf path,
-/// from `RowRef(block_no, i)` with null-key rows skipped.
+/// `insertFromBlockImplTypeCase` + the `Inserter` family for the map's value shape: the map hash
+/// is computed inside `emplaceKey` (once per build row); `RowRefList` cells store the encoded
+/// row ref inline and append duplicates to the arena list (`insertAll`); `RowRef` cells keep the
+/// first row per key, or the last with `any_take_last_row` (`insertOne`); `AsofRowRefs` cells
+/// append (asof value, row ref) to the per-key sorted lookup (`insertAsof`). The recorded ref
+/// comes from the scattered locator column - the encoded 8-byte word or the packed 4-byte form -
+/// or, on the single-leaf path, from `RowRef(block_no, i)` with skipped (null-key/mask-filtered)
+/// rows excluded via `skip_bytes`.
 template <typename KeyGetter, typename Map>
 void insertSectionImpl(
+    const HashJoin & join,
     Map & map,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
@@ -59,12 +65,42 @@ void insertSectionImpl(
     const UInt64 * locators,
     const UInt32 * narrow_locators,
     UInt32 block_no,
-    const UInt8 * null_bytes,
+    const UInt8 * skip_bytes,
     Arena & pool,
     bool & all_values_unique,
     bool enable_prefetch)
 {
-    KeyGetter key_getter(key_columns, key_sizes, nullptr);
+    using Mapped = Map::mapped_type;
+    constexpr bool mapped_one = std::is_same_v<Mapped, RowRef>;
+    constexpr bool mapped_asof = std::is_same_v<Mapped, AsofRowRefs>;
+
+    /// The ASOF value lives at the row's own index of the trailing key column, so the sorted
+    /// insert only works where the compact index IS the stored row - the single-leaf path
+    /// (ASOF plans always degenerate to one leaf, see `decidePartitionPlan`).
+    const IColumn * asof_column [[maybe_unused]] = nullptr;
+    if constexpr (mapped_asof)
+    {
+        if (locators || narrow_locators)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "ASOF leaf inserts require the single-leaf build plan");
+        asof_column = key_columns.back();
+    }
+
+    /// Mirrors `createKeyGetter`: the ASOF getter excludes the trailing inequality column.
+    auto key_getter = [&]
+    {
+        if constexpr (mapped_asof)
+        {
+            ColumnRawPtrs equi_columns(key_columns.begin(), key_columns.end() - 1);
+            Sizes equi_sizes(key_sizes.begin(), key_sizes.end() - 1);
+            return KeyGetter(equi_columns, equi_sizes, nullptr);
+        }
+        else
+        {
+            return KeyGetter(key_columns, key_sizes, nullptr);
+        }
+    }();
+
+    const bool any_take_last_row = join.anyTakeLastRow();
 
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
     bool use_prefetch = false;
@@ -86,31 +122,45 @@ void insertSectionImpl(
         if constexpr (can_prefetch)
             prefetcher.prefetchAt(i);
 
-        if (null_bytes && null_bytes[i])
+        if (skip_bytes && skip_bytes[i])
             continue;
 
         auto emplace_result = key_getter.emplaceKey(map, i, pool);
-        UInt64 ref = 0;
-        if (locators)
+
+        if constexpr (mapped_asof)
         {
-            ref = locators[i];
-        }
-        else if (narrow_locators)
-        {
-            ref = RowRef(narrow_locators[i] >> 16, narrow_locators[i] & 0xFFFFu).encode();
-        }
-        else
-        {
-            ref = RowRef(block_no, i).encode();
-        }
-        if (emplace_result.isInserted())
-        {
-            new (&emplace_result.getMapped()) RowRefList(RowRefList::fromWord(ref));
+            Mapped * time_series_map = &emplace_result.getMapped();
+            if (emplace_result.isInserted())
+                time_series_map = new (time_series_map) Mapped(createAsofRowRef(*join.getAsofType(), join.getAsofInequality()));
+            (*time_series_map)->insert(*asof_column, block_no, i);
         }
         else
         {
-            emplace_result.getMapped().insert(ref, pool);
-            all_unique = false;
+            UInt64 ref = 0;
+            if (locators)
+                ref = locators[i];
+            else if (narrow_locators)
+                ref = RowRef(narrow_locators[i] >> 16, narrow_locators[i] & 0xFFFFu).encode();
+            else
+                ref = RowRef(block_no, i).encode();
+
+            if constexpr (mapped_one)
+            {
+                if (emplace_result.isInserted() || any_take_last_row)
+                    new (&emplace_result.getMapped()) RowRef(refWordBlockNo(ref), refWordRowNo(ref));
+            }
+            else
+            {
+                if (emplace_result.isInserted())
+                {
+                    new (&emplace_result.getMapped()) RowRefList(RowRefList::fromWord(ref));
+                }
+                else
+                {
+                    emplace_result.getMapped().insert(ref, pool);
+                    all_unique = false;
+                }
+            }
         }
     }
     all_values_unique = all_unique;
@@ -175,17 +225,16 @@ struct PartitionedHashJoin::PostBuildContext
 namespace
 {
 
-/// Bucket ids for one block, derived from the saved routes (MSB-first bit slice); null-key rows
-/// go to the drop bucket `partitions`.
-void deriveBucketIds(const PaddedPODArray<UInt16> & routes, const NullMap * null_map, size_t bits, size_t partitions, UInt16 * bucket_ids)
+/// Bucket ids for one block, derived from the saved routes (MSB-first bit slice); skipped rows
+/// (null keys, mask-filtered) go to the drop bucket `partitions`.
+void deriveBucketIds(const PaddedPODArray<UInt16> & routes, const UInt8 * skip_bytes, size_t bits, size_t partitions, UInt16 * bucket_ids)
 {
     const size_t rows = routes.size();
     const UInt32 shift = static_cast<UInt32>(16 - bits);
-    if (null_map)
+    if (skip_bytes)
     {
-        const auto & nulls = *null_map;
         for (size_t i = 0; i < rows; ++i)
-            bucket_ids[i] = nulls[i] ? static_cast<UInt16>(partitions) : static_cast<UInt16>(routes[i] >> shift);
+            bucket_ids[i] = skip_bytes[i] ? static_cast<UInt16>(partitions) : static_cast<UInt16>(routes[i] >> shift);
     }
     else
     {
@@ -203,44 +252,61 @@ void PartitionedHashJoin::insertLeafSection(
     const UInt64 * locators,
     const UInt32 * narrow_locators_data,
     UInt32 block_no,
-    const UInt8 * null_bytes,
+    const UInt8 * skip_bytes,
     Arena & pool,
     bool & all_values_unique)
 {
     const Sizes & key_sizes = leaf_join->key_sizes[0];
     const bool enable_prefetch = leaf_join->enableSoftwarePrefetch();
 
-    switch (leaf_join->data->type)
-    {
+    std::visit(
+        [&](auto & shape_maps)
+        {
+            switch (leaf_join->data->type)
+            {
 #define M(TYPE) \
     case HashJoin::Type::TYPE: { \
-        using Map = typename decltype(PartitionedJoinMaps::TYPE)::element_type; \
+        using Map = typename decltype(shape_maps.TYPE)::element_type; \
         using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, Map>::Type; \
         insertSectionImpl<KeyGetter>( \
-            *maps.TYPE, \
+            *leaf_join, \
+            *shape_maps.TYPE, \
             key_columns, \
             key_sizes, \
             rows, \
             locators, \
             narrow_locators_data, \
             block_no, \
-            null_bytes, \
+            skip_bytes, \
             pool, \
             all_values_unique, \
             enable_prefetch); \
         break; \
     }
-        APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
+                APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
 #undef M
-        default:
-            throw Exception(
-                ErrorCodes::UNSUPPORTED_JOIN_KEYS, "Unsupported JOIN keys for the partitioned join (type: {})", leaf_join->data->type);
-    }
+                default:
+                    throw Exception(
+                        ErrorCodes::UNSUPPORTED_JOIN_KEYS,
+                        "Unsupported JOIN keys for the partitioned join (type: {})",
+                        leaf_join->data->type);
+            }
+        },
+        maps.maps);
 }
 
 void PartitionedHashJoin::runPostBuildPhase()
 {
     chassert(!build_phase_finished);
+
+    if (delegate_mode)
+    {
+        /// The standard machinery already built and finished during the fill and the barrier.
+        /// Its own single-map post-build optimizations (rerange, fixed-hash-map conversion,
+        /// runtime-filter publish) stay off, as for the partitioned path.
+        build_phase_finished = true;
+        return;
+    }
 
     bool all_values_unique = true;
     if (bits == 0)
@@ -283,11 +349,46 @@ void PartitionedHashJoin::finishBuildPhase(bool all_values_unique)
 {
     /// The leaf's own barrier work: used-flags init over its (empty) map, the ALL -> RightAny
     /// promotion when every build key turned out unique (our probe dispatches on the promoted
-    /// strictness), and the non-joined-rows status.
+    /// strictness), and the non-joined-rows status. The used flags are then re-sized to span
+    /// all leaf maps - after the leaf builds, so the bucket counts are final.
     leaf_join->all_values_unique = all_values_unique;
     leaf_join->onBuildPhaseFinish();
+    computeFlagBaseAndReinitUsedFlags();
     leaf_join->data->keys_to_join = getTotalRowCount();
     build_phase_finished = true;
+}
+
+void PartitionedHashJoin::computeFlagBaseAndReinitUsedFlags()
+{
+    /// One per-offset flag space spans all leaves: leaf L's flags start at `flag_base[L]`, with
+    /// bucket count + 1 slots per leaf (the +1 covers the hash table's zero-value cell, exactly
+    /// like the standard sizing `getBufferSizeInCells() + 1`). The probe shifts every
+    /// `FindResult` offset by its leaf's base, so `JoinUsedFlags` and the non-joined iteration
+    /// keep their single-map semantics.
+    const HashJoin::Type type = leaf_join->data->type;
+    flag_base.assign(1, 0);
+    flag_base.reserve(leaf_maps.size() + 1);
+    for (const auto & maps : leaf_maps)
+        flag_base.push_back(flag_base.back() + maps.getBufferSizeInCells(type) + 1);
+
+    /// `reinit` only grows and is a no-op for shapes without right-side used flags; it runs
+    /// after the leaf `HashJoin`'s own barrier re-initialized the flags to its empty map's size.
+    const bool prefer_use_maps_all = leaf_join->preferUseMapsAll();
+    joinDispatch(
+        leaf_join->getKind(),
+        leaf_join->getStrictness(),
+        leaf_join->data->maps.front(),
+        prefer_use_maps_all,
+        [&](auto kind_, auto strictness_, auto & map_)
+        {
+            leaf_join->used_flags->reinit<kind_, strictness_, std::is_same_v<std::decay_t<decltype(map_)>, HashJoin::MapsAll>>(
+                flag_base.back());
+        });
+
+    /// Shapes that never consult right-side used flags do not pay for the vector; make that
+    /// visible to tests through an empty base table.
+    if (!leaf_join->used_flags->need_flags)
+        flag_base.clear();
 }
 
 bool PartitionedHashJoin::postBuildSingleLeaf()
@@ -296,17 +397,17 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
 
     /// The degenerate plan (G6): one leaf over the whole build, exact-reserved from the sketch,
     /// no scatter - rows are inserted straight from the stored blocks with standard
-    /// `RowRef(block_no, row)` refs, null-key rows skipped by the saved null maps.
+    /// `RowRef(block_no, row)` refs, skipped rows excluded by the saved skip bytes.
     const size_t insertable_rows = accumulated_rows.load(std::memory_order_relaxed);
     const auto reserve
         = std::clamp<size_t>(static_cast<size_t>(std::ceil(hll_estimate * reserve_safety)), 1, std::max<size_t>(insertable_rows, 1));
-    const size_t predicted_bytes = PartitionedJoinMaps::predictedBufferBytes(type, reserve);
+    const size_t predicted_bytes = PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, reserve);
 
     ht_slab_bytes = predicted_bytes;
     ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
     ++stats.slab_allocations;
 
-    leaf_maps.resize(1);
+    leaf_maps.assign(1, PartitionedJoinMaps(maps_variant_index));
     build_arenas.emplace_back();
 
     FixedRegionAllocator::Region region{ht_slab, predicted_bytes, &region_carves, &heap_fallbacks};
@@ -324,7 +425,7 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
             /*locators=*/nullptr,
             /*narrow_locators_data=*/nullptr,
             fill.block_no,
-            fill.null_map ? fill.null_map->data() : nullptr,
+            fill.skipData(),
             build_arenas.front(),
             all_values_unique);
         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinLeafRows, fill.rows);
@@ -335,6 +436,8 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
         fill.key_columns.clear();
         fill.null_map_holder.reset();
         fill.null_map = nullptr;
+        fill.join_mask = JoinCommon::JoinMask();
+        fill.skip_bytes = {};
         fill.routes = {};
     }
     return all_values_unique;
@@ -455,7 +558,7 @@ void PartitionedHashJoin::histogramWorker(PostBuildContext & ctx, size_t worker)
     {
         const FillBlock & fill = build_blocks[b];
         bucket_ids.resize(fill.rows);
-        deriveBucketIds(fill.routes, fill.null_map, bits, partitions, bucket_ids.data());
+        deriveBucketIds(fill.routes, fill.skipData(), bits, partitions, bucket_ids.data());
         ColumnsScatter::histogramPidChunk(bucket_ids.data(), fill.rows, hist, hist_lanes, ctx.fanout);
     }
     if (hist_lanes)
@@ -544,6 +647,8 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
         fill.key_columns.clear();
         fill.null_map_holder.reset();
         fill.null_map = nullptr;
+        fill.join_mask = JoinCommon::JoinMask();
+        fill.skip_bytes = {};
         fill.routes = {};
     };
 
@@ -579,7 +684,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
             {
                 const FillBlock & fill = build_blocks[i];
                 batch_bucket_ids[i - batch_begin].resize(fill.rows);
-                deriveBucketIds(fill.routes, fill.null_map, bits, partitions, batch_bucket_ids[i - batch_begin].data());
+                deriveBucketIds(fill.routes, fill.skipData(), bits, partitions, batch_bucket_ids[i - batch_begin].data());
             }
             for (size_t c = 0; c < ctx.num_key_columns; ++c)
                 for (size_t i = batch_begin; i < b; ++i)
@@ -615,7 +720,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
     {
         const FillBlock & fill = build_blocks[i];
         stripe_bucket_ids[i - begin].resize(fill.rows);
-        deriveBucketIds(fill.routes, fill.null_map, bits, partitions, stripe_bucket_ids[i - begin].data());
+        deriveBucketIds(fill.routes, fill.skipData(), bits, partitions, stripe_bucket_ids[i - begin].data());
         bucket_id_spans[i - begin] = {stripe_bucket_ids[i - begin].data(), fill.rows};
         scatter_locators(fill, stripe_bucket_ids[i - begin].data());
     }
@@ -657,7 +762,7 @@ void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
     {
         /// The sketch estimate can only shrink a leaf below its row count, never inflate it.
         ctx.leaf_reserve[leaf] = std::clamp<UInt64>(per_leaf_estimate, 1, std::max<UInt64>(ctx.bucket_rows[leaf], 1));
-        ctx.leaf_bytes[leaf] = PartitionedJoinMaps::predictedBufferBytes(type, ctx.leaf_reserve[leaf]);
+        ctx.leaf_bytes[leaf] = PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, ctx.leaf_reserve[leaf]);
         running = (running + ColumnsScatter::LINE_BYTES - 1) & ~static_cast<UInt64>(ColumnsScatter::LINE_BYTES - 1);
         ctx.leaf_offset[leaf] = running;
         running += ctx.leaf_bytes[leaf];
@@ -669,7 +774,7 @@ void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
     ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
     ++stats.slab_allocations;
 
-    leaf_maps.resize(partitions);
+    leaf_maps.assign(partitions, PartitionedJoinMaps(maps_variant_index));
     ctx.leaf_order.resize(partitions);
     for (size_t leaf = 0; leaf < partitions; ++leaf)
         ctx.leaf_order[leaf] = static_cast<UInt32>(leaf);
@@ -710,7 +815,7 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
                 narrow_locators ? nullptr : ctx.locators[leaf].data(),
                 narrow_locators ? ctx.locators32[leaf].data() : nullptr,
                 /*block_no=*/0,
-                /*null_bytes=*/nullptr,
+                /*skip_bytes=*/nullptr,
                 arena,
                 state.all_values_unique);
         }
@@ -732,7 +837,7 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
                     narrow_locators ? nullptr : ctx.locators[leaf].data() + piece_start,
                     narrow_locators ? ctx.locators32[leaf].data() + piece_start : nullptr,
                     /*block_no=*/0,
-                    /*null_bytes=*/nullptr,
+                    /*skip_bytes=*/nullptr,
                     arena,
                     state.all_values_unique);
             }

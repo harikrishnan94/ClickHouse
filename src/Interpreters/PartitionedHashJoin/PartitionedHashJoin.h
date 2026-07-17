@@ -4,6 +4,7 @@
 #include <Core/Block_fwd.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/IJoin.h>
+#include <Interpreters/JoinUtils.h>
 #include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedJoinMaps.h>
 #include <Common/Allocator.h>
@@ -44,6 +45,15 @@ class TableJoin;
   *   released as they are consumed, before the probe starts.
   * - Probe: probe blocks are never scattered or buffered; each row recomputes its route word and
   *   looks its key up in the routed leaf table through the standard `HashJoin` emit machinery.
+  *   Right-side used flags (RIGHT/FULL/SEMI/ANTI/ANY kinds) live in one per-offset flag space
+  *   spanning all leaves: leaf L's cell offsets are shifted by `flag_base[L]` (the prefix sums of
+  *   the per-leaf bucket counts), so `JoinUsedFlags` and the non-joined machinery keep their
+  *   single-map semantics.
+  *
+  * Shapes whose used flags must be keyed per right-table row instead of per hash-table cell -
+  * multiple disjuncts (OR of key sets) - run the standard `HashJoin` machinery whole (fill,
+  * probe, flags, non-joined) behind this interface: the per-row-flags regime is partition
+  * agnostic and rare, so it is not worth a partitioned build. The partition plan is 1 there.
   */
 class PartitionedHashJoin : public IJoin
 {
@@ -76,8 +86,9 @@ public:
     bool alwaysReturnsEmptySet() const override;
 
     /// The fill phase is per-lane local plus a cheap mutexed append, so right-side streams
-    /// may call `addBlockToJoin` concurrently.
-    bool supportParallelJoin() const override { return true; }
+    /// may call `addBlockToJoin` concurrently. The delegated standard path inserts into one
+    /// `HashJoin`, which is not thread-safe - a single fill stream there, like `hash`.
+    bool supportParallelJoin() const override { return !delegate_mode; }
 
     void onBuildPhaseFinish() override;
     bool hasPostBuildPhase() const override { return true; }
@@ -112,6 +123,9 @@ public:
         UInt64 leaf_rows = 0;
         /// Every leaf map's actual buffer bytes equaled the plan's prediction.
         bool predictions_exact = true;
+        /// Per-leaf used-flag base offsets (prefix sums of the per-leaf bucket counts + 1),
+        /// size partitions + 1; empty when the join shape needs no right-side used flags.
+        std::vector<UInt64> flag_base;
     };
 
     BuildStats getBuildStats() const;
@@ -121,6 +135,13 @@ public:
     void setReserveSafetyFactorForTests(double factor) { reserve_safety = factor; }
 
 private:
+    /// The non-joined-rows filler for RIGHT/FULL output over the partitioned leaf maps.
+    friend class NotJoinedPartitioned;
+
+    /// Row-store access for the non-joined filler: `HashJoin::data` is private, and the filler
+    /// is a friend of this class, not of `HashJoin`.
+    const HashJoin::RightTableData & storedData() const { return *leaf_join->data; }
+
     /// One accumulated right-side block: the payload block in row-store form, the prepared key
     /// columns (nested, with the merged null map extracted), and the saved 2-byte routes.
     struct FillBlock
@@ -130,9 +151,22 @@ private:
         ColumnRawPtrs key_columns;
         ColumnPtr null_map_holder;
         ConstNullMapPtr null_map = nullptr;
+        /// The right-side ON-section condition of the clause, evaluated per row (`AllTrue` when
+        /// the clause has none): rows it filters are not inserted, mirroring the standard build.
+        JoinCommon::JoinMask join_mask;
+        /// Merged build-skip bytes (key-null rows OR mask-filtered rows), materialized only when
+        /// the mask actually filters; otherwise `skipData` falls back to the plain null map.
+        PaddedPODArray<UInt8> skip_bytes;
         PaddedPODArray<UInt16> routes;
         size_t rows = 0;
         UInt32 block_no = 0; /// assigned at the build barrier
+
+        const UInt8 * skipData() const
+        {
+            if (!skip_bytes.empty())
+                return skip_bytes.data();
+            return null_map ? null_map->data() : nullptr;
+        }
     };
 
     /// Per-fill-thread lane: blocks are appended and the sketch updated without contention.
@@ -162,7 +196,7 @@ private:
     /// Sequential locator-aware insert of one compact section into one leaf (PartitionedHashJoinBuild.cpp).
     /// The stored row ref of row i is `locators[i]` (encoded `RowRef` word), the decoded
     /// `narrow_locators[i]` (packed 4-byte form), or `RowRef(block_no, i)` when neither is set -
-    /// the single-leaf path, where `null_bytes` (when set) skips null-key rows.
+    /// the single-leaf path, where `skip_bytes` (when set) skips null-key and mask-filtered rows.
     void insertLeafSection(
         PartitionedJoinMaps & maps,
         const ColumnRawPtrs & key_columns,
@@ -170,17 +204,23 @@ private:
         const UInt64 * locators,
         const UInt32 * narrow_locators_data,
         UInt32 block_no,
-        const UInt8 * null_bytes,
+        const UInt8 * skip_bytes,
         Arena & pool,
         bool & all_values_unique);
 
-    /// The routed probe (PartitionedHashJoinProbe.cpp).
+    /// Per-leaf used-flag base offsets from the final leaf bucket counts, and the used-flags
+    /// reinit over the whole flag space; runs after the leaf builds, for flagged shapes only.
+    void computeFlagBaseAndReinitUsedFlags();
+
+    /// The routed probe (PartitionedHashJoinProbe*.cpp). `MapsShape` is the standard maps shape
+    /// (`HashJoin::MapsOne`/`MapsAll`/`MapsAsof`) the (kind, strictness) pair dispatches to; the
+    /// actual leaf maps are the partitioned counterpart holding identical cells.
     JoinResultPtr probeDispatch(Block block);
 
-    template <JoinKind KIND, JoinStrictness STRICTNESS>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape>
     JoinResultPtr probeImpl(Block block);
 
-    template <JoinKind KIND, JoinStrictness STRICTNESS, typename KeyGetter, typename Map, typename AddedColumnsType>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape, typename KeyGetter, typename Map, typename AddedColumnsType>
     size_t routedJoinRightColumns(
         const std::vector<const Map *> & leaf_maps_vector, AddedColumnsType & added_columns, const ScatteredBlock & block);
 
@@ -190,9 +230,18 @@ private:
     const size_t num_threads;
 
     /// Schema delegate and owner of everything the probe emit machinery needs: block
-    /// preparation, the saved block sample, the shared row store (`StoredColumnsIndex`) and the
-    /// output sample blocks. Its own map stays empty; the leaf maps below replace it.
+    /// preparation, the saved block sample, the shared row store (`StoredColumnsIndex`), the
+    /// used flags and the output sample blocks. Its own map stays empty; the leaf maps below
+    /// replace it - except in the delegated standard path, where it runs the join whole.
     std::unique_ptr<HashJoin> leaf_join;
+
+    /// Shapes needing the per-row used-flags regime (multiple disjuncts) run the standard
+    /// `HashJoin` machinery whole; see the class comment.
+    const bool delegate_mode;
+
+    /// Index of the active `HashJoin::MapsVariant` alternative (MapsOne/MapsAll/MapsAsof) the
+    /// (kind, strictness) pair dispatches to; the leaf maps mirror it.
+    const size_t maps_variant_index;
 
     /// `IJoin::totals` is private, so the guarded overrides keep their own copy.
     std::mutex totals_mutex;
@@ -219,6 +268,11 @@ private:
     /// Leaf hash tables, backed by the single contiguous slab. `build_arenas` hold the string
     /// keys and duplicate-list nodes referenced by map cells, so they live as long as the maps.
     std::vector<PartitionedJoinMaps> leaf_maps;
+    /// Per-leaf used-flag base offsets: leaf L's flags live at `[flag_base[L], flag_base[L + 1])`
+    /// of the shared per-offset flag space (`flag_base[L + 1] - flag_base[L]` = leaf bucket
+    /// count + 1, the +1 covering the hash table's zero-value cell). Size partitions + 1;
+    /// filled after the leaf builds, only for shapes that track right-side used flags.
+    std::vector<UInt64> flag_base;
     std::deque<Arena> build_arenas;
     char * ht_slab = nullptr;
     size_t ht_slab_bytes = 0;

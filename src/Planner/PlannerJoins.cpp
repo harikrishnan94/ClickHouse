@@ -1192,8 +1192,9 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
         algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
         algorithm == JoinAlgorithm::PARALLEL_HASH ||
-        /// partitioned_hash supports a narrow set of join shapes; everything else falls back to
-        /// parallel_hash (if enabled) or hash below - at plan time, never at execution time
+        /// partitioned_hash covers the single-level hash-join shapes; the rest (mixed ON
+        /// conditions, spilling contexts) falls back to parallel_hash (if enabled) or hash
+        /// below - at plan time, never at execution time
         algorithm == JoinAlgorithm::PARTITIONED_HASH ||
         algorithm == JoinAlgorithm::DEFAULT)
     {
@@ -1447,7 +1448,8 @@ std::shared_ptr<IJoin> chooseJoinAlgorithm(
     if (table_join->kind() == JoinKind::Cross)
         return std::make_shared<HashJoin>(table_join, right_table_expression_header, params.join_any_take_last_row);
 
-    if (!table_join->oneDisjunct() && !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH) && !table_join->isEnabledAlgorithm(JoinAlgorithm::AUTO))
+    if (!table_join->oneDisjunct() && !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH)
+        && !table_join->isEnabledAlgorithm(JoinAlgorithm::PARTITIONED_HASH) && !table_join->isEnabledAlgorithm(JoinAlgorithm::AUTO))
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Only `hash` join supports multiple ORs for keys in JOIN ON section");
 
     for (auto algorithm : table_join->getEnabledJoinAlgorithms())
