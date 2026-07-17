@@ -35,8 +35,10 @@ def main(argv: list[str] | None = None) -> int:
         print("no completed OK points yet", file=sys.stderr)
         return 0
 
-    radix_speedups = [
-        float(r["speedup"]) for r in rows if r["winner"] == "radix_join" and r["speedup"]
+    partitioned_speedups = [
+        float(r["speedup"])
+        for r in rows
+        if r["winner"] == "partitioned_hash" and r["speedup"]
     ]
     parallel_speedups = [
         float(r["speedup"]) for r in rows if r["winner"] == "parallel_hash" and r["speedup"]
@@ -44,11 +46,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Completed OK points: {len(rows)}")
     print(
-        f"radix_join wins: {len(radix_speedups)}  "
-        f"(median {fmt(statistics.median(radix_speedups))}x, "
-        f"max {fmt(max(radix_speedups))}x)"
-        if radix_speedups
-        else "radix_join wins: 0"
+        f"partitioned_hash wins: {len(partitioned_speedups)}  "
+        f"(median {fmt(statistics.median(partitioned_speedups))}x, "
+        f"max {fmt(max(partitioned_speedups))}x)"
+        if partitioned_speedups
+        else "partitioned_hash wins: 0"
     )
     print(
         f"parallel_hash wins: {len(parallel_speedups)}  "
@@ -58,34 +60,39 @@ def main(argv: list[str] | None = None) -> int:
         else "parallel_hash wins: 0"
     )
 
-    radix_mem = [float(r["radix_peak_mem_mb"]) for r in rows if r["radix_peak_mem_mb"]]
+    partitioned_mem = [
+        float(r["partitioned_peak_mem_mb"]) for r in rows if r["partitioned_peak_mem_mb"]
+    ]
     parallel_mem = [
         float(r["parallel_peak_mem_mb"]) for r in rows if r["parallel_peak_mem_mb"]
     ]
-    if radix_mem or parallel_mem:
-        print(f"\nPeak memory (MB), points with data: radix={len(radix_mem)} parallel={len(parallel_mem)}")
-        if radix_mem:
+    if partitioned_mem or parallel_mem:
+        print(
+            f"\nPeak memory (MB), points with data: "
+            f"partitioned={len(partitioned_mem)} parallel={len(parallel_mem)}"
+        )
+        if partitioned_mem:
             print(
-                f"  radix_join:    median {statistics.median(radix_mem):>10.1f}  "
-                f"max {max(radix_mem):>10.1f}"
+                f"  partitioned_hash: median {statistics.median(partitioned_mem):>10.1f}  "
+                f"max {max(partitioned_mem):>10.1f}"
             )
         if parallel_mem:
             print(
-                f"  parallel_hash: median {statistics.median(parallel_mem):>10.1f}  "
+                f"  parallel_hash:    median {statistics.median(parallel_mem):>10.1f}  "
                 f"max {max(parallel_mem):>10.1f}"
             )
         paired = [
-            (float(r["radix_peak_mem_mb"]), float(r["parallel_peak_mem_mb"]))
+            (float(r["partitioned_peak_mem_mb"]), float(r["parallel_peak_mem_mb"]))
             for r in rows
-            if r["radix_peak_mem_mb"] and r["parallel_peak_mem_mb"]
+            if r["partitioned_peak_mem_mb"] and r["parallel_peak_mem_mb"]
         ]
         if paired:
-            ratios = [radix / parallel for radix, parallel in paired if parallel > 0]
+            ratios = [partitioned / parallel for partitioned, parallel in paired if parallel > 0]
             if ratios:
                 print(
-                    f"  radix/parallel memory ratio over {len(ratios)} paired points: "
+                    f"  partitioned/parallel memory ratio over {len(ratios)} paired points: "
                     f"median {statistics.median(ratios):.2f}x "
-                    f"(>1 means radix_join uses MORE memory)"
+                    f"(>1 means partitioned_hash uses MORE memory)"
                 )
     else:
         print(
@@ -94,17 +101,22 @@ def main(argv: list[str] | None = None) -> int:
             "capture was added to the tool)"
         )
 
-    # bp x pp matrix: average signed log-speedup so + means radix favored.
+    # bp x pp matrix: average signed log-speedup so + means partitioned favored.
     cell_speedups: dict[tuple[str, str], list[float]] = defaultdict(list)
     for r in rows:
-        if not r["speedup"] or r["winner"] not in ("radix_join", "parallel_hash"):
+        if not r["speedup"] or r["winner"] not in ("partitioned_hash", "parallel_hash"):
             continue
-        signed = float(r["speedup"]) if r["winner"] == "radix_join" else -float(r["speedup"])
+        signed = (
+            float(r["speedup"]) if r["winner"] == "partitioned_hash" else -float(r["speedup"])
+        )
         cell_speedups[(r["bp"], r["pp"])].append(signed)
 
     bps = sorted({r["bp"] for r in rows}, key=int)
     pps = sorted({r["pp"] for r in rows}, key=int)
-    print("\nbp x pp matrix (avg signed speedup; +N = radix_join N x faster, -N = parallel_hash N x faster; blank = no data yet):")
+    print(
+        "\nbp x pp matrix (avg signed speedup; +N = partitioned_hash N x faster, "
+        "-N = parallel_hash N x faster; blank = no data yet):"
+    )
     header = "bp\\pp".ljust(8) + "".join(f"pp={pp}".rjust(10) for pp in pps)
     print(header)
     for bp in bps:
@@ -124,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         speedup = f"{r['speedup']}x" if r["speedup"] else "-"
         print(
             f"  D={int(r['D']):>10} ratio={r['ratio']} bp={r['bp']} pp={r['pp']} "
-            f"-> {winner} ({speedup})  radix={r['radix_median_ms']}ms "
+            f"-> {winner} ({speedup})  partitioned={r['partitioned_median_ms']}ms "
             f"parallel={r['parallel_median_ms']}ms"
         )
     return 0

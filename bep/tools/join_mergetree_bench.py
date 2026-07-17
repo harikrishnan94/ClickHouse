@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent `MergeTree` benchmark for `radix_join` and `parallel_hash`.
+"""Persistent `MergeTree` benchmark for `partitioned_hash` and `parallel_hash`.
 
 The loader creates deterministic build and probe tables in a `clickhouse local`
 data path. The runner validates those tables, checks result correctness, and
@@ -53,15 +53,11 @@ EVENTS = (
     "RealTimeMicroseconds",
     "SelectedRows",
     "SelectedBytes",
-    "RadixHashJoinBuildMicroseconds",
-    "RadixHashJoinProbeMicroseconds",
-    "RadixHashJoinProbeCollectMatchesMicroseconds",
-    "RadixHashJoinProbePackHashRouteMicroseconds",
-    "RadixHashJoinLeafGroupBuilds",
-    "RadixHashJoinLeafGroupBuildMicroseconds",
-    "HashJoinProbeMatchMicroseconds",
-    "HashJoinProbeGatherMicroseconds",
-    "ConcurrentHashJoinProbeDispatchMicroseconds",
+    "PartitionedHashJoinBuildMicroseconds",
+    "PartitionedHashJoinProbeMicroseconds",
+    "PartitionedHashJoinPartitions",
+    "PartitionedHashJoinLeafRows",
+    "ConcurrentHashJoinBuildMicroseconds",
     "MemoryTrackerPeakUsage",
 )
 # `MemoryTrackerPeakUsage` is a `(gauge)` snapshot of the query memory tracker's
@@ -69,7 +65,25 @@ EVENTS = (
 GAUGE_EVENTS = frozenset({"MemoryTrackerPeakUsage"})
 WALL_TIME_EVENT = "WallTimeMicroseconds"
 
-ALGORITHMS = ("radix_join", "parallel_hash")
+ALGORITHMS = ("partitioned_hash", "parallel_hash")
+# The pair whose median wall times decide the per-point winner: the challenger
+# is compared against the baseline.
+CHALLENGER = "partitioned_hash"
+BASELINE = "parallel_hash"
+
+# Events the per-algorithm execution-path assertions (`fallback_reason`) rely
+# on. A final ProfileEvents packet only contains events with nonzero values, so
+# a name absent from the BINARY would silently parse as 0 and could make a
+# negative ("must be zero") assertion vacuous. Before measuring anything, the
+# runner therefore asserts that every one of these names EXISTS in the binary
+# via `system.events` (fail-closed with exit code 2 otherwise).
+PATH_ASSERTION_EVENTS = (
+    "PartitionedHashJoinBuildMicroseconds",
+    "PartitionedHashJoinProbeMicroseconds",
+    "PartitionedHashJoinPartitions",
+    "PartitionedHashJoinLeafRows",
+    "ConcurrentHashJoinBuildMicroseconds",
+)
 
 BUILD_FIXED_COLUMNS = (
     ("occurrence", "UInt64"),
@@ -1249,24 +1263,48 @@ def summarize_measurements(runs: Sequence[dict[str, int]]) -> Measurements:
 
 
 def fallback_reason(algorithm: str, runs: Sequence[dict[str, int]]) -> str | None:
-    build_event = "RadixHashJoinBuildMicroseconds"
-    probe_event = "RadixHashJoinProbeMicroseconds"
-    leaf_builds_event = "RadixHashJoinLeafGroupBuilds"
+    """Per-run execution-path assertion from query-scoped ProfileEvents.
+
+    `partitioned_hash` is asserted POSITIVELY (all of its build/probe events
+    must be nonzero) and must not show the `parallel_hash` build event;
+    `parallel_hash` is asserted positively on its own build event and must not
+    show any `partitioned_hash` event. Every event named here is also asserted
+    to exist in the binary up front (see `PATH_ASSERTION_EVENTS`), so an absent
+    event cannot silently satisfy a zero check.
+    """
+    partitioned_events = (
+        "PartitionedHashJoinBuildMicroseconds",
+        "PartitionedHashJoinProbeMicroseconds",
+        "PartitionedHashJoinPartitions",
+        "PartitionedHashJoinLeafRows",
+    )
+    parallel_build_event = "ConcurrentHashJoinBuildMicroseconds"
     for index, values in enumerate(runs, 1):
-        build = values[build_event]
-        probe = values[probe_event]
-        leaf_builds = values[leaf_builds_event]
-        if algorithm == "radix_join":
-            if leaf_builds == 0:
+        partitioned = {name: values[name] for name in partitioned_events}
+        parallel_build = values[parallel_build_event]
+        if algorithm == "partitioned_hash":
+            zeroes = [name for name, value in partitioned.items() if value == 0]
+            if zeroes:
                 return (
-                    f"run {index}: radix leaf-group build count must be nonzero "
-                    f"(leaf_builds={leaf_builds})"
+                    f"run {index}: partitioned_hash path events must all be "
+                    f"nonzero (zero: {', '.join(zeroes)})"
+                )
+            if parallel_build != 0:
+                return (
+                    f"run {index}: parallel_hash build event must be zero "
+                    f"({parallel_build_event}={parallel_build})"
                 )
         elif algorithm == "parallel_hash":
-            if leaf_builds != 0 or build != 0 or probe != 0:
+            if parallel_build == 0:
                 return (
-                    f"run {index}: radix path events must all be zero "
-                    f"(leaf_builds={leaf_builds}, build={build}, probe={probe})"
+                    f"run {index}: parallel_hash build event must be nonzero "
+                    f"({parallel_build_event}={parallel_build})"
+                )
+            nonzeroes = [name for name, value in partitioned.items() if value != 0]
+            if nonzeroes:
+                return (
+                    f"run {index}: partitioned_hash path events must all be "
+                    f"zero (nonzero: {', '.join(nonzeroes)})"
                 )
         else:
             raise ValueError(f"unsupported join algorithm: {algorithm}")
@@ -1394,6 +1432,34 @@ def _validate_binary(binary: str) -> None:
         raise ValueError(f"binary not found: {binary}")
     if not os.access(binary, os.X_OK):
         raise ValueError(f"binary is not executable: {binary}")
+
+
+def profile_events_existence_query() -> str:
+    names = ", ".join(f"'{name}'" for name in PATH_ASSERTION_EVENTS)
+    return (
+        f"SELECT name FROM system.events WHERE name IN ({names}) ORDER BY name "
+        "SETTINGS system_events_show_zero_values = 1 FORMAT JSONEachRow"
+    )
+
+
+def _assert_profile_events_exist(binary: str, path: str) -> None:
+    """Fail closed when a path-assertion ProfileEvent is absent from the binary.
+
+    Final ProfileEvents packets omit zero-valued events, so the packet parser
+    cannot distinguish "event is zero" from "event does not exist in this
+    binary". `system.events` with `system_events_show_zero_values = 1` lists
+    every event the binary defines, which makes existence checkable up front.
+    """
+    found = {
+        str(row["name"])
+        for row in _query_json(binary, path, profile_events_existence_query())
+    }
+    missing = [name for name in PATH_ASSERTION_EVENTS if name not in found]
+    if missing:
+        raise ValueError(
+            "binary does not define the ProfileEvents required for execution-"
+            f"path assertions: {', '.join(missing)}"
+        )
 
 
 def _parse_load_metadata(args: argparse.Namespace) -> LoadedMetadata:
@@ -1572,7 +1638,7 @@ def _verify_point(
             "; ".join(f"{algorithm}: {error}" for algorithm, error in errors.items()),
             errors,
         )
-    if hashes["radix_join"] != hashes["parallel_hash"]:
+    if any(hashes[algorithm] != hashes[ALGORITHMS[0]] for algorithm in ALGORITHMS[1:]):
         return "FAIL", "FORMAT Hash mismatch", {}
     return "PASS", "identical sorted output", {}
 
@@ -1650,13 +1716,9 @@ def _print_point_results(
         "min_ms",
         "build_ms",
         "probe_ms",
-        "collect_ms",
-        "pack_ms",
-        "leaf_builds",
-        "leaf_ms",
-        "hash_match_ms",
-        "hash_gather_ms",
-        "dispatch_ms",
+        "partitions",
+        "leaf_rows",
+        "chj_build_ms",
         "selected_rows",
         "selected_bytes",
         "peak_mem_mb",
@@ -1684,15 +1746,11 @@ def _print_point_results(
                 verify_status,
                 _ms(result.measurements.median_us),
                 _ms(result.measurements.min_us),
-                _event_ms(events, "RadixHashJoinBuildMicroseconds"),
-                _event_ms(events, "RadixHashJoinProbeMicroseconds"),
-                _event_ms(events, "RadixHashJoinProbeCollectMatchesMicroseconds"),
-                _event_ms(events, "RadixHashJoinProbePackHashRouteMicroseconds"),
-                str(events["RadixHashJoinLeafGroupBuilds"]),
-                _event_ms(events, "RadixHashJoinLeafGroupBuildMicroseconds"),
-                _event_ms(events, "HashJoinProbeMatchMicroseconds"),
-                _event_ms(events, "HashJoinProbeGatherMicroseconds"),
-                _event_ms(events, "ConcurrentHashJoinProbeDispatchMicroseconds"),
+                _event_ms(events, "PartitionedHashJoinBuildMicroseconds"),
+                _event_ms(events, "PartitionedHashJoinProbeMicroseconds"),
+                str(events["PartitionedHashJoinPartitions"]),
+                str(events["PartitionedHashJoinLeafRows"]),
+                _event_ms(events, "ConcurrentHashJoinBuildMicroseconds"),
                 str(events["SelectedRows"]),
                 str(events["SelectedBytes"]),
                 _event_mb(events, "MemoryTrackerPeakUsage"),
@@ -1715,21 +1773,21 @@ def _print_point_results(
     ):
         print("Winner: excluded")
         return None, None
-    radix = next(result for result in results if result.algorithm == "radix_join")
-    parallel = next(result for result in results if result.algorithm == "parallel_hash")
-    assert radix.measurements is not None and parallel.measurements is not None
-    radix_time = float(radix.measurements.median_us)
-    parallel_time = float(parallel.measurements.median_us)
-    if radix_time == parallel_time:
+    challenger = next(result for result in results if result.algorithm == CHALLENGER)
+    baseline = next(result for result in results if result.algorithm == BASELINE)
+    assert challenger.measurements is not None and baseline.measurements is not None
+    challenger_time = float(challenger.measurements.median_us)
+    baseline_time = float(baseline.measurements.median_us)
+    if challenger_time == baseline_time:
         print("Winner: tie (1.000x)")
         return "tie", 1.0
-    if radix_time < parallel_time:
-        speedup = parallel_time / radix_time
-        print(f"Winner: radix_join ({speedup:.3f}x)")
-        return "radix_join", speedup
-    speedup = radix_time / parallel_time
-    print(f"Winner: parallel_hash ({speedup:.3f}x)")
-    return "parallel_hash", speedup
+    if challenger_time < baseline_time:
+        speedup = baseline_time / challenger_time
+        print(f"Winner: {CHALLENGER} ({speedup:.3f}x)")
+        return CHALLENGER, speedup
+    speedup = challenger_time / baseline_time
+    print(f"Winner: {BASELINE} ({speedup:.3f}x)")
+    return BASELINE, speedup
 
 
 def _available_cpu_count() -> int:
@@ -1751,6 +1809,7 @@ def run_command(args: argparse.Namespace) -> int:
     }
     try:
         _validate_binary(args.binary)
+        _assert_profile_events_exist(args.binary, args.path)
         multiplicities = parse_integer_list(args.multiplicities, "multiplicities")
         ratios = parse_decimal_list(args.ratios, "ratios")
         hit_rates = parse_decimal_list(args.hit_rates, "hit-rates", allow_zero=True)
@@ -1866,9 +1925,9 @@ def run_command(args: argparse.Namespace) -> int:
         winner, _ = _print_point_results(
             point, verification, results, verification_errors
         )
-        if winner == "radix_join":
+        if winner == CHALLENGER:
             counts["wins"] += 1
-        elif winner == "parallel_hash":
+        elif winner == BASELINE:
             counts["losses"] += 1
         elif winner == "tie":
             counts["ties"] += 1
@@ -1948,8 +2007,8 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         help="validate data, verify results, and benchmark both algorithms",
         description=(
-            "Benchmark `radix_join` and `parallel_hash`. For N_p probe rows and "
-            "hit rate h, n_hit is exact decimal round-half-up(N_p*h)."
+            "Benchmark `partitioned_hash` and `parallel_hash`. For N_p probe "
+            "rows and hit rate h, n_hit is exact decimal round-half-up(N_p*h)."
         ),
     )
     run.add_argument("--path", default=DEFAULT_PATH, help=f"data path (default: {DEFAULT_PATH})")

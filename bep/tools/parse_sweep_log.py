@@ -29,12 +29,12 @@ INVALID_LABEL_RE = re.compile(
 INVALID_RE = re.compile(r"^INVALID: (?P<detail>.*)$")
 VERIFICATION_RE = re.compile(r"^Verification: (?P<status>\S+) \((?P<detail>.*)\)$")
 WINNER_RE = re.compile(
-    r"^Winner: (?P<winner>excluded|tie|radix_join|parallel_hash)"
+    r"^Winner: (?P<winner>excluded|tie|partitioned_hash|parallel_hash)"
     r"(?: \((?P<speedup>[\d.]+)x\))?$"
 )
 THREADS_FROM_NAME_RE = re.compile(r"threads_(\d+)\.log$")
 
-ROW_HEADERS_NO_MEMORY = (
+ROW_HEADERS = (
     "algorithm",
     "status",
     "verify",
@@ -42,22 +42,15 @@ ROW_HEADERS_NO_MEMORY = (
     "min_ms",
     "build_ms",
     "probe_ms",
-    "collect_ms",
-    "pack_ms",
-    "leaf_builds",
-    "leaf_ms",
-    "hash_match_ms",
-    "hash_gather_ms",
-    "dispatch_ms",
+    "partitions",
+    "leaf_rows",
+    "chj_build_ms",
     "selected_rows",
     "selected_bytes",
+    "peak_mem_mb",
 )
-# Logs from before `MemoryTrackerPeakUsage` was added to the tool have 16
-# columns per row; newer logs append `peak_mem_mb` as a 17th. Accept both.
-ROW_HEADERS_WITH_MEMORY = ROW_HEADERS_NO_MEMORY + ("peak_mem_mb",)
 ROW_HEADERS_BY_LENGTH = {
-    len(ROW_HEADERS_NO_MEMORY): ROW_HEADERS_NO_MEMORY,
-    len(ROW_HEADERS_WITH_MEMORY): ROW_HEADERS_WITH_MEMORY,
+    len(ROW_HEADERS): ROW_HEADERS,
 }
 
 OUTPUT_COLUMNS = (
@@ -70,17 +63,15 @@ OUTPUT_COLUMNS = (
     "verification",
     "winner",
     "speedup",
-    "radix_status",
-    "radix_median_ms",
-    "radix_peak_mem_mb",
-    "radix_build_ms",
-    "radix_hash_match_ms",
-    "radix_hash_gather_ms",
+    "partitioned_status",
+    "partitioned_median_ms",
+    "partitioned_peak_mem_mb",
+    "partitioned_build_ms",
+    "partitioned_probe_ms",
     "parallel_status",
     "parallel_median_ms",
     "parallel_peak_mem_mb",
-    "parallel_hash_match_ms",
-    "parallel_hash_gather_ms",
+    "parallel_build_ms",
     "detail",
 )
 
@@ -96,17 +87,15 @@ class PointResult:
     verification: str
     winner: str
     speedup: str
-    radix_status: str
-    radix_median_ms: str
-    radix_peak_mem_mb: str
-    radix_build_ms: str
-    radix_hash_match_ms: str
-    radix_hash_gather_ms: str
+    partitioned_status: str
+    partitioned_median_ms: str
+    partitioned_peak_mem_mb: str
+    partitioned_build_ms: str
+    partitioned_probe_ms: str
     parallel_status: str
     parallel_median_ms: str
     parallel_peak_mem_mb: str
-    parallel_hash_match_ms: str
-    parallel_hash_gather_ms: str
+    parallel_build_ms: str
     detail: str
 
 
@@ -151,17 +140,15 @@ def parse_block(block: list[str], *, threads: int) -> PointResult | None:
     verification = ""
     winner = ""
     speedup = ""
-    radix_status = ""
-    radix_median = ""
-    radix_peak_mem = ""
-    radix_build = ""
-    radix_hash_match = ""
-    radix_hash_gather = ""
+    partitioned_status = ""
+    partitioned_median = ""
+    partitioned_peak_mem = ""
+    partitioned_build = ""
+    partitioned_probe = ""
     parallel_status = ""
     parallel_median = ""
     parallel_peak_mem = ""
-    parallel_hash_match = ""
-    parallel_hash_gather = ""
+    parallel_build = ""
 
     for line in block[1:]:
         invalid_match = INVALID_RE.match(line)
@@ -185,23 +172,21 @@ def parse_block(block: list[str], *, threads: int) -> PointResult | None:
         if row_headers is None:
             continue
         row = dict(zip(row_headers, fields))
-        if row["algorithm"] == "radix_join":
-            radix_status = row["status"]
-            radix_median = row["median_ms"]
-            radix_peak_mem = row.get("peak_mem_mb", "")
-            radix_build = row.get("build_ms", "")
-            radix_hash_match = row.get("hash_match_ms", "")
-            radix_hash_gather = row.get("hash_gather_ms", "")
+        if row["algorithm"] == "partitioned_hash":
+            partitioned_status = row["status"]
+            partitioned_median = row["median_ms"]
+            partitioned_peak_mem = row.get("peak_mem_mb", "")
+            partitioned_build = row.get("build_ms", "")
+            partitioned_probe = row.get("probe_ms", "")
         elif row["algorithm"] == "parallel_hash":
             parallel_status = row["status"]
             parallel_median = row["median_ms"]
             parallel_peak_mem = row.get("peak_mem_mb", "")
-            parallel_hash_match = row.get("hash_match_ms", "")
-            parallel_hash_gather = row.get("hash_gather_ms", "")
+            parallel_build = row.get("chj_build_ms", "")
 
     if invalid_detail is not None:
         point_status = "INVALID"
-    elif not radix_status and not parallel_status:
+    elif not partitioned_status and not parallel_status:
         # An incomplete trailing block (log still being written mid-run).
         return None
     else:
@@ -217,17 +202,15 @@ def parse_block(block: list[str], *, threads: int) -> PointResult | None:
         verification=verification,
         winner=winner,
         speedup=speedup,
-        radix_status=radix_status,
-        radix_median_ms=radix_median,
-        radix_peak_mem_mb=radix_peak_mem,
-        radix_build_ms=radix_build,
-        radix_hash_match_ms=radix_hash_match,
-        radix_hash_gather_ms=radix_hash_gather,
+        partitioned_status=partitioned_status,
+        partitioned_median_ms=partitioned_median,
+        partitioned_peak_mem_mb=partitioned_peak_mem,
+        partitioned_build_ms=partitioned_build,
+        partitioned_probe_ms=partitioned_probe,
         parallel_status=parallel_status,
         parallel_median_ms=parallel_median,
         parallel_peak_mem_mb=parallel_peak_mem,
-        parallel_hash_match_ms=parallel_hash_match,
-        parallel_hash_gather_ms=parallel_hash_gather,
+        parallel_build_ms=parallel_build,
         detail=invalid_detail or "",
     )
 
@@ -260,17 +243,15 @@ def write_csv(results: list[PointResult], output_path: str) -> None:
                     result.verification,
                     result.winner,
                     result.speedup,
-                    result.radix_status,
-                    result.radix_median_ms,
-                    result.radix_peak_mem_mb,
-                    result.radix_build_ms,
-                    result.radix_hash_match_ms,
-                    result.radix_hash_gather_ms,
+                    result.partitioned_status,
+                    result.partitioned_median_ms,
+                    result.partitioned_peak_mem_mb,
+                    result.partitioned_build_ms,
+                    result.partitioned_probe_ms,
                     result.parallel_status,
                     result.parallel_median_ms,
                     result.parallel_peak_mem_mb,
-                    result.parallel_hash_match_ms,
-                    result.parallel_hash_gather_ms,
+                    result.parallel_build_ms,
                     result.detail,
                 )
             )
