@@ -120,7 +120,8 @@ BuiltJoin buildJoin(
     size_t num_threads,
     double reserve_safety_for_tests = 0,
     size_t build_block_rows = block_rows,
-    JoinKind kind = JoinKind::Inner)
+    JoinKind kind = JoinKind::Inner,
+    bool disable_amac = false)
 {
     const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
     const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
@@ -130,6 +131,8 @@ BuiltJoin buildJoin(
     result.join = std::make_shared<PartitionedHashJoin>(result.table_join, std::make_shared<const Block>(right_header), num_threads);
     if (reserve_safety_for_tests > 0)
         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
+    if (disable_amac)
+        result.join->setAmacEnabledForTests(false);
 
     std::vector<UInt64> keys;
     std::vector<UInt64> ids;
@@ -368,6 +371,57 @@ TEST(PartitionedHashJoin, RightJoinFlagBaseAndNonJoined)
     std::sort(actual_non_joined.begin(), actual_non_joined.end());
     ASSERT_EQ(actual_non_joined.size(), expected_non_joined.size());
     ASSERT_TRUE(actual_non_joined == expected_non_joined);
+}
+
+TEST(PartitionedHashJoin, AmacRingGrowthResume)
+{
+    /// Cursor resume across map growth: the reserve safety factor is crippled to ~1/3 of the
+    /// real distinct count while the slab stays far above the AMAC engagement threshold, so
+    /// every leaf's insert ring must hit the grower boundary mid-flight (~2 times per leaf),
+    /// drain the ring, resize the map onto the heap, and re-seed the in-flight rows. The exact
+    /// joined-row multiset check below is count-exact: a build row lost (two in-flight rows
+    /// claiming one cell) or duplicated by the re-seed cannot pass.
+    constexpr size_t distinct_keys = 3000000;
+    auto built = buildJoin(distinct_keys, /*duplicates=*/1, /*num_threads=*/4, /*reserve_safety_for_tests=*/0.35);
+
+    const auto stats = built.join->getBuildStats();
+    EXPECT_GT(stats.partitions, 1u);
+    EXPECT_TRUE(stats.amac_build_engaged) << "the slab must be far above the AMAC engagement threshold";
+    EXPECT_GT(stats.amac_ring_growths, 0u) << "the crippled reserve must force growth inside the insert rings";
+    EXPECT_GT(stats.heap_fallbacks, 0u) << "growing out of the slab regions must be counted, never silent";
+    EXPECT_EQ(stats.slab_allocations, 1u);
+    EXPECT_EQ(stats.leaf_rows, distinct_keys);
+
+    probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/10000);
+}
+
+TEST(PartitionedHashJoin, AmacDuplicateHeavyBuildParityVsSequential)
+{
+    /// Duplicate-heavy build (16 rows per key, several leaves) with the AMAC rings engaged,
+    /// cross-checked against the same build and probe forced onto the sequential loops. Each
+    /// key's duplicates are adjacent in the scattered leaf chunks, so same-key rows are
+    /// permanently in flight together - the fused read -> act step invariant is what keeps the
+    /// counts exact (a batched read-then-act would let two of them claim one cell).
+    constexpr size_t distinct_keys = 200000;
+    constexpr size_t duplicates = 16;
+
+    auto amac_built = buildJoin(distinct_keys, duplicates, /*num_threads=*/4);
+    const auto amac_stats = amac_built.join->getBuildStats();
+    EXPECT_GT(amac_stats.partitions, 1u);
+    EXPECT_TRUE(amac_stats.amac_build_engaged);
+    EXPECT_EQ(amac_stats.heap_fallbacks, 0u);
+    EXPECT_EQ(amac_stats.amac_ring_growths, 0u);
+    EXPECT_EQ(amac_stats.leaf_rows, distinct_keys * duplicates);
+
+    auto sequential_built = buildJoin(
+        distinct_keys, duplicates, /*num_threads=*/4, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner, /*disable_amac=*/true);
+    const auto sequential_stats = sequential_built.join->getBuildStats();
+    EXPECT_FALSE(sequential_stats.amac_build_engaged);
+    EXPECT_EQ(sequential_stats.leaf_rows, distinct_keys * duplicates);
+
+    /// Both builds must produce the exact expected multiset - equal to each other transitively.
+    probeAndCheck(amac_built, distinct_keys, duplicates, /*misses=*/1000);
+    probeAndCheck(sequential_built, distinct_keys, duplicates, /*misses=*/1000);
 }
 
 TEST(PartitionedHashJoin, FixedRegionAllocatorCarveAndFallback)
