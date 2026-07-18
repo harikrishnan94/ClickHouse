@@ -61,21 +61,25 @@ struct ResumableHashMap : public Base
     Cell * cursorCell(size_t place) { return &this->buf[place]; }
     const Cell * cursorCell(size_t place) const { return &this->buf[place]; }
 
+    /// The cell buffer base, for policies that cache it in a field instead of re-resolving it
+    /// through the map per visit. Invalidated by `cursorGrow`.
+    Cell * cursorCells() { return this->buf; }
+
     bool cursorCellIsEmpty(const Cell * cell) const { return cell->isZero(*this); }
 
     bool cursorKeyEquals(const Cell * cell, const Key & key, size_t hash_value) const { return cell->keyEquals(key, hash_value, *this); }
 
     /** Claim an empty cell for a new key: exactly what `emplaceNonZeroImpl` does up to the
-      * mapped-value write, which the caller performs in the same fused step. Returns whether the
-      * insert overflowed the grower - the caller must then drain its ring and call `cursorGrow`
+      * mapped-value write, which the caller performs in the same fused step. The caller passes
+      * the cell pointer it already computed for the empty check. Returns whether the insert
+      * overflowed the grower - the caller must then drain its ring and call `cursorGrow`
       * (the standard path resizes at the same point).
       */
     template <typename KeyHolder>
-    ALWAYS_INLINE bool cursorClaim(size_t place, KeyHolder && key_holder, size_t hash_value)
+    ALWAYS_INLINE bool cursorClaim(Cell * cell, KeyHolder && key_holder, size_t hash_value)
     {
         keyHolderPersistKey(key_holder);
         const auto & key = keyHolderGetKey(key_holder);
-        Cell * cell = &this->buf[place];
         new (cell) Cell(key, *this);
         cell->setHash(hash_value);
         ++this->m_size;
@@ -167,10 +171,12 @@ constexpr bool amac_join_supported
 /** Growth cancellation: collect the other in-flight rows, deactivate them, let the policy grow
   * the map (the just-claimed row of slot `skip` is fully inserted and gets rehashed by the
   * resize), then re-seed the collected rows in slot order - preserving their relative stepping
-  * order, so same-key rows still act in row order.
+  * order, so same-key rows still act in row order. Force-inlined because it is called from
+  * inside the steady loop: as an out-of-line call it would capture the policy and ring
+  * addresses and force conservative per-visit reloads of the policy invariants there.
   */
 template <size_t ring_size, typename Policy>
-void amacDrainAndGrow(Policy & policy, std::array<typename Policy::Slot, ring_size> & ring, size_t skip)
+ALWAYS_INLINE void amacDrainAndGrow(Policy & policy, std::array<typename Policy::Slot, ring_size> & ring, size_t skip)
 {
     std::array<UInt32, ring_size> pending_rows{};
     size_t pending_count = 0;
@@ -209,11 +215,13 @@ void amacRun(Policy & policy_arg, size_t rows)
     static_assert(std::has_single_bit(ring_size));
     chassert(rows < AmacRingSlot<false>::inactive_row);
 
-    /// A policy whose fields are all per-run invariants (nothing written back for the caller to
-    /// read) opts in to running on a frame-local copy: the copy's address never escapes (every
-    /// policy call inlines), so its fields become SSA values that stores through the policy's
-    /// result arrays cannot alias - behind the caller's reference they would be conservatively
-    /// reloaded per visit. Stateful policies (the build insert) keep the reference.
+    /// A policy whose fields are per-run invariants opts in to running on a frame-local copy:
+    /// the copy's address never escapes (every policy call inlines), so its fields become SSA
+    /// values that stores through the policy's result arrays cannot alias - behind the caller's
+    /// reference they would be conservatively reloaded per visit. A policy with per-run mutable
+    /// aggregates may still opt in by providing `writeBackTo`, which the driver invokes on the
+    /// original after the drain; on an exception mid-run the write-back is skipped, matching the
+    /// by-reference semantics where the aggregates are only consumed after a successful run.
     static constexpr bool run_on_copy = requires { requires Policy::copy_into_frame; };
     std::conditional_t<run_on_copy, Policy, Policy &> policy = policy_arg;
 
@@ -285,6 +293,12 @@ void amacRun(Policy & policy_arg, size_t rows)
             ring[s].deactivate();
             --active;
         }
+    }
+
+    if constexpr (run_on_copy)
+    {
+        if constexpr (requires { policy.writeBackTo(policy_arg); })
+            policy.writeBackTo(policy_arg);
     }
 }
 

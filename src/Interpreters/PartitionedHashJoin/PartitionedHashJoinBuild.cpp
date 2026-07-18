@@ -92,10 +92,20 @@ struct AmacBuildInsertPolicy
     using Mapped = Map::mapped_type;
     static constexpr bool store_hash = cell_stores_hash<Cell>;
     static constexpr bool may_grow = true;
+    /// The frame-copy opt-in (aggregates return through `writeBackTo`) requires copying the key
+    /// getter; the `KeysFixed` getter is not copyable (prepared-keys buffer, shuffle masks) and
+    /// keeps the by-reference run.
+    static constexpr bool copy_into_frame = std::is_copy_constructible_v<KeyGetter>;
     using Slot = AmacRingSlot<store_hash>;
 
     Map & map;
-    KeyGetter & key_getter;
+    /// Cached cell buffer base, so the per-visit cell address is one add off a register instead
+    /// of a load chain through the map. Refreshed by `grow` (the resize reallocates the buffer);
+    /// the zero-sentinel `emplace` in `start` never resizes, so it cannot invalidate the cache.
+    Cell * cells;
+    /// By value where the getter is a cheap pointer bundle: the frame-owned copy keeps the
+    /// key-column bases register-resident in the steady loop.
+    std::conditional_t<copy_into_frame, KeyGetter, KeyGetter &> key_getter;
     const UInt64 * locators = nullptr;
     const UInt32 * narrow_locators = nullptr;
     const UInt8 * skip_bytes = nullptr;
@@ -133,7 +143,7 @@ struct AmacBuildInsertPolicy
         slot.row = static_cast<UInt32>(row);
         if constexpr (store_hash)
             slot.hash = hash;
-        __builtin_prefetch(map.cursorCell(slot.pos), 1, 3);
+        __builtin_prefetch(cells + slot.pos, 1, 3);
         return true;
     }
 
@@ -146,12 +156,12 @@ struct AmacBuildInsertPolicy
             hash = slot.hash;
         else
             hash = map.hash(key);
-        Cell * cell = map.cursorCell(slot.pos);
+        Cell * cell = cells + slot.pos;
         if (map.cursorCellIsEmpty(cell))
         {
             /// Claim the empty cell and write the mapped value in the SAME visit (fused): a
             /// later same-key or colliding row can never also observe this cell empty.
-            const bool needs_grow = map.cursorClaim(slot.pos, key_holder, hash);
+            const bool needs_grow = map.cursorClaim(cell, key_holder, hash);
             applyBuildRowToMapped(cell->getMapped(), /*inserted=*/true, refWordAt(slot.row), pool, any_take_last_row, all_unique);
             return needs_grow ? AmacStepResult::DoneNeedsGrow : AmacStepResult::Done;
         }
@@ -161,7 +171,7 @@ struct AmacBuildInsertPolicy
             return AmacStepResult::Done;
         }
         slot.pos = map.cursorNext(slot.pos);
-        __builtin_prefetch(map.cursorCell(slot.pos), 1, 3);
+        __builtin_prefetch(cells + slot.pos, 1, 3);
         return AmacStepResult::Advance;
     }
 
@@ -169,6 +179,15 @@ struct AmacBuildInsertPolicy
     {
         ++growths;
         map.cursorGrow();
+        cells = map.cursorCells();
+    }
+
+    /// The driver runs on a frame-local copy (`copy_into_frame`); these are the only fields the
+    /// caller reads after the run.
+    void writeBackTo(AmacBuildInsertPolicy & original) const
+    {
+        original.all_unique = all_unique;
+        original.growths = growths;
     }
 };
 
@@ -239,6 +258,7 @@ void insertSectionImpl(
         {
             AmacBuildInsertPolicy<KeyGetter, Map> policy{
                 .map = map,
+                .cells = map.cursorCells(),
                 .key_getter = key_getter,
                 .locators = locators,
                 .narrow_locators = narrow_locators,
