@@ -233,19 +233,27 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
             skip_data = join_keys.buildRowSkipData(skip_buffer, selector.getIndexes());
     }
 
-    /// AMAC engagement mirrors the software-prefetch heuristics (the user toggle + the aggregate
-    /// table size outgrowing L2 - below it the tables are cache resident and the ring is pure
-    /// overhead), with a row floor so tiny blocks keep the plain loop (G6).
+    /// AMAC probe engagement, measured on this machine (see the P5 phase report): for the
+    /// cheap-key getters the adaptive look-ahead prefetch of the plain loop already extracts the
+    /// same memory-level parallelism, and the ring's extra pass costs ~9-10 ns/row at every
+    /// thread count - so those types keep the plain loop. The ring engages where the prefetcher
+    /// CANNOT run (`join_prefetch_supported` is false - the string-key maps, whose per-visit key
+    /// fetch is too expensive for the look-ahead heuristic): there it is the only mechanism that
+    /// overlaps the cell misses, measured ~5% (T16) to ~12% (T1) faster end-to-end. The runtime
+    /// conditions mirror the software-prefetch heuristics: the user toggle, the aggregate table
+    /// size outgrowing L2 (below it the tables are cache resident and the ring is pure
+    /// overhead), and a row floor so tiny blocks keep the plain loop (G6).
     constexpr bool amac_supported = amac_join_supported<KeyGetter, std::remove_const_t<Map>>;
+    constexpr bool prefetch_supported = join_prefetch_supported<KeyGetter, Map>;
     bool use_amac = false;
     if constexpr (amac_supported)
-        use_amac = amac_enabled && added_columns.enable_prefetch && ht_slab_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
-            && rows < AmacRingSlot<false>::inactive_row;
+        use_amac = (!prefetch_supported || amac_probe_forced_for_tests) && amac_enabled && added_columns.enable_prefetch
+            && ht_slab_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows && rows < AmacRingSlot<false>::inactive_row;
 
     /// Routed look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC
     /// pass; same engagement threshold (the leaf tables are cache-sized by design, so both fire
     /// only when the aggregate table size outgrows it).
-    constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
+    constexpr bool can_prefetch = prefetch_supported;
     bool use_prefetch = false;
     if constexpr (can_prefetch)
         use_prefetch = !use_amac && added_columns.enable_prefetch && ht_slab_bytes > getMinBytesForPrefetchInJoin();

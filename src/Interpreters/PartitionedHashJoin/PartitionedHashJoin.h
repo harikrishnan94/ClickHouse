@@ -45,10 +45,11 @@ class TableJoin;
   *   released as they are consumed, before the probe starts.
   * - Probe: probe blocks are never scattered or buffered; each row recomputes its route word and
   *   looks its key up in the routed leaf table through the standard `HashJoin` emit machinery.
-  *   Above the AMAC engagement threshold the lookups run as a two-phase pass per block: an AMAC
-  *   find ring (`AmacRing.h`) fills a per-row result array out of order, then the sequential
-  *   in-order loop consumes the precomputed results through the standard `processMatch` - so
-  *   replication offsets, used-flags semantics and every join kind's logic stay untouched.
+  *   For map types the look-ahead prefetcher cannot serve (string keys), lookups above the
+  *   engagement threshold run as a two-phase pass per block: an AMAC find ring (`AmacRing.h`)
+  *   fills a per-row result array out of order, then the sequential in-order loop consumes the
+  *   precomputed results through the standard `processMatch` - so replication offsets,
+  *   used-flags semantics and every join kind's logic stay untouched.
   *   Right-side used flags (RIGHT/FULL/SEMI/ANTI/ANY kinds) live in one per-offset flag space
   *   spanning all leaves: leaf L's cell offsets are shifted by `flag_base[L]` (the prefix sums of
   *   the per-leaf bucket counts), so `JoinUsedFlags` and the non-joined machinery keep their
@@ -146,6 +147,11 @@ public:
     /// Pins the build and probe onto the plain sequential loops regardless of the engagement
     /// threshold - lets tests cross-check the AMAC results against the sequential ones.
     void setAmacEnabledForTests(bool value) { amac_enabled = value; }
+
+    /// Engages the two-phase AMAC probe also for the prefetch-capable key getters (where the
+    /// measured default keeps the plain prefetched loop) - lets tests cover the generic find
+    /// pass on the numeric map types.
+    void setForceAmacProbeForTests(bool value) { amac_probe_forced_for_tests = value; }
 
 private:
     /// The non-joined-rows filler for RIGHT/FULL output over the partitioned leaf maps.
@@ -322,9 +328,10 @@ private:
 
     bool build_phase_finished = false;
 
-    /// AMAC state: the test override, the engagement decision of this build's leaf inserts
+    /// AMAC state: the test overrides, the engagement decision of this build's leaf inserts
     /// (made once, before the leaf-build wave), and the ring-growth counter.
     bool amac_enabled = true;
+    bool amac_probe_forced_for_tests = false;
     bool amac_build_engaged = false;
     std::atomic<UInt64> amac_ring_growths{0};
 

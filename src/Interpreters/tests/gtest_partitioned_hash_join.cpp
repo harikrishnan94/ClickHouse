@@ -133,6 +133,10 @@ BuiltJoin buildJoin(
         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
     if (disable_amac)
         result.join->setAmacEnabledForTests(false);
+    else
+        /// The measured default engages the two-phase AMAC probe only for string-key maps;
+        /// force it here so these UInt64 joins cover the generic find pass too.
+        result.join->setForceAmacProbeForTests(true);
 
     std::vector<UInt64> keys;
     std::vector<UInt64> ids;
