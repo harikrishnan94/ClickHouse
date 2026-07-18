@@ -253,13 +253,16 @@ private:
 
     /// Per-probe-stream scratch, pooled on the join and reused across probe blocks: the per-row
     /// route words and leaf ids, and the AMAC find pass's per-row results - the matched cell's
-    /// mapped value (null = no match, type-erased across the map types) and its used-flags
-    /// offset, already shifted into the shared flag space.
+    /// mapped value copied BY VALUE into `found_word` (0 = no match; `RowRef`/`RowRefList` are
+    /// 8-byte words that are never 0 for a real match), so phase B never dereferences the cell a
+    /// second time after it left the cache. Mapped types that do not fit a word (ASOF) store the
+    /// mapped pointer's bits instead. `found_offset` is the used-flags offset shifted into the
+    /// shared flag space, filled only for the flagged shapes.
     struct ProbeScratch
     {
         PaddedPODArray<UInt32> route_words;
         PaddedPODArray<UInt16> leaf_ids;
-        PaddedPODArray<const void *> found_mapped;
+        PaddedPODArray<UInt64> found_word;
         PaddedPODArray<UInt64> found_offset;
     };
 

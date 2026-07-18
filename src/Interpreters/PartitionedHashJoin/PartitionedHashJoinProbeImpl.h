@@ -9,6 +9,7 @@
 #include <Interpreters/PartitionedHashJoin/AmacRing.h>
 #include <Interpreters/PartitionedHashJoin/JoinRouteHashing.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
+#include <Interpreters/RowRefs.h>
 #include <Interpreters/TableJoin.h>
 #include <base/scope_guard.h>
 #include <Common/HashTable/HashTable.h>
@@ -23,10 +24,44 @@ extern const int LOGICAL_ERROR;
 extern const int UNSUPPORTED_JOIN_KEYS;
 }
 
+/// Mapped values the AMAC find pass records BY VALUE: both are 8-byte words (`RowRef` encodes to
+/// its ref word, `RowRefList` IS a tagged word) that are never 0 for a built cell - a `RowRef` is
+/// always constructed with INLINE_FLAG in bit 63, and a `RowRefList` word is an inline ref (bit
+/// 63 set) or a non-null node pointer - so 0 can encode a miss. Everything phase B does with a
+/// match (`appendFromBlock`, `rows`, `refsOf`, `firstRefWord`) consumes only the word, and the
+/// probe maps are immutable, so the copy is semantically the cell itself.
+template <typename Mapped>
+inline constexpr bool amac_mapped_fits_word = std::is_same_v<Mapped, RowRef> || std::is_same_v<Mapped, RowRefList>;
+
+template <typename Mapped>
+requires amac_mapped_fits_word<Mapped>
+ALWAYS_INLINE UInt64 mappedWordOf(const Mapped & mapped)
+{
+    if constexpr (std::is_same_v<Mapped, RowRefList>)
+        return mapped.word;
+    else
+        return mapped.encode();
+}
+
+template <typename Mapped>
+requires amac_mapped_fits_word<Mapped>
+ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
+{
+    if constexpr (std::is_same_v<Mapped, RowRefList>)
+        return RowRefList::fromWord(word);
+    else
+        return RowRef::fromWord(word);
+}
+
 /** The AMAC find policy of the two-phase probe (phase A): out-of-order lookups that only fill
-  * the per-row result arrays - the matched cell's mapped value (null = no match) and its
-  * used-flags offset, shifted into the shared flag space. Nothing is emitted here; phase B (the
-  * sequential in-order loop) consumes the results through the standard `processMatch`.
+  * the per-row result arrays - the matched cell's mapped value copied by value into `found_word`
+  * (0 = no match) and, for the flagged shapes only, its used-flags offset shifted into the
+  * shared flag space. Copying the word in the same visit that reads the cell means phase B never
+  * touches the cell again - by the time the sequential loop reaches the row, a block later, the
+  * cell line has usually left the cache and re-reading it through a recorded pointer was a
+  * second random miss per row. Mapped types that do not fit a word (ASOF) keep the pointer
+  * scheme, storing its bits in the same array. Nothing is emitted here; phase B (the sequential
+  * in-order loop) consumes the results through the standard `processMatch`.
   * Unlike the build ring, one ring serves MANY maps - each row's leaf - so the slot carries the
   * leaf id and the policy re-resolves the (cache-hot) map header per visit. Cell prefetches use
   * read intent and low locality: a probed cell is not revisited.
@@ -38,6 +73,7 @@ struct RoutedAmacFindPolicy
     using Cell = MapNonConst::cell_type;
     static constexpr bool store_hash = cell_stores_hash<Cell>;
     static constexpr bool may_grow = false;
+    static constexpr bool mapped_by_value = amac_mapped_fits_word<typename MapNonConst::mapped_type>;
 
     struct Slot : public AmacRingSlot<store_hash>
     {
@@ -51,23 +87,24 @@ struct RoutedAmacFindPolicy
     const UInt8 * skip_data = nullptr; /// null on the fast path
     const UInt64 * flag_base_data = nullptr;
     Arena & pool;
-    const void ** found_mapped = nullptr;
-    UInt64 * found_offset = nullptr;
+    UInt64 * found_word = nullptr;
+    UInt64 * found_offset = nullptr; /// null unless `need_flags`
 
     ALWAYS_INLINE const MapNonConst & mapAt(size_t leaf) const { return *static_cast<Map *>(leaf_maps_data[leaf]); }
 
-    ALWAYS_INLINE void record(size_t row, size_t leaf, const Cell * cell, const MapNonConst & map)
+    ALWAYS_INLINE void record(size_t row, size_t leaf [[maybe_unused]], const Cell * cell, const MapNonConst & map [[maybe_unused]])
     {
         if (!cell)
         {
-            found_mapped[row] = nullptr;
+            found_word[row] = 0;
             return;
         }
-        found_mapped[row] = &cell->getMapped();
-        size_t offset = map.offsetInternal(cell);
+        if constexpr (mapped_by_value)
+            found_word[row] = mappedWordOf(cell->getMapped());
+        else
+            found_word[row] = reinterpret_cast<UInt64>(&cell->getMapped());
         if constexpr (need_flags)
-            offset += flag_base_data[leaf];
-        found_offset[row] = offset;
+            found_offset[row] = map.offsetInternal(cell) + flag_base_data[leaf];
     }
 
     ALWAYS_INLINE bool start(Slot & slot, size_t i)
@@ -75,7 +112,7 @@ struct RoutedAmacFindPolicy
         const size_t ind = selector[i];
         if (skip_data && skip_data[ind])
         {
-            found_mapped[i] = nullptr;
+            found_word[i] = 0;
             return false;
         }
         auto && key_holder = key_getter.getKeyHolder(ind, pool);
@@ -104,7 +141,7 @@ struct RoutedAmacFindPolicy
         const Cell * cell = map.cursorCell(slot.pos);
         if (map.cursorCellIsEmpty(cell))
         {
-            found_mapped[slot.row] = nullptr;
+            found_word[slot.row] = 0;
             return AmacStepResult::Done;
         }
         const size_t ind = selector[slot.row];
@@ -320,12 +357,32 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
 
             if constexpr (precomputed)
             {
-                if (const void * mapped_ptr = results->found_mapped[i])
+                if (const UInt64 word = results->found_word[i])
                 {
                     right_row_found = true;
-                    typename KeyGetter::FindResult find_result(static_cast<Mapped *>(mapped_ptr), true, results->found_offset[i]);
-                    processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsShape, Map, KeyGetter>(
-                        find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows);
+                    size_t offset = 0;
+                    if constexpr (join_features.need_flags)
+                        offset = results->found_offset[i];
+                    /// Phase A decided by-value recording from the map's mapped type; this side
+                    /// decides from the FindResult's - they must be the same type, or a word
+                    /// would be reinterpreted as a pointer.
+                    static_assert(std::is_same_v<std::remove_const_t<Mapped>, typename std::remove_const_t<Map>::mapped_type>);
+                    if constexpr (amac_mapped_fits_word<std::remove_const_t<Mapped>>)
+                    {
+                        /// The mapped value phase A copied out of the cell, rebuilt on the stack:
+                        /// the cell itself is never dereferenced again.
+                        auto mapped_value = mappedFromWord<std::remove_const_t<Mapped>>(word);
+                        typename KeyGetter::FindResult find_result(&mapped_value, true, offset);
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsShape, Map, KeyGetter>(
+                            find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows);
+                    }
+                    else
+                    {
+                        typename KeyGetter::FindResult find_result(
+                            reinterpret_cast<Mapped *>(word), true, offset); /// NOLINT(performance-no-int-to-ptr)
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsShape, Map, KeyGetter>(
+                            find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows);
+                    }
                 }
             }
             else
@@ -509,10 +566,16 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
         {
             /// Phase A: the AMAC find pass. Every row gets a result: `start` records skipped and
             /// zero-key rows synchronously, `step` records hits and misses - so the arrays need
-            /// no pre-fill and phase B needs no skip logic.
+            /// no pre-fill and phase B needs no skip logic. The offsets are only recorded (and
+            /// only sized) for the flagged shapes - they have no other consumer.
             auto & results = ensure_scratch();
-            results.found_mapped.resize(rows);
-            results.found_offset.resize(rows);
+            results.found_word.resize(rows);
+            UInt64 * found_offset_data = nullptr;
+            if constexpr (join_features.need_flags)
+            {
+                results.found_offset.resize(rows);
+                found_offset_data = results.found_offset.data();
+            }
             RoutedAmacFindPolicy<KeyGetter, Map, join_features.need_flags> policy{
                 .key_getter = key_getter,
                 .leaf_maps_data = leaf_maps_data,
@@ -521,8 +584,8 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
                 .skip_data = skip_data,
                 .flag_base_data = flag_base_data,
                 .pool = pool,
-                .found_mapped = results.found_mapped.data(),
-                .found_offset = results.found_offset.data()};
+                .found_word = results.found_word.data(),
+                .found_offset = found_offset_data};
             amacRun(policy, rows);
 
             if (added_columns.need_filter)
