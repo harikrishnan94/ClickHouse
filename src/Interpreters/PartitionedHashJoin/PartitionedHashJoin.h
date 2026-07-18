@@ -45,6 +45,10 @@ class TableJoin;
   *   released as they are consumed, before the probe starts.
   * - Probe: probe blocks are never scattered or buffered; each row recomputes its route word and
   *   looks its key up in the routed leaf table through the standard `HashJoin` emit machinery.
+  *   Above the AMAC engagement threshold the lookups run as a two-phase pass per block: an AMAC
+  *   find ring (`AmacRing.h`) fills a per-row result array out of order, then the sequential
+  *   in-order loop consumes the precomputed results through the standard `processMatch` - so
+  *   replication offsets, used-flags semantics and every join kind's logic stay untouched.
   *   Right-side used flags (RIGHT/FULL/SEMI/ANTI/ANY kinds) live in one per-offset flag space
   *   spanning all leaves: leaf L's cell offsets are shifted by `flag_base[L]` (the prefix sums of
   *   the per-leaf bucket counts), so `JoinUsedFlags` and the non-joined machinery keep their
@@ -120,6 +124,11 @@ public:
         size_t slab_bytes = 0;
         UInt64 region_carves = 0;
         UInt64 heap_fallbacks = 0;
+        /// Times a leaf map grew during an AMAC insert ring (the ring was drained, the map
+        /// resized, the in-flight rows re-seeded) - rare, correct, never silent.
+        UInt64 amac_ring_growths = 0;
+        /// Whether the leaf inserts of this build ran above the AMAC engagement threshold.
+        bool amac_build_engaged = false;
         UInt64 leaf_rows = 0;
         /// Every leaf map's actual buffer bytes equaled the plan's prediction.
         bool predictions_exact = true;
@@ -133,6 +142,10 @@ public:
     /// Shrinks the reserve safety factor so that leaf reserves underestimate and the maps must
     /// grow out of their slab regions - exercises the heap-fallback path in tests.
     void setReserveSafetyFactorForTests(double factor) { reserve_safety = factor; }
+
+    /// Pins the build and probe onto the plain sequential loops regardless of the engagement
+    /// threshold - lets tests cross-check the AMAC results against the sequential ones.
+    void setAmacEnabledForTests(bool value) { amac_enabled = value; }
 
 private:
     /// The non-joined-rows filler for RIGHT/FULL output over the partitioned leaf maps.
@@ -193,7 +206,8 @@ private:
     void leafBuildWorker(PostBuildContext & ctx, size_t worker);
     void finishBuildPhase(bool all_values_unique);
 
-    /// Sequential locator-aware insert of one compact section into one leaf (PartitionedHashJoinBuild.cpp).
+    /// Locator-aware insert of one compact section into one leaf (PartitionedHashJoinBuild.cpp):
+    /// an AMAC insert ring above the engagement threshold, the sequential loop below it.
     /// The stored row ref of row i is `locators[i]` (encoded `RowRef` word), the decoded
     /// `narrow_locators[i]` (packed 4-byte form), or `RowRef(block_no, i)` when neither is set -
     /// the single-leaf path, where `skip_bytes` (when set) skips null-key and mask-filtered rows.
@@ -212,6 +226,14 @@ private:
     /// reinit over the whole flag space; runs after the leaf builds, for flagged shapes only.
     void computeFlagBaseAndReinitUsedFlags();
 
+    /// Fills `leaf_map_ptrs` once after the leaf builds, so the probe does not rebuild a
+    /// per-block pointer table (8 bytes x partitions per `joinBlock` call).
+    void collectLeafMapPointers();
+
+    /// The AMAC engagement decision of this build, made once right after the hash-table slab is
+    /// sized (before the leaf inserts); mirrors the software-prefetch enablement heuristics.
+    void decideAmacEngagement();
+
     /// The routed probe (PartitionedHashJoinProbe*.cpp). `MapsShape` is the standard maps shape
     /// (`HashJoin::MapsOne`/`MapsAll`/`MapsAsof`) the (kind, strictness) pair dispatches to; the
     /// actual leaf maps are the partitioned counterpart holding identical cells.
@@ -221,8 +243,22 @@ private:
     JoinResultPtr probeImpl(Block block);
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape, typename KeyGetter, typename Map, typename AddedColumnsType>
-    size_t routedJoinRightColumns(
-        const std::vector<const Map *> & leaf_maps_vector, AddedColumnsType & added_columns, const ScatteredBlock & block);
+    size_t routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block);
+
+    /// Per-probe-stream scratch, pooled on the join and reused across probe blocks: the per-row
+    /// route words and leaf ids, and the AMAC find pass's per-row results - the matched cell's
+    /// mapped value (null = no match, type-erased across the map types) and its used-flags
+    /// offset, already shifted into the shared flag space.
+    struct ProbeScratch
+    {
+        PaddedPODArray<UInt32> route_words;
+        PaddedPODArray<UInt16> leaf_ids;
+        PaddedPODArray<const void *> found_mapped;
+        PaddedPODArray<UInt64> found_offset;
+    };
+
+    std::unique_ptr<ProbeScratch> acquireProbeScratch();
+    void releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch);
 
     std::shared_ptr<TableJoin> table_join;
     SharedHeader right_sample_block;
@@ -268,6 +304,10 @@ private:
     /// Leaf hash tables, backed by the single contiguous slab. `build_arenas` hold the string
     /// keys and duplicate-list nodes referenced by map cells, so they live as long as the maps.
     std::vector<PartitionedJoinMaps> leaf_maps;
+    /// The active map of each leaf, collected once after the builds (`collectLeafMapPointers`).
+    /// Type-erased: the probe dispatch casts an entry back to the concrete map type selected by
+    /// the same `data->type` + maps-variant pair that stored it.
+    std::vector<const void *> leaf_map_ptrs;
     /// Per-leaf used-flag base offsets: leaf L's flags live at `[flag_base[L], flag_base[L + 1])`
     /// of the shared per-offset flag space (`flag_base[L + 1] - flag_base[L]` = leaf bucket
     /// count + 1, the +1 covering the hash table's zero-value cell). Size partitions + 1;
@@ -281,6 +321,15 @@ private:
     std::unique_ptr<ThreadPool> post_build_pool;
 
     bool build_phase_finished = false;
+
+    /// AMAC state: the test override, the engagement decision of this build's leaf inserts
+    /// (made once, before the leaf-build wave), and the ring-growth counter.
+    bool amac_enabled = true;
+    bool amac_build_engaged = false;
+    std::atomic<UInt64> amac_ring_growths{0};
+
+    std::mutex probe_scratch_mutex;
+    std::vector<std::unique_ptr<ProbeScratch>> probe_scratch_pool;
 
     mutable std::atomic<UInt64> region_carves{0};
     mutable std::atomic<UInt64> heap_fallbacks{0};

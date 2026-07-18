@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/PartitionedHashJoin/AmacRing.h>
 #include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
 #include <Interpreters/RowRefs.h>
 #include <Common/HashTable/FixedHashMap.h>
@@ -43,7 +44,9 @@ namespace PartitionedJoinMapsDetail
   * it. Deriving the leaf map types from the standard ones (instead of mirroring their
   * declarations) means a master-side change of a cell type, hash function or grower propagates
   * here automatically, and an incompatible restructuring breaks the build instead of silently
-  * diverging.
+  * diverging. The open-addressing maps additionally carry the resumable-cursor API of
+  * `ResumableHashMap` (the seed/step decomposition the AMAC build and probe rings drive);
+  * `FixedHashMap` has no collision chain to pipeline and keeps the plain interface.
   */
 template <typename Map>
 struct WithRegionAllocator;
@@ -51,7 +54,7 @@ struct WithRegionAllocator;
 template <typename Key, typename Cell, typename Hash, typename Grower, typename Alloc>
 struct WithRegionAllocator<HashMapTable<Key, Cell, Hash, Grower, Alloc>>
 {
-    using Type = HashMapTable<Key, Cell, Hash, Grower, FixedRegionAllocator>;
+    using Type = ResumableHashMap<HashMapTable<Key, Cell, Hash, Grower, FixedRegionAllocator>>;
 };
 
 template <typename Key, typename Mapped, typename Cell, typename Size, typename Alloc, size_t size_bits>

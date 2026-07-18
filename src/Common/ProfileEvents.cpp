@@ -433,6 +433,7 @@
     M(PartitionedHashJoinLeafRows, "Number of right-side rows fed into partitioned_hash JOIN leaf hash-table builds.", ValueType::Number) \
     M(PartitionedHashJoinHashTableBytes, "Bytes of the single contiguous allocation backing all leaf hash tables of a partitioned_hash JOIN build.", ValueType::Bytes) \
     M(PartitionedHashJoinHashTableHeapFallbacks, "Number of partitioned_hash JOIN leaf hash-table allocations that fell back to the heap because a leaf outgrew its slab region (a distinct-estimate shortfall; correct but slower than the planned path).", ValueType::Number) \
+    M(PartitionedHashJoinAmacRingGrowths, "Number of times a partitioned_hash JOIN leaf hash table grew during an AMAC insert ring: the ring is drained, the map resized, and the in-flight rows re-seeded (a distinct-estimate shortfall; correct, never silent).", ValueType::Number) \
     M(JoinReorderMicroseconds, "Total time spent executing JOIN reordering algorithm.", ValueType::Microseconds) \
     M(JoinOptimizeMicroseconds, "Total time spent executing JOIN plan optimizations.", ValueType::Microseconds) \
     M(QueryPlanOptimizeMicroseconds, "Total time spent executing query plan optimizations.", ValueType::Microseconds) \

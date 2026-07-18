@@ -2,6 +2,7 @@
 #include <Interpreters/HashJoin/HashJoinMethodsImpl.h>
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/KeyGetter.h>
+#include <Interpreters/PartitionedHashJoin/AmacRing.h>
 #include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/TableJoin.h>
@@ -10,6 +11,7 @@
 #include <Common/CurrentThread.h>
 #include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/ProfileEvents.h>
+#include <Common/Stopwatch.h>
 #include <Common/ThreadGroupSwitcher.h>
 #include <Common/formatReadable.h>
 #include <Common/logger_useful.h>
@@ -23,6 +25,7 @@ extern const Event PartitionedHashJoinBuildMicroseconds;
 extern const Event PartitionedHashJoinLeafRows;
 extern const Event PartitionedHashJoinHashTableBytes;
 extern const Event PartitionedHashJoinHashTableHeapFallbacks;
+extern const Event PartitionedHashJoinAmacRingGrowths;
 }
 
 namespace CurrentMetrics
@@ -46,7 +49,130 @@ namespace
 
 constexpr size_t locator_piece_rows = 32768; /// locator synthesis scratch stays L2-resident
 
-/// Sequential locator-aware insert of one compact section, mirroring the semantics of
+/// The mapped-value write of one build row, shared by the sequential emplace path and the fused
+/// AMAC step so both stay identical in semantics: `RowRefList` cells store the first ref inline
+/// and append duplicates to the arena list (`insertAll`); `RowRef` cells keep the first row per
+/// key, or the last with `any_take_last_row` (`insertOne`).
+template <typename Mapped>
+ALWAYS_INLINE void
+applyBuildRowToMapped(Mapped & mapped, bool inserted, UInt64 ref, Arena & pool, bool any_take_last_row, bool & all_unique)
+{
+    if constexpr (std::is_same_v<Mapped, RowRef>)
+    {
+        if (inserted || any_take_last_row)
+            new (&mapped) RowRef(refWordBlockNo(ref), refWordRowNo(ref));
+    }
+    else
+    {
+        static_assert(std::is_same_v<Mapped, RowRefList>);
+        if (inserted)
+        {
+            new (&mapped) RowRefList(RowRefList::fromWord(ref));
+        }
+        else
+        {
+            mapped.insert(ref, pool);
+            all_unique = false;
+        }
+    }
+}
+
+/** The AMAC build-insert policy (facts-B contract): `start` computes the map hash - its latency
+  * overlaps the other slots' outstanding cell misses - and issues the home-cell prefetch with
+  * write intent, high locality; `step` is ONE fused read -> act: claim an empty cell (insert the
+  * key and the row ref), append a duplicate to the arena list, or advance on a collision and
+  * prefetch the next cell. The fused step is the load-bearing invariant - see `AmacRing.h`.
+  * Rows whose key is the zero sentinel are handled synchronously through the standard `emplace`
+  * (the zero cell has no memory-dependent walk to overlap) and never occupy a ring slot.
+  */
+template <typename KeyGetter, typename Map>
+struct AmacBuildInsertPolicy
+{
+    using Cell = Map::cell_type;
+    using Mapped = Map::mapped_type;
+    static constexpr bool store_hash = cell_stores_hash<Cell>;
+    static constexpr bool may_grow = true;
+    using Slot = AmacRingSlot<store_hash>;
+
+    Map & map;
+    KeyGetter & key_getter;
+    const UInt64 * locators = nullptr;
+    const UInt32 * narrow_locators = nullptr;
+    const UInt8 * skip_bytes = nullptr;
+    UInt32 block_no = 0;
+    bool any_take_last_row = false;
+    Arena & pool;
+    bool all_unique = true;
+    UInt64 growths = 0;
+
+    ALWAYS_INLINE UInt64 refWordAt(size_t row) const
+    {
+        if (locators)
+            return locators[row];
+        if (narrow_locators)
+            return RowRef(narrow_locators[row] >> 16, narrow_locators[row] & 0xFFFFu).encode();
+        return RowRef(block_no, static_cast<UInt32>(row)).encode();
+    }
+
+    ALWAYS_INLINE bool start(Slot & slot, size_t row)
+    {
+        if (skip_bytes && skip_bytes[row])
+            return false;
+        auto && key_holder = key_getter.getKeyHolder(row, pool);
+        const auto & key = keyHolderGetKey(key_holder);
+        if (unlikely(map.isZeroKey(key)))
+        {
+            typename Map::LookupResult it;
+            bool inserted = false;
+            map.emplace(key_holder, it, inserted);
+            applyBuildRowToMapped(it->getMapped(), inserted, refWordAt(row), pool, any_take_last_row, all_unique);
+            return false;
+        }
+        const size_t hash = map.hash(key);
+        slot.pos = map.cursorPlace(hash);
+        slot.row = static_cast<UInt32>(row);
+        if constexpr (store_hash)
+            slot.hash = hash;
+        __builtin_prefetch(map.cursorCell(slot.pos), 1, 3);
+        return true;
+    }
+
+    ALWAYS_INLINE AmacStepResult step(Slot & slot)
+    {
+        auto && key_holder = key_getter.getKeyHolder(slot.row, pool);
+        const auto & key = keyHolderGetKey(key_holder);
+        size_t hash = 0;
+        if constexpr (store_hash)
+            hash = slot.hash;
+        else
+            hash = map.hash(key);
+        Cell * cell = map.cursorCell(slot.pos);
+        if (map.cursorCellIsEmpty(cell))
+        {
+            /// Claim the empty cell and write the mapped value in the SAME visit (fused): a
+            /// later same-key or colliding row can never also observe this cell empty.
+            const bool needs_grow = map.cursorClaim(slot.pos, key_holder, hash);
+            applyBuildRowToMapped(cell->getMapped(), /*inserted=*/true, refWordAt(slot.row), pool, any_take_last_row, all_unique);
+            return needs_grow ? AmacStepResult::DoneNeedsGrow : AmacStepResult::Done;
+        }
+        if (map.cursorKeyEquals(cell, key, hash))
+        {
+            applyBuildRowToMapped(cell->getMapped(), /*inserted=*/false, refWordAt(slot.row), pool, any_take_last_row, all_unique);
+            return AmacStepResult::Done;
+        }
+        slot.pos = map.cursorNext(slot.pos);
+        __builtin_prefetch(map.cursorCell(slot.pos), 1, 3);
+        return AmacStepResult::Advance;
+    }
+
+    void grow()
+    {
+        ++growths;
+        map.cursorGrow();
+    }
+};
+
+/// Locator-aware insert of one compact section, mirroring the semantics of
 /// `insertFromBlockImplTypeCase` + the `Inserter` family for the map's value shape: the map hash
 /// is computed inside `emplaceKey` (once per build row); `RowRefList` cells store the encoded
 /// row ref inline and append duplicates to the arena list (`insertAll`); `RowRef` cells keep the
@@ -68,10 +194,11 @@ void insertSectionImpl(
     const UInt8 * skip_bytes,
     Arena & pool,
     bool & all_values_unique,
-    bool enable_prefetch)
+    bool enable_prefetch,
+    bool use_amac,
+    UInt64 & amac_ring_growths)
 {
     using Mapped = Map::mapped_type;
-    constexpr bool mapped_one = std::is_same_v<Mapped, RowRef>;
     constexpr bool mapped_asof = std::is_same_v<Mapped, AsofRowRefs>;
 
     /// The ASOF value lives at the row's own index of the trailing key column, so the sorted
@@ -101,6 +228,30 @@ void insertSectionImpl(
     }();
 
     const bool any_take_last_row = join.anyTakeLastRow();
+
+    /// The AMAC insert ring replaces the sequential loop when the build is large enough for the
+    /// data-dependent cell misses to dominate (the caller's engagement decision) and the section
+    /// has enough rows to amortize the ring's prime/drain. ASOF stays sequential: its mapped
+    /// insert appends to a per-key sorted lookup - not a one-cell fused action.
+    if constexpr (!mapped_asof && amac_join_supported<KeyGetter, Map>)
+    {
+        if (use_amac && rows >= amac_min_rows && rows < AmacRingSlot<false>::inactive_row)
+        {
+            AmacBuildInsertPolicy<KeyGetter, Map> policy{
+                .map = map,
+                .key_getter = key_getter,
+                .locators = locators,
+                .narrow_locators = narrow_locators,
+                .skip_bytes = skip_bytes,
+                .block_no = block_no,
+                .any_take_last_row = any_take_last_row,
+                .pool = pool};
+            amacRun(policy, rows);
+            all_values_unique = all_values_unique && policy.all_unique;
+            amac_ring_growths += policy.growths;
+            return;
+        }
+    }
 
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
     bool use_prefetch = false;
@@ -144,23 +295,7 @@ void insertSectionImpl(
             else
                 ref = RowRef(block_no, i).encode();
 
-            if constexpr (mapped_one)
-            {
-                if (emplace_result.isInserted() || any_take_last_row)
-                    new (&emplace_result.getMapped()) RowRef(refWordBlockNo(ref), refWordRowNo(ref));
-            }
-            else
-            {
-                if (emplace_result.isInserted())
-                {
-                    new (&emplace_result.getMapped()) RowRefList(RowRefList::fromWord(ref));
-                }
-                else
-                {
-                    emplace_result.getMapped().insert(ref, pool);
-                    all_unique = false;
-                }
-            }
+            applyBuildRowToMapped(emplace_result.getMapped(), emplace_result.isInserted(), ref, pool, any_take_last_row, all_unique);
         }
     }
     all_values_unique = all_unique;
@@ -245,6 +380,42 @@ void deriveBucketIds(const PaddedPODArray<UInt16> & routes, const UInt8 * skip_b
 
 }
 
+void PartitionedHashJoin::decideAmacEngagement()
+{
+    /// Mirrors the software-prefetch enablement heuristics of the standard join loops: the user
+    /// toggle, plus the aggregate hash-table size outgrowing the L2 threshold - below it the
+    /// tables are cache resident and pipelining the (then hitting) cell reads is pure overhead.
+    /// The aggregate size is the right scale on both sides: the build streams scattered chunks
+    /// through the cache alongside its leaf, and the probe misses across the whole slab, not
+    /// within one leaf.
+    amac_build_engaged = amac_enabled && leaf_join->enableSoftwarePrefetch() && ht_slab_bytes > getMinBytesForPrefetchInJoin();
+}
+
+void PartitionedHashJoin::collectLeafMapPointers()
+{
+    leaf_map_ptrs.resize(leaf_maps.size());
+    for (size_t leaf = 0; leaf < leaf_maps.size(); ++leaf)
+    {
+        std::visit(
+            [&](auto & shape_maps)
+            {
+                switch (leaf_join->data->type)
+                {
+#define M(TYPE) \
+    case HashJoin::Type::TYPE: leaf_map_ptrs[leaf] = shape_maps.TYPE.get(); break;
+                    APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
+#undef M
+                    default:
+                        throw Exception(
+                            ErrorCodes::UNSUPPORTED_JOIN_KEYS,
+                            "Unsupported JOIN keys for the partitioned join (type: {})",
+                            leaf_join->data->type);
+                }
+            },
+            leaf_maps[leaf].maps);
+    }
+}
+
 void PartitionedHashJoin::insertLeafSection(
     PartitionedJoinMaps & maps,
     const ColumnRawPtrs & key_columns,
@@ -258,6 +429,7 @@ void PartitionedHashJoin::insertLeafSection(
 {
     const Sizes & key_sizes = leaf_join->key_sizes[0];
     const bool enable_prefetch = leaf_join->enableSoftwarePrefetch();
+    UInt64 ring_growths = 0;
 
     std::visit(
         [&](auto & shape_maps)
@@ -280,7 +452,9 @@ void PartitionedHashJoin::insertLeafSection(
             skip_bytes, \
             pool, \
             all_values_unique, \
-            enable_prefetch); \
+            enable_prefetch, \
+            amac_build_engaged, \
+            ring_growths); \
         break; \
     }
                 APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
@@ -293,6 +467,9 @@ void PartitionedHashJoin::insertLeafSection(
             }
         },
         maps.maps);
+
+    if (ring_growths)
+        amac_ring_growths.fetch_add(ring_growths, std::memory_order_relaxed);
 }
 
 void PartitionedHashJoin::runPostBuildPhase()
@@ -331,18 +508,22 @@ void PartitionedHashJoin::runPostBuildPhase()
     ProfileEvents::increment(ProfileEvents::PartitionedHashJoinHashTableBytes, ht_slab_bytes);
     if (const UInt64 fallbacks = heap_fallbacks.load(std::memory_order_relaxed))
         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinHashTableHeapFallbacks, fallbacks);
+    if (const UInt64 growths = amac_ring_growths.load(std::memory_order_relaxed))
+        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinAmacRingGrowths, growths);
 
     finishBuildPhase(all_values_unique);
 
     LOG_TRACE(
         log,
-        "Built {} leaf hash tables: {} keys in {} of hash tables ({} carved from one {} slab, {} heap fallbacks)",
+        "Built {} leaf hash tables: {} keys, {} of right-table data including the hash tables "
+        "({} carved from one {} slab, {} heap fallbacks, {} ring growths)",
         partitions,
         getTotalRowCount(),
         ReadableSize(getTotalByteCount()),
         region_carves.load(std::memory_order_relaxed),
         ReadableSize(ht_slab_bytes),
-        heap_fallbacks.load(std::memory_order_relaxed));
+        heap_fallbacks.load(std::memory_order_relaxed),
+        amac_ring_growths.load(std::memory_order_relaxed));
 }
 
 void PartitionedHashJoin::finishBuildPhase(bool all_values_unique)
@@ -354,6 +535,7 @@ void PartitionedHashJoin::finishBuildPhase(bool all_values_unique)
     leaf_join->all_values_unique = all_values_unique;
     leaf_join->onBuildPhaseFinish();
     computeFlagBaseAndReinitUsedFlags();
+    collectLeafMapPointers();
     leaf_join->data->keys_to_join = getTotalRowCount();
     build_phase_finished = true;
 }
@@ -406,6 +588,7 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
     ht_slab_bytes = predicted_bytes;
     ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
     ++stats.slab_allocations;
+    decideAmacEngagement();
 
     leaf_maps.assign(1, PartitionedJoinMaps(maps_variant_index));
     build_arenas.emplace_back();
@@ -495,18 +678,21 @@ bool PartitionedHashJoin::postBuildPartitioned()
 
     /// Each stage runs as one wave of jobs; `post_build_pool->wait()` is the stage barrier. The build
     /// ProfileEvent accumulates per-worker THREAD time inside the jobs, keeping its unit
-    /// identical to the summed thread time `parallel_hash`'s build event reports.
-    auto run_wave = [&](auto && stage)
+    /// identical to the summed thread time `parallel_hash`'s build event reports. Per-stage
+    /// wall and thread times are collected for the trace-level breakdown below.
+    auto run_wave = [&](auto && stage, std::atomic<UInt64> & stage_thread_us)
     {
         try
         {
             for (size_t w = 0; w < ctx.workers; ++w)
                 post_build_pool->scheduleOrThrow(
-                    [&stage, w, thread_group = CurrentThread::getGroup()]
+                    [&stage, &stage_thread_us, w, thread_group = CurrentThread::getGroup()]
                     {
                         ThreadGroupSwitcher switcher(thread_group, ThreadName::PARTITIONED_JOIN);
                         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
+                        Stopwatch stage_watch;
                         stage(w);
+                        stage_thread_us.fetch_add(stage_watch.elapsedMicroseconds(), std::memory_order_relaxed);
                     });
             post_build_pool->wait();
         }
@@ -517,16 +703,51 @@ bool PartitionedHashJoin::postBuildPartitioned()
         }
     };
 
-    run_wave([&](size_t w) { histogramWorker(ctx, w); });
-    run_wave([&](size_t w) { allocateWorker(ctx, w); });
-    run_wave([&](size_t w) { scatterWorker(ctx, w); });
+    std::atomic<UInt64> hist_thread_us{0};
+    std::atomic<UInt64> alloc_thread_us{0};
+    std::atomic<UInt64> scatter_thread_us{0};
+    std::atomic<UInt64> insert_thread_us{0};
+
+    Stopwatch stage_watch;
+    run_wave([&](size_t w) { histogramWorker(ctx, w); }, hist_thread_us);
+    const UInt64 hist_wall_us = stage_watch.elapsedMicroseconds();
+
+    stage_watch.restart();
+    run_wave([&](size_t w) { allocateWorker(ctx, w); }, alloc_thread_us);
+    const UInt64 alloc_wall_us = stage_watch.elapsedMicroseconds();
+
+    stage_watch.restart();
+    run_wave([&](size_t w) { scatterWorker(ctx, w); }, scatter_thread_us);
+    const UInt64 scatter_wall_us = stage_watch.elapsedMicroseconds();
+
+    stage_watch.restart();
     {
         /// The single contiguous hash-table allocation, right before the leaf builds (R1);
         /// caller-thread work, counted like any other build-thread time.
         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
         planAndAllocateHashTables(ctx);
     }
-    run_wave([&](size_t w) { leafBuildWorker(ctx, w); });
+    const UInt64 plan_wall_us = stage_watch.elapsedMicroseconds();
+
+    stage_watch.restart();
+    run_wave([&](size_t w) { leafBuildWorker(ctx, w); }, insert_thread_us);
+    const UInt64 insert_wall_us = stage_watch.elapsedMicroseconds();
+
+    const auto to_ms = [](UInt64 us) { return static_cast<double>(us) / 1000.0; };
+    LOG_TRACE(
+        log,
+        "Post-build stages, wall/thread ms: histogram {:.1f}/{:.1f}, chunk allocation {:.1f}/{:.1f}, scatter {:.1f}/{:.1f}, "
+        "hash-table plan+slab {:.1f}, leaf inserts {:.1f}/{:.1f} (AMAC {})",
+        to_ms(hist_wall_us),
+        to_ms(hist_thread_us.load(std::memory_order_relaxed)),
+        to_ms(alloc_wall_us),
+        to_ms(alloc_thread_us.load(std::memory_order_relaxed)),
+        to_ms(scatter_wall_us),
+        to_ms(scatter_thread_us.load(std::memory_order_relaxed)),
+        to_ms(plan_wall_us),
+        to_ms(insert_wall_us),
+        to_ms(insert_thread_us.load(std::memory_order_relaxed)),
+        amac_build_engaged ? "engaged" : "off");
 
     post_build_pool.reset();
 
@@ -773,6 +994,7 @@ void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
     ht_slab_bytes = running;
     ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
     ++stats.slab_allocations;
+    decideAmacEngagement();
 
     leaf_maps.assign(partitions, PartitionedJoinMaps(maps_variant_index));
     ctx.leaf_order.resize(partitions);

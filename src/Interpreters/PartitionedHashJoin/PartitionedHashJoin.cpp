@@ -477,8 +477,30 @@ PartitionedHashJoin::BuildStats PartitionedHashJoin::getBuildStats() const
     res.slab_bytes = ht_slab_bytes;
     res.region_carves = region_carves.load(std::memory_order_relaxed);
     res.heap_fallbacks = heap_fallbacks.load(std::memory_order_relaxed);
+    res.amac_ring_growths = amac_ring_growths.load(std::memory_order_relaxed);
+    res.amac_build_engaged = amac_build_engaged;
     res.flag_base = flag_base;
     return res;
+}
+
+std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireProbeScratch()
+{
+    {
+        std::lock_guard lock(probe_scratch_mutex);
+        if (!probe_scratch_pool.empty())
+        {
+            auto scratch = std::move(probe_scratch_pool.back());
+            probe_scratch_pool.pop_back();
+            return scratch;
+        }
+    }
+    return std::make_unique<ProbeScratch>();
+}
+
+void PartitionedHashJoin::releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch)
+{
+    std::lock_guard lock(probe_scratch_mutex);
+    probe_scratch_pool.push_back(std::move(scratch));
 }
 
 bool PartitionedHashJoin::isCloneSupported() const
