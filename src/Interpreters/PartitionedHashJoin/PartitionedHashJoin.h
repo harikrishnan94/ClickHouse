@@ -25,6 +25,18 @@ namespace DB
 
 class TableJoin;
 
+/// Flat lookup descriptor of one leaf's open-addressing map: the cell buffer pointer and the
+/// grower mask, extracted once after the builds. 16 bytes per leaf in one contiguous array, so
+/// a probe's per-row cell address is computable from one L1 load here instead of chasing
+/// `leaf_map_ptrs[leaf]` and then the map header (three dependent loads); the AMAC probe ring
+/// resolves a row's descriptor once at admit and carries it in the ring slot. The fixed-size map
+/// types (`key8`/`key16`) keep the zero entry - their probe never takes the descriptor path.
+struct LeafMapDesc
+{
+    const void * buf = nullptr;
+    size_t mask = 0;
+};
+
 /** Partitioned hash join (`join_algorithm = 'partitioned_hash'`).
   *
   * Key-only scatter + partitioned hash-table build, with an unpartitioned probe:
@@ -317,17 +329,7 @@ private:
     /// Type-erased: the probe dispatch casts an entry back to the concrete map type selected by
     /// the same `data->type` + maps-variant pair that stored it.
     std::vector<const void *> leaf_map_ptrs;
-    /// Flat lookup descriptor of each leaf's open-addressing map: the cell buffer pointer and
-    /// the grower mask, extracted once after the builds. 16 bytes per leaf in one contiguous
-    /// array, so the probe's per-row cell address is computable from one L1 load here instead
-    /// of chasing `leaf_map_ptrs[leaf]` and then the map header (three dependent loads). The
-    /// fixed-size map types (`key8`/`key16`) keep the zero entry - their probe never takes the
-    /// descriptor path.
-    struct LeafMapDesc
-    {
-        const void * buf = nullptr;
-        size_t mask = 0;
-    };
+    /// One `LeafMapDesc` per leaf, filled by `collectLeafMapPointers`.
     std::vector<LeafMapDesc> leaf_map_descs;
     /// Per-leaf used-flag base offsets: leaf L's flags live at `[flag_base[L], flag_base[L + 1])`
     /// of the shared per-offset flag space (`flag_base[L + 1] - flag_base[L]` = leaf bucket

@@ -96,7 +96,9 @@ constexpr bool cell_stores_hash = requires(const Cell & cell) { cell.saved_hash;
 
 /** A ring slot: the resumable cursor position and the row it belongs to. Everything recomputable
   * from the row index (the key, the selector index) is recomputed per visit, and per-section
-  * invariants (map, locators, key getter) live in the policy - measured slot minimalism.
+  * invariants (map, locators, key getter) live in the policy - measured slot minimalism. A policy
+  * may extend its slot with address material resolved once at admit (the routed probe carries
+  * the leaf's cell buffer and mask) when the steady step would otherwise re-resolve it per visit.
   */
 template <bool store_hash>
 struct AmacRingSlot
@@ -202,10 +204,18 @@ void amacDrainAndGrow(Policy & policy, std::array<typename Policy::Slot, ring_si
   * the active check.
   */
 template <typename Policy, size_t ring_size = amac_ring_size>
-void amacRun(Policy & policy, size_t rows)
+void amacRun(Policy & policy_arg, size_t rows)
 {
     static_assert(std::has_single_bit(ring_size));
     chassert(rows < AmacRingSlot<false>::inactive_row);
+
+    /// A policy whose fields are all per-run invariants (nothing written back for the caller to
+    /// read) opts in to running on a frame-local copy: the copy's address never escapes (every
+    /// policy call inlines), so its fields become SSA values that stores through the policy's
+    /// result arrays cannot alias - behind the caller's reference they would be conservatively
+    /// reloaded per visit. Stateful policies (the build insert) keep the reference.
+    static constexpr bool run_on_copy = requires { requires Policy::copy_into_frame; };
+    std::conditional_t<run_on_copy, Policy, Policy &> policy = policy_arg;
 
     std::array<typename Policy::Slot, ring_size> ring{};
     size_t next = 0;

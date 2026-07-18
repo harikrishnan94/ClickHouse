@@ -53,6 +53,11 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
         return RowRef::fromWord(word);
 }
 
+template <typename Grower>
+inline constexpr bool is_power_of_two_linear_grower = false;
+template <size_t initial_size_degree>
+inline constexpr bool is_power_of_two_linear_grower<HashTableGrowerWithPrecalculation<initial_size_degree>> = true;
+
 /** The AMAC find policy of the two-phase probe (phase A): out-of-order lookups that only fill
   * the per-row result arrays - the matched cell's mapped value copied by value into `found_word`
   * (0 = no match) and, for the flagged shapes only, its used-flags offset shifted into the
@@ -62,36 +67,72 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
   * second random miss per row. Mapped types that do not fit a word (ASOF) keep the pointer
   * scheme, storing its bits in the same array. Nothing is emitted here; phase B (the sequential
   * in-order loop) consumes the results through the standard `processMatch`.
-  * Unlike the build ring, one ring serves MANY maps - each row's leaf - so the slot carries the
-  * leaf id and the policy re-resolves the (cache-hot) map header per visit. Cell prefetches use
-  * read intent and low locality: a probed cell is not revisited.
+  * One ring serves MANY maps - each row's leaf. The leaf's address material - the cell buffer
+  * and the grower mask - is resolved once at admit from the flat descriptor array and carried in
+  * the slot, so a steady visit dereferences nothing but the cell itself and the probe key: the
+  * map headers, scattered across as many heap objects as there are partitions, would otherwise
+  * sit on the address chain of every visit (2-3 dependent loads; the flat loop got the same fix
+  * in descriptor form). The selector variant is a template parameter for the same reason - it
+  * was a per-visit kind branch. Cell prefetches use read intent and low locality: a probed cell
+  * is not revisited.
   */
-template <typename KeyGetter, typename Map, bool need_flags>
+template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
 struct RoutedAmacFindPolicy
 {
     using MapNonConst = std::remove_const_t<Map>;
     using Cell = MapNonConst::cell_type;
     static constexpr bool store_hash = cell_stores_hash<Cell>;
     static constexpr bool may_grow = false;
+    static constexpr bool copy_into_frame = true; /// results live in the arrays; no state survives the run
     static constexpr bool mapped_by_value = amac_mapped_fits_word<typename MapNonConst::mapped_type>;
 
+    /// The slot-register walk below is `HashMapTable::find` only under the contract of the flat
+    /// lookup (`FlatLookupMap`): a power-of-two linear-probing grower - the home cell is
+    /// `hash & mask`, the walk step `(pos + 1) & mask` - and stateless cells, whose zero-check
+    /// and key-compare read nothing through the map object. Every map the AMAC gate admits
+    /// satisfies it; one that does not must keep the map-resolved cursor instead.
+    static_assert(is_power_of_two_linear_grower<typename MapNonConst::grower_type>);
+    static_assert(std::is_same_v<typename Cell::State, HashTableNoState>);
+    static constexpr HashTableNoState no_state{};
+
+    /// The leaf id stays for the record path (the used-flags base of the leaf).
     struct Slot : public AmacRingSlot<store_hash>
     {
         UInt16 leaf = 0;
+        const Cell * buf = nullptr;
+        size_t mask = 0;
     };
+    static_assert(sizeof(Slot) == (store_hash ? 48 : 32));
 
-    KeyGetter & key_getter;
-    const void * const * leaf_maps_data = nullptr;
+    /// A by-value copy of a trivially copyable key getter keeps its key-column pointer a plain
+    /// field of the (frame-local) policy instead of two dependent loads behind a reference.
+    std::conditional_t<std::is_trivially_copyable_v<KeyGetter>, KeyGetter, KeyGetter &> key_getter;
+    /// Hash provider and zero-key checker; reads nothing through the object (the hash functor is
+    /// an empty base and the cells are stateless), so any leaf serves.
+    const MapNonConst & map0;
+    const void * const * leaf_maps_data = nullptr; /// the zero-key sentinel path only
+    const LeafMapDesc * leaf_descs = nullptr;
     const UInt16 * leaf_ids = nullptr; /// null at the single-leaf plan
-    const ScatteredBlock::Selector & selector;
+    size_t selector_base = 0; /// the first row of a continuous-range selector
+    const UInt64 * selector_indexes = nullptr; /// the data of an explicit-indexes selector
     const UInt8 * skip_data = nullptr; /// null on the fast path
     const UInt64 * flag_base_data = nullptr;
     Arena & pool;
     UInt64 * found_word = nullptr;
     UInt64 * found_offset = nullptr; /// null unless `need_flags`
 
+    ALWAYS_INLINE size_t indexAt(size_t i) const
+    {
+        if constexpr (selector_is_range)
+            return selector_base + i;
+        else
+            return selector_indexes[i];
+    }
+
     ALWAYS_INLINE const MapNonConst & mapAt(size_t leaf) const { return *static_cast<Map *>(leaf_maps_data[leaf]); }
 
+    /// The synchronous zero-key path of `start`: the cell (the map's dedicated zero-value cell,
+    /// or null) came from the map object, and so must its used-flags offset.
     ALWAYS_INLINE void record(size_t row, size_t leaf [[maybe_unused]], const Cell * cell, const MapNonConst & map [[maybe_unused]])
     {
         if (!cell)
@@ -107,9 +148,21 @@ struct RoutedAmacFindPolicy
             found_offset[row] = map.offsetInternal(cell) + flag_base_data[leaf];
     }
 
+    /// A ring hit: the cell is `slot.buf + slot.pos` and known non-zero, so its used-flags
+    /// offset is `slot.pos + 1` - `offsetInternal` without touching the map.
+    ALWAYS_INLINE void recordHit(const Slot & slot, const Cell * cell)
+    {
+        if constexpr (mapped_by_value)
+            found_word[slot.row] = mappedWordOf(cell->getMapped());
+        else
+            found_word[slot.row] = reinterpret_cast<UInt64>(&cell->getMapped());
+        if constexpr (need_flags)
+            found_offset[slot.row] = slot.pos + 1 + flag_base_data[slot.leaf];
+    }
+
     ALWAYS_INLINE bool start(Slot & slot, size_t i)
     {
-        const size_t ind = selector[i];
+        const size_t ind = indexAt(i);
         if (skip_data && skip_data[ind])
         {
             found_word[i] = 0;
@@ -118,55 +171,52 @@ struct RoutedAmacFindPolicy
         auto && key_holder = key_getter.getKeyHolder(ind, pool);
         const auto & key = keyHolderGetKey(key_holder);
         const size_t leaf = leaf_ids ? leaf_ids[ind] : 0;
-        const MapNonConst & map = mapAt(leaf);
-        if (unlikely(map.isZeroKey(key)))
+        if (unlikely(map0.isZeroKey(key)))
         {
             /// The zero key lives in the dedicated zero-value cell - nothing to overlap.
+            const MapNonConst & map = mapAt(leaf);
             record(i, leaf, map.find(key), map);
             return false;
         }
-        const size_t hash = map.hash(key);
-        slot.pos = map.cursorPlace(hash);
+        const size_t hash = map0.hash(key);
+        const LeafMapDesc & desc = leaf_descs[leaf];
+        slot.pos = hash & desc.mask;
         slot.row = static_cast<UInt32>(i);
-        slot.leaf = static_cast<UInt16>(leaf);
         if constexpr (store_hash)
             slot.hash = hash;
-        __builtin_prefetch(map.cursorCell(slot.pos), 0, 1);
+        slot.leaf = static_cast<UInt16>(leaf);
+        slot.buf = static_cast<const Cell *>(desc.buf);
+        slot.mask = desc.mask;
+        __builtin_prefetch(slot.buf + slot.pos, 0, 1);
         return true;
     }
 
     ALWAYS_INLINE AmacStepResult step(Slot & slot)
     {
-        const MapNonConst & map = mapAt(slot.leaf);
-        const Cell * cell = map.cursorCell(slot.pos);
-        if (map.cursorCellIsEmpty(cell))
+        const Cell * cell = slot.buf + slot.pos;
+        if (cell->isZero(no_state))
         {
             found_word[slot.row] = 0;
             return AmacStepResult::Done;
         }
-        const size_t ind = selector[slot.row];
+        const size_t ind = indexAt(slot.row);
         auto && key_holder = key_getter.getKeyHolder(ind, pool);
         const auto & key = keyHolderGetKey(key_holder);
         size_t hash = 0;
         if constexpr (store_hash)
             hash = slot.hash;
         else
-            hash = map.hash(key);
-        if (map.cursorKeyEquals(cell, key, hash))
+            hash = map0.hash(key);
+        if (cell->keyEquals(key, hash, no_state))
         {
-            record(slot.row, slot.leaf, cell, map);
+            recordHit(slot, cell);
             return AmacStepResult::Done;
         }
-        slot.pos = map.cursorNext(slot.pos);
-        __builtin_prefetch(map.cursorCell(slot.pos), 0, 1);
+        slot.pos = (slot.pos + 1) & slot.mask;
+        __builtin_prefetch(slot.buf + slot.pos, 0, 1);
         return AmacStepResult::Advance;
     }
 };
-
-template <typename Grower>
-inline constexpr bool is_power_of_two_linear_grower = false;
-template <size_t initial_size_degree>
-inline constexpr bool is_power_of_two_linear_grower<HashTableGrowerWithPrecalculation<initial_size_degree>> = true;
 
 /** The compile-time gate of the flat-descriptor lookup: an open-addressing map whose find needs
   * nothing from the map object itself - a power-of-two linear-probing grower, so the cell
@@ -576,17 +626,33 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
                 results.found_offset.resize(rows);
                 found_offset_data = results.found_offset.data();
             }
-            RoutedAmacFindPolicy<KeyGetter, Map, join_features.need_flags> policy{
-                .key_getter = key_getter,
-                .leaf_maps_data = leaf_maps_data,
-                .leaf_ids = leaf_ids,
-                .selector = selector,
-                .skip_data = skip_data,
-                .flag_base_data = flag_base_data,
-                .pool = pool,
-                .found_word = results.found_word.data(),
-                .found_offset = found_offset_data};
-            amacRun(policy, rows);
+            auto amac_find = [&]<bool selector_is_range>()
+            {
+                size_t selector_base = 0;
+                const UInt64 * selector_indexes = nullptr;
+                if constexpr (selector_is_range)
+                    selector_base = selector.getRange().first;
+                else
+                    selector_indexes = selector.getIndexes().getData().data();
+                RoutedAmacFindPolicy<KeyGetter, Map, join_features.need_flags, selector_is_range> policy{
+                    .key_getter = key_getter,
+                    .map0 = map_at(0),
+                    .leaf_maps_data = leaf_maps_data,
+                    .leaf_descs = leaf_map_descs.data(),
+                    .leaf_ids = leaf_ids,
+                    .selector_base = selector_base,
+                    .selector_indexes = selector_indexes,
+                    .skip_data = skip_data,
+                    .flag_base_data = flag_base_data,
+                    .pool = pool,
+                    .found_word = results.found_word.data(),
+                    .found_offset = found_offset_data};
+                amacRun(policy, rows);
+            };
+            if (selector.isContinuousRange())
+                amac_find.template operator()<true>();
+            else
+                amac_find.template operator()<false>();
 
             if (added_columns.need_filter)
                 loop.template operator()<true, false, true>(&results);
