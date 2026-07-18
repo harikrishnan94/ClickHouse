@@ -84,6 +84,16 @@ struct LazyOutput
     size_t output_by_row_list_threshold = 0;
     size_t join_data_avg_perkey_rows = 0;
 
+    /// Set only by `PartitionedHashJoin` for its routed probe results (see `probeImpl`): in
+    /// `buildOutputFromBlocks`, fixed-width output columns are gathered straight from the
+    /// per-block source arrays of the emit table, consuming the 8-byte ref words as is, instead
+    /// of going through the generic `(StoredBlock *, row)` pair expansion. The values produced
+    /// are identical; the flag exists so `hash`/`parallel_hash` keep their exact code path.
+    bool use_direct_typed_gather = false;
+    /// Entry count of the `emit_block_columns`/`emit_block_replicated` per-block tables
+    /// (= `StoredColumnsIndex::blocksCount`); set together with `use_direct_typed_gather`.
+    size_t stored_blocks_count = 0;
+
     const PaddedPODArray<UInt64> & getRowRefs() const { return row_refs; }
     size_t getRowCount() const { return row_count; }
 

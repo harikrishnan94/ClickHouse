@@ -449,6 +449,10 @@ public:
     /// Raw pointer for hot decode loops. Must not be called before the build phase is finished.
     const StoredBlock * const * blocksData() const { return blocks.data(); }
 
+    /// Number of registered blocks (= size of the per-block emit tables handed out by
+    /// `resolveEmitColumns`). Like `blocksData`, must not be called before the build phase is finished.
+    size_t blocksCount() const { return blocks.size(); }
+
     const StoredBlock * at(UInt32 block_no) const
     {
         chassert(block_no < blocks.size());
