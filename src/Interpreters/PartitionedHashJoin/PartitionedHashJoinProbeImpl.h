@@ -11,6 +11,7 @@
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <base/scope_guard.h>
+#include <Common/HashTable/HashTable.h>
 #include <Common/PODArray.h>
 
 namespace DB
@@ -123,6 +124,24 @@ struct RoutedAmacFindPolicy
         __builtin_prefetch(map.cursorCell(slot.pos), 0, 1);
         return AmacStepResult::Advance;
     }
+};
+
+template <typename Grower>
+inline constexpr bool is_power_of_two_linear_grower = false;
+template <size_t initial_size_degree>
+inline constexpr bool is_power_of_two_linear_grower<HashTableGrowerWithPrecalculation<initial_size_degree>> = true;
+
+/** The compile-time gate of the flat-descriptor lookup: an open-addressing map whose find needs
+  * nothing from the map object itself - a power-of-two linear-probing grower, so the cell
+  * address is `hash & mask` and the walk step `(pos + 1) & mask`, both computable from the
+  * 16-byte leaf descriptor, and stateless cells, whose `isZero`/`keyEquals` read only the cell
+  * and the key. The fixed-size maps (`key8`/`key16`) have no cursor API; the string, `hashed`
+  * and LowCardinality getters are excluded by the caller's cheap-key gate.
+  */
+template <typename Map>
+concept FlatLookupMap = AmacResumableMap<Map> && requires {
+    requires is_power_of_two_linear_grower<typename Map::grower_type>;
+    requires std::is_same_v<typename Map::cell_type::State, HashTableNoState>;
 };
 
 /** The routed probe: the single-map `joinRightColumns` loop with one difference - each row's map
@@ -243,8 +262,12 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     /// conditions mirror the software-prefetch heuristics: the user toggle, the aggregate table
     /// size outgrowing L2 (below it the tables are cache resident and the ring is pure
     /// overhead), and a row floor so tiny blocks keep the plain loop (G6).
-    constexpr bool amac_supported = amac_join_supported<KeyGetter, std::remove_const_t<Map>>;
+    using MapNonConst = std::remove_const_t<Map>;
+    constexpr bool amac_supported = amac_join_supported<KeyGetter, MapNonConst>;
     constexpr bool prefetch_supported = join_prefetch_supported<KeyGetter, Map>;
+    /// The cheap-key open-addressing shapes run the flat-descriptor loop below instead of the
+    /// plain routed loop.
+    constexpr bool flat_lookup_supported = prefetch_supported && FlatLookupMap<MapNonConst>;
     bool use_amac = false;
     if constexpr (amac_supported)
         use_amac = (!prefetch_supported || amac_probe_forced_for_tests) && amac_enabled && added_columns.enable_prefetch
@@ -343,6 +366,142 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
         }
     };
 
+    /// The flat routed loop for the cheap-key open-addressing maps - the measured hot shape.
+    /// Two structural fixes over the plain loop above, per the probe disassembly: the per-row
+    /// cell address comes from the contiguous 16-byte-per-leaf descriptor array (one L1 load)
+    /// instead of `leaf_map_ptrs[leaf]` and then the map header (three dependent loads on the
+    /// address-generation critical path, mirroring `parallel_hash`'s contiguous bucket-header
+    /// array); and every loop invariant - the selector base, the leaf ids, the descriptors, the
+    /// key getter - is snapshotted into locals of the loop body, because the closure fields sit
+    /// behind a pointer the compiler must conservatively re-load after every opaque call
+    /// (`appendFromBlock`), which showed up as ~10 per-row loads. The selector variant is a
+    /// template parameter for the same reason - its per-row kind check was a per-row load. The
+    /// lookup itself is exactly `HashMapTable::find` with identical offset semantics; keys equal
+    /// to the zero sentinel resolve through the map object (rare). Everything downstream of the
+    /// `FindResult` matches the plain loop.
+    auto flat_loop = [&]<bool need_filter, bool with_skip, bool selector_is_range>()
+    {
+        /// The call sites are gated on the same constant, but the guard must also be here:
+        /// instantiating the enclosing function substitutes the enclosing template arguments
+        /// into this body even when the lambda is never called, and the lookup below is only
+        /// well-formed for the gated map types.
+        if constexpr (flat_lookup_supported)
+        {
+            using Cell = typename MapNonConst::cell_type;
+
+            /// Unlike the plain loop, the invariant snapshots below touch the leaf tables before
+            /// the first row; an empty probe block may legally arrive with no leaf maps at all.
+            if (rows == 0)
+                return;
+
+            if constexpr (need_filter)
+            {
+                added_columns.filter = IColumn::Filter(rows, 0);
+                added_columns.matched_rows.reserve(rows);
+            }
+
+            [[maybe_unused]] size_t selector_base = 0;
+            [[maybe_unused]] const UInt64 * selector_indexes = nullptr;
+            if constexpr (selector_is_range)
+                selector_base = selector.getRange().first;
+            else
+                selector_indexes = selector.getIndexes().getData().data();
+            auto index_at = [&](size_t k) __attribute__((always_inline))
+            {
+                if constexpr (selector_is_range)
+                    return selector_base + k;
+                else
+                    return static_cast<size_t>(selector_indexes[k]);
+            };
+
+            const UInt16 * const leaf_ids_local = leaf_ids;
+            [[maybe_unused]] const UInt8 * const skip_local = skip_data;
+            [[maybe_unused]] const UInt64 * const flag_base_local = flag_base_data;
+            const LeafMapDesc * const descs = leaf_map_descs.data();
+            /// The gate guarantees the cells' zero-check and key-compare read no map state.
+            const HashTableNoState no_state{};
+            /// Hash provider; reads nothing through the object (the hash functor is an empty base).
+            const MapNonConst & map0 = map_at(0);
+            /// A private copy of a cheap key getter keeps its column pointer in a register.
+            std::conditional_t<std::is_trivially_copyable_v<KeyGetter>, KeyGetter, KeyGetter &> keys = key_getter;
+
+            auto flat_prefetcher = makeJoinPrefetcher(
+                use_prefetch,
+                rows,
+                [&](size_t k) __attribute__((always_inline))
+                {
+                    const size_t ind = index_at(k);
+                    const auto & desc = descs[leaf_ids_local ? leaf_ids_local[ind] : 0];
+                    auto && key_holder = keys.getKeyHolder(ind, pool);
+                    const size_t hash = map0.hash(keyHolderGetKey(key_holder));
+                    __builtin_prefetch(static_cast<const Cell *>(desc.buf) + (hash & desc.mask));
+                });
+
+            IColumn::Offset current_offset = 0;
+            for (size_t i = 0; i < rows; ++i)
+            {
+                flat_prefetcher.prefetchAt(i);
+
+                const size_t ind = index_at(i);
+
+                bool right_row_found = false;
+                KnownRowsHolder<flag_per_row> dummy_known_rows;
+
+                bool skip_row = false;
+                if constexpr (with_skip)
+                    skip_row = skip_local && skip_local[ind];
+
+                if (!skip_row)
+                {
+                    const size_t leaf = leaf_ids_local ? leaf_ids_local[ind] : 0;
+                    auto && key_holder = keys.getKeyHolder(ind, pool);
+                    const auto & key = keyHolderGetKey(key_holder);
+                    const Cell * cell = nullptr;
+                    size_t offset = 0;
+                    if (unlikely(Cell::isZero(key, no_state)))
+                    {
+                        /// The zero key lives in the map's dedicated zero-value cell, whose
+                        /// `offsetInternal` is 0.
+                        cell = map_at(leaf).find(key);
+                    }
+                    else
+                    {
+                        const auto & desc = descs[leaf];
+                        const size_t hash = map0.hash(key);
+                        const Cell * buf = static_cast<const Cell *>(desc.buf);
+                        size_t pos = hash & desc.mask;
+                        while (!buf[pos].isZero(no_state) && !buf[pos].keyEquals(key, hash, no_state))
+                            pos = (pos + 1) & desc.mask;
+                        if (!buf[pos].isZero(no_state))
+                        {
+                            cell = buf + pos;
+                            offset = pos + 1;
+                        }
+                    }
+                    if (cell)
+                    {
+                        right_row_found = true;
+                        if constexpr (join_features.need_flags)
+                            offset += flag_base_local[leaf];
+                        typename KeyGetter::FindResult find_result(&cell->getMapped(), true, offset);
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsShape, Map, KeyGetter>(
+                            find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows);
+                    }
+                }
+
+                if (!right_row_found)
+                {
+                    if constexpr (join_features.is_anti_join && join_features.left)
+                        setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
+                    addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+                }
+
+                if constexpr (join_features.need_replication)
+                    added_columns.offsets_to_replicate[i] = current_offset;
+            }
+        }
+    };
+
     bool amac_ran = false;
     if constexpr (amac_supported)
     {
@@ -376,19 +535,46 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
 
     if (!amac_ran)
     {
-        if (added_columns.need_filter)
+        if constexpr (flat_lookup_supported)
         {
-            if (fast_path)
-                loop.template operator()<true, false, false>(nullptr);
+            auto flat_dispatch = [&]<bool need_filter, bool with_skip>()
+            {
+                if (selector.isContinuousRange())
+                    flat_loop.template operator()<need_filter, with_skip, true>();
+                else
+                    flat_loop.template operator()<need_filter, with_skip, false>();
+            };
+            if (added_columns.need_filter)
+            {
+                if (fast_path)
+                    flat_dispatch.template operator()<true, false>();
+                else
+                    flat_dispatch.template operator()<true, true>();
+            }
             else
-                loop.template operator()<true, true, false>(nullptr);
+            {
+                if (fast_path)
+                    flat_dispatch.template operator()<false, false>();
+                else
+                    flat_dispatch.template operator()<false, true>();
+            }
         }
         else
         {
-            if (fast_path)
-                loop.template operator()<false, false, false>(nullptr);
+            if (added_columns.need_filter)
+            {
+                if (fast_path)
+                    loop.template operator()<true, false, false>(nullptr);
+                else
+                    loop.template operator()<true, true, false>(nullptr);
+            }
             else
-                loop.template operator()<false, true, false>(nullptr);
+            {
+                if (fast_path)
+                    loop.template operator()<false, false, false>(nullptr);
+                else
+                    loop.template operator()<false, true, false>(nullptr);
+            }
         }
     }
 

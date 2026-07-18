@@ -394,6 +394,7 @@ void PartitionedHashJoin::decideAmacEngagement()
 void PartitionedHashJoin::collectLeafMapPointers()
 {
     leaf_map_ptrs.resize(leaf_maps.size());
+    leaf_map_descs.assign(leaf_maps.size(), LeafMapDesc{});
     for (size_t leaf = 0; leaf < leaf_maps.size(); ++leaf)
     {
         std::visit(
@@ -402,7 +403,13 @@ void PartitionedHashJoin::collectLeafMapPointers()
                 switch (leaf_join->data->type)
                 {
 #define M(TYPE) \
-    case HashJoin::Type::TYPE: leaf_map_ptrs[leaf] = shape_maps.TYPE.get(); break;
+    case HashJoin::Type::TYPE: { \
+        const auto & map = *shape_maps.TYPE; \
+        leaf_map_ptrs[leaf] = &map; \
+        if constexpr (AmacResumableMap<std::remove_cvref_t<decltype(map)>>) \
+            leaf_map_descs[leaf] = LeafMapDesc{map.cursorCell(0), map.getBufferSizeInCells() - 1}; \
+        break; \
+    }
                     APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
 #undef M
                     default:
