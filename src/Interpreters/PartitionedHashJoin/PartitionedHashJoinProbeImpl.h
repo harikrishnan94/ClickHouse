@@ -65,8 +65,9 @@ inline constexpr bool is_power_of_two_linear_grower<HashTableGrowerWithPrecalcul
   * touches the cell again - by the time the sequential loop reaches the row, a block later, the
   * cell line has usually left the cache and re-reading it through a recorded pointer was a
   * second random miss per row. Mapped types that do not fit a word (ASOF) keep the pointer
-  * scheme, storing its bits in the same array. Nothing is emitted here; phase B (the sequential
-  * in-order loop) consumes the results through the standard `processMatch`.
+  * scheme, storing its bits in the same array. Nothing is emitted here; phase B consumes the
+  * results in row order - the flagless word-mapped lazy shapes through the degenerate cursor
+  * pass (`word_loop`), the rest through the standard `processMatch`.
   * One ring serves MANY maps - each row's leaf. The leaf's address material - the cell buffer
   * and the grower mask - is resolved once at admit from the flat descriptor array and carried in
   * the slot, so a steady visit dereferences nothing but the cell itself and the probe key: the
@@ -238,9 +239,11 @@ concept FlatLookupMap = AmacResumableMap<Map> && requires {
   *
   * Above the AMAC engagement threshold the lookups run in two phases per block: phase A is an
   * AMAC find ring completing rows out of order into the reused per-row result scratch; phase B
-  * is the same sequential in-order loop with the lookup replaced by the precomputed result, so
-  * replication offsets, used-flags semantics and every join kind's logic are untouched. Below
-  * the threshold the plain routed loop runs.
+  * consumes the results in row order. On the flagless word-mapped lazy shapes it degenerates to
+  * a dispatch-free cursor pass over the recorded words (`word_loop`); the other shapes run the
+  * same sequential in-order loop with the lookup replaced by the precomputed result - either
+  * way replication offsets, used-flags semantics and every join kind's logic are untouched.
+  * Below the threshold the plain routed loop runs.
   *
   * `MapsShape` is the standard maps shape (`HashJoin::MapsOne`/`MapsAll`/`MapsAsof`) driving
   * `JoinFeatures`/`processMatch` semantics; `Map` is the partitioned leaf map holding identical
@@ -339,16 +342,18 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
             skip_data = join_keys.buildRowSkipData(skip_buffer, selector.getIndexes());
     }
 
-    /// AMAC probe engagement, measured on this machine (see the P5 phase report): for the
-    /// cheap-key getters the adaptive look-ahead prefetch of the plain loop already extracts the
-    /// same memory-level parallelism, and the ring's extra pass costs ~9-10 ns/row at every
-    /// thread count - so those types keep the plain loop. The ring engages where the prefetcher
-    /// CANNOT run (`join_prefetch_supported` is false - the string-key maps, whose per-visit key
-    /// fetch is too expensive for the look-ahead heuristic): there it is the only mechanism that
-    /// overlaps the cell misses, measured ~5% (T16) to ~12% (T1) faster end-to-end. The runtime
-    /// conditions mirror the software-prefetch heuristics: the user toggle, the aggregate table
-    /// size outgrowing L2 (below it the tables are cache resident and the ring is pure
-    /// overhead), and a row floor so tiny blocks keep the plain loop (G6).
+    /// AMAC probe engagement, measured on this machine (see the P5 phase report): above the
+    /// threshold the ring is the single engaged probe path for every AMAC-capable shape. On the
+    /// string-key maps - where the look-ahead prefetcher cannot run at all (`getKeyHolder` per
+    /// look-ahead is too expensive for its heuristic) - it is the only mechanism that overlaps
+    /// the cell misses, measured ~20% (T16 and T1) faster end-to-end than the plain loop. On the
+    /// cheap-key getters it beats the adaptive look-ahead prefetch of the flat loop too (~11%
+    /// probe thread time at T16, parity-to-win at T1) since the slot-carried address chain and
+    /// the degenerate emit pass removed the ring's former per-visit metadata and two-phase
+    /// costs. The runtime conditions mirror the software-prefetch heuristics: the user toggle,
+    /// the aggregate table size outgrowing L2 (below it the tables are cache resident and the
+    /// ring is pure overhead), and a row floor so tiny blocks keep the plain loop (G6); the
+    /// loops below serve those regimes and the AMAC-incapable getters.
     using MapNonConst = std::remove_const_t<Map>;
     constexpr bool amac_supported = amac_join_supported<KeyGetter, MapNonConst>;
     constexpr bool prefetch_supported = join_prefetch_supported<KeyGetter, Map>;
@@ -357,8 +362,8 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     constexpr bool flat_lookup_supported = prefetch_supported && FlatLookupMap<MapNonConst>;
     bool use_amac = false;
     if constexpr (amac_supported)
-        use_amac = (!prefetch_supported || amac_probe_forced_for_tests) && amac_enabled && added_columns.enable_prefetch
-            && ht_slab_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows && rows < AmacRingSlot<false>::inactive_row;
+        use_amac = amac_enabled && added_columns.enable_prefetch && ht_slab_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
+            && rows < AmacRingSlot<false>::inactive_row;
 
     /// Routed look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC
     /// pass; same engagement threshold (the leaf tables are cache-sized by design, so both fire
@@ -470,6 +475,123 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
 
             if constexpr (join_features.need_replication)
                 added_columns.offsets_to_replicate[i] = current_offset;
+        }
+    };
+
+    /// Whether phase B can degenerate to the dispatch-free `word_loop` below: the recorded word
+    /// must be the mapped value itself, the emit must be the lazy ref-word append, and the shape
+    /// must consume no per-row state beyond the filter, the appended words and the replication
+    /// offsets. The flagged shapes (RIGHT/FULL used flags, incl. `setUsedOnce` - every shape
+    /// with first-match-only semantics is flagged) and ASOF keep the full loop above.
+    constexpr bool degenerate_phase_b = AddedColumnsType::isLazy() && amac_mapped_fits_word<typename MapNonConst::mapped_type>
+        && !join_features.need_flags && !join_features.is_asof_join && !join_features.is_any_join;
+
+    /// The degenerate phase B of the two-phase AMAC probe. On the shapes gated above,
+    /// `processMatch` reduces to: mark the row matched (filter + `matched_rows`), append the
+    /// recorded word (ALL: the list word, advancing the replication offset by its row count;
+    /// RightAny/Semi: its first ref) or the default on an added miss - so this pass consumes
+    /// `found_word` directly instead of rebuilding a `FindResult` and dispatching `processMatch`
+    /// per row, whose outlined `appendFromBlock` call forced the loop-carried state to spill.
+    /// Every row appends at most one entry, so the cursors write into pre-sized arrays with no
+    /// per-append capacity check. Row order, filter, offsets and `row_count` are exactly the
+    /// full loop's; the 3-way parity suite pins that.
+    auto word_loop = [&]<bool need_filter, bool with_refs>(const ProbeScratch & results [[maybe_unused]])
+    {
+        if constexpr (degenerate_phase_b)
+        {
+            using Mapped = MapNonConst::mapped_type;
+
+            if constexpr (need_filter)
+            {
+                added_columns.filter = IColumn::Filter(rows, 0);
+                added_columns.matched_rows.resize(rows);
+            }
+
+            const UInt64 * const words = results.found_word.data();
+            [[maybe_unused]] UInt8 * filter_data = nullptr;
+            [[maybe_unused]] IColumn::Offset * matched_cur = nullptr;
+            if constexpr (need_filter)
+            {
+                filter_data = added_columns.filter.data();
+                matched_cur = added_columns.matched_rows.data();
+            }
+            [[maybe_unused]] UInt64 * ref_cur = nullptr;
+            if constexpr (with_refs)
+            {
+                auto & row_refs = added_columns.lazy_output.row_refs;
+                const size_t refs_begin = row_refs.size();
+                row_refs.resize(refs_begin + rows);
+                ref_cur = row_refs.data() + refs_begin;
+            }
+            [[maybe_unused]] IColumn::Offset * offsets = nullptr;
+            if constexpr (join_features.need_replication)
+                offsets = added_columns.offsets_to_replicate.data();
+
+            [[maybe_unused]] IColumn::Offset current_offset = 0;
+            [[maybe_unused]] UInt64 appended_row_count = 0;
+            /// A local copy: the loop bound would otherwise reload through the closure per
+            /// iteration - the filter's byte stores may alias anything the closure points at.
+            const size_t rows_local = rows;
+            for (size_t i = 0; i < rows_local; ++i)
+            {
+                const UInt64 word = words[i];
+                if (word)
+                {
+                    /// A flagless anti match only leaves its row unmatched in the filter.
+                    if constexpr (!join_features.is_anti_join)
+                    {
+                        if constexpr (need_filter)
+                        {
+                            filter_data[i] = 1;
+                            *matched_cur++ = i;
+                        }
+                        if constexpr (join_features.is_all_join)
+                        {
+                            const UInt32 match_rows = refWordRows(word);
+                            current_offset += match_rows;
+                            if constexpr (with_refs)
+                            {
+                                *ref_cur++ = word;
+                                appended_row_count += match_rows;
+                            }
+                        }
+                        else if constexpr (with_refs)
+                        {
+                            *ref_cur++ = firstRefWord(mappedFromWord<Mapped>(word));
+                            ++appended_row_count;
+                        }
+                    }
+                }
+                else
+                {
+                    if constexpr (join_features.is_anti_join && join_features.left && need_filter)
+                    {
+                        filter_data[i] = 1;
+                        *matched_cur++ = i;
+                    }
+                    if constexpr (join_features.add_missing)
+                    {
+                        if constexpr (with_refs)
+                        {
+                            *ref_cur++ = 0;
+                            ++appended_row_count;
+                        }
+                        if constexpr (join_features.need_replication)
+                            ++current_offset;
+                    }
+                }
+                if constexpr (join_features.need_replication)
+                    offsets[i] = current_offset;
+            }
+
+            if constexpr (need_filter)
+                added_columns.matched_rows.resize(matched_cur - added_columns.matched_rows.data());
+            if constexpr (with_refs)
+            {
+                auto & row_refs = added_columns.lazy_output.row_refs;
+                row_refs.resize(ref_cur - row_refs.data());
+                added_columns.lazy_output.row_count += appended_row_count;
+            }
         }
     };
 
@@ -654,10 +776,27 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
             else
                 amac_find.template operator()<false>();
 
-            if (added_columns.need_filter)
-                loop.template operator()<true, false, true>(&results);
+            if constexpr (degenerate_phase_b)
+            {
+                auto word_dispatch = [&]<bool need_filter>()
+                {
+                    if (added_columns.has_columns_to_add)
+                        word_loop.template operator()<need_filter, true>(results);
+                    else
+                        word_loop.template operator()<need_filter, false>(results);
+                };
+                if (added_columns.need_filter)
+                    word_dispatch.template operator()<true>();
+                else
+                    word_dispatch.template operator()<false>();
+            }
             else
-                loop.template operator()<false, false, true>(&results);
+            {
+                if (added_columns.need_filter)
+                    loop.template operator()<true, false, true>(&results);
+                else
+                    loop.template operator()<false, false, true>(&results);
+            }
             amac_ran = true;
         }
     }

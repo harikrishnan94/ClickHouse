@@ -131,12 +131,11 @@ BuiltJoin buildJoin(
     result.join = std::make_shared<PartitionedHashJoin>(result.table_join, std::make_shared<const Block>(right_header), num_threads);
     if (reserve_safety_for_tests > 0)
         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
+    /// Without the override the AMAC build insert and two-phase probe engage by default here
+    /// (these builds exceed the slab-size threshold), covering the generic find pass on the
+    /// UInt64 map types.
     if (disable_amac)
         result.join->setAmacEnabledForTests(false);
-    else
-        /// The measured default engages the two-phase AMAC probe only for string-key maps;
-        /// force it here so these UInt64 joins cover the generic find pass too.
-        result.join->setForceAmacProbeForTests(true);
 
     std::vector<UInt64> keys;
     std::vector<UInt64> ids;
