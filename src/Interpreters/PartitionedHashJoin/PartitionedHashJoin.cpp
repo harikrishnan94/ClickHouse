@@ -12,6 +12,8 @@
 #include <Common/ProfileEvents.h>
 #include <Common/logger_useful.h>
 
+#include <fmt/ranges.h>
+
 #include <bit>
 #include <cmath>
 
@@ -70,6 +72,7 @@ PartitionedHashJoin::PartitionedHashJoin(
     , leaf_join(std::make_unique<HashJoin>(table_join, right_sample_block, any_take_last_row))
     , delegate_mode(!table_join->oneDisjunct())
     , maps_variant_index(leaf_join->data->maps.empty() ? 1 : leaf_join->data->maps.front().index())
+    , max_fanout_per_pass(ColumnsScatter::MAX_FANOUT_PER_PASS)
     , log(getLogger("PartitionedHashJoin"))
 {
     if (!PartitionedJoinMaps::isSupportedType(leaf_join->data->type))
@@ -348,25 +351,15 @@ void PartitionedHashJoin::decidePartitionPlan()
             const auto parallelism_floor = static_cast<size_t>(std::bit_width(std::bit_ceil(num_threads) - 1));
             bits = std::max(bits, parallelism_floor);
         }
-
-        /// Single-pass scatter only: the per-pass fanout ceiling caps the bits. Reaching the cap
-        /// needs an estimate above ~400M distinct keys (2^13 leaves of ~50K); the multi-pass
-        /// refine that lifts it is deferred (see the phase report). Correctness is unaffected -
-        /// the leaves just exceed the L2 budget.
-        const auto pass_cap_bits = static_cast<size_t>(std::countr_zero(ColumnsScatter::MAX_FANOUT_PER_PASS));
-        if (bits > pass_cap_bits)
-        {
-            LOG_WARNING(
-                log,
-                "Partition plan capped at {} bits by the single-pass fanout ceiling (the L2 rule asked for {}); "
-                "leaf hash tables will exceed the cache budget",
-                pass_cap_bits,
-                bits);
-            bits = pass_cap_bits;
-        }
     }
 
     partitions = 1uz << bits;
+
+    /// When the L2 rule wants more partitions than one scatter pass's fanout ceiling sustains,
+    /// the plan splits the bits into MSB-first passes (a first pass plus refine passes) instead
+    /// of capping the fanout. The 16-bit plan-loop bound above is what the saved 16-bit routes
+    /// and the UInt16 probe leaf ids cover, so no route widening is needed at any reachable plan.
+    pass_bits = bits > 0 ? ColumnsScatter::computePassBits(partitions, max_fanout_per_pass) : std::vector<size_t>{};
 }
 
 void PartitionedHashJoin::onBuildPhaseFinish()
@@ -414,9 +407,12 @@ void PartitionedHashJoin::onBuildPhaseFinish()
 
     LOG_TRACE(
         log,
-        "Partition plan: bits = {}, partitions = {}, {} rows in {} blocks, estimated {} distinct keys",
+        "Partition plan: bits = {}, partitions = {}, {} scatter pass(es) (bits per pass [{}]), {} rows in {} blocks, "
+        "estimated {} distinct keys",
         bits,
         partitions,
+        std::max<size_t>(pass_bits.size(), 1),
+        fmt::join(pass_bits, ", "),
         accumulated_rows.load(std::memory_order_relaxed),
         build_blocks.size(),
         static_cast<size_t>(hll_estimate));
@@ -473,6 +469,7 @@ PartitionedHashJoin::BuildStats PartitionedHashJoin::getBuildStats() const
     BuildStats res = stats;
     res.bits = bits;
     res.partitions = partitions;
+    res.pass_bits = pass_bits;
     res.hll_estimate = hll_estimate;
     res.slab_bytes = ht_slab_bytes;
     res.region_carves = region_carves.load(std::memory_order_relaxed);

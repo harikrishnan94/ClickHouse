@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -1213,6 +1214,26 @@ void reduceHistogramLanes(UInt32 * hist, const UInt32 * lanes, size_t fanout)
 void reduceHistogramLanes(UInt64 * hist, const UInt64 * lanes, size_t fanout)
 {
     reduceHistogramLanesImpl(hist, lanes, fanout);
+}
+
+std::vector<size_t> computePassBits(size_t fanout, size_t max_fanout_per_pass) /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+{
+    chassert(std::has_single_bit(fanout));
+    const size_t total_bits = static_cast<size_t>(std::countr_zero(fanout));
+    const size_t pass_bits = std::max<size_t>(
+        1, static_cast<size_t>(std::countr_zero(std::bit_floor(std::max<size_t>(2, max_fanout_per_pass)))));
+    const size_t num_passes = (total_bits + pass_bits - 1) / pass_bits;
+    const size_t per_pass = num_passes ? (total_bits + num_passes - 1) / num_passes : 0;
+
+    std::vector<size_t> result; /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+    size_t remaining = total_bits;
+    while (remaining > 0)
+    {
+        const size_t bits = std::min(per_pass, remaining);
+        result.push_back(bits);
+        remaining -= bits;
+    }
+    return result;
 }
 
 std::pair<MutableColumnPtr, std::span<char>> allocateUninitializedFixed(const IColumn & sample, size_t rows)

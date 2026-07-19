@@ -132,6 +132,12 @@ public:
     {
         size_t bits = 0;
         size_t partitions = 0;
+        /// Per-pass radix bits of the build scatter, MSB-first (one element = single-pass;
+        /// the plan splits when the L2 rule wants more bits than one pass's fanout ceiling).
+        std::vector<size_t> pass_bits;
+        /// Final per-leaf insertable row counts (size `partitions`), filled on the partitioned
+        /// path; lets tests assert per-leaf row parity between different pass plans.
+        std::vector<UInt64> leaf_row_counts;
         double hll_estimate = 0;
         /// Incremented at the slab allocation call sites, so the one-allocation assert counts
         /// real allocations instead of deriving 1 from the slab pointer being set.
@@ -161,6 +167,10 @@ public:
     /// Pins the build and probe onto the plain sequential loops regardless of the engagement
     /// threshold - lets tests cross-check the AMAC results against the sequential ones.
     void setAmacEnabledForTests(bool value) { amac_enabled = value; }
+
+    /// Lowers the per-pass fanout ceiling so small builds plan multi-pass scatters - lets tests
+    /// exercise the refine passes without a ~500M-key build.
+    void setMaxFanoutPerPassForTests(size_t value) { max_fanout_per_pass = value; }
 
 private:
     /// The non-joined-rows filler for RIGHT/FULL output over the partitioned leaf maps.
@@ -217,6 +227,13 @@ private:
     void histogramWorker(PostBuildContext & ctx, size_t worker) const;
     void allocateWorker(PostBuildContext & ctx, size_t worker) const;
     void scatterWorker(PostBuildContext & ctx, size_t worker);
+
+    /// One refine pass of a multi-pass plan: splits every current bucket into
+    /// `2^refine_bits` sub-buckets by the next MSB-first slice of the saved route words
+    /// (below the `bits_done` bits earlier passes consumed), group-major output. After the
+    /// last pass a row's leaf index equals `route >> (16 - bits)` - the same leaf a
+    /// single-pass plan of `bits` would give it, and the leaf the probe derives.
+    void refinePassWave(PostBuildContext & ctx, size_t refine_bits, size_t bits_done, std::atomic<UInt64> & stage_thread_us);
     void planAndAllocateHashTables(PostBuildContext & ctx);
     void leafBuildWorker(PostBuildContext & ctx, size_t worker);
     void finishBuildPhase(bool all_values_unique);
@@ -311,6 +328,11 @@ private:
     /// Partition plan, decided at the build barrier (`onBuildPhaseFinish`).
     size_t bits = 0;
     size_t partitions = 1;
+    /// Per-pass radix bits (MSB-first slices of the route word), sum == `bits`; more than one
+    /// element when the L2 rule wants a fanout above the per-pass ceiling (multi-pass scatter).
+    std::vector<size_t> pass_bits;
+    /// The per-pass fanout ceiling (`ColumnsScatter::MAX_FANOUT_PER_PASS`; test-overridable).
+    size_t max_fanout_per_pass;
     double hll_estimate = 0;
     double reserve_safety = 1.2; /// covers the sketch error (~1.15% at precision 13) and per-leaf spread
     std::vector<FillBlock> build_blocks; /// concatenated lanes, row-store block numbers assigned

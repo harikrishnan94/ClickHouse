@@ -56,6 +56,12 @@ inline size_t scatterBatchRowsTarget(size_t fanout)
     return std::max(SCATTER_BATCH_MIN_ROWS, fanout * SCATTER_BATCH_LINES_PER_PARTITION * (LINE_BYTES / sizeof(UInt64)));
 }
 
+/// Splits log2(fanout) partition bits into passes of at most log2(max_fanout_per_pass) bits each,
+/// balanced across passes (e.g. 15 bits under a 13-bit per-pass cap split 8 + 7, not 13 + 2 — the
+/// refine pass's working set is what the cap protects, so both passes should stay well under it).
+/// Empty for fanout <= 1. Same function as the radix join benchmark's computePassBits.
+std::vector<size_t> computePassBits(size_t fanout, size_t max_fanout_per_pass); /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+
 /// SWWC is enabled only for widths that divide the 64-byte line and are covered by the 16-byte
 /// minimum alignment of column data (so the per-partition staging line fills to exactly 64 bytes).
 inline bool widthSupportsSwwc(size_t w)

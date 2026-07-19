@@ -51,3 +51,23 @@ Build (G1) exits 0 with no warnings in touched files; all existing `PartitionedH
 - A refined leaf's row count differing from the single-pass plan's same leaf (routing inconsistency between `(g << b) | p` and `route >> (16 - total_bits)`).
 - Any existing gtest breaking (single-pass path perturbed).
 - The forced-cap build reporting `partitions` equal to the forced per-pass ceiling (cap still effective — port not engaged).
+
+## Iteration 3 — Unit 1 implementation + gates (GREEN)
+
+Implemented per the registered design:
+
+- `ColumnsScatter::computePassBits` (`src/Columns/ColumnsScatter.{h,cpp}`) — balanced MSB-first split, ported from the reference.
+- `decidePartitionPlan`: cap + warning REMOVED; `pass_bits = computePassBits(partitions, max_fanout_per_pass)`; `max_fanout_per_pass` member (default `ColumnsScatter::MAX_FANOUT_PER_PASS`), test hook `setMaxFanoutPerPassForTests`.
+- `postBuildPartitioned`: pass-1 fanout = `2^pass_bits[0] + 1`; multi-pass scatters the saved 16-bit route words as an extra cooperative stream (2 B/row); drop bucket freed before refine; refine wave loop; refined stage in the trace log.
+- `refinePassWave`: dynamic group claim, per-group pid derivation `(route >> shift) & mask`, exact per-sub-bucket allocation, SWWC scatter of locators/routes/fixed keys, Layer-1 `scatter` of generic pieces (worker-major pid spans for the first refine, single piece after), group-major output, eager input freeing.
+- `planAndAllocateHashTables` skips drop-bucket clearing on refined builds; fills `stats.leaf_row_counts`.
+- `leafBuildWorker`: refined-generic branch (one piece per leaf).
+- 4 new gtests: `MultiPassForcedPlanLeafParity`, `MultiPassWideLocatorsManyPassesWithDuplicates` (3+ passes, wide locators, duplicates), `MultiPassRightJoinNonJoined` (used flags + non-joined over refined leaves), `MultiPassGenericStringKeys` (generic-mode refine).
+
+### Gate results (raw)
+
+- **G1**: `ninja -C build/reldeb clickhouse unit_tests_dbms > build/reldeb/build_multipass.log 2>&1; echo $?` → `exit=0`; `grep -c warning build/reldeb/build_multipass.log` → `0`. All touched TUs rebuilt (log lines `[2/17] ... ColumnsScatter.cpp.o`, `[4/17] ... PartitionedHashJoin.cpp.o`, `[10/17] ... PartitionedHashJoinBuild.cpp.o`, `[7/17] ... gtest_partitioned_hash_join.cpp.o`).
+- **G2**: `build/reldeb/src/unit_tests_dbms --gtest_filter='PartitionedHashJoin.*'` → `[  PASSED  ] 13 tests.` (9 pre-existing + 4 new; log `build/reldeb/test_gtest_multipass.log`).
+- **Negative case**: temporarily re-added `bits = min(bits, countr_zero(bit_floor(max_fanout_per_pass)))` in `decidePartitionPlan`, rebuilt, ran `--gtest_filter='PartitionedHashJoin.MultiPass*'` → `4 FAILED TESTS` (all four new tests; log `build/reldeb/test_negcase.log`). Reverted the probe; full suite green again (13/13, `build/reldeb/test_gtest_multipass2.log`); `clickhouse` binary relinked against the reverted source (`build/reldeb/build_multipass_final.log`, exit 0).
+
+Verdict: Unit 1 GREEN. Committing.

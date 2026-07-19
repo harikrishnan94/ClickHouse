@@ -331,9 +331,22 @@ void insertSectionImpl(
 struct PartitionedHashJoin::PostBuildContext
 {
     size_t workers = 0;
-    size_t fanout = 0; /// partitions + 1 (the null bucket)
+    size_t fanout = 0; /// pass-1 partitions + 1 (the null bucket); == partitions + 1 on single-pass plans
     size_t num_key_columns = 0;
     bool generic_mode = false;
+
+    /// Multi-pass plan state. Pass 1 scatters to `2^route_bits` buckets (+ the drop bucket)
+    /// and additionally scatters the saved 16-bit route words, so the refine passes derive
+    /// their sub-bucket ids without touching the key columns. After the refine passes ran
+    /// (`refined`), every per-bucket container is final-leaf-indexed with no drop bucket.
+    size_t route_bits = 0; /// pass-1 bits (== total bits on single-pass plans)
+    bool multi_pass = false;
+    bool refined = false;
+    size_t current_buckets = 0; /// buckets refine passes operate on (drop bucket excluded)
+    std::vector<PaddedPODArray<UInt16>> routes;
+
+    /// Generic mode after a refine pass: ONE self-contained piece per (key column, leaf).
+    std::vector<MutableColumns> refined_pieces;
 
     PaddedPODArray<UInt64> worker_hist; /// workers x fanout
     std::vector<UInt64> bucket_rows; /// per bucket
@@ -356,6 +369,7 @@ struct PartitionedHashJoin::PostBuildContext
     {
         std::vector<ColumnsScatter::ScatterScratch> key_scratch;
         ColumnsScatter::ScatterScratch locator_scratch;
+        ColumnsScatter::ScatterScratch route_scratch;
         PaddedPODArray<UInt64> locator_piece;
         PaddedPODArray<UInt32> locator_piece32;
         bool all_values_unique = true;
@@ -657,7 +671,10 @@ bool PartitionedHashJoin::postBuildPartitioned()
 {
     PostBuildContext ctx;
     ctx.workers = std::max<size_t>(1, std::min(num_threads, build_blocks.size()));
-    ctx.fanout = partitions + 1;
+    chassert(!pass_bits.empty());
+    ctx.multi_pass = pass_bits.size() > 1;
+    ctx.route_bits = pass_bits.front();
+    ctx.fanout = (1uz << ctx.route_bits) + 1;
     ctx.num_key_columns = build_blocks.front().key_columns.size();
 
     ctx.generic_mode = false;
@@ -678,6 +695,8 @@ bool PartitionedHashJoin::postBuildPartitioned()
         ctx.locators32.resize(ctx.fanout);
     else
         ctx.locators.resize(ctx.fanout);
+    if (ctx.multi_pass)
+        ctx.routes.resize(ctx.fanout);
     if (ctx.generic_mode)
     {
         ctx.pieces.resize(ctx.num_key_columns);
@@ -747,6 +766,34 @@ bool PartitionedHashJoin::postBuildPartitioned()
     run_wave([&](size_t w) { scatterWorker(ctx, w); }, scatter_thread_us);
     const UInt64 scatter_wall_us = stage_watch.elapsedMicroseconds();
 
+    std::atomic<UInt64> refine_thread_us{0};
+    stage_watch.restart();
+    if (ctx.multi_pass)
+    {
+        /// The drop bucket's rows (null keys, mask-filtered) are never inserted; free them
+        /// before the refine passes so they are neither scattered again nor kept alive.
+        const size_t drop = ctx.fanout - 1;
+        if (narrow_locators)
+            ctx.locators32[drop] = {};
+        else
+            ctx.locators[drop] = {};
+        ctx.routes[drop] = {};
+        if (!ctx.generic_mode)
+            for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                ctx.fixed_out[c][drop].reset();
+
+        ctx.current_buckets = drop;
+        size_t bits_done = ctx.route_bits;
+        for (size_t k = 1; k < pass_bits.size(); ++k)
+        {
+            refinePassWave(ctx, pass_bits[k], bits_done, refine_thread_us);
+            bits_done += pass_bits[k];
+        }
+        chassert(bits_done == bits);
+        chassert(ctx.current_buckets == partitions);
+    }
+    const UInt64 refine_wall_us = stage_watch.elapsedMicroseconds();
+
     stage_watch.restart();
     {
         /// The single contiguous hash-table allocation, right before the leaf builds (R1);
@@ -764,13 +811,15 @@ bool PartitionedHashJoin::postBuildPartitioned()
     LOG_TRACE(
         log,
         "Post-build stages, wall/thread ms: histogram {:.1f}/{:.1f}, chunk allocation {:.1f}/{:.1f}, scatter {:.1f}/{:.1f}, "
-        "hash-table plan+slab {:.1f}, leaf inserts {:.1f}/{:.1f} (AMAC {})",
+        "refine passes {:.1f}/{:.1f}, hash-table plan+slab {:.1f}, leaf inserts {:.1f}/{:.1f} (AMAC {})",
         to_ms(hist_wall_us),
         to_ms(hist_thread_us.load(std::memory_order_relaxed)),
         to_ms(alloc_wall_us),
         to_ms(alloc_thread_us.load(std::memory_order_relaxed)),
         to_ms(scatter_wall_us),
         to_ms(scatter_thread_us.load(std::memory_order_relaxed)),
+        to_ms(refine_wall_us),
+        to_ms(refine_thread_us.load(std::memory_order_relaxed)),
         to_ms(plan_wall_us),
         to_ms(insert_wall_us),
         to_ms(insert_thread_us.load(std::memory_order_relaxed)),
@@ -806,7 +855,7 @@ void PartitionedHashJoin::histogramWorker(PostBuildContext & ctx, size_t worker)
     {
         const FillBlock & fill = build_blocks[b];
         bucket_ids.resize(fill.rows);
-        deriveBucketIds(fill.routes, fill.skipData(), bits, partitions, bucket_ids.data());
+        deriveBucketIds(fill.routes, fill.skipData(), ctx.route_bits, ctx.fanout - 1, bucket_ids.data());
         ColumnsScatter::histogramPidChunk(bucket_ids.data(), fill.rows, hist, hist_lanes, ctx.fanout);
     }
     if (hist_lanes)
@@ -833,6 +882,8 @@ void PartitionedHashJoin::allocateWorker(PostBuildContext & ctx, size_t worker) 
             ctx.locators32[p].resize_exact(running);
         else
             ctx.locators[p].resize_exact(running);
+        if (ctx.multi_pass)
+            ctx.routes[p].resize_exact(running);
         if (!ctx.generic_mode)
         {
             for (size_t c = 0; c < ctx.num_key_columns; ++c)
@@ -864,6 +915,29 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
                                         : reinterpret_cast<char *>(ctx.locators[p].data() + start);
         state.locator_scratch.seed(p, cursor);
     }
+
+    /// Multi-pass plans scatter the saved 16-bit route words alongside the locators (same
+    /// layout), so the refine passes can derive their sub-bucket ids from them.
+    const bool route_swwc = ctx.multi_pass && ctx.fanout >= ColumnsScatter::SWWC_MIN_FANOUT;
+    if (ctx.multi_pass)
+    {
+        state.route_scratch.init(ctx.fanout, route_swwc);
+        for (size_t p = 0; p < ctx.fanout; ++p)
+        {
+            const UInt64 start = ctx.starts[p * ctx.workers + worker];
+            state.route_scratch.seed(p, reinterpret_cast<char *>(ctx.routes[p].data() + start));
+        }
+    }
+    auto scatter_routes = [&](const FillBlock & fill, const UInt16 * bucket_ids)
+    {
+        ColumnsScatter::scatterPidChunk(
+            sizeof(UInt16),
+            bucket_ids,
+            reinterpret_cast<const char *>(fill.routes.data()),
+            fill.rows,
+            route_swwc,
+            state.route_scratch);
+    };
 
     /// The locator rows must land in the same per-bucket positions the histogram assigned, so
     /// bucket ids are derived once per block and shared by every scattered column of the block.
@@ -932,7 +1006,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
             {
                 const FillBlock & fill = build_blocks[i];
                 batch_bucket_ids[i - batch_begin].resize(fill.rows);
-                deriveBucketIds(fill.routes, fill.skipData(), bits, partitions, batch_bucket_ids[i - batch_begin].data());
+                deriveBucketIds(fill.routes, fill.skipData(), ctx.route_bits, ctx.fanout - 1, batch_bucket_ids[i - batch_begin].data());
             }
             for (size_t c = 0; c < ctx.num_key_columns; ++c)
                 for (size_t i = batch_begin; i < b; ++i)
@@ -947,6 +1021,9 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
                         state.key_scratch[c]);
             for (size_t i = batch_begin; i < b; ++i)
                 scatter_locators(build_blocks[i], batch_bucket_ids[i - batch_begin].data());
+            if (ctx.multi_pass)
+                for (size_t i = batch_begin; i < b; ++i)
+                    scatter_routes(build_blocks[i], batch_bucket_ids[i - batch_begin].data());
             for (size_t i = batch_begin; i < b; ++i)
                 release_block_inputs(build_blocks[i]);
         }
@@ -954,6 +1031,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
         for (auto & scratch : state.key_scratch)
             scratch.drain();
         state.locator_scratch.drain();
+        state.route_scratch.drain();
         return;
     }
 
@@ -968,11 +1046,14 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
     {
         const FillBlock & fill = build_blocks[i];
         stripe_bucket_ids[i - begin].resize(fill.rows);
-        deriveBucketIds(fill.routes, fill.skipData(), bits, partitions, stripe_bucket_ids[i - begin].data());
+        deriveBucketIds(fill.routes, fill.skipData(), ctx.route_bits, ctx.fanout - 1, stripe_bucket_ids[i - begin].data());
         bucket_id_spans[i - begin] = {stripe_bucket_ids[i - begin].data(), fill.rows};
         scatter_locators(fill, stripe_bucket_ids[i - begin].data());
+        if (ctx.multi_pass)
+            scatter_routes(fill, stripe_bucket_ids[i - begin].data());
     }
     state.locator_scratch.drain();
+    state.route_scratch.drain();
 
     std::vector<const IColumn *> sources(end - begin);
     for (size_t c = 0; c < ctx.num_key_columns; ++c)
@@ -981,22 +1062,236 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
             sources[i - begin] = build_blocks[i].key_columns[c];
         ctx.pieces[c][worker] = ColumnsScatter::scatter(sources, bucket_id_spans, ctx.fanout);
         /// Drop the null bucket's piece right away - those rows are never inserted.
-        ctx.pieces[c][worker][partitions].reset();
+        ctx.pieces[c][worker][ctx.fanout - 1].reset();
     }
     for (size_t i = begin; i < end; ++i)
         release_block_inputs(build_blocks[i]);
 }
 
+void PartitionedHashJoin::refinePassWave(
+    PostBuildContext & ctx, size_t refine_bits, size_t bits_done, std::atomic<UInt64> & stage_thread_us)
+{
+    /// Splits every current bucket ("group") into `2^refine_bits` sub-buckets by the next
+    /// MSB-first slice of the group's scattered route words, group-major output
+    /// (`leaf = (group << refine_bits) | sub`) - so after the last pass a row's leaf index
+    /// equals `route >> (16 - bits)`, exactly the leaf a single-pass plan would give it and
+    /// the leaf the probe derives from its recomputed route word. Groups are claimed
+    /// dynamically (their sizes can be skewed) and each group's inputs are freed as soon as
+    /// they are consumed, so the pass cycles memory instead of doubling the scattered side.
+    const size_t groups = ctx.current_buckets;
+    const size_t sub_fanout = 1uz << refine_bits;
+    const size_t new_buckets = groups * sub_fanout;
+    const bool last_pass = bits_done + refine_bits == bits;
+    chassert(bits_done + refine_bits <= 16);
+    chassert(sub_fanout <= ColumnsScatter::MAX_FANOUT_PER_PASS);
+    const auto shift = static_cast<UInt32>(16 - bits_done - refine_bits);
+    const auto mask = static_cast<UInt32>(sub_fanout - 1);
+
+    std::vector<PaddedPODArray<UInt64>> new_locators;
+    std::vector<PaddedPODArray<UInt32>> new_locators32;
+    if (narrow_locators)
+        new_locators32.resize(new_buckets);
+    else
+        new_locators.resize(new_buckets);
+    std::vector<PaddedPODArray<UInt16>> new_routes;
+    if (!last_pass)
+        new_routes.resize(new_buckets);
+    std::vector<MutableColumns> new_fixed;
+    std::vector<MutableColumns> new_pieces;
+    for (size_t c = 0; c < ctx.num_key_columns; ++c)
+        (ctx.generic_mode ? new_pieces : new_fixed).emplace_back(new_buckets);
+    std::vector<UInt64> new_bucket_rows(new_buckets, 0);
+
+    std::atomic<size_t> next_group{0};
+
+    auto worker_body = [&]
+    {
+        const size_t locator_width = narrow_locators ? sizeof(UInt32) : sizeof(UInt64);
+        const bool swwc_fanout = sub_fanout >= ColumnsScatter::SWWC_MIN_FANOUT;
+        ColumnsScatter::ScatterScratch scratch;
+        scratch.init(sub_fanout, swwc_fanout);
+        PaddedPODArray<UInt16> pids;
+        PaddedPODArray<UInt32> hist(sub_fanout);
+        std::vector<const IColumn *> sources;
+        std::vector<std::span<const UInt16>> pid_spans;
+
+        for (size_t g = next_group.fetch_add(1, std::memory_order_relaxed); g < groups;
+             g = next_group.fetch_add(1, std::memory_order_relaxed))
+        {
+            const size_t n = ctx.bucket_rows[g];
+            const UInt16 * group_routes = ctx.routes[g].data();
+            const size_t out_base = g * sub_fanout;
+
+            pids.resize(n);
+            memset(hist.data(), 0, sub_fanout * sizeof(UInt32));
+            for (size_t i = 0; i < n; ++i)
+            {
+                const auto p = static_cast<UInt16>((group_routes[i] >> shift) & mask);
+                pids[i] = p;
+                ++hist[p];
+            }
+            for (size_t p = 0; p < sub_fanout; ++p)
+                new_bucket_rows[out_base + p] = hist[p];
+
+            /// Locators (widths 4 and 8 both support SWWC).
+            scratch.setUseSwwc(swwc_fanout);
+            for (size_t p = 0; p < sub_fanout; ++p)
+            {
+                char * cursor = nullptr;
+                if (narrow_locators)
+                {
+                    new_locators32[out_base + p].resize_exact(hist[p]);
+                    cursor = reinterpret_cast<char *>(new_locators32[out_base + p].data());
+                }
+                else
+                {
+                    new_locators[out_base + p].resize_exact(hist[p]);
+                    cursor = reinterpret_cast<char *>(new_locators[out_base + p].data());
+                }
+                scratch.seed(p, cursor);
+            }
+            {
+                const char * data = narrow_locators ? reinterpret_cast<const char *>(ctx.locators32[g].data())
+                                                    : reinterpret_cast<const char *>(ctx.locators[g].data());
+                ColumnsScatter::scatterPidChunk(locator_width, pids.data(), data, n, swwc_fanout, scratch);
+                scratch.drain();
+            }
+            if (narrow_locators)
+                ctx.locators32[g] = {};
+            else
+                ctx.locators[g] = {};
+
+            /// The route words themselves, when another refine pass follows.
+            if (!last_pass)
+            {
+                scratch.setUseSwwc(swwc_fanout);
+                for (size_t p = 0; p < sub_fanout; ++p)
+                {
+                    new_routes[out_base + p].resize_exact(hist[p]);
+                    scratch.seed(p, reinterpret_cast<char *>(new_routes[out_base + p].data()));
+                }
+                ColumnsScatter::scatterPidChunk(
+                    sizeof(UInt16), pids.data(), reinterpret_cast<const char *>(group_routes), n, swwc_fanout, scratch);
+                scratch.drain();
+            }
+            ctx.routes[g] = {};
+
+            /// Key columns.
+            if (!ctx.generic_mode)
+            {
+                for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                {
+                    const size_t width = ctx.fixed_widths[c];
+                    const bool use_swwc = swwc_fanout && ColumnsScatter::widthSupportsSwwc(width);
+                    scratch.setUseSwwc(use_swwc);
+                    const IColumn & sample = *ctx.fixed_out[c][g];
+                    for (size_t p = 0; p < sub_fanout; ++p)
+                    {
+                        auto [column, raw] = ColumnsScatter::allocateUninitializedFixed(sample, hist[p]);
+                        new_fixed[c][out_base + p] = std::move(column);
+                        scratch.seed(p, raw.data());
+                    }
+                    ColumnsScatter::scatterPidChunk(
+                        width,
+                        pids.data(),
+                        ctx.fixed_out[c][g]->getRawData().data(), /// NOLINT(bugprone-suspicious-stringview-data-usage)
+                        n,
+                        use_swwc,
+                        scratch);
+                    scratch.drain();
+                    ctx.fixed_out[c][g].reset();
+                }
+            }
+            else
+            {
+                /// Sources of one group: the per-worker pieces of the first refine pass, or the
+                /// single refined piece afterwards. The pid spans slice the group's pid array
+                /// the same worker-major way the cooperative locator layout is built, so rows
+                /// land at the same per-sub-bucket positions as their locators.
+                for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                {
+                    sources.clear();
+                    pid_spans.clear();
+                    if (!ctx.refined)
+                    {
+                        for (size_t w = 0; w < ctx.workers; ++w)
+                        {
+                            sources.push_back(ctx.pieces[c][w][g].get());
+                            pid_spans.emplace_back(pids.data() + ctx.starts[g * ctx.workers + w], ctx.worker_hist[w * ctx.fanout + g]);
+                        }
+                    }
+                    else
+                    {
+                        sources.push_back(ctx.refined_pieces[c][g].get());
+                        pid_spans.emplace_back(pids.data(), n);
+                    }
+                    MutableColumns outs = ColumnsScatter::scatter(sources, pid_spans, sub_fanout, {hist.data(), sub_fanout});
+                    for (size_t p = 0; p < sub_fanout; ++p)
+                        new_pieces[c][out_base + p] = std::move(outs[p]);
+                    if (!ctx.refined)
+                        for (size_t w = 0; w < ctx.workers; ++w)
+                            ctx.pieces[c][w][g].reset();
+                    else
+                        ctx.refined_pieces[c][g].reset();
+                }
+            }
+        }
+    };
+
+    try
+    {
+        for (size_t w = 0; w < ctx.workers; ++w)
+            post_build_pool->scheduleOrThrow(
+                [&worker_body, &stage_thread_us, thread_group = CurrentThread::getGroup()]
+                {
+                    ThreadGroupSwitcher switcher(thread_group, ThreadName::PARTITIONED_JOIN);
+                    ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
+                    Stopwatch stage_watch;
+                    worker_body();
+                    stage_thread_us.fetch_add(stage_watch.elapsedMicroseconds(), std::memory_order_relaxed);
+                });
+        post_build_pool->wait();
+    }
+    catch (...)
+    {
+        post_build_pool->wait();
+        throw;
+    }
+
+    if (narrow_locators)
+        ctx.locators32 = std::move(new_locators32);
+    else
+        ctx.locators = std::move(new_locators);
+    ctx.routes = std::move(new_routes);
+    if (!ctx.generic_mode)
+        ctx.fixed_out = std::move(new_fixed);
+    else
+    {
+        ctx.refined_pieces = std::move(new_pieces);
+        ctx.pieces.clear();
+    }
+    ctx.bucket_rows = std::move(new_bucket_rows);
+    ctx.current_buckets = new_buckets;
+    ctx.refined = true;
+}
+
 void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
 {
-    /// Drop the null bucket's outputs: null-key rows are never inserted.
-    if (narrow_locators)
-        ctx.locators32[partitions] = {};
-    else
-        ctx.locators[partitions] = {};
-    if (!ctx.generic_mode)
-        for (size_t c = 0; c < ctx.num_key_columns; ++c)
-            ctx.fixed_out[c][partitions].reset();
+    /// Drop the null bucket's outputs: null-key rows are never inserted. On a refined
+    /// (multi-pass) build the containers are final-leaf-indexed and the drop bucket was
+    /// already freed before the refine passes.
+    if (!ctx.refined)
+    {
+        if (narrow_locators)
+            ctx.locators32[partitions] = {};
+        else
+            ctx.locators[partitions] = {};
+        if (!ctx.generic_mode)
+            for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                ctx.fixed_out[c][partitions].reset();
+    }
+
+    stats.leaf_row_counts.assign(ctx.bucket_rows.begin(), ctx.bucket_rows.begin() + partitions);
 
     const HashJoin::Type type = leaf_join->data->type;
     const auto per_leaf_estimate
@@ -1068,6 +1363,23 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
                 arena,
                 state.all_values_unique);
         }
+        else if (ctx.refined)
+        {
+            /// After the refine passes a leaf has ONE self-contained piece per key column,
+            /// aligned with the leaf's full locator array.
+            for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                section_columns[c] = ctx.refined_pieces[c][leaf].get();
+            insertLeafSection(
+                leaf_maps[leaf],
+                section_columns,
+                leaf_rows,
+                narrow_locators ? nullptr : ctx.locators[leaf].data(),
+                narrow_locators ? ctx.locators32[leaf].data() : nullptr,
+                /*block_no=*/0,
+                /*skip_bytes=*/nullptr,
+                arena,
+                state.all_values_unique);
+        }
         else
         {
             /// The pieces of one leaf, in worker order, are exactly the locator layout.
@@ -1103,6 +1415,11 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
         {
             for (size_t c = 0; c < ctx.num_key_columns; ++c)
                 ctx.fixed_out[c][leaf].reset();
+        }
+        else if (ctx.refined)
+        {
+            for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                ctx.refined_pieces[c][leaf].reset();
         }
         else
         {
