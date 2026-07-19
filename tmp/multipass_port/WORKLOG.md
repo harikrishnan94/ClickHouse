@@ -71,3 +71,22 @@ Implemented per the registered design:
 - **Negative case**: temporarily re-added `bits = min(bits, countr_zero(bit_floor(max_fanout_per_pass)))` in `decidePartitionPlan`, rebuilt, ran `--gtest_filter='PartitionedHashJoin.MultiPass*'` → `4 FAILED TESTS` (all four new tests; log `build/reldeb/test_negcase.log`). Reverted the probe; full suite green again (13/13, `build/reldeb/test_gtest_multipass2.log`); `clickhouse` binary relinked against the reverted source (`build/reldeb/build_multipass_final.log`, exit 0).
 
 Verdict: Unit 1 GREEN. Committing.
+
+## Iteration 4 — Unit 2 PRE-REGISTRATION (correctness under multi-pass)
+
+No production code changes expected in this unit; the work is building and running the checks.
+
+### Expected outcome
+
+The losing-cell query plans 15 bits / 32768 partitions with no cap warning; hash verification agrees with `parallel_hash` on every check, including a genuinely >13-bit multi-pass plan; the shared `HashJoin` machinery is untouched.
+
+### Gate invocations (exact)
+
+- **G3**: `build/reldeb/programs/clickhouse local --path=/mnt/data/join_bench_data --multiquery --send_logs_level=warning < tmp/q_lose_cell.sql 2>&1 | grep -c "Partition plan capped"` → `0`. Plan observation: same query with `--send_logs_level=trace 2>&1 | grep "Partition plan"` → `bits = 15, partitions = 32768, 2 scatter pass(es)`. Refuted by: any cap warning, or a plan below 15 bits.
+- **G4a (bench small cells, bit-exact oracle)**: `python3 bep/tools/join_mergetree_bench.py run --path=/mnt/data/join_bench_data --cardinalities=4194304 --multiplicities=1 --ratios=1 --hit-rates=0.5,1 --build-payload-columns=7 --probe-payload-columns=3 --threads=32 --runs=1` → every point `Verification: PASS`, summary `hash_mismatch=0`. (These plan single-pass; the sorted `FORMAT Hash` oracle is capped at 10M output rows, so multi-pass cells cannot use it.)
+- **G4b (multi-pass hash verification)**: `tmp/multipass_port/verify_multipass.sql` via `clickhouse local`: LEFT JOIN with duplicate build keys — build `SELECT intDiv(number, 2) AS k, number AS bv FROM numbers(1048576000)` (524288000 distinct keys, every key twice → the `RowRefList` path), probe `SELECT number AS k, number AS pv FROM numbers(600000000)` (75.7M non-matching rows exercise LEFT semantics) — comparing `count()`, `sum(cityHash64(k, pv, ifNull(bv, 42)))` between `join_algorithm='partitioned_hash'` and `'parallel_hash'`. Mechanism proof: `--send_logs_level=trace` grep shows `Partition plan: bits = 15 ... 2 scatter pass(es) (bits per pass [8, 7])` for the partitioned run. Refuted by: any aggregate differing, or the plan line showing 1 pass.
+- **Regression gate**: `build/reldeb/src/unit_tests_dbms --gtest_filter='PartitionedHashJoin.*'` → 13/13; `git diff --stat ahj -- src/Interpreters/HashJoin/` → empty AND `git diff --stat fd53e4e604e..HEAD -- src/Interpreters/HashJoin/` → empty.
+
+### What would refute
+
+A hash/aggregate mismatch on any check (routing or locator corruption in the refine pass); a cap warning or sub-15-bit plan on the losing cell (cap not actually lifted); any diff under `src/Interpreters/HashJoin/`.
