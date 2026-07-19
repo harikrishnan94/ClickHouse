@@ -1,0 +1,13 @@
+Benchmark path=/mnt/data/join_bench_data points=1 threads=32 runs=3 build_payload_columns=0 probe_payload_columns=7; n_hit=round-half-up(N_p * hit_rate).
+
+Assertions: PASS for D=436207616 m=1 ratio=2 hit=1 bp=0 pp=7; probe/build/joined=872415232/436207616/872415232
+
+Point: D=436207616 m=1 ratio=2 hit=1 bp=0 pp=7 N_p=872415232 n_hit=872415232
+Verification: SKIP (output rows 872415232 exceed cap 10000000)
+algorithm         status  verify  median_ms  min_ms    build_ms   probe_ms   partitions  leaf_rows  chj_build_ms  selected_rows  selected_bytes  peak_mem_mb
+----------------  ------  ------  ---------  --------  ---------  ---------  ----------  ---------  ------------  -------------  --------------  -----------
+partitioned_hash  OK      SKIP    4924.000   4721.000  13634.892  40790.357  8192        436207616  0.000         1308622848     87241523200     23134.401  
+parallel_hash     OK      SKIP    5101.000   5077.000  0.000      0.000      0           0          26710.138     1308622848     87241523200     16585.782  
+Winner: partitioned_hash (1.036x)
+
+Summary: wins=1 losses=0 ties=0 fallback=0 invalid=0 errors=0 hash_mismatch=0

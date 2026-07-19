@@ -117,3 +117,55 @@ The D=524M bp=0 cell flips to `partitioned_hash` (mechanism: 32768 partitions pu
 ### What would refute
 
 G5/G6 wins inside the noise band (mechanism not proven); any sweep cell slower by more than the band (refine passes leaking into single-pass plans — would demand a diff review of the bits <= 13 path); nonzero FALLBACK/ERROR/INVALID/CANNOT_SCHEDULE/hash-mismatch count.
+
+## Iteration 7 — Unit 3 cycle 1: G5/G6 RED; diagnosis; split-policy fix
+
+### Raw results (balanced split, [8,7] at 15 bits / [7,7] at 14 bits)
+
+- G5 (`tmp/multipass_port/g5_lose_cell.log`): D=524M — partitioned 6287 ms vs parallel 6101 ms → `Winner: parallel_hash (1.030x)`. Re-run (`g5_rerun.log`): 6519 vs 6125 → `parallel_hash (1.064x)`. Baseline loss was 1.051x (6323 vs 6015). partitions=32768 confirmed; build_ms 28547/33170 (baseline 29725), probe_ms 53236/52930 (baseline 49905).
+- G6 (`tmp/multipass_port/g6_ladder.log`): D=436M — partitioned 5517 vs parallel 4996 → `parallel_hash (1.104x)`; baseline was a partitioned WIN 1.045x (4834 vs 5050). REGRESSION: build_ms 13632 → 27682 (doubled), probe ~same (41111 → 41872). D=470M — 5573 vs 5415 → `parallel_hash (1.029x)`; baseline loss 1.040x (5647 vs 5432); build 28483 → 29067, probe 44620 → 47209.
+
+### Diagnosis (from the numbers, not a story)
+
+The D=436M build doubling is the smoking gun: 14 bits split balanced as [7,7] runs BOTH scatter passes at fanout 128 — below `SWWC_MIN_FANOUT = 256` — so both passes lose the software-write-combining non-temporal path (RFO traffic + cache pollution on every partition write), where the baseline's single capped pass ran at fanout 8192 with SWWC. At 15 bits ([8, 7]) pass 1 sits at exactly 256 (SWWC on) and the refine at 128 (off). The stage trace at D=524M shows scatter 6529 + refine 3659 thread-ms ≈ 10.2 s vs the single-pass baseline's scatter-only cost. The balanced-split heuristic came from the reference's regime (small `f_max`, e.g. 13 bits under an 8-bit cap); in this port's regime (cap 13 bits, totals 14-16) it is wrong.
+
+### Fix (pre-registered expectation)
+
+Change `computePassBits` to greedy MSB-first: every pass takes `min(remaining, cap_bits)` — 14 → [13, 1], 15 → [13, 2], 16 → [13, 3]. Pass 1 then runs EXACTLY like today's capped single pass (fanout 8192, SWWC, proven cost), and the refine passes run tiny fanouts (2-8) over groups of ~1/8192 of the side (~64K rows, ~1 MiB — cache-resident input AND output per group). Expected: D=436M build returns to ≈ baseline + a small refine term; D≥470M leaf inserts get the L2-resident payoff. The forced-cap gtests are split-agnostic (they assert per-pass <= ceiling, sum == bits, leaf parity) and must stay green; G4b re-run must stay identical (routing is split-invariant by construction — same MSB-first slices).
+
+Refuted if: D=436M build_ms stays ~2x baseline (the SWWC theory is wrong), or G5 still loses by more than noise with build fixed (the mechanism was never the build).
+
+## Iteration 8 — Unit 3 cycle 2: greedy split lands; G5/G6 still red; controlled experiments
+
+### Greedy split results (raw)
+
+- Correctness unchanged: 13/13 gtests (`build/reldeb/test_gtest_greedy.log`); G4b re-run identical hashes with the `[13, 2]` plan (`tmp/multipass_port/g4b_out_greedy.tsv`, `g4b_trace_greedy.log`).
+- `tmp/multipass_port/g5g6_greedy.log`: D=436M `parallel_hash (1.063x)` (partitioned build_ms 29729); D=470M `parallel_hash (1.093x)`; D=524M `parallel_hash (1.063x)`. The SWWC theory was WRONG as the main effect: greedy `[13, 1]` build (29729) ≈ balanced `[7, 7]` build (27682).
+
+### Controlled A/B on one binary generation, bench methodology (D=436M, r=2, bp=0, pp=7, t=32, runs=3)
+
+1. Diagnostic re-clamp to 13 bits (temporary, reverted): partitioned median 4924, build_ms 13634 → `Winner: partitioned_hash (1.036x)` (`tmp/multipass_port/g6_436m_capped_bench.log`). Reproduces the baseline (4834/13632) — the harness and machine still produce the old numbers.
+2. Multi-pass 14-bit `[13, 1]`: median 5384, build_ms 29729 → loses.
+3. Diagnostic single-pass 14-bit (per-pass ceiling raised to 16384, NO refine pass at all; temporary, reverted): median 5310, build_ms 26965 → `parallel_hash (1.058x)` (`tmp/multipass_port/g6_436m_single14_bench.log`).
+
+Conclusion forced by 2 vs 3: the refine pass costs ~2.8 s thread (~90 ms wall) — the dominant regression (+13-16 s build thread) comes from the LEAF COUNT itself (16384 x 1 MiB tables build 2x slower than 8192 x 2 MiB, same total bytes, same load factor). The L2-residency premise ("smaller leaves insert faster") is contradicted at D=436M by direct experiment.
+
+### Variance observation (LEAD, unsettled)
+
+Warm-process stage traces (`tmp/multipass_port/trace_single14_x4.log`): leaf-insert thread time is BIMODAL across identical runs — 16679 / 16602 / 4434 / 17029 ms. One run of four hit a 4x-faster insert profile at 14 bits. The capped 13-bit bench build (13.6 s = scatter ~7 s + inserts ~5-6 s) matches the FAST profile; the 14/15-bit bench builds match the SLOW profile. Root cause not established (THP/page-placement luck is a candidate); recorded as a lead, not used as evidence.
+
+### Decision
+
+Revert both diagnostics (done; only the greedy `computePassBits` stays). Cycle 3: characterize the honest run-to-run spread of the REAL multi-pass config on the G5 cell (repeat invocations), then decide between a red-but-noise-dominated verdict and a mechanism-refuted verdict. No gate weakening: the flip either reproduces outside the declared band or the unit reports red/UNSETTLED.
+
+### Note on the ORIGINAL premise (recorded for the report)
+
+The baseline ladder itself shows probe_ms rising smoothly across the 2 MiB -> 4 MiB leaf boundary (41.1 s at D=436M, 44.6 s at 470M, 49.9 s at 524M) while build_ms DOUBLES (13.6 -> 28.5 s). `PartitionedHashJoin` probes UNPARTITIONED (probe rows route randomly across all leaves; the class comment already says "the probe misses across the whole slab, not within one leaf") — leaf L2 residency cannot help this probe, unlike `RadixHashJoin` (whose probe side is scattered). The reachable payoff, if any, is in the leaf BUILD.
+
+## Iteration 9 — Unit 3 cycle 3 PRE-REGISTRATION: THP hypothesis on the slab
+
+The bimodal insert observation (identical 14-bit runs: 16.7 / 16.6 / 4.4 / 17.0 s thread) suggests the leaf inserts are TLB-bound on the 16 GiB slab, not L2-bound: system THP policy is `madvise` (`/sys/kernel/mm/transparent_hugepage/enabled` = `always [madvise] never`, defrag `[madvise]`, page size 4096), the slab comes from plain `malloc` (jemalloc, which does not `MADV_HUGEPAGE` by default), so hugepage backing is luck — and one lucky run shows 3.8x faster inserts.
+
+Experiment (diagnostic first, adopt only if it wins): `madvise(MADV_HUGEPAGE)` on `ht_slab` right after the slab allocation. Expectation: D=436M multi-pass build_ms drops toward ~14 s and insert thread time stabilizes near the fast profile; if the leaf-insert speedup materializes at D>=470M too, G5/G6 flip. Refuted if: build_ms stays ~27-30 s (TLB theory wrong or madvise ineffective on jemalloc-served pages), or inserts stay bimodal.
+
+**WITHDRAWN before running: the requester intervened mid-run with "Don't try huge pages."** The `madvise(MADV_HUGEPAGE)` diagnostic was reverted unbuilt and unmeasured; the THP hypothesis stays a recorded LEAD, not evidence, and no hugepage-related change ships. Cycle 3 continues without it: characterize the honest run-to-run spread of the real multi-pass configuration on the G5 cell and settle the verdict on that basis.
