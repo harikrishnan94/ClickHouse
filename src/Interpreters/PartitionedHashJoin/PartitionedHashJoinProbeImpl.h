@@ -896,10 +896,7 @@ JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
     /// `AddedColumns` does not resolve the emit table). Partitioned-only by construction:
     /// `hash`/`parallel_hash` never set the flag.
     if constexpr (!join_features.is_any_join && !join_features.is_asof_join)
-    {
         added_columns.lazy_output.use_direct_typed_gather = true;
-        added_columns.lazy_output.stored_blocks_count = join.getJoinedData()->stored_columns_index->blocksCount();
-    }
 
     const bool has_required_right_keys = join.required_right_keys.columns() != 0;
     added_columns.need_filter = join_features.need_filter || has_required_right_keys;

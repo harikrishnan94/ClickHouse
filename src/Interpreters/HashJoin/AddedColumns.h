@@ -75,6 +75,9 @@ struct LazyOutput
     /// Filled in the AddedColumns ctor for the hot `fillFromRowRefs` path; empty for joinGet / ASOF.
     std::vector<const IColumn * const *> emit_block_columns;
     std::vector<const ColumnReplicated * const *> emit_block_replicated;
+    /// Per output column: the prebuilt raw-data table of the direct typed gather (see
+    /// `StoredColumnsIndex::DirectGatherColumn`); a null `data_by_block` keeps the generic path.
+    std::vector<StoredColumnsIndex::DirectGatherColumn> emit_direct_gather;
 
     std::vector<size_t> right_indexes;
     NamesAndTypes type_name;
@@ -90,9 +93,6 @@ struct LazyOutput
     /// of going through the generic `(StoredBlock *, row)` pair expansion. The values produced
     /// are identical; the flag exists so `hash`/`parallel_hash` keep their exact code path.
     bool use_direct_typed_gather = false;
-    /// Entry count of the `emit_block_columns`/`emit_block_replicated` per-block tables
-    /// (= `StoredColumnsIndex::blocksCount`); set together with `use_direct_typed_gather`.
-    size_t stored_blocks_count = 0;
 
     const PaddedPODArray<UInt64> & getRowRefs() const { return row_refs; }
     size_t getRowCount() const { return row_count; }
@@ -229,7 +229,8 @@ public:
                     saved_block_sample.columns(),
                     lazy_output.right_indexes,
                     lazy_output.emit_block_columns,
-                    lazy_output.emit_block_replicated);
+                    lazy_output.emit_block_replicated,
+                    &lazy_output.emit_direct_gather);
         }
     }
 

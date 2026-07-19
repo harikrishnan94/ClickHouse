@@ -446,6 +446,25 @@ public:
         PODArray<const IColumn *> by_block;
         /// `repl_by_block[b]` is that column as `ColumnReplicated *` if it is one, otherwise nullptr.
         PODArray<const ColumnReplicated *> repl_by_block;
+        /// `data_by_block[b]` is the raw fixed-width data base of that column (`IColumn::getRawData`),
+        /// nullptr for a cleared block. Only valid when `direct_gather_ok`; the direct typed gather of
+        /// `LazyOutput::buildOutputFromBlocks` indexes it per row ref. Prebuilt here because resolving
+        /// it per emit call would put `blocks x columns` cold `typeid_cast` chains on every output
+        /// chunk (the dominant probe cost of a large build with narrow probe blocks).
+        PODArray<const void *> data_by_block;
+        /// The first live block's column: all stored blocks share the saved-block structure, so a
+        /// single `typeid_cast` of this column validates the type of the whole `data_by_block` table.
+        const IColumn * sample_column = nullptr;
+        /// True when every live block's column is fixed-width-contiguous and not `ColumnReplicated`.
+        bool direct_gather_ok = false;
+    };
+
+    /// The direct-gather view of one output column handed to `LazyOutput` (see `EmitColumn`).
+    /// `data_by_block == nullptr` when the column cannot take the direct typed gather.
+    struct DirectGatherColumn
+    {
+        const void * const * data_by_block = nullptr;
+        const IColumn * sample_column = nullptr;
     };
 
     /// Registers a stored block, returns its block_no. Throws when the 2^31 limit
@@ -458,10 +477,6 @@ public:
 
     /// Raw pointer for hot decode loops. Must not be called before the build phase is finished.
     const StoredBlock * const * blocksData() const { return blocks.data(); }
-
-    /// Number of registered blocks (= size of the per-block emit tables handed out by
-    /// `resolveEmitColumns`). Like `blocksData`, must not be called before the build phase is finished.
-    size_t blocksCount() const { return blocks.size(); }
 
     const StoredBlock * at(UInt32 block_no) const
     {
@@ -483,7 +498,8 @@ public:
         size_t saved_columns_count,
         const std::vector<size_t> & positions,
         std::vector<const IColumn * const *> & out_columns,
-        std::vector<const ColumnReplicated * const *> & out_replicated);
+        std::vector<const ColumnReplicated * const *> & out_replicated,
+        std::vector<DirectGatherColumn> * out_direct_gather = nullptr);
 
     /// Invalidate the emit table after the stored columns are replaced in place (e.g. shrinkStoredBlocksToFit
     /// `cloneResized`), which would otherwise leave the cached `const IColumn *` dangling. Bumps the generation.

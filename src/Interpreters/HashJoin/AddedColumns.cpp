@@ -250,9 +250,7 @@ namespace
 template <bool from_row_list, typename ColumnT>
 bool gatherColumnFromRefsDirect(
     IColumn & dst_column,
-    const IColumn * const * by_block,
-    const ColumnReplicated * const * repl_by_block,
-    size_t blocks_count,
+    const StoredColumnsIndex::DirectGatherColumn & source,
     const UInt64 * row_refs_begin,
     const UInt64 * row_refs_end,
     size_t rows_to_add)
@@ -261,30 +259,22 @@ bool gatherColumnFromRefsDirect(
     if (!dst)
         return false;
 
+    /// The raw-data table is prebuilt once per join in `StoredColumnsIndex::resolveEmitColumns`
+    /// (re-resolving it here would cost `blocks x columns` cold `typeid_cast` chains on every
+    /// output chunk). All stored blocks share the saved-block structure, so one cast of the
+    /// sample column validates the type of the whole table.
+    if (!source.data_by_block || !source.sample_column || !typeid_cast<const ColumnT *>(source.sample_column))
+        return false;
+
     using T = typename ColumnT::ValueType;
-    PODArray<const T *> data_by_block(blocks_count);
-    for (size_t b = 0; b < blocks_count; ++b)
-    {
-        const IColumn * source = by_block[b];
-        if (!source)
-        {
-            /// A cleared entry (see `StoredColumnsIndex::clearEntry`); no live ref points at it.
-            data_by_block[b] = nullptr;
-            continue;
-        }
-        if (repl_by_block[b])
-            return false;
-        const auto * typed = typeid_cast<const ColumnT *>(source);
-        if (!typed)
-            return false;
-        data_by_block[b] = typed->getData().data();
-    }
+    const void * const * sources = source.data_by_block;
+    const auto row_value = [sources](UInt64 ref_word)
+    { return static_cast<const T *>(sources[refWordBlockNo(ref_word)])[refWordRowNo(ref_word)]; };
 
     auto & dst_data = dst->getData();
     size_t out = dst_data.size();
     dst_data.resize(out + rows_to_add);
     T * __restrict out_data = dst_data.data();
-    const T * const * sources = data_by_block.data();
     const size_t num_refs = row_refs_end - row_refs_begin;
     /// At ~2-3 ns of loop body per row, 32 rows of lead cover the DRAM latency of the source row.
     static constexpr size_t look_ahead = 32;
@@ -295,7 +285,7 @@ bool gatherColumnFromRefsDirect(
             const UInt64 ahead = row_refs_begin[i + look_ahead];
             /// Only inline words carry a (block, row) address; list nodes are walked when reached.
             if (refWordIsInline(ahead))
-                __builtin_prefetch(sources[refWordBlockNo(ahead)] + refWordRowNo(ahead));
+                __builtin_prefetch(static_cast<const T *>(sources[refWordBlockNo(ahead)]) + refWordRowNo(ahead));
         }
         const UInt64 word = row_refs_begin[i];
         if constexpr (from_row_list)
@@ -303,15 +293,15 @@ bool gatherColumnFromRefsDirect(
             if (word == 0)
                 out_data[out++] = T{};
             else if (refWordIsInline(word))
-                out_data[out++] = sources[refWordBlockNo(word)][refWordRowNo(word)];
+                out_data[out++] = row_value(word);
             else
                 for (const UInt64 ref_word : refsOf(word))
-                    out_data[out++] = sources[refWordBlockNo(ref_word)][refWordRowNo(ref_word)];
+                    out_data[out++] = row_value(ref_word);
         }
         else
         {
             chassert(word == 0 || refWordIsInline(word));
-            out_data[out] = word ? sources[refWordBlockNo(word)][refWordRowNo(word)] : T{};
+            out_data[out] = word ? row_value(word) : T{};
             ++out;
         }
     }
@@ -327,9 +317,7 @@ template <bool from_row_list>
 bool gatherColumnDirect(
     const DataTypePtr & type,
     IColumn & dst_column,
-    const IColumn * const * by_block,
-    const ColumnReplicated * const * repl_by_block,
-    size_t blocks_count,
+    const StoredColumnsIndex::DirectGatherColumn & source,
     const UInt64 * row_refs_begin,
     const UInt64 * row_refs_end,
     size_t rows_to_add)
@@ -339,7 +327,7 @@ bool gatherColumnDirect(
 #define M(TYPE_INDEX, COLUMN_TYPE) \
     case TypeIndex::TYPE_INDEX: \
         return gatherColumnFromRefsDirect<from_row_list, COLUMN_TYPE>( \
-            dst_column, by_block, repl_by_block, blocks_count, row_refs_begin, row_refs_end, rows_to_add);
+            dst_column, source, row_refs_begin, row_refs_end, rows_to_add);
         M(UInt8, ColumnVector<UInt8>)
         M(UInt16, ColumnVector<UInt16>)
         M(UInt32, ColumnVector<UInt32>)
@@ -379,7 +367,7 @@ void LazyOutput::buildOutputFromBlocks(size_t size_to_reserve, MutableColumns & 
 
     /// The partitioned probe's emit fast path; columns it cannot take keep the generic path below.
     std::vector<UInt8> gathered_directly;
-    if (use_direct_typed_gather && emit_block_columns.size() == columns.size())
+    if (use_direct_typed_gather && emit_direct_gather.size() == columns.size())
     {
         const size_t rows_to_add = [&]
         {
@@ -401,9 +389,7 @@ void LazyOutput::buildOutputFromBlocks(size_t size_to_reserve, MutableColumns & 
             gathered_directly[i] = gatherColumnDirect<from_row_list>(
                 type_name[i].type,
                 *columns[i],
-                emit_block_columns[i],
-                emit_block_replicated[i],
-                stored_blocks_count,
+                emit_direct_gather[i],
                 row_refs_begin,
                 row_refs_end,
                 rows_to_add);
