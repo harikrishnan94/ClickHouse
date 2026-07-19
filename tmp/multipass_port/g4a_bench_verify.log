@@ -1,0 +1,23 @@
+Benchmark path=/mnt/data/join_bench_data points=2 threads=32 runs=1 build_payload_columns=7 probe_payload_columns=3; n_hit=round-half-up(N_p * hit_rate).
+
+Assertions: PASS for D=4194304 m=1 ratio=1 hit=0.5 bp=7 pp=3; probe/build/joined=4194304/4194304/2097152
+
+Point: D=4194304 m=1 ratio=1 hit=0.5 bp=7 pp=3 N_p=4194304 n_hit=2097152
+Verification: PASS (identical sorted output)
+algorithm         status  verify  median_ms  min_ms  build_ms  probe_ms  partitions  leaf_rows  chj_build_ms  selected_rows  selected_bytes  peak_mem_mb
+----------------  ------  ------  ---------  ------  --------  --------  ----------  ---------  ------------  -------------  --------------  -----------
+partitioned_hash  OK      PASS    59.000     59.000  105.034   250.676   256         4194304    0.000         8388608        536870912       495.040    
+parallel_hash     OK      PASS    86.000     86.000  0.000     0.000     0           0          418.121       8388608        536870912       533.518    
+Winner: partitioned_hash (1.458x)
+
+Assertions: PASS for D=4194304 m=1 ratio=1 hit=1 bp=7 pp=3; probe/build/joined=4194304/4194304/4194304
+
+Point: D=4194304 m=1 ratio=1 hit=1 bp=7 pp=3 N_p=4194304 n_hit=4194304
+Verification: PASS (identical sorted output)
+algorithm         status  verify  median_ms  min_ms   build_ms  probe_ms  partitions  leaf_rows  chj_build_ms  selected_rows  selected_bytes  peak_mem_mb
+----------------  ------  ------  ---------  -------  --------  --------  ----------  ---------  ------------  -------------  --------------  -----------
+partitioned_hash  OK      PASS    57.000     57.000   99.878    378.405   256         4194304    0.000         8388608        536870912       519.808    
+parallel_hash     OK      PASS    108.000    108.000  0.000     0.000     0           0          424.903       8388608        536870912       554.055    
+Winner: partitioned_hash (1.895x)
+
+Summary: wins=2 losses=0 ties=0 fallback=0 invalid=0 errors=0 hash_mismatch=0

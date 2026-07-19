@@ -1,0 +1,430 @@
+[ip-172-31-5-72] 2026.07.19 05:56:47.365294 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> executeQuery: (from 0.0.0.0:0, user: ) (query 1, line 1) -- G4b: bit-exact-in-aggregate verification of a genuinely multi-pass (>13-bit) plan.
+ -- Build side: 524288000 distinct keys, every key twice (RowRefList path); probe: 600M rows of
+ -- which 75.7M miss (LEFT JOIN emits them with default values). The pair (count, sum of a
+ -- row hash) is order-independent, so it compares `partitioned_hash` against `parallel_hash`
+ -- exactly on both the matched multiset and the non-matched LEFT rows.
+ SELECT 'partitioned_hash' AS algo, count() AS cnt, sum(cityHash64(k, pv, bv)) AS h FROM ( SELECT number AS k, number * 7 AS pv FROM numbers_mt(600000000) ) AS p LEFT JOIN ( SELECT intDiv(number, 2) AS k, number AS bv FROM numbers_mt(1048576000) ) AS b USING (k) SETTINGS join_algorithm = 'partitioned_hash', max_threads = 32, query_plan_join_swap_table = false, enable_analyzer = 1, enable_join_runtime_filters = 0, max_bytes_before_external_join = 0, max_bytes_ratio_before_external_join = 0, max_memory_usage = 200000000000; (stage: Complete)
+[ip-172-31-5-72] 2026.07.19 05:56:47.366395 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Planner: Query to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:47.366480 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Planner: Query to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:47.366552 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> ContextAccess (default): Settings: readonly = 0, allow_ddl = true, allow_introspection_functions = true
+[ip-172-31-5-72] 2026.07.19 05:56:47.366594 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> ContextAccess (default): List of all grants: GRANT CHECK, SHOW, SELECT, INSERT, ALTER, CREATE, DROP, UNDROP TABLE, TRUNCATE, OPTIMIZE, BACKUP, KILL QUERY, KILL TRANSACTION, MOVE PARTITION BETWEEN SHARDS, ROLE ADMIN, CREATE ROW POLICY, ALTER ROW POLICY, DROP ROW POLICY, CREATE MASKING POLICY, ALTER MASKING POLICY, DROP MASKING POLICY, CREATE QUOTA, ALTER QUOTA, DROP QUOTA, CREATE SETTINGS PROFILE, ALTER SETTINGS PROFILE, DROP SETTINGS PROFILE, ALLOW SQL SECURITY NONE, SHOW ACCESS, SYSTEM, dictGet, displaySecretsInShowAndSelect, INTROSPECTION, CLUSTER, FILE, URL, REMOTE, MONGO, REDIS, MYSQL, POSTGRES, SQLITE, ODBC, JDBC, HDFS, S3, HIVE, AZURE, KAFKA, NATS, RABBITMQ, YTSAURUS, ARROW FLIGHT, SOURCES ON *.* WITH GRANT OPTION, GRANT READ, WRITE ON * WITH GRANT OPTION, GRANT TABLE ENGINE ON * WITH GRANT OPTION, GRANT SET DEFINER ON * WITH GRANT OPTION, GRANT CREATE USER, ALTER USER, DROP USER, CREATE ROLE, ALTER ROLE, DROP ROLE, IMPERSONATE ON * WITH GRANT OPTION, GRANT ALTER NAMED COLLECTION, CREATE NAMED COLLECTION, DROP NAMED COLLECTION, SHOW NAMED COLLECTIONS, NAMED COLLECTION ON * WITH GRANT OPTION
+[ip-172-31-5-72] 2026.07.19 05:56:47.366622 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> ContextAccess (default): List of all grants including implicit: GRANT CHECK, SHOW, SELECT, INSERT, ALTER, CREATE, DROP, UNDROP TABLE, TRUNCATE, OPTIMIZE, BACKUP, KILL QUERY, KILL TRANSACTION, MOVE PARTITION BETWEEN SHARDS, ROLE ADMIN, CREATE ROW POLICY, ALTER ROW POLICY, DROP ROW POLICY, CREATE MASKING POLICY, ALTER MASKING POLICY, DROP MASKING POLICY, CREATE QUOTA, ALTER QUOTA, DROP QUOTA, CREATE SETTINGS PROFILE, ALTER SETTINGS PROFILE, DROP SETTINGS PROFILE, ALLOW SQL SECURITY NONE, SHOW ACCESS, SYSTEM, dictGet, displaySecretsInShowAndSelect, INTROSPECTION, CLUSTER, FILE, URL, REMOTE, MONGO, REDIS, MYSQL, POSTGRES, SQLITE, ODBC, JDBC, HDFS, S3, HIVE, AZURE, KAFKA, NATS, RABBITMQ, YTSAURUS, ARROW FLIGHT, SOURCES ON *.* WITH GRANT OPTION, GRANT READ, WRITE ON * WITH GRANT OPTION, GRANT TABLE ENGINE ON * WITH GRANT OPTION, GRANT SET DEFINER ON * WITH GRANT OPTION, GRANT CREATE USER, ALTER USER, DROP USER, CREATE ROLE, ALTER ROLE, DROP ROLE, IMPERSONATE ON * WITH GRANT OPTION, GRANT ALTER NAMED COLLECTION, CREATE NAMED COLLECTION, DROP NAMED COLLECTION, SHOW NAMED COLLECTIONS, NAMED COLLECTION ON * WITH GRANT OPTION
+[ip-172-31-5-72] 2026.07.19 05:56:47.366768 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Planner: Query from stage FetchColumns to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:47.366888 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Planner: Query to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:47.366986 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Planner: Query from stage FetchColumns to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:47.367090 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> SortingStep: Adjusting memory limit before external sort with 166.93 GiB (ratio: 0.500, available system memory: 333.86 GiB)
+[ip-172-31-5-72] 2026.07.19 05:56:47.367120 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Planner: Query from stage FetchColumns to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:47.367203 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Adjusting memory limit before external aggregation with 166.93 GiB (ratio: 0.500, available system memory: 333.86 GiB)
+[ip-172-31-5-72] 2026.07.19 05:56:47.367445 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> optimizeJoin: Estimated statistics for Expression p: unknown rows, columns: []
+[ip-172-31-5-72] 2026.07.19 05:56:47.367463 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> optimizeJoin: Estimated statistics for Expression b: unknown rows, columns: []
+[ip-172-31-5-72] 2026.07.19 05:56:47.367497 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> QueryPlanOptimizations: Optimizing join order for query graph with 2 relations
+[ip-172-31-5-72] 2026.07.19 05:56:47.367525 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> JoinOrderOptimizer: Solving join order using GREEDY algorithm
+[ip-172-31-5-72] 2026.07.19 05:56:47.367556 [ 1456902 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> JoinOrderOptimizer: Optimized join order in 0.03 ms, best plan cost: 1, estimated cardinality: unknown
+[ip-172-31-5-72] 2026.07.19 05:56:47.388012 [ 1456940 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 8.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.404941 [ 1456955 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 1.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.416150 [ 1456941 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 9.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.443549 [ 1456945 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 2.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.455266 [ 1456954 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 10.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.480163 [ 1456936 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 3.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.491631 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 11.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.515496 [ 1456944 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 4.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.526859 [ 1456938 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 12.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.550335 [ 1456934 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 5.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.560606 [ 1456935 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 13.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.583749 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 6.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.594547 [ 1456950 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 14.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.616568 [ 1456933 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 7.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.627610 [ 1456949 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 15.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.649818 [ 1456957 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 8.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.660025 [ 1456951 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 16.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.683860 [ 1456949 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 9.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.693343 [ 1456943 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 17.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.715100 [ 1456941 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 10.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.725717 [ 1456942 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 18.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.748435 [ 1456943 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 11.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.758295 [ 1456933 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 19.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.780136 [ 1456938 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 12.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.791053 [ 1456934 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 20.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.814860 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 13.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.825696 [ 1456934 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 21.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.847715 [ 1456957 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 14.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.857657 [ 1456941 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 22.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.880487 [ 1456937 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 15.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.890427 [ 1456937 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 23.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.912644 [ 1456944 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 16.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.922179 [ 1456945 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 24.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.944091 [ 1456958 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 17.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.953668 [ 1456940 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 25.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:47.972025 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> PartitionedHashJoin: Partition plan: bits = 15, partitions = 32768, 2 scatter pass(es) (bits per pass [8, 7]), 1048576000 rows in 16032 blocks, estimated 562217958 distinct keys
+[ip-172-31-5-72] 2026.07.19 05:56:48.005363 [ 1456991 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 19.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.005499 [ 1456987 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 18.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.005571 [ 1456966 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 26.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.005980 [ 1456988 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 28.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006085 [ 1456973 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 27.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006263 [ 1456972 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 21.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006351 [ 1456963 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 29.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006356 [ 1456983 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 20.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006498 [ 1456966 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 22.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006580 [ 1456975 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 30.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006771 [ 1456964 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 23.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006838 [ 1456974 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 31.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006885 [ 1456969 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 24.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.006891 [ 1456964 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 32.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007108 [ 1456982 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 25.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007190 [ 1456985 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 33.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007351 [ 1456990 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 26.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007436 [ 1456968 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 34.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007457 [ 1456973 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 27.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007467 [ 1456968 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 35.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007665 [ 1456987 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 28.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007739 [ 1456964 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 36.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007824 [ 1456986 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 29.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007850 [ 1456980 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 37.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.007984 [ 1456966 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 30.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.008060 [ 1456989 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 38.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.008131 [ 1456986 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 31.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.565431 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 51.52 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.565460 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 59.21 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.585988 [ 1456979 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 52.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.589272 [ 1456982 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 60.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.610678 [ 1456981 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 53.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.640086 [ 1456967 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 61.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.640991 [ 1456979 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 54.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.648379 [ 1456978 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 62.05 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.776273 [ 1456974 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 55.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.776414 [ 1456963 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 63.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.778090 [ 1456979 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 56.08 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.778564 [ 1456980 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 64.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.784937 [ 1456988 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 57.05 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.791343 [ 1456994 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 65.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:48.796318 [ 1456984 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 58.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.051959 [ 1456986 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 66.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.057376 [ 1456988 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 59.07 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.057981 [ 1456962 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 67.12 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.063626 [ 1456994 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 60.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.067503 [ 1456989 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 68.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.238638 [ 1456978 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 61.08 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.238720 [ 1456993 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 69.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.240424 [ 1456972 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 62.05 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.245080 [ 1456981 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 70.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.417381 [ 1456966 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 63.11 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.419544 [ 1456970 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 71.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.422001 [ 1456993 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 64.07 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.423222 [ 1456988 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 72.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.430981 [ 1456994 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 65.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.435190 [ 1456989 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 73.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.642183 [ 1456970 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 66.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.643809 [ 1456993 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 74.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.646434 [ 1456962 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 67.05 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.652040 [ 1456981 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 75.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.836484 [ 1456965 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 68.11 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.838876 [ 1456970 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 76.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.841126 [ 1456972 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 69.07 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.841654 [ 1456993 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 77.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.850305 [ 1456994 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 70.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:49.854893 [ 1456989 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 78.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:50.031710 [ 1456978 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 71.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:50.032731 [ 1456964 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 79.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:50.034698 [ 1456976 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 72.06 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:50.038477 [ 1456981 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: (total) current memory usage: 80.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:50.269828 [ 1456979 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Debug> MemoryTracker: Query current memory usage: 73.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:51.292595 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> PartitionedHashJoin: Post-build stages, wall/thread ms: histogram 32.7/635.0, chunk allocation 3.4/85.0, scatter 346.0/10666.9, refine passes 210.6/6424.6, hash-table plan+slab 2.4, leaf inserts 2725.4/70706.1 (AMAC engaged)
+[ip-172-31-5-72] 2026.07.19 05:56:51.293651 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> HashJoin: Join data is built, 7.81 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:51.294918 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> PartitionedHashJoin: Built 32768 leaf hash tables: 524288000 keys, 72.94 GiB of right-table data including the hash tables (32768 carved from one 32.00 GiB slab, 0 heap fallbacks, 0 ring growths)
+[ip-172-31-5-72] 2026.07.19 05:56:51.300973 [ 1456950 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301015 [ 1456950 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301096 [ 1456933 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301119 [ 1456933 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301224 [ 1456945 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301245 [ 1456945 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301308 [ 1456947 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301327 [ 1456938 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301328 [ 1456952 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301336 [ 1456947 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301346 [ 1456938 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301354 [ 1456952 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301358 [ 1456957 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301380 [ 1456957 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301399 [ 1456934 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301406 [ 1456949 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301413 [ 1456934 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301420 [ 1456949 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301570 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301595 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301631 [ 1456943 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301645 [ 1456943 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301710 [ 1456932 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301738 [ 1456932 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301758 [ 1456956 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301767 [ 1456944 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301775 [ 1456936 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301784 [ 1456956 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301785 [ 1456944 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301812 [ 1456935 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301813 [ 1456936 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301830 [ 1456935 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301942 [ 1456942 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301957 [ 1456942 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.301965 [ 1456937 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.301978 [ 1456937 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302230 [ 1456939 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302259 [ 1456939 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302282 [ 1456955 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302284 [ 1456953 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302302 [ 1456955 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302312 [ 1456953 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302337 [ 1456954 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302356 [ 1456954 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302361 [ 1456958 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302370 [ 1456941 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302379 [ 1456958 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302383 [ 1456940 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302389 [ 1456941 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302398 [ 1456940 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302454 [ 1456951 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302471 [ 1456951 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302545 [ 1456948 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302572 [ 1456948 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302699 [ 1456930 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302708 [ 1456929 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.302733 [ 1456930 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.302743 [ 1456929 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.303026 [ 1456960 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.303058 [ 1456960 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.303180 [ 1456959 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.303207 [ 1456959 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:51.303482 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:51.303515 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:53.203364 [ 1456945 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35651148 to 1 rows (from 272.00 MiB) in 5.834 sec. (6110733.859 rows/sec., 46.62 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.203513 [ 1456933 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34405134 to 1 rows (from 262.49 MiB) in 5.834 sec. (5896959.589 rows/sec., 44.99 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.203822 [ 1456932 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34274316 to 1 rows (from 261.49 MiB) in 5.835 sec. (5874259.504 rows/sec., 44.82 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204283 [ 1456954 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35582496 to 1 rows (from 271.47 MiB) in 5.835 sec. (6098043.345 rows/sec., 46.52 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204403 [ 1456929 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34405134 to 1 rows (from 262.49 MiB) in 5.835 sec. (5896154.411 rows/sec., 44.98 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204520 [ 1456946 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34339725 to 1 rows (from 261.99 MiB) in 5.835 sec. (5884736.337 rows/sec., 44.90 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204526 [ 1456933 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35647905 to 1 rows (from 271.97 MiB) in 5.835 sec. (6108900.543 rows/sec., 46.61 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204724 [ 1456937 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34862997 to 1 rows (from 265.98 MiB) in 5.836 sec. (5974276.684 rows/sec., 45.58 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204808 [ 1456950 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34993815 to 1 rows (from 266.98 MiB) in 5.836 sec. (5996530.311 rows/sec., 45.75 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204898 [ 1456941 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35582496 to 1 rows (from 271.47 MiB) in 5.836 sec. (6097359.087 rows/sec., 46.52 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204899 [ 1456960 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35451678 to 1 rows (from 270.47 MiB) in 5.836 sec. (6074938.642 rows/sec., 46.35 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204907 [ 1456930 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34012680 to 1 rows (from 259.50 MiB) in 5.836 sec. (5828361.440 rows/sec., 44.47 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.204977 [ 1456939 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 5.836 sec. (6018860.910 rows/sec., 45.92 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.205241 [ 1456935 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 5.836 sec. (6018520.173 rows/sec., 45.92 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.205790 [ 1456953 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35713314 to 1 rows (from 272.47 MiB) in 5.837 sec. (6118812.037 rows/sec., 46.68 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206322 [ 1456943 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35451678 to 1 rows (from 270.47 MiB) in 5.837 sec. (6073428.193 rows/sec., 46.34 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206347 [ 1456948 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35386269 to 1 rows (from 269.98 MiB) in 5.837 sec. (6062220.786 rows/sec., 46.25 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206363 [ 1456934 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34470543 to 1 rows (from 262.99 MiB) in 5.837 sec. (5905355.086 rows/sec., 45.05 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206664 [ 1456959 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35582496 to 1 rows (from 271.47 MiB) in 5.837 sec. (6095549.800 rows/sec., 46.51 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206782 [ 1456956 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35451678 to 1 rows (from 270.47 MiB) in 5.838 sec. (6073007.829 rows/sec., 46.33 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206919 [ 1456947 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35320860 to 1 rows (from 269.48 MiB) in 5.838 sec. (6050406.158 rows/sec., 46.16 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206934 [ 1456955 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35386269 to 1 rows (from 269.98 MiB) in 5.838 sec. (6061612.693 rows/sec., 46.25 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.206993 [ 1456944 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 5.838 sec. (6039093.302 rows/sec., 46.07 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207016 [ 1456949 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35451678 to 1 rows (from 270.47 MiB) in 5.838 sec. (6072753.543 rows/sec., 46.33 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207334 [ 1456947 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35386269 to 1 rows (from 269.98 MiB) in 5.838 sec. (6061207.640 rows/sec., 46.24 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207343 [ 1456942 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35647905 to 1 rows (from 271.97 MiB) in 5.838 sec. (6105994.741 rows/sec., 46.59 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207425 [ 1456958 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35320860 to 1 rows (from 269.48 MiB) in 5.838 sec. (6049869.681 rows/sec., 46.16 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207518 [ 1456940 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34897862 to 1 rows (from 266.25 MiB) in 5.838 sec. (5977400.164 rows/sec., 45.60 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207525 [ 1456944 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35320860 to 1 rows (from 269.48 MiB) in 5.838 sec. (6049801.045 rows/sec., 46.16 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207536 [ 1456952 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 35778723 to 1 rows (from 272.97 MiB) in 5.838 sec. (6128164.574 rows/sec., 46.75 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.207836 [ 1456938 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34928406 to 1 rows (from 266.48 MiB) in 5.839 sec. (5982251.643 rows/sec., 45.64 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.208054 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> AggregatingTransform: Aggregated. 34078089 to 1 rows (from 260.00 MiB) in 5.839 sec. (5836397.685 rows/sec., 44.53 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:53.208066 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> Aggregator: Merging aggregated data
+[ip-172-31-5-72] 2026.07.19 05:56:53.208081 [ 1456931 ] {b76e61c4-63a1-4c97-95e3-c9b82052ed91} <Trace> HashTablesStatistics: Statistics updated for key=8820250956807358779: sum_of_sizes=32, median_size=1
+[ip-172-31-5-72] 2026.07.19 05:56:53.225629 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> executeQuery: (from 0.0.0.0:0, user: ) (query 2, line 21) SELECT 'parallel_hash' AS algo, count() AS cnt, sum(cityHash64(k, pv, bv)) AS h FROM ( SELECT number AS k, number * 7 AS pv FROM numbers_mt(600000000) ) AS p LEFT JOIN ( SELECT intDiv(number, 2) AS k, number AS bv FROM numbers_mt(1048576000) ) AS b USING (k) SETTINGS join_algorithm = 'parallel_hash', max_threads = 32, query_plan_join_swap_table = false, enable_analyzer = 1, enable_join_runtime_filters = 0, max_bytes_before_external_join = 0, max_bytes_ratio_before_external_join = 0, max_memory_usage = 200000000000; (stage: Complete)
+[ip-172-31-5-72] 2026.07.19 05:56:53.226252 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Planner: Query to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:53.226311 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Planner: Query to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:53.226435 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Planner: Query from stage FetchColumns to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:53.226507 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Planner: Query to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:53.226583 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Planner: Query from stage FetchColumns to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:53.226657 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> SortingStep: Adjusting memory limit before external sort with 153.77 GiB (ratio: 0.500, available system memory: 307.54 GiB)
+[ip-172-31-5-72] 2026.07.19 05:56:53.226676 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Planner: Query from stage FetchColumns to stage Complete
+[ip-172-31-5-72] 2026.07.19 05:56:53.226747 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Adjusting memory limit before external aggregation with 153.77 GiB (ratio: 0.500, available system memory: 307.54 GiB)
+[ip-172-31-5-72] 2026.07.19 05:56:53.226972 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> optimizeJoin: Estimated statistics for Expression p: unknown rows, columns: []
+[ip-172-31-5-72] 2026.07.19 05:56:53.226982 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> optimizeJoin: Estimated statistics for Expression b: unknown rows, columns: []
+[ip-172-31-5-72] 2026.07.19 05:56:53.226997 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> QueryPlanOptimizations: Optimizing join order for query graph with 2 relations
+[ip-172-31-5-72] 2026.07.19 05:56:53.227013 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> JoinOrderOptimizer: Solving join order using GREEDY algorithm
+[ip-172-31-5-72] 2026.07.19 05:56:53.227050 [ 1456902 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> JoinOrderOptimizer: Optimized join order in 0.04 ms, best plan cost: 1, estimated cardinality: unknown
+[ip-172-31-5-72] 2026.07.19 05:56:53.249275 [ 1456952 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 1.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.295119 [ 1456935 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 3.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.383205 [ 1456949 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 5.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.383396 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 6.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.416332 [ 1456955 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 7.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.504895 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 9.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.504966 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 10.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.505019 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 11.06 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.505073 [ 1456957 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 12.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.523663 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 13.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.573600 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 14.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.652083 [ 1456940 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 15.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.749849 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 17.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.749925 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 18.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.750010 [ 1456943 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 19.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.750405 [ 1456935 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 20.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.780409 [ 1456942 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 21.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.827442 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 22.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.858955 [ 1456956 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 23.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:53.881375 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 24.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.074654 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 26.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.125568 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 27.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.125636 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 28.12 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.125751 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 29.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.125822 [ 1456927 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 30.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.157152 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 31.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.314724 [ 1456933 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 33.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.314851 [ 1456956 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 34.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.314995 [ 1456950 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 35.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.315105 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 36.10 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.315316 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 37.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.330428 [ 1456956 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 38.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.345790 [ 1456968 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 39.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.368787 [ 1456931 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 40.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.413847 [ 1456939 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 41.05 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.444017 [ 1456968 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 42.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.488116 [ 1456930 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 43.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.575463 [ 1456984 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 44.02 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.857921 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 46.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.950382 [ 1456952 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 47.05 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.950501 [ 1456953 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 48.06 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.950615 [ 1456984 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 49.07 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:54.950893 [ 1456930 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 50.07 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.078885 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 52.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.202688 [ 1456931 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 54.09 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.202840 [ 1456937 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 55.11 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.202945 [ 1456942 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 56.11 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.203126 [ 1456938 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 57.12 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.305743 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 58.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.453441 [ 1456950 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 60.01 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.453531 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 61.03 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.453698 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 62.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.453843 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 63.04 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.542216 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 64.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.662507 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent0) Join data is built, 24.81 GiB and 524288000 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662527 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent1) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662534 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent2) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662540 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent3) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662547 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent4) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662554 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent5) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662563 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent6) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662569 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent7) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662578 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent8) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662595 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent9) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662617 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent10) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662635 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent11) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662652 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent12) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662658 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent13) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662664 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent14) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662671 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent15) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662678 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent16) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662685 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent17) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662691 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent18) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662697 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent19) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662705 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent20) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662711 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent21) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662720 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent22) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662737 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent23) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662759 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent24) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662776 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent25) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662809 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent26) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662818 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent27) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662833 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent28) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662852 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent29) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662876 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent30) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.662891 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashJoin: (concurrent31) Join data is built, 1.00 GiB and 0 rows in hash table
+[ip-172-31-5-72] 2026.07.19 05:56:55.681007 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Debug> MemoryTracker: Query current memory usage: 65.00 GiB.
+[ip-172-31-5-72] 2026.07.19 05:56:55.683739 [ 1456956 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.683762 [ 1456956 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.683777 [ 1456931 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.683811 [ 1456931 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684251 [ 1456938 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684268 [ 1456938 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684424 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684437 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684741 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684754 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684791 [ 1456945 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684820 [ 1456945 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684837 [ 1456927 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684843 [ 1456957 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684853 [ 1456927 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684857 [ 1456957 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684902 [ 1456930 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684906 [ 1456933 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684917 [ 1456930 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684920 [ 1456968 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.684920 [ 1456933 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.684936 [ 1456968 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685028 [ 1456947 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685044 [ 1456947 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685060 [ 1456953 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685074 [ 1456953 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685140 [ 1456955 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685153 [ 1456955 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685155 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685165 [ 1456948 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685168 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685179 [ 1456948 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685184 [ 1456984 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685195 [ 1456935 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685197 [ 1456984 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685209 [ 1456935 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685211 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685225 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685344 [ 1456940 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685360 [ 1456940 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685365 [ 1456943 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685378 [ 1456943 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685394 [ 1456939 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685408 [ 1456939 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685430 [ 1456952 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685444 [ 1456952 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685451 [ 1456950 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685464 [ 1456950 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685477 [ 1456937 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685490 [ 1456937 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685699 [ 1456949 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685714 [ 1456949 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685737 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685751 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685779 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685791 [ 1456941 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685858 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685872 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685888 [ 1456942 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685893 [ 1456936 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.685901 [ 1456942 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.685908 [ 1456936 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:55.686063 [ 1456958 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregating
+[ip-172-31-5-72] 2026.07.19 05:56:55.686078 [ 1456958 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Aggregation method: without_key
+[ip-172-31-5-72] 2026.07.19 05:56:56.857247 [ 1456947 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.628 sec. (9717432.103 rows/sec., 74.14 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857274 [ 1456937 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35059224 to 1 rows (from 267.48 MiB) in 3.628 sec. (9663399.654 rows/sec., 73.73 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857352 [ 1456946 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35190042 to 1 rows (from 268.48 MiB) in 3.628 sec. (9699219.142 rows/sec., 74.00 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857354 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35190042 to 1 rows (from 268.48 MiB) in 3.628 sec. (9699139.229 rows/sec., 74.00 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857356 [ 1456936 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35190042 to 1 rows (from 268.48 MiB) in 3.628 sec. (9699083.504 rows/sec., 74.00 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857366 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35190042 to 1 rows (from 268.48 MiB) in 3.628 sec. (9698994.747 rows/sec., 74.00 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857400 [ 1456960 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35059224 to 1 rows (from 267.48 MiB) in 3.628 sec. (9662982.491 rows/sec., 73.72 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857415 [ 1456957 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.628 sec. (9716878.719 rows/sec., 74.13 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857441 [ 1456939 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35190042 to 1 rows (from 268.48 MiB) in 3.628 sec. (9698946.710 rows/sec., 74.00 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857471 [ 1456933 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 34797588 to 1 rows (from 265.48 MiB) in 3.628 sec. (9590560.557 rows/sec., 73.17 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857483 [ 1456949 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35059224 to 1 rows (from 267.48 MiB) in 3.628 sec. (9662793.462 rows/sec., 73.72 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857560 [ 1456956 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35258694 to 1 rows (from 269.00 MiB) in 3.628 sec. (9717514.351 rows/sec., 74.14 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.857568 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 34928406 to 1 rows (from 266.48 MiB) in 3.628 sec. (9626391.268 rows/sec., 73.44 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.858158 [ 1456958 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 3.629 sec. (9679032.049 rows/sec., 73.85 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.858270 [ 1456938 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 3.629 sec. (9678577.868 rows/sec., 73.84 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.858281 [ 1456930 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 34601361 to 1 rows (from 263.99 MiB) in 3.629 sec. (9534355.846 rows/sec., 72.74 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.858337 [ 1456931 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 34797588 to 1 rows (from 265.48 MiB) in 3.629 sec. (9588309.702 rows/sec., 73.15 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860276 [ 1456952 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35320860 to 1 rows (from 269.48 MiB) in 3.631 sec. (9727410.403 rows/sec., 74.21 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860309 [ 1456955 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709178.087 rows/sec., 74.08 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860317 [ 1456945 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35320860 to 1 rows (from 269.48 MiB) in 3.631 sec. (9727230.765 rows/sec., 74.21 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860320 [ 1456950 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709218.107 rows/sec., 74.08 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860330 [ 1456932 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709153.055 rows/sec., 74.07 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860333 [ 1456933 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709250.520 rows/sec., 74.08 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860335 [ 1456939 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709203.374 rows/sec., 74.08 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860349 [ 1456942 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709251.017 rows/sec., 74.08 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860384 [ 1456984 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35059224 to 1 rows (from 267.48 MiB) in 3.631 sec. (9654993.356 rows/sec., 73.66 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860394 [ 1456949 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35255451 to 1 rows (from 268.98 MiB) in 3.631 sec. (9709011.292 rows/sec., 74.07 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860401 [ 1456948 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35159498 to 1 rows (from 268.25 MiB) in 3.631 sec. (9682674.580 rows/sec., 73.87 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860420 [ 1456937 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 3.631 sec. (9672812.398 rows/sec., 73.80 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860500 [ 1456954 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 3.631 sec. (9672632.316 rows/sec., 73.80 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860511 [ 1456951 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 34993815 to 1 rows (from 266.98 MiB) in 3.631 sec. (9636682.042 rows/sec., 73.52 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860520 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> AggregatingTransform: Aggregated. 35124633 to 1 rows (from 267.98 MiB) in 3.631 sec. (9672630.377 rows/sec., 73.80 MiB/sec.)
+[ip-172-31-5-72] 2026.07.19 05:56:56.860530 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> Aggregator: Merging aggregated data
+[ip-172-31-5-72] 2026.07.19 05:56:56.860541 [ 1456959 ] {1d5f04b9-dfb2-47ce-82db-ac8f89774982} <Trace> HashTablesStatistics: Statistics updated for key=13573334812949131489: sum_of_sizes=32, median_size=1

@@ -90,3 +90,30 @@ The losing-cell query plans 15 bits / 32768 partitions with no cap warning; hash
 ### What would refute
 
 A hash/aggregate mismatch on any check (routing or locator corruption in the refine pass); a cap warning or sub-15-bit plan on the losing cell (cap not actually lifted); any diff under `src/Interpreters/HashJoin/`.
+
+## Iteration 5 — Unit 2 gates (GREEN)
+
+- **G3**: `... --send_logs_level=warning < tmp/q_lose_cell.sql 2>&1 | grep -c "Partition plan capped"` → `0` (query exit 0; log file `tmp/multipass_port/g3_warning.log` is EMPTY — no warnings of any kind). Plan observation (`tmp/multipass_port/g3_trace.log`): `Partition plan: bits = 15, partitions = 32768, 2 scatter pass(es) (bits per pass [8, 7]), 524288000 rows in 8722 blocks, estimated 524090366 distinct keys`; `Built 32768 leaf hash tables: 524288000 keys ... 32768 carved from one 16.02 GiB slab, 0 heap fallbacks`; stage trace shows `refine passes 120.8/3659.8` wall/thread ms.
+- **G4a**: bench run (`tmp/multipass_port/g4a_bench_verify.log`): both points `Verification: PASS (identical sorted output)`, `Summary: wins=2 losses=0 ties=0 fallback=0 invalid=0 errors=0 hash_mismatch=0`.
+- **G4b**: `tmp/multipass_port/verify_multipass.sql` via `clickhouse local` (`tmp/multipass_port/g4b_out.tsv`): `partitioned_hash 1124288000 8110256178567749413` vs `parallel_hash 1124288000 8110256178567749413` — identical count and row-hash sum (expected count checks out: 524288000×2 matched + 75712000 LEFT-non-matched). Mechanism proof (`tmp/multipass_port/g4b_trace.log`): `Partition plan: bits = 15, partitions = 32768, 2 scatter pass(es) (bits per pass [8, 7]) ... estimated 562217958 distinct keys` — the verification genuinely exercised the multi-pass path, on the `RowRefList` (duplicate-key) shape and LEFT semantics.
+- **Regression gate**: gtests 13/13 (`build/reldeb/test_gtest_unit2.log`); `git diff --stat ahj -- src/Interpreters/HashJoin/` → empty; `git diff --stat fd53e4e604e..HEAD -- src/Interpreters/HashJoin/` → empty.
+
+Verdict: Unit 2 GREEN.
+
+## Iteration 6 — Unit 3 PRE-REGISTRATION (performance validation)
+
+**Noise band (declared up front): effects within max(5%, run-to-run spread of the 3 medians) are "no result".** Comparisons: same binary path (`build/reldeb/programs/clickhouse`), same dataset, same thread counts, `--runs=3` medians, re-established fresh.
+
+### Expected outcome
+
+The D=524M bp=0 cell flips to `partitioned_hash` (mechanism: 32768 partitions put the per-leaf hash table + build rows within the 1.6 MiB L2 budget, restoring the lookup advantage); D=436M/470M margins improve vs `tmp/lose_cell_ab.log`; the other 33 cells unchanged within the noise band, and their logs must show the multi-pass path did NOT trigger (partitions <= 8192 single-pass at D <= 268M; the two other D=524M quick-compare cells also plan 15 bits and may improve — they were already wins).
+
+### Gate invocations (exact)
+
+- **G5**: `python3 bep/tools/join_mergetree_bench.py run --path=/mnt/data/join_bench_data --cardinalities=524288000 --multiplicities=1 --ratios=2 --build-payload-columns=0 --probe-payload-columns=7 --threads=32 --runs=3` → `Winner: partitioned_hash`, margin outside the noise band. Refuted by: `Winner: parallel_hash` or a within-noise margin.
+- **G6**: same with `--cardinalities=436207616,469762048` → both `Winner: partitioned_hash`; margins at D≥470M better than the recorded ladder (`tmp/lose_cell_ab.log`: 436M won 1.045x, 470M lost 1.040x).
+- **G7**: the 10 quick-compare invocations exactly as the baseline headers (threads 1: [D=33554432 with (ratio=2,bp=1,pp=0), (ratio=1,bp=3,pp=3), (ratio=1,bp=1,pp=7), (ratio=2,bp=7,pp=0)]; threads 16: [D=67108864 ratio=4 bp=0 pp=1, D=134217728 ratio=4 bp=0 pp=7, D=134217728 ratio=2 bp=7 pp=0]; threads 32: [D=524288000 ratio=2 bp=0 pp=7, D=524288000 ratio=4 bp=1 pp=7, D=268435456 ratio=2 bp=7 pp=0]; all m=1, hit=1, runs=3) appended into `tmp/quick_compare_multipass.log`; the 4 sweep invocations (`--cardinalities=67108864,134217728,268435456 --ratios=1,4 --threads={32,64}` × bp=pp={3,7}, runs=3) into `tmp/bp_pp_sweep_multipass_threads_{32,64}.log`; parse with `bep/tools/parse_sweep_log.py`; `grep -c "FALLBACK\|ERROR\|INVALID\|CANNOT_SCHEDULE\|hash mismatch"` over the three logs → `0`. Pass: `partitioned_hash` wins >= 33 of 34 with the D=524M bp=0 cell among the wins; no cell's partitioned median regresses beyond the noise band vs `tmp/quick_compare_fixed.csv` / `tmp/bp_pp_sweep_fixed.csv`.
+
+### What would refute
+
+G5/G6 wins inside the noise band (mechanism not proven); any sweep cell slower by more than the band (refine passes leaking into single-pass plans — would demand a diff review of the bits <= 13 path); nonzero FALLBACK/ERROR/INVALID/CANNOT_SCHEDULE/hash-mismatch count.

@@ -1,0 +1,711 @@
+diff --git a/src/Common/benchmarks/radix_hash_join_bench.cpp b/src/Common/benchmarks/radix_hash_join_bench.cpp
+index 9b6855c1a48..f727dd18127 100644
+--- a/src/Common/benchmarks/radix_hash_join_bench.cpp
++++ b/src/Common/benchmarks/radix_hash_join_bench.cpp
+@@ -26,12 +26,12 @@ double eventSeconds(ProfileEvents::Event e)
+ }
+ 
+ RadixHashJoinBench::RadixHashJoinBench(
+-    WorkerPool & pool_, const Block & left_header_, const Block & right_header_, size_t p_star_, size_t /*f_max_*/)
++    WorkerPool & pool_, const Block & left_header_, const Block & right_header_, size_t /*p_star_*/, size_t f_max_)
+     : pool(pool_)
+     , left_header(left_header_)
+     , right_header(std::make_shared<const Block>(right_header_))
+     , table_join(makeTableJoin(left_header_, right_header_))
+-    , p_star(p_star_)
++    , f_max(f_max_)
+ {
+ }
+ 
+@@ -39,15 +39,17 @@ RadixHashJoinBench::~RadixHashJoinBench() = default;
+ 
+ std::unique_ptr<RadixHashJoin> RadixHashJoinBench::makeJoin(UInt64 probe_min_bytes, UInt64 probe_max_bytes)
+ {
+-    /// `p_star` bounds the leaf fanout via `radix_join_max_partitions_per_pass`; the production join
+-    /// still picks the actual fanout from its L2 criterion (up to that cap). The probe-buffer budget
+-    /// is set in absolute bytes (fraction 0), so the caller controls the wave count directly.
++    /// `f_max` caps a single scatter pass via `radix_join_max_partitions_per_pass`; the production
++    /// join picks the total leaf fanout from its own L2 criterion (the same criterion the model uses
++    /// for P*) and runs more passes when the total exceeds the cap — the model's n_pass. The
++    /// probe-buffer budget is set in absolute bytes (fraction 0), so the caller controls the wave
++    /// count directly.
+     return std::make_unique<RadixHashJoin>(
+         table_join,
+         right_header,
+         /*max_threads*/ pool.size(),
+         /*rhs_size_estimation*/ std::nullopt,
+-        /*max_partitions_per_pass*/ std::max<UInt64>(2, p_star),
++        /*max_partitions_per_pass*/ std::max<UInt64>(2, f_max),
+         /*size_tables_by_distinct_estimate*/ false,
+         /*probe_buffer_fraction*/ 0.0,
+         /*probe_buffer_min_bytes*/ probe_min_bytes,
+diff --git a/src/Common/benchmarks/radix_hash_join_bench.h b/src/Common/benchmarks/radix_hash_join_bench.h
+index dfa554f8659..cd3296be6e6 100644
+--- a/src/Common/benchmarks/radix_hash_join_bench.h
++++ b/src/Common/benchmarks/radix_hash_join_bench.h
+@@ -26,8 +26,9 @@ namespace DB::JoinBench
+ class RadixHashJoinBench : public IJoinBench
+ {
+ public:
+-    /// `p_star` caps the leaf fanout (`radix_join_max_partitions_per_pass`); `f_max` is accepted for
+-    /// call-site compatibility (the production join is single-pass and derives fanout internally).
++    /// `f_max` caps a single scatter pass (`radix_join_max_partitions_per_pass`); the production join
++    /// derives the total leaf fanout internally (the same L2 criterion the model uses for P*) and runs
++    /// more passes when the total exceeds the cap. `p_star` is accepted for call-site compatibility.
+     RadixHashJoinBench(WorkerPool & pool_, const Block & left_header_, const Block & right_header_, size_t p_star_, size_t f_max_);
+     ~RadixHashJoinBench() override;
+ 
+@@ -54,7 +55,7 @@ private:
+     Block left_header;
+     SharedHeader right_header;
+     std::shared_ptr<TableJoin> table_join;
+-    size_t p_star;
++    size_t f_max;
+ 
+     std::unique_ptr<RadixHashJoin> join;
+     const std::vector<Block> * build_blocks = nullptr;
+diff --git a/src/Interpreters/RadixHashJoin/RadixHashJoin.cpp b/src/Interpreters/RadixHashJoin/RadixHashJoin.cpp
+index 5541eb2296d..ee20a99ff98 100644
+--- a/src/Interpreters/RadixHashJoin/RadixHashJoin.cpp
++++ b/src/Interpreters/RadixHashJoin/RadixHashJoin.cpp
+@@ -18,6 +18,8 @@
+ #include <Common/logger_useful.h>
+ #include <Common/setThreadName.h>
+ 
++#include <fmt/ranges.h>
++
+ #include <atomic>
+ #include <bit>
+ #include <cstring>
+@@ -58,7 +60,10 @@ namespace
+ /// Radix scatter kernels — a width-generic port of the benchmark's scatter (see
+ /// src/Common/benchmarks/hash_join_bench.cpp). The benchmark operates on UInt64 columns; here the
+ /// same structure (histogram + prefix sum + exact allocation + software write-combining scatter)
+-/// is generalized to arbitrary fixed-width columns.
++/// is generalized to arbitrary fixed-width columns. Partitioning is multi-pass as in the
++/// benchmark's scatterSide: when the leaf plan wants more partitions than one pass sustains
++/// (`max_partitions_per_pass`), each pass consumes a disjoint bit slice of the same 32-bit route
++/// word — a cooperative first pass over the input blocks, then group-parallel refine passes.
+ /// ---------------------------------------------------------------------------------------------
+ 
+ constexpr size_t LINE_BYTES = 64;
+@@ -203,17 +208,20 @@ struct ScatterScratch
+ };
+ 
+ /// The routing source per row. The single-column key kernel computes the partition from the key (and
+-/// optionally emits it as a 2-byte pid); the payload kernels reload the emitted pid.
++/// optionally emits it as a 2-byte pid); the payload kernels reload the emitted pid. Every pass
++/// consumes a disjoint bit slice of the same 32-bit route word: `(route >> shift) & mask`. For the
++/// first pass (top bits) the mask is a no-op; refine passes slice mid-word bits.
+ template <size_t width>
+ struct RouteFromKey
+ {
+     const char * keys;
+     UInt32 shift;
++    UInt32 mask;
+     UInt16 * pids; /// null when there are no columns to consume the ids
+ 
+     ALWAYS_INLINE UInt32 partition(size_t i) const
+     {
+-        const UInt32 p = routeWordFixed<width>(keys + i * width) >> shift;
++        const UInt32 p = (routeWordFixed<width>(keys + i * width) >> shift) & mask;
+         if (pids)
+             pids[i] = static_cast<UInt16>(p);
+         return p;
+@@ -225,11 +233,12 @@ struct RouteFromKeyGeneric
+     const char * keys;
+     size_t width;
+     UInt32 shift;
++    UInt32 mask;
+     UInt16 * pids;
+ 
+     ALWAYS_INLINE UInt32 partition(size_t i) const
+     {
+-        const UInt32 p = routeWordBytes(keys + i * width, width) >> shift;
++        const UInt32 p = (routeWordBytes(keys + i * width, width) >> shift) & mask;
+         if (pids)
+             pids[i] = static_cast<UInt16>(p);
+         return p;
+@@ -313,14 +322,14 @@ ALWAYS_INLINE void scatterOne(Route route, const char * data, size_t n, bool use
+ 
+ /// Scatter one chunk's key column (single-key mode), emitting pids as a by-product when `pids`
+ /// is non-null. Width dispatch to a compile-time kernel for the common widths.
+-void scatterKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt16 * pids, bool use_swwc, ScatterScratch & scratch)
++void scatterKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt32 mask, UInt16 * pids, bool use_swwc, ScatterScratch & scratch)
+ {
+     switch (kw)
+     {
+-        case 4: scatterOne<4>(RouteFromKey<4>{keys, shift, pids}, keys, n, use_swwc, scratch); break;
+-        case 8: scatterOne<8>(RouteFromKey<8>{keys, shift, pids}, keys, n, use_swwc, scratch); break;
+-        case 16: scatterOne<16>(RouteFromKey<16>{keys, shift, pids}, keys, n, use_swwc, scratch); break;
+-        default: scatterDirectGeneric(RouteFromKeyGeneric{keys, kw, shift, pids}, keys, n, kw, scratch.cursors.data()); break;
++        case 4: scatterOne<4>(RouteFromKey<4>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
++        case 8: scatterOne<8>(RouteFromKey<8>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
++        case 16: scatterOne<16>(RouteFromKey<16>{keys, shift, mask, pids}, keys, n, use_swwc, scratch); break;
++        default: scatterDirectGeneric(RouteFromKeyGeneric{keys, kw, shift, mask, pids}, keys, n, kw, scratch.cursors.data()); break;
+     }
+ }
+ 
+@@ -343,68 +352,68 @@ void scatterPidChunk(size_t w, const UInt16 * pids, const char * data, size_t n,
+ /// owned, persistent across chunks) breaks the load-increment-store dependency chain.
+ /// hist and lanes are each written on one branch (a clang-tidy false positive flags them const-able).
+ template <size_t width>
+-void histogramKeyT(const char * keys, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout) /// NOLINT(readability-non-const-parameter)
++void histogramKeyT(const char * keys, size_t n, UInt32 shift, UInt32 mask, UInt64 * hist, UInt32 * lanes, size_t fanout) /// NOLINT(readability-non-const-parameter)
+ {
+     if (!lanes)
+     {
+         for (size_t i = 0; i < n; ++i)
+-            ++hist[routeWordFixed<width>(keys + i * width) >> shift];
++            ++hist[(routeWordFixed<width>(keys + i * width) >> shift) & mask];
+         return;
+     }
+     size_t i = 0;
+     for (; i + 4 <= n; i += 4)
+     {
+-        ++lanes[0 * fanout + (routeWordFixed<width>(keys + (i + 0) * width) >> shift)];
+-        ++lanes[1 * fanout + (routeWordFixed<width>(keys + (i + 1) * width) >> shift)];
+-        ++lanes[2 * fanout + (routeWordFixed<width>(keys + (i + 2) * width) >> shift)];
+-        ++lanes[3 * fanout + (routeWordFixed<width>(keys + (i + 3) * width) >> shift)];
++        ++lanes[0 * fanout + ((routeWordFixed<width>(keys + (i + 0) * width) >> shift) & mask)];
++        ++lanes[1 * fanout + ((routeWordFixed<width>(keys + (i + 1) * width) >> shift) & mask)];
++        ++lanes[2 * fanout + ((routeWordFixed<width>(keys + (i + 2) * width) >> shift) & mask)];
++        ++lanes[3 * fanout + ((routeWordFixed<width>(keys + (i + 3) * width) >> shift) & mask)];
+     }
+     for (; i < n; ++i)
+-        ++lanes[(i & 3) * fanout + (routeWordFixed<width>(keys + i * width) >> shift)];
++        ++lanes[(i & 3) * fanout + ((routeWordFixed<width>(keys + i * width) >> shift) & mask)];
+ }
+ 
+-void histogramKeyGeneric(const char * keys, size_t width, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout)
++void histogramKeyGeneric(const char * keys, size_t width, size_t n, UInt32 shift, UInt32 mask, UInt64 * hist, UInt32 * lanes, size_t fanout)
+ {
+     if (!lanes)
+     {
+         for (size_t i = 0; i < n; ++i)
+-            ++hist[routeWordBytes(keys + i * width, width) >> shift];
++            ++hist[(routeWordBytes(keys + i * width, width) >> shift) & mask];
+         return;
+     }
+     for (size_t i = 0; i < n; ++i)
+-        ++lanes[(i & 3) * fanout + (routeWordBytes(keys + i * width, width) >> shift)];
++        ++lanes[(i & 3) * fanout + ((routeWordBytes(keys + i * width, width) >> shift) & mask)];
+ }
+ 
+-void histogramKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout)
++void histogramKeyChunk(size_t kw, const char * keys, size_t n, UInt32 shift, UInt32 mask, UInt64 * hist, UInt32 * lanes, size_t fanout)
+ {
+     switch (kw)
+     {
+-        case 4: histogramKeyT<4>(keys, n, shift, hist, lanes, fanout); break;
+-        case 8: histogramKeyT<8>(keys, n, shift, hist, lanes, fanout); break;
+-        case 16: histogramKeyT<16>(keys, n, shift, hist, lanes, fanout); break;
+-        default: histogramKeyGeneric(keys, kw, n, shift, hist, lanes, fanout); break;
++        case 4: histogramKeyT<4>(keys, n, shift, mask, hist, lanes, fanout); break;
++        case 8: histogramKeyT<8>(keys, n, shift, mask, hist, lanes, fanout); break;
++        case 16: histogramKeyT<16>(keys, n, shift, mask, hist, lanes, fanout); break;
++        default: histogramKeyGeneric(keys, kw, n, shift, mask, hist, lanes, fanout); break;
+     }
+ }
+ 
+ /// Histogram one chunk's rows from precomputed route words (composite-key mode).
+-void histogramRouteChunk(const UInt32 * routes, size_t n, UInt32 shift, UInt64 * hist, UInt32 * lanes, size_t fanout)
++void histogramRouteChunk(const UInt32 * routes, size_t n, UInt32 shift, UInt32 mask, UInt64 * hist, UInt32 * lanes, size_t fanout)
+ {
+     if (!lanes)
+     {
+         for (size_t i = 0; i < n; ++i)
+-            ++hist[routes[i] >> shift];
++            ++hist[(routes[i] >> shift) & mask];
+         return;
+     }
+     size_t i = 0;
+     for (; i + 4 <= n; i += 4)
+     {
+-        ++lanes[0 * fanout + (routes[i + 0] >> shift)];
+-        ++lanes[1 * fanout + (routes[i + 1] >> shift)];
+-        ++lanes[2 * fanout + (routes[i + 2] >> shift)];
+-        ++lanes[3 * fanout + (routes[i + 3] >> shift)];
++        ++lanes[0 * fanout + ((routes[i + 0] >> shift) & mask)];
++        ++lanes[1 * fanout + ((routes[i + 1] >> shift) & mask)];
++        ++lanes[2 * fanout + ((routes[i + 2] >> shift) & mask)];
++        ++lanes[3 * fanout + ((routes[i + 3] >> shift) & mask)];
+     }
+     for (; i < n; ++i)
+-        ++lanes[(i & 3) * fanout + (routes[i] >> shift)];
++        ++lanes[(i & 3) * fanout + ((routes[i] >> shift) & mask)];
+ }
+ 
+ void reduceHistogramLanes(UInt64 * hist, const UInt32 * lanes, size_t fanout)
+@@ -459,22 +468,32 @@ struct PartitionOutput
+     std::vector<char *> bases;
+     size_t rows = 0;
+ 
++    /// Sizes the slots without allocating any column data; refine passes then call allocateColumn
++    /// just-in-time, one column per scatter round, so the allocator can serve it from the input
++    /// column the previous round just dropped.
++    void prepare(size_t num_columns, size_t rows_)
++    {
++        rows = rows_;
++        columns.resize(num_columns);
++        bases.assign(num_columns, nullptr);
++    }
++
+     /// createColumn()+insertRawUninitialized leaves POD contents uninitialized: no memset, pages are
+     /// first-touched by the scatter writes themselves.
++    void allocateColumn(const Block & header, const std::vector<size_t> & col_widths, size_t j)
++    {
++        auto col = header.getByPosition(j).type->createColumn();
++        auto span = col->insertRawUninitialized(rows);
++        chassert(span.size() == rows * col_widths[j]);
++        bases[j] = span.data();
++        columns[j] = std::move(col);
++    }
++
+     void allocate(const Block & header, const std::vector<size_t> & col_widths, size_t rows_)
+     {
+-        rows = rows_;
+-        const size_t n = header.columns();
+-        columns.resize(n);
+-        bases.resize(n);
+-        for (size_t j = 0; j < n; ++j)
+-        {
+-            auto col = header.getByPosition(j).type->createColumn();
+-            auto span = col->insertRawUninitialized(rows);
+-            chassert(span.size() == rows * col_widths[j]);
+-            bases[j] = span.data();
+-            columns[j] = std::move(col);
+-        }
++        prepare(header.columns(), rows_);
++        for (size_t j = 0; j < columns.size(); ++j)
++            allocateColumn(header, col_widths, j);
+     }
+ 
+     Block toBlock(const Block & header)
+@@ -495,21 +514,45 @@ void parallelRun(ThreadPool & pool, size_t threads, const ThreadGroupPtr & threa
+     pool.wait();
+ }
+ 
+-/// Radix-scatter `blocks` (all sharing `header`'s structure) into `fanout` exactly-sized per-partition
+-/// column bundles, using three cooperative pool phases (histogram, fused prefix-sum + exact
+-/// allocation, batched column-major scatter). `blocks` is consumed (columns dropped batch-eagerly).
+-std::vector<PartitionOutput> scatterToPartitions(
++/// Column processing order: single-key routes the key column first (emitting the pids the payload
++/// columns then consume); composite precomputes the pids from the route words up front.
++std::vector<size_t> makeScatterOrder(const SideLayout & layout)
++{
++    std::vector<size_t> order;
++    order.reserve(layout.num_columns);
++    if (layout.single_key)
++    {
++        order.push_back(layout.key_pos);
++        for (size_t j = 0; j < layout.num_columns; ++j)
++            if (j != layout.key_pos)
++                order.push_back(j);
++    }
++    else
++    {
++        for (size_t j = 0; j < layout.num_columns; ++j)
++            order.push_back(j);
++    }
++    return order;
++}
++
++/// First radix pass: scatter `blocks` (all sharing `header`'s structure) into `2^bits` exactly-sized
++/// per-partition column bundles, using three cooperative pool phases (histogram, fused prefix-sum +
++/// exact allocation, batched column-major scatter). `blocks` is consumed (columns dropped
++/// batch-eagerly). Consumes the top `bits` of the route word.
++std::vector<PartitionOutput> scatterFirstPass(
+     ThreadPool & pool,
+     size_t threads,
+     const ThreadGroupPtr & thread_group,
+     const Block & header,
+     std::vector<Block> & blocks,
+     const SideLayout & layout,
+-    size_t fanout,
+-    UInt32 route_shift)
++    size_t bits)
+ {
+     const size_t num_chunks = blocks.size();
+     const size_t num_columns = layout.num_columns;
++    const size_t fanout = 1ULL << bits;
++    const UInt32 route_shift = static_cast<UInt32>(32 - bits);
++    const UInt32 route_mask = static_cast<UInt32>(fanout - 1);
+     const bool use_swwc_fanout = fanout >= SWWC_MIN_FANOUT;
+     const bool interleave_hist = fanout <= HIST_INTERLEAVE_MAX_FANOUT;
+     const bool composite = !layout.single_key;
+@@ -554,12 +597,12 @@ std::vector<PartitionOutput> scatterToPartitions(
+                 chunk_routes[c].resize(n);
+                 for (size_t i = 0; i < n; ++i)
+                     chunk_routes[c][i] = finalizeRoute(acc[i]);
+-                histogramRouteChunk(chunk_routes[c].data(), n, route_shift, h, interleave_hist ? lanes.data() : nullptr, fanout);
++                histogramRouteChunk(chunk_routes[c].data(), n, route_shift, route_mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
+             }
+             else
+             {
+                 const char * keys = blocks[c].getByPosition(layout.key_pos).column->getRawData().data();
+-                histogramKeyChunk(layout.key_width, keys, n, route_shift, h, interleave_hist ? lanes.data() : nullptr, fanout);
++                histogramKeyChunk(layout.key_width, keys, n, route_shift, route_mask, h, interleave_hist ? lanes.data() : nullptr, fanout);
+             }
+         }
+         if (interleave_hist)
+@@ -594,22 +637,7 @@ std::vector<PartitionOutput> scatterToPartitions(
+     /// of whole chunks; the batch's input chunks are dropped after their last column is scattered.
+     const size_t batch_rows_target = scatterBatchRowsTarget(fanout);
+ 
+-    /// Column processing order: single-key routes the key column first (emitting the pids the payload
+-    /// columns then consume); composite precomputes the pids from the route words up front.
+-    std::vector<size_t> scatter_order;
+-    scatter_order.reserve(num_columns);
+-    if (composite)
+-    {
+-        for (size_t j = 0; j < num_columns; ++j)
+-            scatter_order.push_back(j);
+-    }
+-    else
+-    {
+-        scatter_order.push_back(layout.key_pos);
+-        for (size_t j = 0; j < num_columns; ++j)
+-            if (j != layout.key_pos)
+-                scatter_order.push_back(j);
+-    }
++    const std::vector<size_t> scatter_order = makeScatterOrder(layout);
+     const bool need_pids = composite || num_columns > 1;
+ 
+     parallelRun(pool, threads, thread_group, [&](size_t tid)
+@@ -654,7 +682,7 @@ std::vector<PartitionOutput> scatterToPartitions(
+                     UInt16 * dst = pids.data() + batch_offsets[b];
+                     const UInt32 * routes = chunk_routes[cc].data();
+                     for (size_t i = 0; i < n; ++i)
+-                        dst[i] = static_cast<UInt16>(routes[i] >> route_shift);
++                        dst[i] = static_cast<UInt16>((routes[i] >> route_shift) & route_mask);
+                 }
+             }
+ 
+@@ -677,7 +705,7 @@ std::vector<PartitionOutput> scatterToPartitions(
+                     if (key_first)
+                     {
+                         const bool key_swwc = use_swwc_fanout && widthSupportsSwwc(layout.key_width);
+-                        scatterKeyChunk(layout.key_width, data, n, route_shift, pid_slice, key_swwc, scratch);
++                        scatterKeyChunk(layout.key_width, data, n, route_shift, route_mask, pid_slice, key_swwc, scratch);
+                     }
+                     else
+                     {
+@@ -698,6 +726,184 @@ std::vector<PartitionOutput> scatterToPartitions(
+     return parts;
+ }
+ 
++/// One refine pass: split every input group (one partition of the previous pass) into `2^bits`
++/// sub-partitions, consuming the next `bits` of the route word below the `bits_done` already
++/// consumed. Groups are claimed dynamically (an atomic counter, not a static stripe), because groups
++/// can have very different sizes and a static stripe would leave some workers idle while others are
++/// still scattering their share — the defense against per-group skew. Group input is owned (the
++/// previous pass's output), so memory is cycled eagerly, all worker-local: routing is materialized as
++/// 2-byte pids for the whole group (bounded: a group is at most ~1/fanout_so_far of the side), each
++/// column round allocates its output columns just-in-time, scatters, and drops the consumed input
++/// column — so the freed input extents are immediately reusable for the next round's output instead
++/// of sitting dirty until allocator decay. Output is group-major: out[g * 2^bits + p].
++std::vector<PartitionOutput> scatterRefinePass(
++    ThreadPool & pool,
++    size_t threads,
++    const ThreadGroupPtr & thread_group,
++    const Block & header,
++    std::vector<PartitionOutput> & groups,
++    const SideLayout & layout,
++    size_t bits,
++    size_t bits_done)
++{
++    chassert(bits_done + bits <= 32);
++    const size_t num_columns = layout.num_columns;
++    const size_t fanout = 1ULL << bits;
++    const UInt32 route_shift = static_cast<UInt32>(32 - bits_done - bits);
++    const UInt32 route_mask = static_cast<UInt32>(fanout - 1);
++    const bool use_swwc_fanout = fanout >= SWWC_MIN_FANOUT;
++    const bool interleave_hist = fanout <= HIST_INTERLEAVE_MAX_FANOUT;
++    const bool composite = !layout.single_key;
++    const std::vector<size_t> scatter_order = makeScatterOrder(layout);
++    const bool need_pids = composite || num_columns > 1;
++
++    std::vector<PartitionOutput> out(groups.size() * fanout);
++    std::atomic<size_t> next_group{0};
++    parallelRun(pool, threads, thread_group, [&](size_t)
++    {
++        ScatterScratch scratch;
++        scratch.init(fanout, use_swwc_fanout);
++        std::vector<UInt64> hist(fanout);
++        std::vector<UInt32> lanes;
++        if (interleave_hist)
++            lanes.resize(4 * fanout);
++        PaddedPODArray<UInt16> pids;
++        PaddedPODArray<UInt64> acc;    /// composite fold accumulator, reused per group
++        PaddedPODArray<UInt32> routes; /// composite route words, reused per group
++
++        for (size_t g = next_group.fetch_add(1, std::memory_order_relaxed); g < groups.size();
++             g = next_group.fetch_add(1, std::memory_order_relaxed))
++        {
++            PartitionOutput & group = groups[g];
++            const size_t n = group.rows;
++            if (!n)
++                continue;
++
++            std::fill(hist.begin(), hist.end(), 0);
++            if (interleave_hist)
++                std::fill(lanes.begin(), lanes.end(), 0);
++
++            /// Composite: recompute the route words (the fold genuinely reads the key columns; carrying
++            /// them across passes would cost 4 B/row of extra scatter traffic instead) and derive the
++            /// group's pids before any column scatters, as the first pass does per batch.
++            if (composite)
++            {
++                acc.resize(n);
++                memset(acc.data(), 0, n * sizeof(UInt64));
++                for (size_t k = 0; k < layout.key_positions.size(); ++k)
++                {
++                    const size_t pos = layout.key_positions[k];
++                    const size_t w = layout.key_widths[k];
++                    const char * base = group.columns[pos]->getRawData().data();
++                    for (size_t i = 0; i < n; ++i)
++                        acc[i] = foldBytes(acc[i], base + i * w, w);
++                }
++                routes.resize(n);
++                for (size_t i = 0; i < n; ++i)
++                    routes[i] = finalizeRoute(acc[i]);
++                histogramRouteChunk(routes.data(), n, route_shift, route_mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
++            }
++            else
++            {
++                const char * keys = group.columns[layout.key_pos]->getRawData().data();
++                histogramKeyChunk(layout.key_width, keys, n, route_shift, route_mask, hist.data(), interleave_hist ? lanes.data() : nullptr, fanout);
++            }
++            if (interleave_hist)
++                reduceHistogramLanes(hist.data(), lanes.data(), fanout);
++
++            PartitionOutput * sub = out.data() + g * fanout;
++            for (size_t p = 0; p < fanout; ++p)
++                if (hist[p])
++                    sub[p].prepare(num_columns, hist[p]);
++
++            if (need_pids)
++            {
++                pids.resize(n);
++                if (composite)
++                {
++                    for (size_t i = 0; i < n; ++i)
++                        pids[i] = static_cast<UInt16>((routes[i] >> route_shift) & route_mask);
++                }
++            }
++
++            for (size_t j : scatter_order)
++            {
++                const size_t w = layout.col_widths[j];
++                const bool use_swwc = use_swwc_fanout && widthSupportsSwwc(w);
++
++                /// Just-in-time exact allocation of this round's output columns: by now the previous
++                /// round's input column has been dropped, so its extents back this.
++                for (size_t p = 0; p < fanout; ++p)
++                {
++                    if (hist[p])
++                        sub[p].allocateColumn(header, layout.col_widths, j);
++                    scratch.seed(p, hist[p] ? sub[p].bases[j] : nullptr);
++                }
++
++                const char * data = group.columns[j]->getRawData().data();
++                if (!composite && j == layout.key_pos)
++                    scatterKeyChunk(layout.key_width, data, n, route_shift, route_mask, need_pids ? pids.data() : nullptr, use_swwc, scratch);
++                else
++                    scatterPidChunk(w, pids.data(), data, n, use_swwc, scratch);
++                scratch.drain();
++
++                /// Input column j is fully consumed: drop it before the next round allocates its outputs.
++                group.columns[j] = nullptr;
++            }
++
++            /// Only empty shells remain; free them before moving to the next group.
++            group = PartitionOutput{};
++        }
++    });
++    return out;
++}
++
++/// Splits log2(p_star) partition bits into passes of at most log2(f_max) bits each, balanced across
++/// passes (e.g. 13 bits under an 8-bit per-pass cap split 7+6, not 8+5). Same function as the
++/// benchmark's computePassBits (see src/Common/benchmarks/hash_join_bench.h).
++std::vector<size_t> computePassBits(size_t p_star, size_t f_max)
++{
++    const size_t total_bits = static_cast<size_t>(std::countr_zero(std::bit_ceil(p_star)));
++    const size_t f_bits = std::max<size_t>(1, static_cast<size_t>(std::bit_width(std::bit_floor(std::max<size_t>(2, f_max))) - 1));
++    const size_t n_pass = (total_bits + f_bits - 1) / f_bits;
++    const size_t per_pass = n_pass ? (total_bits + n_pass - 1) / n_pass : 0;
++
++    std::vector<size_t> result;
++    size_t remaining = total_bits;
++    while (remaining > 0)
++    {
++        const size_t bits = std::min(per_pass, remaining);
++        result.push_back(bits);
++        remaining -= bits;
++    }
++    return result;
++}
++
++/// Radix-scatter `blocks` (all sharing `header`'s structure) into `2^sum(pass_bits)` exactly-sized
++/// per-partition column bundles. Pass k consumes the next pass_bits[k] bits of the route word below
++/// those already consumed, and refine-pass output is group-major, so the final partition index equals
++/// `route >> (32 - total_bits)` regardless of how total_bits is split into passes — which is what
++/// keeps build- and probe-side partitioning consistent by construction. `blocks` is consumed.
++std::vector<PartitionOutput> scatterToPartitions(
++    ThreadPool & pool,
++    size_t threads,
++    const ThreadGroupPtr & thread_group,
++    const Block & header,
++    std::vector<Block> & blocks,
++    const SideLayout & layout,
++    const std::vector<size_t> & pass_bits)
++{
++    chassert(!pass_bits.empty());
++    std::vector<PartitionOutput> parts = scatterFirstPass(pool, threads, thread_group, header, blocks, layout, pass_bits[0]);
++    size_t bits_done = pass_bits[0];
++    for (size_t k = 1; k < pass_bits.size(); ++k)
++    {
++        parts = scatterRefinePass(pool, threads, thread_group, header, parts, layout, pass_bits[k], bits_done);
++        bits_done += pass_bits[k];
++    }
++    return parts;
++}
++
+ }
+ 
+ /// -------------------------------------------------------------------------------------------------
+@@ -723,8 +929,8 @@ struct RadixHashJoin::State
+     std::vector<Block> build_blocks; /// concatenated at the build barrier
+     std::atomic<bool> post_build_done{false};
+ 
+-    size_t fanout = 0;
+-    UInt32 route_shift = 0;
++    size_t fanout = 0; /// total leaf count, 2^sum(pass_bits)
++    std::vector<size_t> pass_bits; /// per-pass radix bits (both sides scatter with the same plan)
+     std::vector<std::unique_ptr<HashJoin>> partition_joins; /// size fanout, nullptr = empty partition
+     size_t post_build_bytes = 0;
+     size_t probe_window_budget = 0;
+@@ -765,7 +971,7 @@ struct ProbeShared
+     const Block & left_header;
+     const SideLayout & left_layout;
+     size_t fanout;
+-    UInt32 route_shift;
++    const std::vector<size_t> & pass_bits;
+ };
+ 
+ /// Drives one leaf partition's probe, forwarding output blocks through `emit` (which returns false to
+@@ -810,7 +1016,7 @@ public:
+         {
+             ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+             parts = scatterToPartitions(
+-                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.fanout, shared.route_shift);
++                shared.pool, shared.threads, shared.thread_group, shared.left_header, window, shared.left_layout, shared.pass_bits);
+         }
+ 
+         active_workers.store(shared.threads);
+@@ -1045,7 +1251,6 @@ RadixHashJoin::RadixHashJoin(
+     state->schema_join->setEnableLazyColumnsIndexing(state->enable_lazy_columns_indexing);
+ 
+     (void)rhs_size_estimation;
+-    (void)max_partitions_per_pass;
+     (void)size_tables_by_distinct_estimate;
+ }
+ 
+@@ -1154,20 +1359,24 @@ void RadixHashJoin::runPostBuildPhase()
+     /// 5.1 Partition plan. The leaf working set is the reserved hash table plus the stored build rows;
+     /// pick the smallest power-of-two fanout that keeps it within an L2-sized budget (the benchmark
+     /// bandwidth model's "HT + build within L2" criterion). build_rows is exact here.
++    /// `max_partitions_per_pass` caps a single pass, not the total: when the plan wants more leaves
++    /// than one pass sustains, the scatter runs multiple passes (the bandwidth model's n_pass), each
++    /// consuming a disjoint slice of the route word. The floor of 2 keeps the plan non-degenerate
++    /// (at least one pass of at least one bit).
+     auto ht_bytes = [](size_t n) { return std::bit_ceil(std::max<size_t>(2 * n, 1)) * HT_CELL_BYTES; };
+     auto leaf_bytes = [&](size_t p) { return ht_bytes(build_rows / p) + build_bytes / p; };
+ 
+-    const size_t lower = std::min<size_t>(std::bit_ceil(max_threads), MAX_LEAVES);
+-    const size_t upper = std::min<size_t>(MAX_LEAVES, std::bit_floor(std::max<size_t>(2, max_partitions_per_pass)));
++    const size_t lower = std::clamp<size_t>(std::bit_ceil(max_threads), 2, MAX_LEAVES);
+ 
+-    size_t fanout = 1;
+-    while (fanout < upper && leaf_bytes(fanout) > LEAF_TARGET_BYTES)
++    size_t fanout = 2;
++    while (fanout < MAX_LEAVES && leaf_bytes(fanout) > LEAF_TARGET_BYTES)
+         fanout <<= 1;
+-    fanout = std::clamp(fanout, std::max<size_t>(lower, 1), std::max<size_t>(upper, 1));
++    fanout = std::clamp(fanout, lower, MAX_LEAVES);
+     fanout = std::bit_ceil(fanout);
+ 
++    const size_t max_pass_fanout = std::bit_floor(std::clamp<size_t>(max_partitions_per_pass, 2, 1ULL << 16));
+     state->fanout = fanout;
+-    state->route_shift = static_cast<UInt32>(32 - std::countr_zero(fanout));
++    state->pass_bits = computePassBits(fanout, max_pass_fanout);
+ 
+     /// Probe-buffer budget from the settings knobs, computed once against the built size below.
+     Block build_header = state->build_blocks.front().cloneEmpty();
+@@ -1175,7 +1384,7 @@ void RadixHashJoin::runPostBuildPhase()
+ 
+     auto thread_group = CurrentThread::getGroup();
+     std::vector<PartitionOutput> parts = scatterToPartitions(
+-        *state->pool, max_threads, thread_group, build_header, state->build_blocks, build_layout, fanout, state->route_shift);
++        *state->pool, max_threads, thread_group, build_header, state->build_blocks, build_layout, state->pass_bits);
+ 
+     /// Release the (now-empty) build block shells.
+     state->build_blocks.clear();
+@@ -1228,8 +1437,10 @@ void RadixHashJoin::runPostBuildPhase()
+     ProfileEvents::increment(ProfileEvents::RadixHashJoinBuildMicroseconds, build_watch.elapsedMicroseconds());
+     LOG_DEBUG(
+         getLogger("RadixHashJoin"),
+-        "Built {} leaf partitions from {} rows ({}), probe window budget {}, in {} ms",
++        "Built {} leaf partitions ({} scatter pass(es), bits per pass [{}]) from {} rows ({}), probe window budget {}, in {} ms",
+         fanout,
++        state->pass_bits.size(),
++        fmt::join(state->pass_bits, ", "),
+         build_rows,
+         ReadableSize(post_build_bytes),
+         ReadableSize(state->probe_window_budget),
+@@ -1306,7 +1517,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t /*lane*/)
+         state->left_header,
+         state->left_layout,
+         state->fanout,
+-        state->route_shift};
++        state->pass_bits};
+ 
+     std::unique_lock<std::mutex> wave_lock(state->wave_mutex);
+     return std::make_unique<WaveJoinResult>(std::move(shared), std::move(window), std::move(wave_lock));
+@@ -1335,7 +1546,7 @@ IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
+     {
+         ProfileEventTimeIncrement<Microseconds> route_watch(ProfileEvents::RadixHashJoinProbePackHashRouteMicroseconds);
+         parts = scatterToPartitions(
+-            *state->pool, max_threads, thread_group, state->left_header, window, state->left_layout, state->fanout, state->route_shift);
++            *state->pool, max_threads, thread_group, state->left_header, window, state->left_layout, state->pass_bits);
+     }
+ 
+     ProbeShared shared{
+@@ -1346,7 +1557,7 @@ IBlocksStreamPtr RadixHashJoin::getDelayedBlocks()
+         state->left_header,
+         state->left_layout,
+         state->fanout,
+-        state->route_shift};
++        state->pass_bits};
+ 
+     return std::make_shared<RadixDelayedBlocks>(std::move(shared), std::move(parts));
+ }
+diff --git a/src/Interpreters/RadixHashJoin/RadixHashJoin.h b/src/Interpreters/RadixHashJoin/RadixHashJoin.h
+index fe7b9afd92f..6eca924c627 100644
+--- a/src/Interpreters/RadixHashJoin/RadixHashJoin.h
++++ b/src/Interpreters/RadixHashJoin/RadixHashJoin.h
+@@ -43,8 +43,10 @@ class TableJoin;
+   *   onBuildPhaseFinish  the cheap build barrier only: concatenate the per-lane block stores. Runs
+   *                       inside the last filling transform's prepare(), which must stay cheap (D-0003).
+   *   runPostBuildPhase   the heavy post-build, parallelised over a dedicated `ThreadPool`: the radix
+-  *                       scatter of the whole build side to its leaf chunks, and one exactly-reserved
+-  *                       `HashJoin` built per non-empty partition.
++  *                       scatter of the whole build side to its leaf chunks (one or more passes, each
++  *                       capped by `radix_join_max_partitions_per_pass`; the probe side later scatters
++  *                       with the same pass plan), and one exactly-reserved `HashJoin` built per
++  *                       non-empty partition.
+   *   joinBlock           buffer the probe block; when the buffered window reaches the probe budget the
+   *                       triggering call runs one wave (scatter on the pool, probe touched partitions
+   *                       work-stealing) and streams its output. Before the build barrier (the header/
