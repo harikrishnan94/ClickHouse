@@ -169,3 +169,19 @@ The bimodal insert observation (identical 14-bit runs: 16.7 / 16.6 / 4.4 / 17.0 
 Experiment (diagnostic first, adopt only if it wins): `madvise(MADV_HUGEPAGE)` on `ht_slab` right after the slab allocation. Expectation: D=436M multi-pass build_ms drops toward ~14 s and insert thread time stabilizes near the fast profile; if the leaf-insert speedup materializes at D>=470M too, G5/G6 flip. Refuted if: build_ms stays ~27-30 s (TLB theory wrong or madvise ineffective on jemalloc-served pages), or inserts stay bimodal.
 
 **WITHDRAWN before running: the requester intervened mid-run with "Don't try huge pages."** The `madvise(MADV_HUGEPAGE)` diagnostic was reverted unbuilt and unmeasured; the THP hypothesis stays a recorded LEAD, not evidence, and no hugepage-related change ships. Cycle 3 continues without it: characterize the honest run-to-run spread of the real multi-pass configuration on the G5 cell and settle the verdict on that basis.
+
+## Iteration 10 — Unit 3 cycle 3, requester-directed: `MAX_FANOUT_PER_PASS = 1024`, split policy A/B
+
+The requester (supervising live) set `MAX_FANOUT_PER_PASS = 1024` in `ColumnsScatter.h` and asked for the losing cell numbers; then asked to restore the balanced split (`computePassBits` reverted to the reference policy; header comment updated). Gates after each rebuild: zero warnings, 13/13 gtests.
+
+Losing cell (t=32, D=524288000, r=2, bp=0, pp=7, runs=3), partitioned vs parallel median ms:
+
+| Config | partitioned | parallel | Winner | part build_ms | part probe_ms |
+|---|---|---|---|---|---|
+| baseline capped 13-bit, 8192 leaves | 6323 | 6015 | parallel 1.051x | 29725 | 49905 |
+| [8, 7] (8192 cap, balanced) | 6287 / 6519 | 6101 / 6125 | parallel 1.030x / 1.064x | 28547 / 33170 | 53236 / 52930 |
+| [13, 2] (8192 cap, greedy) | 6623 | 6230 | parallel 1.063x | 34559 | 52732 |
+| [10, 5] (1024 cap, greedy) — `g5_fanout1024.log` | 6615 | 6013 | parallel 1.100x | 29404 | 54051 |
+| [8, 7] (1024 cap, balanced) — `g5_balanced1024.log` | 6583 | 6049 | parallel 1.088x | 29252 | 52538 |
+
+Conclusion unchanged and now split-policy-exhaustive: every split lands within the run-to-run spread of the others and loses to `parallel_hash`; the refine wall stays ~100 ms. The cost that separates 32768-leaf plans from the capped 8192-leaf plan is in leaf inserts (+~0-5 s thread) and probe (+~3 s thread), not in the scatter split. The balanced policy is retained per the requester's direction.

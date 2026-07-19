@@ -1222,12 +1222,14 @@ std::vector<size_t> computePassBits(size_t fanout, size_t max_fanout_per_pass) /
     const size_t total_bits = static_cast<size_t>(std::countr_zero(fanout));
     const size_t pass_bits = std::max<size_t>(
         1, static_cast<size_t>(std::countr_zero(std::bit_floor(std::max<size_t>(2, max_fanout_per_pass)))));
+    const size_t num_passes = (total_bits + pass_bits - 1) / pass_bits;
+    const size_t per_pass = num_passes ? (total_bits + num_passes - 1) / num_passes : 0;
 
     std::vector<size_t> result; /// STYLE_CHECK_ALLOW_STD_CONTAINERS
     size_t remaining = total_bits;
     while (remaining > 0)
     {
-        const size_t bits = std::min(pass_bits, remaining);
+        const size_t bits = std::min(per_pass, remaining);
         result.push_back(bits);
         remaining -= bits;
     }

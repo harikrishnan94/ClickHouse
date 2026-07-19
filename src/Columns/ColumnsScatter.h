@@ -49,7 +49,7 @@ constexpr size_t SCATTER_BATCH_MIN_ROWS = 256 << 10;
 constexpr size_t SCATTER_BATCH_LINES_PER_PARTITION = 64;
 /// Per-pass fanout ceiling: the SWWC staging cache ceiling (~76 B/partition/worker must fit L2).
 /// Also the reason 16-bit partition ids suffice on the per-pass hot paths.
-constexpr size_t MAX_FANOUT_PER_PASS = 8192;
+constexpr size_t MAX_FANOUT_PER_PASS = 1024;
 
 inline size_t scatterBatchRowsTarget(size_t fanout)
 {
@@ -57,12 +57,8 @@ inline size_t scatterBatchRowsTarget(size_t fanout)
 }
 
 /// Splits log2(fanout) partition bits into MSB-first passes of at most log2(max_fanout_per_pass)
-/// bits each, greedily (15 bits under a 13-bit cap split 13 + 2, not 8 + 7): the first pass then
-/// runs at the same large fanout a capped single-pass plan would (keeping the SWWC non-temporal
-/// path engaged, which needs fanout >= SWWC_MIN_FANOUT), and the refine passes run tiny fanouts
-/// over per-group working sets of ~1/first_fanout of the side — cache-resident by construction.
-/// A balanced split was measured to double the scatter cost at 14-15 total bits (both passes
-/// below SWWC_MIN_FANOUT). Empty for fanout <= 1.
+/// bits each, balanced across passes (e.g. 15 bits under a 10-bit per-pass cap split 8 + 7, not
+/// 10 + 5) — the same policy as the radix join benchmark's computePassBits. Empty for fanout <= 1.
 std::vector<size_t> computePassBits(size_t fanout, size_t max_fanout_per_pass); /// STYLE_CHECK_ALLOW_STD_CONTAINERS
 
 /// SWWC is enabled only for widths that divide the 64-byte line and are covered by the 16-byte
