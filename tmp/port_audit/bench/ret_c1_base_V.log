@@ -1,0 +1,15 @@
+Benchmark path=/mnt/data/join_bench_data points=1 threads=32 runs=5 build_payload_columns=1 probe_payload_columns=1; n_hit=round-half-up(N_p * hit_rate).
+
+Assertions: PASS for D=4194304 m=1 ratio=1 hit=1 bp=1 pp=1; probe/build/joined=4194304/4194304/4194304
+
+Point: D=4194304 m=1 ratio=1 hit=1 bp=1 pp=1 N_p=4194304 n_hit=4194304
+Verification: PASS (identical sorted output)
+algorithm         status  verify  median_ms  min_ms  build_ms  probe_ms  partitions  leaf_rows  chj_build_ms  selected_rows  selected_bytes  peak_mem_mb
+----------------  ------  ------  ---------  ------  --------  --------  ----------  ---------  ------------  -------------  --------------  -----------
+partitioned_hash  OK      PASS    34.000     31.000  94.396    123.522   256         4194304    0.000         8388608        268435456       313.808    
+parallel_hash     OK      PASS    67.000     46.000  0.000     0.000     0           0          189.416       8388608        268435456       348.023    
+PhaseEvents partitioned_hash: ConcurrentHashJoinBuildMicroseconds=0 HashJoinResultBuildOutputMicroseconds=51010 HashJoinResultFilterLeftMicroseconds=0 MemoryTrackerPeakUsage=329051960 PartitionedHashJoinBuildFillMicroseconds=7843 PartitionedHashJoinBuildHistogramMicroseconds=3485 PartitionedHashJoinBuildLeafMicroseconds=54472 PartitionedHashJoinBuildMicroseconds=94396 PartitionedHashJoinBuildScatterMicroseconds=28433 PartitionedHashJoinDistinctEstimateReused=0 PartitionedHashJoinLeafRows=4194304 PartitionedHashJoinPartitions=256 PartitionedHashJoinProbeLookupMicroseconds=70761 PartitionedHashJoinProbeMicroseconds=123522 PartitionedHashJoinTeardownMicroseconds=0 RealTimeMicroseconds=917204 SelectedBytes=268435456 SelectedRows=8388608 WallTimeMicroseconds=34000
+PhaseEvents parallel_hash: ConcurrentHashJoinBuildMicroseconds=189416 HashJoinResultBuildOutputMicroseconds=97382 HashJoinResultFilterLeftMicroseconds=0 MemoryTrackerPeakUsage=364928882 PartitionedHashJoinBuildFillMicroseconds=0 PartitionedHashJoinBuildHistogramMicroseconds=0 PartitionedHashJoinBuildLeafMicroseconds=0 PartitionedHashJoinBuildMicroseconds=0 PartitionedHashJoinBuildScatterMicroseconds=0 PartitionedHashJoinDistinctEstimateReused=0 PartitionedHashJoinLeafRows=0 PartitionedHashJoinPartitions=0 PartitionedHashJoinProbeLookupMicroseconds=0 PartitionedHashJoinProbeMicroseconds=0 PartitionedHashJoinTeardownMicroseconds=0 RealTimeMicroseconds=1847595 SelectedBytes=268435456 SelectedRows=8388608 WallTimeMicroseconds=67000
+Winner: partitioned_hash (1.971x)
+
+Summary: wins=1 losses=0 ties=0 fallback=0 invalid=0 errors=0 hash_mismatch=0

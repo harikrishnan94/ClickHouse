@@ -557,6 +557,24 @@ void PartitionedHashJoin::runPostBuildPhase()
     if (const UInt64 growths = amac_ring_growths.load(std::memory_order_relaxed))
         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinAmacRingGrowths, growths);
 
+    /// Publish the per-partition distinct-key breakdown for the next run of this query. Each
+    /// leaf map's size is the EXACT number of distinct inserted keys (every cell is one key;
+    /// duplicates chain inside the cell), strictly better than republishing an estimate.
+    if (stats_collecting_params.isCollectionAndUseEnabled())
+    {
+        const HashJoin::Type type = leaf_join->data->type;
+        PartitionedHashJoinEntry entry;
+        entry.bits = bits;
+        entry.per_partition.resize(leaf_maps.size());
+        for (size_t leaf = 0; leaf < leaf_maps.size(); ++leaf)
+        {
+            const size_t distinct = leaf_maps[leaf].getTotalRowCount(type);
+            entry.per_partition[leaf] = distinct;
+            entry.total_distinct += distinct;
+        }
+        getHashTablesStatistics<PartitionedHashJoinEntry>().update(entry, stats_collecting_params);
+    }
+
     finishBuildPhase(all_values_unique);
 
     LOG_TRACE(
@@ -1313,6 +1331,44 @@ void PartitionedHashJoin::planHashTables(PostBuildContext & ctx)
     stats.leaf_row_counts.assign(ctx.bucket_rows.begin(), ctx.bucket_rows.begin() + partitions);
 
     const HashJoin::Type type = leaf_join->data->type;
+
+    /// Per-leaf distinct-key estimates: when a previous run of this query published a usable
+    /// per-partition breakdown, fold/split it to this build's own partition count (the plan and
+    /// cache leaf ranges always nest - both are MSB-first radix partitions of the same route
+    /// space, so a coarser cache folds by summation and a finer cache splits uniformly); the
+    /// uniform rescale of the single (sketch or cached-total) estimate otherwise. Either way each
+    /// leaf's reserve stays clamped to its exact row count just below, so a stale or
+    /// coarser-grained estimate can only under/over-size - never break correctness, only the
+    /// growth path notices.
+    std::vector<UInt64> per_leaf_distinct;
+    if (cached_stats && !cached_stats->per_partition.empty())
+    {
+        const size_t cached_bits = cached_stats->bits;
+        chassert(cached_stats->per_partition.size() == (1uz << cached_bits));
+        per_leaf_distinct.assign(partitions, 0);
+        if (cached_bits == bits)
+        {
+            for (size_t leaf = 0; leaf < partitions; ++leaf)
+                per_leaf_distinct[leaf] = cached_stats->per_partition[leaf];
+        }
+        else if (cached_bits > bits)
+        {
+            const size_t group = 1uz << (cached_bits - bits);
+            for (size_t i = 0; i < cached_stats->per_partition.size(); ++i)
+                per_leaf_distinct[i / group] += cached_stats->per_partition[i];
+        }
+        else
+        {
+            const size_t group = 1uz << (bits - cached_bits);
+            for (size_t j = 0; j < cached_stats->per_partition.size(); ++j)
+            {
+                const UInt64 split = cached_stats->per_partition[j] / group;
+                for (size_t k = 0; k < group; ++k)
+                    per_leaf_distinct[j * group + k] = split;
+            }
+        }
+    }
+
     const auto per_leaf_estimate
         = std::max<UInt64>(1, static_cast<UInt64>(std::ceil(hll_estimate * reserve_safety / static_cast<double>(partitions))));
 
@@ -1321,8 +1377,11 @@ void PartitionedHashJoin::planHashTables(PostBuildContext & ctx)
     UInt64 running = 0;
     for (size_t leaf = 0; leaf < partitions; ++leaf)
     {
-        /// The sketch estimate can only shrink a leaf below its row count, never inflate it.
-        ctx.leaf_reserve[leaf] = std::clamp<UInt64>(per_leaf_estimate, 1, std::max<UInt64>(ctx.bucket_rows[leaf], 1));
+        const UInt64 leaf_hint = per_leaf_distinct.empty()
+            ? per_leaf_estimate
+            : std::max<UInt64>(1, static_cast<UInt64>(std::ceil(static_cast<double>(per_leaf_distinct[leaf]) * reserve_safety)));
+        /// The estimate can only shrink a leaf below its row count, never inflate it.
+        ctx.leaf_reserve[leaf] = std::clamp<UInt64>(leaf_hint, 1, std::max<UInt64>(ctx.bucket_rows[leaf], 1));
         ctx.leaf_bytes[leaf] = PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, ctx.leaf_reserve[leaf]);
         running += ctx.leaf_bytes[leaf];
     }

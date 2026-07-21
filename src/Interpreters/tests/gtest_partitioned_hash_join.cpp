@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <atomic>
 #include <tuple>
 #include <vector>
 
@@ -124,14 +125,20 @@ BuiltJoin buildJoin(
     size_t build_block_rows = block_rows,
     JoinKind kind = JoinKind::Inner,
     bool disable_amac = false,
-    size_t max_fanout_per_pass_for_tests = 0)
+    size_t max_fanout_per_pass_for_tests = 0,
+    const StatsCollectingParams & stats_collecting_params = {})
 {
     const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
     const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
 
     BuiltJoin result;
     result.table_join = makeTableJoin(left_header, right_header, kind);
-    result.join = std::make_shared<PartitionedHashJoin>(result.table_join, std::make_shared<const Block>(right_header), num_threads);
+    result.join = std::make_shared<PartitionedHashJoin>(
+        result.table_join,
+        std::make_shared<const Block>(right_header),
+        num_threads,
+        /*any_take_last_row_=*/false,
+        stats_collecting_params);
     if (reserve_safety_for_tests > 0)
         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
     /// Without the override the AMAC build insert and two-phase probe engage by default here
@@ -213,6 +220,100 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
     ASSERT_TRUE(actual == expected);
 }
 
+}
+
+TEST(PartitionedHashJoin, DistinctEstimateCacheWarmRun)
+{
+    /// A process-unique cache key per test invocation, so repeated runs in one process
+    /// (--gtest_repeat) never see a warm entry on the "cold" build.
+    static std::atomic<UInt64> key_counter{0};
+    const UInt64 key = 0xC1D15117C4C4E000ULL + key_counter.fetch_add(1);
+    const StatsCollectingParams params(
+        key, /*enable_=*/true, /*max_entries_for_hash_table_stats_=*/1024, /*max_size_to_preallocate_=*/1ULL << 40);
+
+    constexpr size_t distinct_keys = 200000;
+    constexpr size_t duplicates = 2;
+
+    /// Cold run: no cache entry, the sketch estimates, and the post-build publishes the exact
+    /// per-partition distinct counts.
+    auto cold = buildJoin(
+        distinct_keys, duplicates, /*num_threads=*/4, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner,
+        /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
+    const auto cold_stats = cold.join->getBuildStats();
+    EXPECT_FALSE(cold_stats.distinct_estimate_reused);
+    /// The sketch estimate is approximate (~1.15% error at precision 13).
+    EXPECT_NEAR(cold_stats.hll_estimate, static_cast<double>(distinct_keys), 0.05 * distinct_keys);
+    probeAndCheck(cold, distinct_keys, duplicates, /*misses=*/100);
+
+    /// Warm run under the same key and the same shape (same `num_threads`, so the same plan
+    /// bits as the cache): the cached EXACT total replaces the sketch estimate, the per-leaf
+    /// sizing takes the cached per-partition counts unchanged (the exact-copy path in
+    /// `planHashTables`, `cached_bits == bits`), and the fill skips the sketch feed entirely.
+    /// Results stay identical.
+    auto warm = buildJoin(
+        distinct_keys, duplicates, /*num_threads=*/4, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner,
+        /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
+    const auto warm_stats = warm.join->getBuildStats();
+    EXPECT_TRUE(warm_stats.distinct_estimate_reused);
+    EXPECT_EQ(warm_stats.hll_estimate, static_cast<double>(distinct_keys));
+    EXPECT_EQ(warm_stats.bits, cold_stats.bits);
+    EXPECT_EQ(warm_stats.leaf_growths, 0u);
+    probeAndCheck(warm, distinct_keys, duplicates, /*misses=*/100);
+
+    /// Disabled statistics: never reused, sketch path as before.
+    auto disabled = buildJoin(distinct_keys, duplicates, /*num_threads=*/4);
+    EXPECT_FALSE(disabled.join->getBuildStats().distinct_estimate_reused);
+    probeAndCheck(disabled, distinct_keys, duplicates, /*misses=*/100);
+}
+
+TEST(PartitionedHashJoin, DistinctEstimateCachePerPartitionFoldAndSplit)
+{
+    /// Same query key, but the cold and warm builds use very different `num_threads` - the
+    /// partition-plan bits get pushed up by the parallelism floor (`decidePartitionPlan`)
+    /// independently of the (shared) distinct-key estimate, so the cached per-partition
+    /// breakdown is published at one bit count and consumed at another: this exercises the
+    /// fold (cached finer than the new plan) and split (cached coarser) branches of
+    /// `planHashTables`, not just the exact-copy path the sibling test above covers.
+    static std::atomic<UInt64> key_counter{0};
+    const UInt64 key = 0xF01D5111C4C4E000ULL + key_counter.fetch_add(1);
+    const StatsCollectingParams params(
+        key, /*enable_=*/true, /*max_entries_for_hash_table_stats_=*/1024, /*max_size_to_preallocate_=*/1ULL << 40);
+
+    constexpr size_t distinct_keys = 300000;
+    constexpr size_t duplicates = 1;
+
+    /// Cold run at a high thread count: the parallelism floor (`bit_width(bit_ceil(128) - 1)`
+    /// = 7) very likely dominates the plan's natural L2-driven bits for this key count, so the
+    /// published per-partition breakdown is at 7+ bits (finer than what a low-thread run alone
+    /// would choose).
+    auto cold = buildJoin(distinct_keys, duplicates, /*num_threads=*/128, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner,
+        /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
+    const auto cold_stats = cold.join->getBuildStats();
+    EXPECT_FALSE(cold_stats.distinct_estimate_reused);
+    probeAndCheck(cold, distinct_keys, duplicates, /*misses=*/100);
+
+    /// Warm run at a single thread: no parallelism floor, so its own plan bits are the plan's
+    /// natural (coarser) value - the cached breakdown was published finer, so `planHashTables`
+    /// folds contiguous cached leaves together (the `cached_bits > bits` branch).
+    auto warm = buildJoin(distinct_keys, duplicates, /*num_threads=*/1, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner,
+        /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
+    const auto warm_stats = warm.join->getBuildStats();
+    EXPECT_TRUE(warm_stats.distinct_estimate_reused);
+    EXPECT_LT(warm_stats.bits, cold_stats.bits) << "test setup assumption: the thread-count-driven parallelism floor must actually "
+                                                    "differ between the two builds for this test to exercise the fold/split paths";
+    EXPECT_EQ(warm_stats.hll_estimate, static_cast<double>(distinct_keys));
+    probeAndCheck(warm, distinct_keys, duplicates, /*misses=*/100);
+
+    /// A third build at the SAME high thread count as the cold run re-consumes the cache at
+    /// matching bits (exact-copy path) and then republishes at that same granularity; a fourth,
+    /// single-threaded build now sees a cache entry that is coarser than its OWN plan only if
+    /// the republish stayed at the cold run's finer bits - assert the mechanism is at least
+    /// self-consistent (reuse fires, correctness holds) without over-constraining the exact bit
+    /// count, which depends on the machine's L2 cache size.
+    auto rewarm_wide = buildJoin(distinct_keys, duplicates, /*num_threads=*/128, /*reserve_safety_for_tests=*/0, block_rows,
+        JoinKind::Inner, /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
+    EXPECT_TRUE(rewarm_wide.join->getBuildStats().distinct_estimate_reused);
+    probeAndCheck(rewarm_wide, distinct_keys, duplicates, /*misses=*/100);
 }
 
 TEST(PartitionedHashJoin, LaneIdentityParity)

@@ -70,6 +70,7 @@ EVENTS = (
     "PartitionedHashJoinProbeLookupMicroseconds",
     "PartitionedHashJoinDistinctEstimateReused",
     "PartitionedHashJoinTeardownMicroseconds",
+    "PartitionedHashJoinHashTableGrowths",
     "HashJoinResultFilterLeftMicroseconds",
     "HashJoinResultBuildOutputMicroseconds",
 )

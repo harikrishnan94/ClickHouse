@@ -3,6 +3,7 @@
 #include <Columns/ColumnNullable.h>
 #include <Core/Block_fwd.h>
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashTablesStatistics.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/JoinUtils.h>
 #include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
@@ -16,6 +17,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -79,7 +81,11 @@ class PartitionedHashJoin : public IJoin
 {
 public:
     PartitionedHashJoin(
-        std::shared_ptr<TableJoin> table_join_, SharedHeader right_sample_block_, size_t num_threads_, bool any_take_last_row_ = false);
+        std::shared_ptr<TableJoin> table_join_,
+        SharedHeader right_sample_block_,
+        size_t num_threads_,
+        bool any_take_last_row_ = false,
+        const StatsCollectingParams & stats_collecting_params_ = {});
 
     ~PartitionedHashJoin() override;
 
@@ -155,6 +161,9 @@ public:
         UInt64 leaf_rows = 0;
         /// Every leaf map's actual buffer bytes equaled the plan's prediction.
         bool predictions_exact = true;
+        /// This build reused a cached per-partition distinct-key count from the hash-table
+        /// statistics cache (a warm run) and skipped the per-row sketch feed of the fill.
+        bool distinct_estimate_reused = false;
         /// Per-leaf used-flag base offsets (prefix sums of the per-leaf bucket counts + 1),
         /// size partitions + 1; empty when the join shape needs no right-side used flags.
         std::vector<UInt64> flag_base;
@@ -347,6 +356,15 @@ private:
     size_t max_fanout_per_pass;
     double hll_estimate = 0;
     double reserve_safety = 1.2; /// covers the sketch error (~1.15% at precision 13) and per-leaf spread
+    /// Cross-run distinct-key statistics (same cache key derivation as the other join
+    /// algorithms, but a dedicated `PartitionedHashJoinEntry` cache holding the PER-PARTITION
+    /// breakdown, not just a total). When a previous run of this query published its counts,
+    /// the fill skips the per-row sketch feed, the barrier consumes the cached total instead of
+    /// the sketch estimate, and the per-leaf hash-table sizing consumes the cached per-partition
+    /// counts (folded or split to match this build's own partition count when its plan bits
+    /// differ from the cached ones - see `planHashTables`) instead of the uniform rescale.
+    StatsCollectingParams stats_collecting_params;
+    std::optional<PartitionedHashJoinEntry> cached_stats;
     std::vector<FillBlock> build_blocks; /// concatenated lanes, row-store block numbers assigned
     /// When every stored block number and row number fits 16 bits, the scattered locator column
     /// uses a packed 4-byte encoding `(block_no << 16) | row_no`, decoded to the standard 8-byte

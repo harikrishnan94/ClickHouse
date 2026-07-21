@@ -1241,7 +1241,11 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         if (algorithm == JoinAlgorithm::PARTITIONED_HASH && PartitionedHashJoin::isSupported(*table_join))
         {
             return std::make_shared<PartitionedHashJoin>(
-                table_join, right_table_expression_header, params.max_threads, params.join_any_take_last_row);
+                table_join,
+                right_table_expression_header,
+                params.max_threads,
+                params.join_any_take_last_row,
+                stats_collecting_params);
         }
 
         if (table_join->allowParallelHashJoin())

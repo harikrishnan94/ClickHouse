@@ -28,6 +28,7 @@ extern const Event PartitionedHashJoinProbeMicroseconds;
 extern const Event PartitionedHashJoinPartitions;
 extern const Event PartitionedHashJoinLeafRows;
 extern const Event PartitionedHashJoinTeardownMicroseconds;
+extern const Event PartitionedHashJoinDistinctEstimateReused;
 }
 
 namespace CurrentMetrics
@@ -76,7 +77,11 @@ private:
 }
 
 PartitionedHashJoin::PartitionedHashJoin(
-    std::shared_ptr<TableJoin> table_join_, SharedHeader right_sample_block_, size_t num_threads_, bool any_take_last_row_)
+    std::shared_ptr<TableJoin> table_join_,
+    SharedHeader right_sample_block_,
+    size_t num_threads_,
+    bool any_take_last_row_,
+    const StatsCollectingParams & stats_collecting_params_)
     : table_join(std::move(table_join_))
     , right_sample_block(std::move(right_sample_block_))
     , any_take_last_row(any_take_last_row_)
@@ -85,6 +90,7 @@ PartitionedHashJoin::PartitionedHashJoin(
     , delegate_mode(!table_join->oneDisjunct())
     , maps_variant_index(leaf_join->data->maps.empty() ? 1 : leaf_join->data->maps.front().index())
     , max_fanout_per_pass(ColumnsScatter::MAX_FANOUT_PER_PASS)
+    , stats_collecting_params(stats_collecting_params_)
     , log(getLogger("PartitionedHashJoin"))
 {
     if (!PartitionedJoinMaps::isSupportedType(leaf_join->data->type))
@@ -97,6 +103,14 @@ PartitionedHashJoin::PartitionedHashJoin(
     /// against growth. Lanes past the table (rare pipeline shapes) take the legacy fallbacks.
     fill_lane_slots = std::vector<std::atomic<FillLane *>>(2 * num_threads);
     probe_scratch_slots = std::vector<std::atomic<ProbeScratch *>>(2 * num_threads);
+
+    /// A cached per-partition distinct-key breakdown from a previous run of the same query
+    /// replaces the sketch estimate wholesale: the decision is per build (all lanes fill the
+    /// same way), so it is made once here. A stale or differently-shaped entry only mis-sizes
+    /// the leaf reserves - the maps grow past an under-reserve (counted, never silent) - and the
+    /// post-build always republishes the fresh exact counts.
+    if (!delegate_mode && stats_collecting_params.isCollectionAndUseEnabled())
+        cached_stats = getHashTablesStatistics<PartitionedHashJoinEntry>().getSizeHint(stats_collecting_params);
 }
 
 PartitionedHashJoin::~PartitionedHashJoin()
@@ -314,7 +328,16 @@ bool PartitionedHashJoin::addBlockToJoinImpl(const Block & source_block, bool ch
     if (leaf_join->getStrictness() == JoinStrictness::Asof)
     {
         ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
-        computeJoinRoutesForFill(equi_columns, rows, fill.skipData(), fill.routes.data(), lane.hll);
+        if (cached_stats)
+            computeJoinRoutesForFill(equi_columns, rows, fill.routes.data());
+        else
+            computeJoinRoutesForFill(equi_columns, rows, fill.skipData(), fill.routes.data(), lane.hll);
+    }
+    else if (cached_stats)
+    {
+        /// Warm run: a previous run published this query's distinct-key counts, so the sketch
+        /// estimate is not needed and the per-row sketch feed is skipped.
+        computeJoinRoutesForFill(fill.key_columns, rows, fill.routes.data());
     }
     else
     {
@@ -486,7 +509,22 @@ void PartitionedHashJoin::onBuildPhaseFinish()
     lanes.clear();
     lane_by_thread.clear();
 
-    hll_estimate = merged.estimate();
+    if (cached_stats)
+    {
+        /// The lanes' sketches were never fed (see `addBlockToJoinImpl`); the cached total from
+        /// the previous run replaces the estimate driving the partition-count decision below.
+        /// The per-leaf sizing in `planHashTables` separately consumes the cached per-partition
+        /// breakdown. Downstream sizing is clamped per leaf by exact row counts, so a stale
+        /// value cannot inflate a leaf past its rows and an under-estimate only triggers counted
+        /// map growth.
+        hll_estimate = static_cast<double>(std::max<size_t>(1, cached_stats->total_distinct));
+        stats.distinct_estimate_reused = true;
+        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinDistinctEstimateReused);
+    }
+    else
+    {
+        hll_estimate = merged.estimate();
+    }
     storeBlocksInRowStore();
 
     /// The packed 4-byte locator encoding applies when every (block_no, row_no) fits 16+16 bits;
@@ -627,7 +665,7 @@ PartitionedHashJoin::clone(const std::shared_ptr<TableJoin> & table_join_, Share
     if (!isSupported(*table_join_))
         throw Exception(
             ErrorCodes::LOGICAL_ERROR, "PartitionedHashJoin: attempt to clone with a join shape the algorithm does not support");
-    return std::make_shared<PartitionedHashJoin>(table_join_, right_sample_block_, num_threads, any_take_last_row);
+    return std::make_shared<PartitionedHashJoin>(table_join_, right_sample_block_, num_threads, any_take_last_row, stats_collecting_params);
 }
 
 std::shared_ptr<IJoin>

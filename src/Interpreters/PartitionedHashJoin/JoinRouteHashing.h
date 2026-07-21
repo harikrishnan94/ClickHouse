@@ -28,6 +28,13 @@ void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt3
   */
 void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, const UInt8 * skip, UInt16 * routes, DenseHyperLogLog & hll);
 
+/** The sketch-free fill variant, taken when a cached distinct-key count from a previous run of
+  * the same query replaces the sketch estimate entirely: routes are still stored for every row
+  * (the scatter's bucket derivation reads them), the per-row sketch feed is skipped. No `skip`
+  * parameter - it only ever filtered the sketch feed, never the route store.
+  */
+void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, UInt16 * routes);
+
 /** The probe-side consumption, fused the same way: the leaf id `word >> (32 - bits)` is stored
   * per row directly (no 32-bit word transient). Agrees with the build's stored-route slice
   * `route >> (16 - bits)` on the shared top bits for every plan (`0 < bits <= 16`).
