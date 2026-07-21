@@ -365,7 +365,7 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     constexpr bool flat_lookup_supported = prefetch_supported && FlatLookupMap<MapNonConst>;
     bool use_amac = false;
     if constexpr (amac_supported)
-        use_amac = amac_enabled && added_columns.enable_prefetch && ht_slab_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
+        use_amac = amac_enabled && added_columns.enable_prefetch && ht_total_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
             && rows < AmacRingSlot<false>::inactive_row;
 
     /// Routed look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC
@@ -374,7 +374,7 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     constexpr bool can_prefetch = prefetch_supported;
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = !use_amac && added_columns.enable_prefetch && ht_slab_bytes > getMinBytesForPrefetchInJoin();
+        use_prefetch = !use_amac && added_columns.enable_prefetch && ht_total_bytes > getMinBytesForPrefetchInJoin();
 
     auto prefetcher = makeJoinPrefetcher(
         use_prefetch,

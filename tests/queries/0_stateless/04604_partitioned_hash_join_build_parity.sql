@@ -1,5 +1,5 @@
--- Parity of the PARTITIONED build path of `partitioned_hash` (bits > 0: route scatter, contiguous
--- hash-table slab, leaf builds) against `hash` and `parallel_hash`, across the map-type matrix.
+-- Parity of the PARTITIONED build path of `partitioned_hash` (bits > 0: route scatter, per-leaf
+-- hash tables, leaf builds) against `hash` and `parallel_hash`, across the map-type matrix.
 -- The build side is large enough that the partition plan chooses more than one leaf for every
 -- non-fixed-size map type, which is asserted through ProfileEvents at the end.
 
@@ -166,7 +166,7 @@ SELECT
     ProfileEvents['PartitionedHashJoinPartitions'] > 1,
     ProfileEvents['PartitionedHashJoinLeafRows'] > 0,
     ProfileEvents['PartitionedHashJoinHashTableBytes'] > 0,
-    ProfileEvents['PartitionedHashJoinHashTableHeapFallbacks']
+    ProfileEvents['PartitionedHashJoinHashTableGrowths']
 FROM system.query_log
 WHERE current_database = currentDatabase() AND type = 'QueryFinish' AND log_comment LIKE 'p3case %'
 ORDER BY log_comment;

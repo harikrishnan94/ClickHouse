@@ -2,12 +2,13 @@
 
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/PartitionedHashJoin/AmacRing.h>
-#include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
 #include <Interpreters/RowRefs.h>
+#include <Common/Allocator.h>
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/Hash.h>
 #include <Common/HashTable/HashMap.h>
 
+#include <cstring>
 #include <variant>
 
 namespace DB
@@ -36,40 +37,75 @@ extern const int UNSUPPORTED_JOIN_KEYS;
     M(low_cardinality_key_string) \
     M(low_cardinality_key_fixed_string)
 
+/** Zero-filling hash-table allocator for the leaf maps: an unzeroed heap allocation followed by
+  * an explicit streaming `memset` on the calling thread - the leaf-build worker that fills the
+  * map right away, so the buffer's pages are materialized sequentially and arrive cache-hot at
+  * the inserts. Functionally equivalent to `HashTableAllocator`, whose `calloc` skips the memset
+  * for freshly mapped extents and thereby defers the first touch to the inserts' random access
+  * order - one page fault at a time under the mmap lock across all build workers (~2x leaf
+  * build time at 32 workers).
+  */
+class ZeroingHashTableAllocator
+{
+public:
+    void * alloc(size_t size)
+    {
+        void * buf = heap.alloc(size);
+        memset(buf, 0, size);
+        return buf;
+    }
+
+    void free(void * buf, size_t size) { heap.free(buf, size); }
+
+    void * realloc(void * buf, size_t old_size, size_t new_size)
+    {
+        void * new_buf = heap.realloc(buf, old_size, new_size);
+        /// The bytes past `old_size` must be cleared to satisfy the hash table's expectation.
+        if (new_size > old_size)
+            memset(reinterpret_cast<char *>(new_buf) + old_size, 0, new_size - old_size);
+        return new_buf;
+    }
+
+private:
+    Allocator<false, false> heap;
+};
+
 namespace PartitionedJoinMapsDetail
 {
 
-/** Rebinds a standard join hash map type to the `FixedRegionAllocator` while keeping every other
-  * template argument - cell layout, hash, grower - exactly as `HashJoin::MapsTemplate` declares
-  * it. Deriving the leaf map types from the standard ones (instead of mirroring their
-  * declarations) means a master-side change of a cell type, hash function or grower propagates
-  * here automatically, and an incompatible restructuring breaks the build instead of silently
-  * diverging. The open-addressing maps additionally carry the resumable-cursor API of
-  * `ResumableHashMap` (the seed/step decomposition the AMAC build and probe rings drive);
-  * `FixedHashMap` has no collision chain to pipeline and keeps the plain interface.
+/** The leaf map type for a standard join hash map type, keeping every other template argument -
+  * cell layout, hash, grower - exactly as `HashJoin::MapsTemplate` declares it, with only the
+  * allocator rebound to `ZeroingHashTableAllocator` (see above). Deriving the leaf map types
+  * from the standard ones (instead of mirroring their declarations) means a master-side change
+  * of a cell type, hash function or grower propagates here automatically, and an incompatible
+  * restructuring breaks the build instead of silently diverging. The open-addressing maps
+  * additionally carry the resumable-cursor API of `ResumableHashMap` (the seed/step
+  * decomposition the AMAC build and probe rings drive); `FixedHashMap` has no collision chain
+  * to pipeline and keeps the plain interface.
   */
 template <typename Map>
-struct WithRegionAllocator;
+struct LeafMap;
 
 template <typename Key, typename Cell, typename Hash, typename Grower, typename Alloc>
-struct WithRegionAllocator<HashMapTable<Key, Cell, Hash, Grower, Alloc>>
+struct LeafMap<HashMapTable<Key, Cell, Hash, Grower, Alloc>>
 {
-    using Type = ResumableHashMap<HashMapTable<Key, Cell, Hash, Grower, FixedRegionAllocator>>;
+    using Type = ResumableHashMap<HashMapTable<Key, Cell, Hash, Grower, ZeroingHashTableAllocator>>;
 };
 
 template <typename Key, typename Mapped, typename Cell, typename Size, typename Alloc, size_t size_bits>
-struct WithRegionAllocator<FixedHashMap<Key, Mapped, Cell, Size, Alloc, size_bits>>
+struct LeafMap<FixedHashMap<Key, Mapped, Cell, Size, Alloc, size_bits>>
 {
-    using Type = FixedHashMap<Key, Mapped, Cell, Size, FixedRegionAllocator, size_bits>;
+    using Type = FixedHashMap<Key, Mapped, Cell, Size, ZeroingHashTableAllocator, size_bits>;
 };
 
 }
 
 /** The leaf hash tables of one partition, for one mapped-value shape (`RowRef`, `RowRefList` or
   * `AsofRowRefs` - the shapes of `HashJoin::MapsOne`/`MapsAll`/`MapsAsof`). Every member type is
-  * the corresponding `HashJoin::MapsTemplate` member with only the allocator rebound, so the
-  * standard `KeyGetterForType` machinery works on the leaf maps unchanged and the emitted cells
-  * are bit-identical to what the standard insert path would produce.
+  * the corresponding `HashJoin::MapsTemplate` member (with only the resumable-cursor API added
+  * on the open-addressing shapes), so the standard `KeyGetterForType` machinery works on the
+  * leaf maps unchanged and the emitted cells are bit-identical to what the standard insert path
+  * would produce.
   */
 template <typename Mapped>
 struct PartitionedJoinMapsTemplate
@@ -79,14 +115,13 @@ struct PartitionedJoinMapsTemplate
 
     /// NOLINTBEGIN(bugprone-macro-parentheses)
 #define M(NAME) \
-    std::shared_ptr<typename PartitionedJoinMapsDetail::WithRegionAllocator<typename decltype(StandardMaps::NAME)::element_type>::Type> \
-        NAME;
+    std::shared_ptr<typename PartitionedJoinMapsDetail::LeafMap<typename decltype(StandardMaps::NAME)::element_type>::Type> NAME;
     APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
 #undef M
 
     /// The exact buffer bytes a map created with `create(which, reserve)` will allocate: the
     /// map's own grower rounding at `reserve`, or the fixed buffer size of a `FixedHashMap`.
-    /// The partition plan sizes the slab regions with this, so predicted == actual.
+    /// The partition plan sizes the leaf buffers with this, so predicted == actual.
     template <typename Map>
     static size_t predictedBufferBytesFor(size_t reserve)
     {
@@ -193,7 +228,7 @@ APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
 #undef M
 
 /// Maps a standard join maps shape (the type `MapGetter`/`JoinFeatures` speak) to the
-/// partitioned counterpart holding the same cells behind the region allocator.
+/// partitioned counterpart holding the same cells.
 template <typename StandardMaps>
 struct PartitionedMapsFor;
 

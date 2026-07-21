@@ -7,7 +7,6 @@
 #include <Interpreters/JoinUtils.h>
 #include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedJoinMaps.h>
-#include <Common/Allocator.h>
 #include <Common/Arena.h>
 #include <Common/Logger.h>
 #include <Common/PODArray.h>
@@ -51,10 +50,12 @@ struct LeafMapDesc
   *   map types (`key8`/`key16`) degenerate to a single leaf with no separate code path.
   * - Post-build (parallel): a cooperative scatter of only the key columns plus an 8-byte row
   *   locator (`RowRef`-encoded) into per-partition chunks, driven by the saved routes; payload
-  *   columns stay in the shared row store. Then ONE contiguous allocation backs all leaf hash
-  *   tables (exact-sized, unzeroed, carved per leaf by `FixedRegionAllocator`), and workers
-  *   claim leaves largest-first for sequential locator-aware inserts. Scatter transients are
-  *   released as they are consumed, before the probe starts.
+  *   columns stay in the shared row store. Then workers claim leaves largest-first for
+  *   sequential locator-aware inserts; each claimed leaf's map is created exact-reserved on
+  *   demand right before that leaf's inserts (one buffer allocation per leaf, predicted through
+  *   the map's own grower math), so the allocator recycles the scatter chunks of already
+  *   consumed leaves instead of holding the full table footprint alongside all transients.
+  *   Scatter transients are released as they are consumed, before the probe starts.
   * - Probe: probe blocks are never scattered or buffered; each row recomputes its route word and
   *   looks its key up in the routed leaf table through the standard `HashJoin` emit machinery.
   *   Above the engagement threshold, lookups of every AMAC-capable map type run as a two-phase
@@ -126,8 +127,8 @@ public:
 
     void setEnableLazyColumnsIndexing(bool value) override;
 
-    /// Build introspection for tests: the one-allocation property, exact region prediction,
-    /// sketch quality, and heap-fallback behavior are asserted on these.
+    /// Build introspection for tests: the exact buffer-size prediction, sketch quality, and
+    /// growth-past-reserve behavior are asserted on these.
     struct BuildStats
     {
         size_t bits = 0;
@@ -139,12 +140,11 @@ public:
         /// path; lets tests assert per-leaf row parity between different pass plans.
         std::vector<UInt64> leaf_row_counts;
         double hll_estimate = 0;
-        /// Incremented at the slab allocation call sites, so the one-allocation assert counts
-        /// real allocations instead of deriving 1 from the slab pointer being set.
-        UInt64 slab_allocations = 0;
-        size_t slab_bytes = 0;
-        UInt64 region_carves = 0;
-        UInt64 heap_fallbacks = 0;
+        /// Total predicted hash-table buffer bytes across all leaves.
+        size_t ht_total_bytes = 0;
+        /// Leaves whose map resized during the inserts, past its create-time buffer (a
+        /// distinct-estimate shortfall) - correct but unplanned, counted, never silent.
+        UInt64 leaf_growths = 0;
         /// Times a leaf map grew during an AMAC insert ring (the ring was drained, the map
         /// resized, the in-flight rows re-seeded) - rare, correct, never silent.
         UInt64 amac_ring_growths = 0;
@@ -161,7 +161,7 @@ public:
     BuildStats getBuildStats() const;
 
     /// Shrinks the reserve safety factor so that leaf reserves underestimate and the maps must
-    /// grow out of their slab regions - exercises the heap-fallback path in tests.
+    /// grow past their exact reserves - exercises the growth path in tests.
     void setReserveSafetyFactorForTests(double factor) { reserve_safety = factor; }
 
     /// Pins the build and probe onto the plain sequential loops regardless of the engagement
@@ -234,7 +234,7 @@ private:
     /// last pass a row's leaf index equals `route >> (16 - bits)` - the same leaf a
     /// single-pass plan of `bits` would give it, and the leaf the probe derives.
     void refinePassWave(PostBuildContext & ctx, size_t refine_bits, size_t bits_done, std::atomic<UInt64> & stage_thread_us);
-    void planAndAllocateHashTables(PostBuildContext & ctx);
+    void planHashTables(PostBuildContext & ctx);
     void leafBuildWorker(PostBuildContext & ctx, size_t worker);
     void finishBuildPhase(bool all_values_unique);
 
@@ -262,7 +262,7 @@ private:
     /// per-block pointer table (8 bytes x partitions per `joinBlock` call).
     void collectLeafMapPointers();
 
-    /// The AMAC engagement decision of this build, made once right after the hash-table slab is
+    /// The AMAC engagement decision of this build, made once right after the hash tables are
     /// sized (before the leaf inserts); mirrors the software-prefetch enablement heuristics.
     void decideAmacEngagement();
 
@@ -340,7 +340,7 @@ private:
     /// `RowRef` at insert - it halves the largest scatter transient. 8-byte otherwise.
     bool narrow_locators = false;
 
-    /// Leaf hash tables, backed by the single contiguous slab. `build_arenas` hold the string
+    /// Leaf hash tables, each owning its exact-reserved buffer. `build_arenas` hold the string
     /// keys and duplicate-list nodes referenced by map cells, so they live as long as the maps.
     std::vector<PartitionedJoinMaps> leaf_maps;
     /// The active map of each leaf, collected once after the builds (`collectLeafMapPointers`).
@@ -355,9 +355,7 @@ private:
     /// filled after the leaf builds, only for shapes that track right-side used flags.
     std::vector<UInt64> flag_base;
     std::deque<Arena> build_arenas;
-    char * ht_slab = nullptr;
-    size_t ht_slab_bytes = 0;
-    Allocator<false, false> slab_allocator; /// not zeroed, not pre-faulted
+    size_t ht_total_bytes = 0; /// total predicted hash-table bytes (drives the prefetch heuristics)
 
     std::unique_ptr<ThreadPool> post_build_pool;
 
@@ -372,8 +370,6 @@ private:
     std::mutex probe_scratch_mutex;
     std::vector<std::unique_ptr<ProbeScratch>> probe_scratch_pool;
 
-    mutable std::atomic<UInt64> region_carves{0};
-    mutable std::atomic<UInt64> heap_fallbacks{0};
     BuildStats stats;
 
     LoggerPtr log;

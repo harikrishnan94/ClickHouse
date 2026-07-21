@@ -13,14 +13,10 @@
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
-#include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
 #include <Interpreters/PartitionedHashJoin/JoinRouteHashing.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedJoinMaps.h>
 #include <Interpreters/TableJoin.h>
-#include <Common/Allocator.h>
-#include <Common/HashTable/Hash.h>
-#include <Common/HashTable/HashMap.h>
 #include <Common/assert_cast.h>
 
 using namespace DB;
@@ -139,7 +135,7 @@ BuiltJoin buildJoin(
     if (reserve_safety_for_tests > 0)
         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
     /// Without the override the AMAC build insert and two-phase probe engage by default here
-    /// (these builds exceed the slab-size threshold), covering the generic find pass on the
+    /// (these builds exceed the aggregate hash-table size threshold), covering the generic find pass on the
     /// UInt64 map types.
     if (disable_amac)
         result.join->setAmacEnabledForTests(false);
@@ -214,19 +210,17 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
 
 }
 
-TEST(PartitionedHashJoin, PartitionedBuildOneAllocationAndParity)
+TEST(PartitionedHashJoin, PartitionedBuildExactReservesAndParity)
 {
     constexpr size_t distinct_keys = 300000;
     auto built = buildJoin(distinct_keys, /*duplicates=*/1, /*num_threads=*/4);
 
     const auto stats = built.join->getBuildStats();
     EXPECT_GT(stats.partitions, 1u) << "a 300K-key build must partition";
-    EXPECT_EQ(stats.slab_allocations, 1u) << "exactly ONE hash-table allocation per build";
-    EXPECT_EQ(stats.region_carves, stats.partitions) << "every leaf buffer must be carved from the slab";
-    EXPECT_EQ(stats.heap_fallbacks, 0u);
+    EXPECT_EQ(stats.leaf_growths, 0u) << "no leaf map may resize past its planned exact reserve";
     EXPECT_TRUE(stats.predictions_exact) << "predicted bucket bytes must equal the actual map buffer bytes";
     EXPECT_EQ(stats.leaf_rows, distinct_keys);
-    EXPECT_GT(stats.slab_bytes, 0u);
+    EXPECT_GT(stats.ht_total_bytes, 0u);
     EXPECT_NEAR(stats.hll_estimate, static_cast<double>(distinct_keys), 0.05 * distinct_keys) << "the distinct estimate must be within 5%";
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/10000);
@@ -240,9 +234,7 @@ TEST(PartitionedHashJoin, PartitionedBuildWithDuplicates)
 
     const auto stats = built.join->getBuildStats();
     EXPECT_GT(stats.partitions, 1u);
-    EXPECT_EQ(stats.slab_allocations, 1u);
-    EXPECT_EQ(stats.region_carves, stats.partitions);
-    EXPECT_EQ(stats.heap_fallbacks, 0u);
+    EXPECT_EQ(stats.leaf_growths, 0u);
     EXPECT_TRUE(stats.predictions_exact);
     EXPECT_EQ(stats.leaf_rows, distinct_keys * duplicates);
 
@@ -256,9 +248,7 @@ TEST(PartitionedHashJoin, DegenerateSingleLeaf)
 
     const auto stats = built.join->getBuildStats();
     EXPECT_EQ(stats.partitions, 1u) << "a small build must degenerate to one leaf";
-    EXPECT_EQ(stats.slab_allocations, 1u);
-    EXPECT_EQ(stats.region_carves, 1u);
-    EXPECT_EQ(stats.heap_fallbacks, 0u);
+    EXPECT_EQ(stats.leaf_growths, 0u);
     EXPECT_TRUE(stats.predictions_exact);
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/2, /*misses=*/100);
@@ -273,25 +263,22 @@ TEST(PartitionedHashJoin, WideLocatorsForLargeBlocks)
 
     const auto stats = built.join->getBuildStats();
     EXPECT_GT(stats.partitions, 1u);
-    EXPECT_EQ(stats.slab_allocations, 1u);
-    EXPECT_EQ(stats.region_carves, stats.partitions);
-    EXPECT_EQ(stats.heap_fallbacks, 0u);
+    EXPECT_EQ(stats.leaf_growths, 0u);
     EXPECT_TRUE(stats.predictions_exact);
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/1000);
 }
 
-TEST(PartitionedHashJoin, HeapFallbackOnUnderestimate)
+TEST(PartitionedHashJoin, GrowthOnUnderestimate)
 {
     /// A crippled reserve safety factor forces every leaf reserve to underestimate, so the
-    /// maps must grow out of their slab regions onto the heap: the result must stay correct
-    /// and the fallbacks must be counted, never silent.
+    /// maps must resize past their planned exact reserves: the result must stay correct and
+    /// the growths must be counted, never silent.
     constexpr size_t distinct_keys = 200000;
     auto built = buildJoin(distinct_keys, /*duplicates=*/1, /*num_threads=*/4, /*reserve_safety_for_tests=*/0.001);
 
     const auto stats = built.join->getBuildStats();
-    EXPECT_EQ(stats.slab_allocations, 1u) << "growing out of the slab must not allocate another one";
-    EXPECT_GT(stats.heap_fallbacks, 0u) << "the crippled estimate must force heap fallbacks";
+    EXPECT_GT(stats.leaf_growths, 0u) << "the crippled estimate must force leaf growths";
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/1000);
 }
@@ -390,9 +377,9 @@ TEST(PartitionedHashJoin, RightJoinFlagBaseAndNonJoined)
 TEST(PartitionedHashJoin, AmacRingGrowthResume)
 {
     /// Cursor resume across map growth: the reserve safety factor is crippled to ~1/3 of the
-    /// real distinct count while the slab stays far above the AMAC engagement threshold, so
+    /// real distinct count while the aggregate table size stays far above the AMAC engagement threshold, so
     /// every leaf's insert ring must hit the grower boundary mid-flight (~2 times per leaf),
-    /// drain the ring, resize the map onto the heap, and re-seed the in-flight rows. The exact
+    /// drain the ring, resize the map, and re-seed the in-flight rows. The exact
     /// joined-row multiset check below is count-exact: a build row lost (two in-flight rows
     /// claiming one cell) or duplicated by the re-seed cannot pass.
     constexpr size_t distinct_keys = 3000000;
@@ -400,10 +387,9 @@ TEST(PartitionedHashJoin, AmacRingGrowthResume)
 
     const auto stats = built.join->getBuildStats();
     EXPECT_GT(stats.partitions, 1u);
-    EXPECT_TRUE(stats.amac_build_engaged) << "the slab must be far above the AMAC engagement threshold";
+    EXPECT_TRUE(stats.amac_build_engaged) << "the tables must be far above the AMAC engagement threshold";
     EXPECT_GT(stats.amac_ring_growths, 0u) << "the crippled reserve must force growth inside the insert rings";
-    EXPECT_GT(stats.heap_fallbacks, 0u) << "growing out of the slab regions must be counted, never silent";
-    EXPECT_EQ(stats.slab_allocations, 1u);
+    EXPECT_GT(stats.leaf_growths, 0u) << "resizing past the planned reserves must be counted, never silent";
     EXPECT_EQ(stats.leaf_rows, distinct_keys);
 
     probeAndCheck(built, distinct_keys, /*duplicates=*/1, /*misses=*/10000);
@@ -423,7 +409,7 @@ TEST(PartitionedHashJoin, AmacDuplicateHeavyBuildParityVsSequential)
     const auto amac_stats = amac_built.join->getBuildStats();
     EXPECT_GT(amac_stats.partitions, 1u);
     EXPECT_TRUE(amac_stats.amac_build_engaged);
-    EXPECT_EQ(amac_stats.heap_fallbacks, 0u);
+    EXPECT_EQ(amac_stats.leaf_growths, 0u);
     EXPECT_EQ(amac_stats.amac_ring_growths, 0u);
     EXPECT_EQ(amac_stats.leaf_rows, distinct_keys * duplicates);
 
@@ -482,10 +468,8 @@ TEST(PartitionedHashJoin, MultiPassForcedPlanLeafParity)
     ASSERT_EQ(multi_stats.leaf_row_counts.size(), multi_stats.partitions);
     EXPECT_TRUE(multi_stats.leaf_row_counts == single_stats.leaf_row_counts);
 
-    /// One-allocation behavior is unchanged by the refine passes.
-    EXPECT_EQ(multi_stats.slab_allocations, 1u);
-    EXPECT_EQ(multi_stats.region_carves, multi_stats.partitions);
-    EXPECT_EQ(multi_stats.heap_fallbacks, 0u);
+    /// Exact-reserve behavior is unchanged by the refine passes.
+    EXPECT_EQ(multi_stats.leaf_growths, 0u);
     EXPECT_TRUE(multi_stats.predictions_exact);
     EXPECT_EQ(multi_stats.leaf_rows, distinct_keys);
 
@@ -519,8 +503,7 @@ TEST(PartitionedHashJoin, MultiPassWideLocatorsManyPassesWithDuplicates)
     EXPECT_EQ(multi_stats.partitions, single_stats.partitions);
     ASSERT_GE(multi_stats.pass_bits.size(), 3u) << "a 1-bit ceiling must force one pass per plan bit";
     EXPECT_TRUE(multi_stats.leaf_row_counts == single_stats.leaf_row_counts);
-    EXPECT_EQ(multi_stats.slab_allocations, 1u);
-    EXPECT_EQ(multi_stats.heap_fallbacks, 0u);
+    EXPECT_EQ(multi_stats.leaf_growths, 0u);
     EXPECT_EQ(multi_stats.leaf_rows, distinct_keys * duplicates);
 
     probeAndCheck(multi, distinct_keys, duplicates, /*misses=*/1000);
@@ -664,8 +647,7 @@ void buildAndCheckStringKeys(size_t distinct_keys, size_t max_fanout_per_pass_fo
         ASSERT_GE(stats.pass_bits.size(), 2u) << "the lowered ceiling must force a multi-pass plan";
     else
         ASSERT_EQ(stats.pass_bits.size(), 1u);
-    EXPECT_EQ(stats.slab_allocations, 1u);
-    EXPECT_EQ(stats.heap_fallbacks, 0u);
+    EXPECT_EQ(stats.leaf_growths, 0u);
     EXPECT_EQ(stats.leaf_rows, distinct_keys);
     leaf_row_counts_out = stats.leaf_row_counts;
 
@@ -736,44 +718,6 @@ TEST(PartitionedHashJoin, MultiPassGenericStringKeys)
     buildAndCheckStringKeys(distinct_keys, /*max_fanout_per_pass_for_tests=*/4, multi_pass_counts);
 
     EXPECT_TRUE(multi_pass_counts == single_pass_counts) << "refine passes must land every row in its single-pass leaf";
-}
-
-TEST(PartitionedHashJoin, FixedRegionAllocatorCarveAndFallback)
-{
-    using Map = HashMap<UInt64, UInt64, HashCRC32<UInt64>, HashTableGrowerWithPrecalculation<>, FixedRegionAllocator>;
-
-    constexpr size_t reserve = 1000;
-    Map::grower_type grower;
-    grower.set(reserve);
-    const size_t predicted_bytes = grower.bufSize() * sizeof(Map::cell_type);
-
-    Allocator<false, false> slab_allocator;
-    void * slab = slab_allocator.alloc(predicted_bytes, 64);
-    std::atomic<UInt64> carves{0};
-    std::atomic<UInt64> fallbacks{0};
-
-    {
-        FixedRegionAllocator::Region region{static_cast<char *>(slab), predicted_bytes, &carves, &fallbacks};
-        FixedRegionAllocator::armRegion(region);
-        Map map(reserve);
-        EXPECT_EQ(map.getBufferSizeInBytes(), predicted_bytes) << "the carve must be grower-exact";
-        EXPECT_EQ(carves.load(), 1u);
-        EXPECT_EQ(fallbacks.load(), 0u);
-
-        /// Insert far beyond the reserve: the map must grow onto the heap (counted), keep every
-        /// key, and release the heap buffer at destruction while leaving the slab alone.
-        for (UInt64 i = 0; i < 20 * reserve; ++i)
-            map[i * 2654435761ULL] = i;
-        EXPECT_GT(fallbacks.load(), 0u);
-        for (UInt64 i = 0; i < 20 * reserve; ++i)
-        {
-            const auto * found = map.find(i * 2654435761ULL);
-            ASSERT_NE(found, nullptr);
-            EXPECT_EQ(found->getMapped(), i);
-        }
-    }
-
-    slab_allocator.free(slab, predicted_bytes);
 }
 
 namespace

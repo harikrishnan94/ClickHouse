@@ -83,13 +83,7 @@ PartitionedHashJoin::PartitionedHashJoin(
             leaf_join->data->type);
 }
 
-PartitionedHashJoin::~PartitionedHashJoin()
-{
-    /// The leaf maps carve their buffers from the slab; release them before the slab.
-    leaf_maps.clear();
-    if (ht_slab)
-        slab_allocator.free(ht_slab, ht_slab_bytes);
-}
+PartitionedHashJoin::~PartitionedHashJoin() = default;
 
 bool PartitionedHashJoin::isSupported(const TableJoin & table_join)
 {
@@ -469,9 +463,7 @@ PartitionedHashJoin::BuildStats PartitionedHashJoin::getBuildStats() const
     res.partitions = partitions;
     res.pass_bits = pass_bits;
     res.hll_estimate = hll_estimate;
-    res.slab_bytes = ht_slab_bytes;
-    res.region_carves = region_carves.load(std::memory_order_relaxed);
-    res.heap_fallbacks = heap_fallbacks.load(std::memory_order_relaxed);
+    res.ht_total_bytes = ht_total_bytes;
     res.amac_ring_growths = amac_ring_growths.load(std::memory_order_relaxed);
     res.amac_build_engaged = amac_build_engaged;
     res.flag_base = flag_base;

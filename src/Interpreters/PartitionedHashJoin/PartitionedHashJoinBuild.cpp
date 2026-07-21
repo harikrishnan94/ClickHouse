@@ -3,7 +3,6 @@
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/KeyGetter.h>
 #include <Interpreters/PartitionedHashJoin/AmacRing.h>
-#include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/joinDispatch.h>
@@ -27,7 +26,7 @@ extern const Event PartitionedHashJoinBuildScatterMicroseconds;
 extern const Event PartitionedHashJoinBuildLeafMicroseconds;
 extern const Event PartitionedHashJoinLeafRows;
 extern const Event PartitionedHashJoinHashTableBytes;
-extern const Event PartitionedHashJoinHashTableHeapFallbacks;
+extern const Event PartitionedHashJoinHashTableGrowths;
 extern const Event PartitionedHashJoinAmacRingGrowths;
 }
 
@@ -378,13 +377,13 @@ struct PartitionedHashJoin::PostBuildContext
         bool all_values_unique = true;
         bool predictions_exact = true;
         UInt64 leaf_rows = 0;
+        UInt64 leaf_growths = 0;
     };
     std::deque<WorkerState> worker_state;
 
     /// Leaf plan (filled right before the leaf builds).
     std::vector<UInt64> leaf_reserve;
     std::vector<UInt64> leaf_bytes;
-    std::vector<UInt64> leaf_offset;
     std::vector<UInt32> leaf_order; /// largest first
     std::atomic<UInt32> leaf_claim{0};
 
@@ -423,9 +422,9 @@ void PartitionedHashJoin::decideAmacEngagement()
     /// toggle, plus the aggregate hash-table size outgrowing the L2 threshold - below it the
     /// tables are cache resident and pipelining the (then hitting) cell reads is pure overhead.
     /// The aggregate size is the right scale on both sides: the build streams scattered chunks
-    /// through the cache alongside its leaf, and the probe misses across the whole slab, not
+    /// through the cache alongside its leaf, and the probe misses across all leaf tables, not
     /// within one leaf.
-    amac_build_engaged = amac_enabled && leaf_join->enableSoftwarePrefetch() && ht_slab_bytes > getMinBytesForPrefetchInJoin();
+    amac_build_engaged = amac_enabled && leaf_join->enableSoftwarePrefetch() && ht_total_bytes > getMinBytesForPrefetchInJoin();
 }
 
 void PartitionedHashJoin::collectLeafMapPointers()
@@ -552,9 +551,9 @@ void PartitionedHashJoin::runPostBuildPhase()
     /// The route transients are gone; from now on the byte count tracks the stored blocks.
     accumulated_bytes.store(leaf_join->data->allocated_size, std::memory_order_relaxed);
 
-    ProfileEvents::increment(ProfileEvents::PartitionedHashJoinHashTableBytes, ht_slab_bytes);
-    if (const UInt64 fallbacks = heap_fallbacks.load(std::memory_order_relaxed))
-        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinHashTableHeapFallbacks, fallbacks);
+    ProfileEvents::increment(ProfileEvents::PartitionedHashJoinHashTableBytes, ht_total_bytes);
+    if (stats.leaf_growths)
+        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinHashTableGrowths, stats.leaf_growths);
     if (const UInt64 growths = amac_ring_growths.load(std::memory_order_relaxed))
         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinAmacRingGrowths, growths);
 
@@ -563,13 +562,12 @@ void PartitionedHashJoin::runPostBuildPhase()
     LOG_TRACE(
         log,
         "Built {} leaf hash tables: {} keys, {} of right-table data including the hash tables "
-        "({} carved from one {} slab, {} heap fallbacks, {} ring growths)",
+        "({} predicted for the exact-reserved buffers, {} leaf growths, {} ring growths)",
         partitions,
         getTotalRowCount(),
         ReadableSize(getTotalByteCount()),
-        region_carves.load(std::memory_order_relaxed),
-        ReadableSize(ht_slab_bytes),
-        heap_fallbacks.load(std::memory_order_relaxed),
+        ReadableSize(ht_total_bytes),
+        stats.leaf_growths,
         amac_ring_growths.load(std::memory_order_relaxed));
 }
 
@@ -632,18 +630,15 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
         = std::clamp<size_t>(static_cast<size_t>(std::ceil(hll_estimate * reserve_safety)), 1, std::max<size_t>(insertable_rows, 1));
     const size_t predicted_bytes = PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, reserve);
 
-    ht_slab_bytes = predicted_bytes;
-    ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
-    ++stats.slab_allocations;
+    ht_total_bytes = predicted_bytes;
     decideAmacEngagement();
 
     leaf_maps.assign(1, PartitionedJoinMaps(maps_variant_index));
     build_arenas.emplace_back();
 
-    FixedRegionAllocator::Region region{ht_slab, predicted_bytes, &region_carves, &heap_fallbacks};
-    FixedRegionAllocator::armRegion(region);
     leaf_maps[0].create(type, reserve);
-    stats.predictions_exact = leaf_maps[0].getBufferSizeInBytes(type) == predicted_bytes;
+    const size_t created_bytes = leaf_maps[0].getBufferSizeInBytes(type);
+    stats.predictions_exact = created_bytes == predicted_bytes;
 
     bool all_values_unique = true;
     for (auto & fill : build_blocks)
@@ -670,6 +665,8 @@ bool PartitionedHashJoin::postBuildSingleLeaf()
         fill.skip_bytes = {};
         fill.routes = {};
     }
+    if (leaf_maps[0].getBufferSizeInBytes(type) != created_bytes)
+        ++stats.leaf_growths;
     return all_values_unique;
 }
 
@@ -802,10 +799,10 @@ bool PartitionedHashJoin::postBuildPartitioned()
 
     stage_watch.restart();
     {
-        /// The single contiguous hash-table allocation, right before the leaf builds (R1);
-        /// caller-thread work, counted like any other build-thread time.
+        /// The per-leaf reserve/byte plan, right before the leaf builds; caller-thread work,
+        /// counted like any other build-thread time.
         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
-        planAndAllocateHashTables(ctx);
+        planHashTables(ctx);
     }
     const UInt64 plan_wall_us = stage_watch.elapsedMicroseconds();
 
@@ -817,7 +814,7 @@ bool PartitionedHashJoin::postBuildPartitioned()
     LOG_TRACE(
         log,
         "Post-build stages, wall/thread ms: histogram {:.1f}/{:.1f}, chunk allocation {:.1f}/{:.1f}, scatter {:.1f}/{:.1f}, "
-        "refine passes {:.1f}/{:.1f}, hash-table plan+slab {:.1f}, leaf inserts {:.1f}/{:.1f} (AMAC {})",
+        "refine passes {:.1f}/{:.1f}, hash-table plan {:.1f}, leaf inserts {:.1f}/{:.1f} (AMAC {})",
         to_ms(hist_wall_us),
         to_ms(hist_thread_us.load(std::memory_order_relaxed)),
         to_ms(alloc_wall_us),
@@ -854,6 +851,7 @@ bool PartitionedHashJoin::postBuildPartitioned()
         all_values_unique &= worker.all_values_unique;
         stats.predictions_exact = stats.predictions_exact && worker.predictions_exact;
         stats.leaf_rows += worker.leaf_rows;
+        stats.leaf_growths += worker.leaf_growths;
     }
     return all_values_unique;
 }
@@ -1296,7 +1294,7 @@ void PartitionedHashJoin::refinePassWave(
     ctx.refined = true;
 }
 
-void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
+void PartitionedHashJoin::planHashTables(PostBuildContext & ctx)
 {
     /// Drop the null bucket's outputs: null-key rows are never inserted. On a refined
     /// (multi-pass) build the containers are final-leaf-indexed and the drop bucket was
@@ -1320,23 +1318,18 @@ void PartitionedHashJoin::planAndAllocateHashTables(PostBuildContext & ctx)
 
     ctx.leaf_reserve.resize(partitions);
     ctx.leaf_bytes.resize(partitions);
-    ctx.leaf_offset.resize(partitions);
     UInt64 running = 0;
     for (size_t leaf = 0; leaf < partitions; ++leaf)
     {
         /// The sketch estimate can only shrink a leaf below its row count, never inflate it.
         ctx.leaf_reserve[leaf] = std::clamp<UInt64>(per_leaf_estimate, 1, std::max<UInt64>(ctx.bucket_rows[leaf], 1));
         ctx.leaf_bytes[leaf] = PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, ctx.leaf_reserve[leaf]);
-        running = (running + ColumnsScatter::LINE_BYTES - 1) & ~static_cast<UInt64>(ColumnsScatter::LINE_BYTES - 1);
-        ctx.leaf_offset[leaf] = running;
         running += ctx.leaf_bytes[leaf];
     }
 
-    /// ONE contiguous allocation backs all leaf hash tables: exact-sized, 64-byte aligned, NOT
-    /// zeroed (each worker zeroes exactly its leaf region right before filling it).
-    ht_slab_bytes = running;
-    ht_slab = static_cast<char *>(slab_allocator.alloc(ht_slab_bytes, ColumnsScatter::LINE_BYTES));
-    ++stats.slab_allocations;
+    /// No allocation happens here: each leaf's exact-reserved buffer is allocated on demand by
+    /// the worker that claims the leaf (`leafBuildWorker`).
+    ht_total_bytes = running;
     decideAmacEngagement();
 
     leaf_maps.assign(partitions, PartitionedJoinMaps(maps_variant_index));
@@ -1363,10 +1356,11 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
             break;
         const UInt32 leaf = ctx.leaf_order[claim];
 
-        FixedRegionAllocator::Region region{ht_slab + ctx.leaf_offset[leaf], ctx.leaf_bytes[leaf], &region_carves, &heap_fallbacks};
-        FixedRegionAllocator::armRegion(region);
+        /// `create` allocates the leaf's exact-reserved buffer on this worker (see
+        /// `ZeroingHashTableAllocator` for why the allocation belongs on the filling thread).
         leaf_maps[leaf].create(type, ctx.leaf_reserve[leaf]);
-        state.predictions_exact = state.predictions_exact && leaf_maps[leaf].getBufferSizeInBytes(type) == ctx.leaf_bytes[leaf];
+        const size_t created_bytes = leaf_maps[leaf].getBufferSizeInBytes(type);
+        state.predictions_exact = state.predictions_exact && created_bytes == ctx.leaf_bytes[leaf];
 
         const UInt64 leaf_rows = ctx.bucket_rows[leaf];
         if (!ctx.generic_mode)
@@ -1426,6 +1420,9 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
         }
         state.leaf_rows += leaf_rows;
         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinLeafRows, leaf_rows);
+
+        if (leaf_maps[leaf].getBufferSizeInBytes(type) != created_bytes)
+            ++state.leaf_growths;
 
         /// Release the leaf's scatter chunks as soon as they are consumed.
         if (narrow_locators)

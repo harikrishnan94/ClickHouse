@@ -139,7 +139,7 @@ SELECT
     log_comment,
     ProfileEvents['PartitionedHashJoinPartitions'] > 1,
     ProfileEvents['PartitionedHashJoinLeafRows'] > 0,
-    ProfileEvents['PartitionedHashJoinHashTableHeapFallbacks']
+    ProfileEvents['PartitionedHashJoinHashTableGrowths']
 FROM system.query_log
 WHERE current_database = currentDatabase() AND type = 'QueryFinish' AND log_comment LIKE 'p4kind %'
 ORDER BY log_comment;
