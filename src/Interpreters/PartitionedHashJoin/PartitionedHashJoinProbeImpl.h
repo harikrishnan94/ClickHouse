@@ -12,8 +12,15 @@
 #include <Interpreters/RowRefs.h>
 #include <Interpreters/TableJoin.h>
 #include <base/scope_guard.h>
+#include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/HashTable/HashTable.h>
 #include <Common/PODArray.h>
+#include <Common/ProfileEvents.h>
+
+namespace ProfileEvents
+{
+extern const Event PartitionedHashJoinProbeLookupMicroseconds;
+}
 
 namespace DB
 {
@@ -904,8 +911,15 @@ JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
 
     using OurMaps = PartitionedMapsFor<MapsShape>::Type;
 
-    switch (join.data->type)
     {
+        /// The routed hash-table lookup (leaf routing plus the AMAC find ring or plain/flat
+        /// lookup loop and match bookkeeping - filter, matched rows, replication offsets). Does
+        /// NOT gather any column values yet; that is deferred to the lazy `HashJoinResult::next`
+        /// (`HashJoinResultFilterLeftMicroseconds`/`HashJoinResultBuildOutputMicroseconds`, shared
+        /// with `hash`/`parallel_hash`/`grace_hash`).
+        ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::PartitionedHashJoinProbeLookupMicroseconds);
+        switch (join.data->type)
+        {
 #define M(TYPE) \
     case HashJoin::Type::TYPE: { \
         using Map = const decltype(OurMaps::TYPE)::element_type; \
@@ -913,11 +927,12 @@ JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
         routedJoinRightColumns<KIND, STRICTNESS, MapsShape, KeyGetter, Map>(added_columns, scattered_block); \
         break; \
     }
-        APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
+            APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
 #undef M
-        default:
-            throw Exception(
-                ErrorCodes::UNSUPPORTED_JOIN_KEYS, "Unsupported JOIN keys for the partitioned join (type: {})", join.data->type);
+            default:
+                throw Exception(
+                    ErrorCodes::UNSUPPORTED_JOIN_KEYS, "Unsupported JOIN keys for the partitioned join (type: {})", join.data->type);
+        }
     }
 
     added_columns.join_on_keys.clear();

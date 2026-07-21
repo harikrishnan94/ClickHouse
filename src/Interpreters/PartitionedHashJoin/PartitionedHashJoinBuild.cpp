@@ -22,6 +22,9 @@
 namespace ProfileEvents
 {
 extern const Event PartitionedHashJoinBuildMicroseconds;
+extern const Event PartitionedHashJoinBuildHistogramMicroseconds;
+extern const Event PartitionedHashJoinBuildScatterMicroseconds;
+extern const Event PartitionedHashJoinBuildLeafMicroseconds;
 extern const Event PartitionedHashJoinLeafRows;
 extern const Event PartitionedHashJoinHashTableBytes;
 extern const Event PartitionedHashJoinHashTableHeapFallbacks;
@@ -529,7 +532,10 @@ void PartitionedHashJoin::runPostBuildPhase()
     bool all_values_unique = true;
     if (bits == 0)
     {
+        /// The degenerate single-leaf plan has no histogram or scatter stage: every row is
+        /// inserted straight from the stored blocks, so this is wholesale "leaf/table build" work.
         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
+        ProfileEventTimeIncrement<Microseconds> leaf_watch(ProfileEvents::PartitionedHashJoinBuildLeafMicroseconds);
         all_values_unique = postBuildSingleLeaf();
     }
     else
@@ -824,6 +830,21 @@ bool PartitionedHashJoin::postBuildPartitioned()
         to_ms(insert_wall_us),
         to_ms(insert_thread_us.load(std::memory_order_relaxed)),
         amac_build_engaged ? "engaged" : "off");
+
+    /// Roll the per-stage thread-time already collected above into the three build sub-phase
+    /// events: "histogram/merge" (the histogram itself plus the parallel prefix-sum merge of the
+    /// per-worker histograms into bucket start offsets), "scatter" (the key+locator scatter plus
+    /// any multi-pass refine waves), and "leaf/table build" (the hash-table allocation plan plus
+    /// the per-leaf inserts). Each is a subset of the overall `PartitionedHashJoinBuildMicroseconds`
+    /// already charged per-worker inside `run_wave`/`refinePassWave` above.
+    ProfileEvents::increment(
+        ProfileEvents::PartitionedHashJoinBuildHistogramMicroseconds,
+        hist_thread_us.load(std::memory_order_relaxed) + alloc_thread_us.load(std::memory_order_relaxed));
+    ProfileEvents::increment(
+        ProfileEvents::PartitionedHashJoinBuildScatterMicroseconds,
+        scatter_thread_us.load(std::memory_order_relaxed) + refine_thread_us.load(std::memory_order_relaxed));
+    ProfileEvents::increment(
+        ProfileEvents::PartitionedHashJoinBuildLeafMicroseconds, plan_wall_us + insert_thread_us.load(std::memory_order_relaxed));
 
     post_build_pool.reset();
 

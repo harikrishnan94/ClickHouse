@@ -20,6 +20,7 @@
 namespace ProfileEvents
 {
 extern const Event PartitionedHashJoinBuildMicroseconds;
+extern const Event PartitionedHashJoinBuildFillMicroseconds;
 extern const Event PartitionedHashJoinProbeMicroseconds;
 extern const Event PartitionedHashJoinPartitions;
 extern const Event PartitionedHashJoinLeafRows;
@@ -167,6 +168,11 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinLeafRows, source_block.rows());
         return leaf_join->addBlockToJoin(source_block, check_limits);
     }
+
+    /// The "fill" build sub-phase: right-side key preparation plus the per-row route hash and
+    /// HLL sketch update (`computeJoinRoutesForFill`); the partitioned/single-leaf decision itself
+    /// is made later, at the build barrier, so every plan pays this cost identically.
+    ProfileEventTimeIncrement<Microseconds> fill_watch(ProfileEvents::PartitionedHashJoinBuildFillMicroseconds);
 
     Block materialized = leaf_join->materializeColumnsFromRightBlock(source_block);
     const size_t rows = materialized.rows();
