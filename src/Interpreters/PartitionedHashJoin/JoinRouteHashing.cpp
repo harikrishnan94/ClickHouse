@@ -3,6 +3,7 @@
 #include <Columns/ColumnLowCardinality.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnsScatter.h>
+#include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
 #include <Common/PODArray.h>
 
 namespace DB
@@ -81,17 +82,19 @@ struct RouteColumn
     }
 };
 
-template <typename T>
-void routeSingleNumericColumn(const char * data, size_t rows, UInt32 * words)
+template <typename T, typename Sink>
+void routeSingleNumericColumn(const char * data, size_t rows, Sink & sink)
 {
     const T * values = reinterpret_cast<const T *>(data);
     for (size_t i = 0; i < rows; ++i)
-        words[i] = ColumnsScatter::routeWord(static_cast<UInt64>(values[i]));
+        sink(i, ColumnsScatter::routeWord(static_cast<UInt64>(values[i])));
 }
 
-}
-
-void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt32 * words)
+/// `sink(row, word)` is a compile-time-known callable inlined into the loops. The words are a
+/// build/probe contract: both public entry points instantiate this one implementation, and the
+/// fold/finalize chain must not change without changing both sides in lockstep.
+template <typename Sink>
+void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, Sink && sink)
 {
     if (rows == 0)
         return;
@@ -106,10 +109,10 @@ void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt3
         const char * data = column.getRawData().data();
         switch (column.sizeOfValueIfFixed())
         {
-            case 1: routeSingleNumericColumn<UInt8>(data, rows, words); return;
-            case 2: routeSingleNumericColumn<UInt16>(data, rows, words); return;
-            case 4: routeSingleNumericColumn<UInt32>(data, rows, words); return;
-            case 8: routeSingleNumericColumn<UInt64>(data, rows, words); return;
+            case 1: routeSingleNumericColumn<UInt8>(data, rows, sink); return;
+            case 2: routeSingleNumericColumn<UInt16>(data, rows, sink); return;
+            case 4: routeSingleNumericColumn<UInt32>(data, rows, sink); return;
+            case 8: routeSingleNumericColumn<UInt64>(data, rows, sink); return;
             default: break; /// wide numerics (UInt128/UInt256/...) take the byte fold below
         }
     }
@@ -126,7 +129,27 @@ void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt3
         for (size_t i = 0; i < rows; ++i)
             accumulator[i] = column.fold(accumulator[i], i);
     for (size_t i = 0; i < rows; ++i)
-        words[i] = ColumnsScatter::finalizeRoute(accumulator[i]);
+        sink(i, ColumnsScatter::finalizeRoute(accumulator[i]));
+}
+
+}
+
+void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt32 * words)
+{
+    computeJoinRouteWordsImpl(key_columns, rows, [&](size_t row, UInt32 word) { words[row] = word; });
+}
+
+void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, const UInt8 * skip, UInt16 * routes, DenseHyperLogLog & hll)
+{
+    computeJoinRouteWordsImpl(
+        key_columns,
+        rows,
+        [&](size_t row, UInt32 word)
+        {
+            routes[row] = static_cast<UInt16>(word >> 16);
+            if (!skip || !skip[row])
+                hll.add(word);
+        });
 }
 
 }

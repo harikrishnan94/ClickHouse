@@ -12,7 +12,9 @@
 #include <Core/Settings.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
 #include <Interpreters/PartitionedHashJoin/FixedRegionAllocator.h>
+#include <Interpreters/PartitionedHashJoin/JoinRouteHashing.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedHashJoin.h>
 #include <Interpreters/PartitionedHashJoin/PartitionedJoinMaps.h>
 #include <Interpreters/TableJoin.h>
@@ -772,4 +774,75 @@ TEST(PartitionedHashJoin, FixedRegionAllocatorCarveAndFallback)
     }
 
     slab_allocator.free(slab, predicted_bytes);
+}
+
+namespace
+{
+
+/// Reference = the two-pass consumption the fused fill entry replaces: 32-bit words via
+/// computeJoinRouteWords, then the truncate + skip-gated sketch feed. Register-array equality
+/// subsumes estimate equality. `routes` is poisoned first, so a row the fused path leaves
+/// unwritten (skipped rows' routes must be written too) fails the memcmp.
+void expectFusedRoutingMatchesTwoPass(const ColumnRawPtrs & key_columns, size_t rows, const UInt8 * skip)
+{
+    PaddedPODArray<UInt32> words(rows);
+    computeJoinRouteWords(key_columns, rows, words.data());
+    PaddedPODArray<UInt16> expected_routes(rows);
+    DenseHyperLogLog expected_hll;
+    for (size_t i = 0; i < rows; ++i)
+    {
+        expected_routes[i] = static_cast<UInt16>(words[i] >> 16);
+        if (!skip || !skip[i])
+            expected_hll.add(words[i]);
+    }
+
+    PaddedPODArray<UInt16> routes;
+    routes.assign(rows, static_cast<UInt16>(0xDEAD));
+    DenseHyperLogLog hll;
+    computeJoinRoutesForFill(key_columns, rows, skip, routes.data(), hll);
+
+    ASSERT_EQ(0, memcmp(routes.data(), expected_routes.data(), rows * sizeof(UInt16)));
+    ASSERT_TRUE(hll.registers == expected_hll.registers);
+}
+
+}
+
+TEST(PartitionedHashJoin, FusedFillRoutingMatchesTwoPass)
+{
+    constexpr size_t rows = 10007;
+
+    /// A null map handed to the fill has the same `const UInt8 *` contract as this mask
+    /// (`FillBlock::skipData`), so the mask runs cover the null-map shape too.
+    std::vector<UInt8> skip_mask(rows);
+    for (size_t i = 0; i < rows; ++i)
+        skip_mask[i] = i % 3 == 0;
+
+    /// Single fixed-width numeric key: the routeSingleNumericColumn hot path.
+    auto uint64_key = ColumnUInt64::create();
+    for (size_t i = 0; i < rows; ++i)
+        uint64_key->insertValue(i * 2654435761ULL + 1);
+
+    /// Second key column: forces the general accumulator/finalize path over two Fixed folds.
+    auto uint16_key = ColumnUInt16::create();
+    for (size_t i = 0; i < rows; ++i)
+        uint16_key->insertValue(static_cast<UInt16>(i * 40503));
+
+    /// String key incl. empty and >8-byte values: the String fold with its tail dispatch.
+    auto string_key = ColumnString::create();
+    for (size_t i = 0; i < rows; ++i)
+    {
+        const std::string value = i % 7 == 0 ? "" : fmt::format("key-{}-{}", i, std::string(i % 19, 'x'));
+        string_key->insertData(value.data(), value.size());
+    }
+
+    for (const UInt8 * skip : {static_cast<const UInt8 *>(nullptr), static_cast<const UInt8 *>(skip_mask.data())})
+    {
+        expectFusedRoutingMatchesTwoPass({uint64_key.get()}, rows, skip);
+        expectFusedRoutingMatchesTwoPass({uint64_key.get(), uint16_key.get()}, rows, skip);
+        expectFusedRoutingMatchesTwoPass({string_key.get()}, rows, skip);
+        /// ASOF shape: the fill routes by the equi-key prefix only; the fused entry must see
+        /// exactly the prefix the caller sliced off the full key set.
+        const ColumnRawPtrs asof_key_columns{uint64_key.get(), uint16_key.get()};
+        expectFusedRoutingMatchesTwoPass(ColumnRawPtrs(asof_key_columns.begin(), asof_key_columns.end() - 1), rows, skip);
+    }
 }

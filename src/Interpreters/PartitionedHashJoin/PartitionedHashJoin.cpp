@@ -202,38 +202,30 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
             fill.skip_bytes[i] = ((nulls && (*nulls)[i]) || fill.join_mask.isRowFiltered(i)) ? 1 : 0;
     }
 
-    /// One route word per row (R4, R6): save the top 16 bits, feed the full word to the lane
-    /// sketch. Skipped rows (null keys, mask-filtered) are never inserted, so they do not
-    /// contribute to the estimate. ASOF routes and sketches by the equi-key prefix only - the
-    /// trailing inequality column goes into the per-key sorted lookup, not into the map key.
+    /// One route word per row (R4, R6): the top 16 bits saved per row and the full word fed to
+    /// the lane sketch, fused into the word loop (no 32-bit word transient). Skipped rows (null
+    /// keys, mask-filtered) are never inserted, so they do not contribute to the estimate; their
+    /// routes are still written - the scatter's bucket derivation reads them. ASOF routes and
+    /// sketches by the equi-key prefix only - the trailing inequality column goes into the
+    /// per-key sorted lookup, not into the map key.
     fill.routes.resize_exact(rows);
+    FillLane & lane = getFillLane();
+    if (leaf_join->getStrictness() == JoinStrictness::Asof)
     {
-        PaddedPODArray<UInt32> words(rows);
-        if (leaf_join->getStrictness() == JoinStrictness::Asof)
-        {
-            ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
-            computeJoinRouteWords(equi_columns, rows, words.data());
-        }
-        else
-        {
-            computeJoinRouteWords(fill.key_columns, rows, words.data());
-        }
-        FillLane & lane = getFillLane();
-        const UInt8 * skip = fill.skipData();
-        for (size_t i = 0; i < rows; ++i)
-        {
-            fill.routes[i] = static_cast<UInt16>(words[i] >> 16);
-            if (!skip || !skip[i])
-                lane.hll.add(words[i]);
-        }
-
-        /// The block in row-store form (payload untouched, G1); appended zero-copy to the lane.
-        fill.stored = HashJoin::prepareRightBlock(materialized, leaf_join->savedBlockSample());
-
-        accumulated_rows.fetch_add(rows, std::memory_order_relaxed);
-        accumulated_bytes.fetch_add(fill.stored.allocatedBytes() + fill.routes.allocated_bytes(), std::memory_order_relaxed);
-        lane.blocks.push_back(std::move(fill));
+        ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
+        computeJoinRoutesForFill(equi_columns, rows, fill.skipData(), fill.routes.data(), lane.hll);
     }
+    else
+    {
+        computeJoinRoutesForFill(fill.key_columns, rows, fill.skipData(), fill.routes.data(), lane.hll);
+    }
+
+    /// The block in row-store form (payload untouched, G1); appended zero-copy to the lane.
+    fill.stored = HashJoin::prepareRightBlock(materialized, leaf_join->savedBlockSample());
+
+    accumulated_rows.fetch_add(rows, std::memory_order_relaxed);
+    accumulated_bytes.fetch_add(fill.stored.allocatedBytes() + fill.routes.allocated_bytes(), std::memory_order_relaxed);
+    lane.blocks.push_back(std::move(fill));
 
     if (!check_limits)
         return true;
