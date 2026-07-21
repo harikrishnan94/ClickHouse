@@ -67,3 +67,21 @@ Merge → PORT_MATRIX.md → check_matrix.py → G0 → G0b spot checks (mine, n
 **Untrusted-content report:** no directives addressed to an AI/reader found by any agent in commit messages, worklogs, or code comments (each agent reported explicitly); the only anomaly class = stale/misleading metadata (RBM ProfileEvents descriptions describing phj5-era mechanisms; RBM tip commit title sounding like server code but touching only bench tooling). Nothing followed. No secrets encountered.
 
 **Next:** commit Phase A artifacts (tmp/port_audit/ only), deliver the Phase A report in chat, HARD STOP for approval (GA).
+
+## Iteration 4 — GA received; Phase B opened
+
+**GA (gate) — requester's approval, quoted verbatim (received 2026-07-21, after the Phase A report):**
+
+> Implement 1, 2, 5 and 7.
+> one by one and keep only items that move the wall (both whole query and the portion being optimized).
+> work on same branch, commit individually but not push
+
+**Interpretation (numbers = the Phase A report's ordered candidate list):** approved = 1 `warm-run-cached-distinct-estimate`, 2 `narrow-scatter-counters`, 5 `pipeline-lane-identity`, 7 `parallel-hash-table-teardown`. Deferred-by-requester = 3 `eager-postbuild-and-8b-leaf-descriptor`, 4 `grouped-leaves-metadata-compression`, 6 `probe-output-block-sorted-payload-gather`, 8 `nt-store-arch-gating`. Implementation order: 1 → 2 → 5 → 7, one at a time. **G3 acceptance is TIGHTENED by the requester:** a candidate is kept only if it improves BOTH the whole-query wall time AND the optimized portion (phase timer), each beyond the noise band, with no grid point regressing beyond the band; otherwise `rejected-by-measurement` and reverted. Same branch (`ahj`), one commit per kept candidate, no push.
+
+**Re-pin at Phase B start:** `git rev-parse ahj` → `d8f6f57ee656a7fb73448fb78fdbc772232ffa54`; working tree CLEAN (`git status` empty). The dirty-tree question from Phase A resolved itself: those edits were committed by the requester's concurrent session as `d8f6f57ee65`.
+
+**Delta audit `$AHJ_SHA..ahj`** (mission-required since ahj moved): two commits — `684df18f951` (my Phase A artifacts, tmp/ only, no row impact) and `d8f6f57ee65` "`PartitionedHashJoin`: allocate each leaf hash table on demand, drop `FixedRegionAllocator`" (author = requester, co-authored Cursor). Mechanism: per-leaf exact-reserved on-demand allocation by the claiming worker (allocator recycles freed scatter transients; measured by its author: tracked peak 25.2→17.2 GB, RSS 32→29 GiB, build wall 1.16→1.08 s on 500M×2B/32T), with a new `ZeroingHashTableAllocator` (unzeroed malloc + explicit streaming memset preserving sequential worker-local first touch). `BuildStats` drops slab_allocations/region_carves/heap_fallbacks/slab_bytes for ht_total_bytes/leaf_growths; ProfileEvent `PartitionedHashJoinHashTableHeapFallbacks` → `PartitionedHashJoinHashTableGrowths`. Matrix row impacts recorded in the matrix's new "Base delta audit" section: `byte-balanced-leaf-cell-allocation` disposition unchanged at `$AHJ_SHA` but the slab form is superseded at the new base (deliberate memory-driven inversion); `parallel-hash-table-teardown` premise STRENGTHENED (destructor now frees one allocation per leaf — thousands of frees — instead of one slab); slab-based risk notes in the deferred grouped-leaves/8b-descriptor rows weakened accordingly.
+
+**New implementation base SHA: `d8f6f57ee656a7fb73448fb78fdbc772232ffa54`** (all Phase B baselines and diffs are against this, not `$AHJ_SHA`).
+
+**Environment check at Phase B start:** load average ~28 with no clickhouse processes running (36 logged-in sessions; other agents likely building). Bench noise must be re-measured empirically before G3 (protocol: noise band = max(3%, observed baseline spread)); if load stays bursty, pin runs and widen samples. To be resolved before the first G3 run.

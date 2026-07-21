@@ -1,0 +1,63 @@
+# Phase B pre-registrations
+
+Every candidate's entry here is committed BEFORE its implementing change (verifier checks the ordering in git history). Base SHA for all of Phase B: `d8f6f57ee656a7fb73448fb78fdbc772232ffa54`.
+
+## Protocol (fixed at Unit-1 start, shared by every candidate)
+
+**Harness:** `bep/tools/join_mergetree_bench.py run` against the persistent dataset at `/mnt/data/join_bench_data` (loaded metadata verified: schema v4, D_max=524288000, bucket_width=4194304, max_multiplicity=1, max_cycles=4, 7+7 payload columns; build 524,288,000 rows, probe 2,097,152,000 rows). The harness pins settings, asserts the execution path fail-closed via ProfileEvents, asserts row counts, runs ONE `clickhouse local` process per (point, algorithm) with 1 warmup + `--runs` timed queries — so timed runs are warm-cache runs by construction (this is what makes candidate 1 measurable). Counters come from the timed run closest to the median wall.
+
+**Grid (6 points; identical for every candidate and for the Unit-1-start baseline):**
+
+| Point | cardinality | ratio | bp x pp | threads | role |
+|-------|------------|-------|---------|---------|------|
+| V | 4194304 | 1 | 1x1 | 32 | verification point — output 4.19M rows <= 10M so the sorted `FORMAT Hash` cross-check vs parallel_hash RUNS here every time |
+| A | 8388608 | 4 | 1x1 | 32 | small build, probe-heavy |
+| B | 524288000 | 1 | 1x1 | 32 | large build, build-heavy, narrow |
+| C | 524288000 | 1 | 4x4 | 32 | large build, wide payloads |
+| D | 67108864 | 4 | 0x0 | 32 | mid build, key-only |
+| E | 67108864 | 4 | 1x1 | 96 | thread-scaling |
+
+**Exact invocation** (per point; `--cardinalities/--ratios/--build-payload-columns/--probe-payload-columns/--threads` from the table):
+
+```
+python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
+  --binary build/reldeb/programs/clickhouse \
+  --cardinalities <c> --multiplicities 1 --ratios <r> --hit-rates 1.0 \
+  --build-payload-columns <bp> --probe-payload-columns <pp> \
+  --threads <t> --runs 5 > <log> 2>&1
+```
+
+**Pairing:** per candidate, a FRESH baseline (base = the commit the candidate's diff applies to) is run on the full grid immediately before the candidate run; never an inherited number. After the candidate run, points V and B are re-run once on the baseline binary as a drift check — if baseline drift exceeds the band, the pair is void and both sides are re-measured.
+
+**Noise band:** max(3%, observed run-to-run spread of the baseline at that point), where spread = (max-min)/median of the 5 timed walls. Effects inside the band are "no result".
+
+**Acceptance (G3, includes the requester's tightening from GA):** a candidate is kept only if, on at least one grid point, BOTH (a) median whole-query wall of `partitioned_hash` improves beyond the band AND (b) the candidate's declared phase counter improves beyond the band — and NO grid point's wall regresses beyond the band. Phase counters come from the median-closest run's packet (one sample per invocation); if a phase delta lands between 1x and 2x the band, one repeat invocation settles direction before deciding. Anything else = `rejected-by-measurement`, revert, record numbers.
+
+**Environment:** 96-core box; a concurrent session is running its own bench campaign (32T) as of Phase B start. Concurrent load is recorded in the worklog per G3 run (`uptime` + `ps` snapshot before/after); the drift check above is the guard. If drift repeatedly voids pairs, escalate to the requester rather than widening the band silently.
+
+**Correctness gates per candidate:** G1 `ninja -C build/reldeb clickhouse unit_tests_dbms > build/reldeb/build_port_<id>.log 2>&1`; G2 `build/reldeb/src/unit_tests_dbms --gtest_filter='PartitionedHashJoin*:*ColumnsScatter*' > build/reldeb/test_port_<id>.log 2>&1` plus stateless `04603|04604|04605|04606` via `tests/clickhouse-test` (output to `build/reldeb/stateless_port_<id>.log`); the V point's hash verification vs parallel_hash must pass in every G3 run.
+
+---
+
+## Candidate 1 — warm-run-cached-distinct-estimate (approved; phj5 `3faf01c1e90`)
+
+**Pre-registered 2026-07-21, before any implementing change (base `d8f6f57ee65`).**
+
+**Mechanism to implement:** a cross-run distinct-key-count cache for `partitioned_hash`, in `PartitionedHashJoin` idiom:
+- New entry type in `src/Interpreters/HashTablesStatistics.h` (e.g. `PartitionedHashJoinEntry { size_t distinct_keys; }`) — deliberately separate from `HashJoinEntry` so `parallel_hash` and `partitioned_hash` never clobber each other's entry under the same cache key (phj5's stated rationale).
+- Plumb `StatsCollectingParams` into the `PartitionedHashJoin` constructor from `PlannerJoins.cpp` (same key derivation as the other join algorithms), honored only when `collect_hash_table_stats_during_joins` allows.
+- Fill phase: on a cache HIT, skip the per-row HyperLogLog feed — the fill loop still computes and stores route words (they are load-bearing) but calls a sketch-free variant of `computeJoinRoutesForFill`. On MISS, feed the sketch exactly as today.
+- Barrier: on HIT, `hll_estimate` := cached `distinct_keys` (clamped >= 1); partition plan and per-leaf reserves consume it unchanged.
+- Post-build: publish the EXACT distinct count (sum of leaf map sizes — exactly known at ahj, better than phj5's estimate republish) back to the cache.
+- Observability: new ProfileEvent `PartitionedHashJoinDistinctEstimateReused` (count of joins that skipped the sketch), used by the bench/stateless assertions.
+
+**Declared phase counter (the "portion being optimized"):** `PartitionedHashJoinBuildFillMicroseconds`.
+
+**Predictions:**
+1. Warm timed runs fire `PartitionedHashJoinDistinctEstimateReused` = 1 per join; the warmup (cold) run does not.
+2. `BuildFillMicroseconds` (thread-summed) drops on the large-build points B and C — expected order 10-30% of fill (the sketch add is a minority of the fused route loop; phj5 claimed ~11% of whole warm build under its architecture, cited as claim).
+3. Whole-query wall improves most on B/C (build-heavy shapes); A/D/E likely inside the band.
+4. `PartitionedHashJoinPartitions` may legitimately change on HIT runs (the cached exact count replaces the HLL estimate — a BETTER input to the same plan formula); `leaf_growths`/`amac_ring_growths` must NOT increase beyond baseline.
+5. No grid point's wall regresses beyond the band (the cold path is unchanged; the hit path only removes work).
+
+**What refutes the port (=> rejected-by-measurement, revert):** wall delta inside the band on ALL points, or fill delta inside the band on ALL points, or any point regressing beyond the band, or any correctness gate red after the 3-cycle ceiling.
