@@ -1,0 +1,803 @@
+diff --git a/src/Interpreters/ConcurrentHashJoin.h b/src/Interpreters/ConcurrentHashJoin.h
+index b7ae852a3b0..f79e5547216 100644
+--- a/src/Interpreters/ConcurrentHashJoin.h
++++ b/src/Interpreters/ConcurrentHashJoin.h
+@@ -39,6 +39,8 @@ class ConcurrentHashJoin : public IJoin
+ {
+ 
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     /// `external_join_threshold_` is the auto-spill memory cap supplied by `SpillingHashJoin`
+     /// when this instance is wrapped. It bounds statistics-driven preallocation so the
+     /// reserve cannot blow past the wrapper's spill threshold. Pass 0 for standalone use
+diff --git a/src/Interpreters/DirectJoin.h b/src/Interpreters/DirectJoin.h
+index 6a21f56d36d..74e52de61ac 100644
+--- a/src/Interpreters/DirectJoin.h
++++ b/src/Interpreters/DirectJoin.h
+@@ -19,6 +19,8 @@ class NotJoinedBlocks;
+ class DirectKeyValueJoin : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     DirectKeyValueJoin(
+         std::shared_ptr<TableJoin> table_join_,
+         const Block & right_sample_block_,
+diff --git a/src/Interpreters/FullSortingMergeJoin.h b/src/Interpreters/FullSortingMergeJoin.h
+index 856ea98619e..25317075ade 100644
+--- a/src/Interpreters/FullSortingMergeJoin.h
++++ b/src/Interpreters/FullSortingMergeJoin.h
+@@ -21,6 +21,8 @@ namespace ErrorCodes
+ class FullSortingMergeJoin : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     explicit FullSortingMergeJoin(std::shared_ptr<TableJoin> table_join_, SharedHeader & right_sample_block_,
+                                   int null_direction_ = 1)
+         : table_join(table_join_)
+diff --git a/src/Interpreters/GraceHashJoin.h b/src/Interpreters/GraceHashJoin.h
+index 6d047e149ee..6b021b0bed9 100644
+--- a/src/Interpreters/GraceHashJoin.h
++++ b/src/Interpreters/GraceHashJoin.h
+@@ -49,6 +49,8 @@ class GraceHashJoin final : public IJoin
+     using InMemoryJoinPtr = std::shared_ptr<HashJoin>;
+ 
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     using BucketPtr = std::shared_ptr<FileBucket>;
+     using Buckets = std::vector<BucketPtr>;
+ 
+diff --git a/src/Interpreters/HashJoin/HashJoin.h b/src/Interpreters/HashJoin/HashJoin.h
+index 7b88631a7ac..adf8fd9ddb2 100644
+--- a/src/Interpreters/HashJoin/HashJoin.h
++++ b/src/Interpreters/HashJoin/HashJoin.h
+@@ -109,6 +109,8 @@ class HashJoinMethods;
+ class HashJoin : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     HashJoin(
+         std::shared_ptr<TableJoin> table_join_,
+         SharedHeader right_sample_block,
+@@ -147,8 +149,6 @@ public:
+ 
+     void checkTypesOfKeys(const Block & block) const override;
+ 
+-    using IJoin::joinBlock;
+-
+     /** Join data from the map (that was previously built by calls to addBlockToJoin) to the block with data from "left" table.
+       * Could be called from different threads in parallel.
+       */
+diff --git a/src/Interpreters/IJoin.h b/src/Interpreters/IJoin.h
+index c2d044d4bde..89eed4fe73b 100644
+--- a/src/Interpreters/IJoin.h
++++ b/src/Interpreters/IJoin.h
+@@ -110,6 +110,17 @@ public:
+         return addBlockToJoin(block, check_limits);
+     }
+ 
++    /// Overload carrying the 0-based build lane index (one per filling transform, assigned in
++    /// `QueryPipelineBuilder`), so a join can bind stable per-lane build state by array index
++    /// instead of a thread-id map (executor threads migrate between transforms; the lane does
++    /// not). Lane indices are NOT guaranteed to stay below the join's thread count in every
++    /// pipeline shape - implementations must tolerate out-of-range lanes. Default ignores the
++    /// lane and forwards.
++    virtual bool addBlockToJoin(const Block & block, size_t num_rows, bool check_limits, size_t /*build_lane*/) /// NOLINT
++    {
++        return addBlockToJoin(block, num_rows, check_limits);
++    }
++
+     /* Some initialization may be required before joinBlock() call.
+      * It's better to done in in constructor, but left block exact structure is not known at that moment.
+      * TODO: pass correct left block sample to the constructor.
+@@ -122,6 +133,11 @@ public:
+     /// Could be called from different threads in parallel.
+     virtual JoinResultPtr joinBlock(Block block) = 0;
+ 
++    /// Overload carrying the 0-based probe lane index (one per `JoiningTransform` stream). Lets
++    /// a join keep stable per-lane probe scratch without locking; the same tolerance rule as the
++    /// build-lane overload applies. Default ignores the lane and forwards.
++    virtual JoinResultPtr joinBlock(Block block, size_t /*lane*/) { return joinBlock(std::move(block)); }
++
+     /** Set/Get totals for right table
+       * Keep "totals" (separate part of dataset, see WITH TOTALS) to use later.
+       */
+diff --git a/src/Interpreters/JoinSwitcher.h b/src/Interpreters/JoinSwitcher.h
+index 29984bbd973..16b1822dbd5 100644
+--- a/src/Interpreters/JoinSwitcher.h
++++ b/src/Interpreters/JoinSwitcher.h
+@@ -17,6 +17,8 @@ namespace DB
+ class JoinSwitcher : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     JoinSwitcher(
+         std::shared_ptr<TableJoin> table_join_,
+         SharedHeader right_sample_block_,
+diff --git a/src/Interpreters/MergeJoin.h b/src/Interpreters/MergeJoin.h
+index cf1cc1260fa..42c64787e2b 100644
+--- a/src/Interpreters/MergeJoin.h
++++ b/src/Interpreters/MergeJoin.h
+@@ -20,6 +20,8 @@ enum class JoinTableSide : uint8_t;
+ class MergeJoin : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     static constexpr Int32 nulls_direction = -1;
+ 
+     MergeJoin(std::shared_ptr<TableJoin> table_join_, SharedHeader right_sample_block);
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp
+index d2e97fd0097..f1e10d218d2 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp
+@@ -81,9 +81,18 @@ PartitionedHashJoin::PartitionedHashJoin(
+             ErrorCodes::LOGICAL_ERROR,
+             "PartitionedHashJoin was created for an unsupported map type {}; the plan-time gate must reject this shape",
+             leaf_join->data->type);
++
++    /// Sized once, never resized: the lock-free fast paths index these without synchronizing
++    /// against growth. Lanes past the table (rare pipeline shapes) take the legacy fallbacks.
++    fill_lane_slots = std::vector<std::atomic<FillLane *>>(2 * num_threads);
++    probe_scratch_slots = std::vector<std::atomic<ProbeScratch *>>(2 * num_threads);
+ }
+ 
+-PartitionedHashJoin::~PartitionedHashJoin() = default;
++PartitionedHashJoin::~PartitionedHashJoin()
++{
++    for (auto & slot : probe_scratch_slots)
++        delete slot.load(std::memory_order_acquire);
++}
+ 
+ bool PartitionedHashJoin::isSupported(const TableJoin & table_join)
+ {
+@@ -149,7 +158,39 @@ PartitionedHashJoin::FillLane & PartitionedHashJoin::getFillLane()
+     return *it->second;
+ }
+ 
++PartitionedHashJoin::FillLane & PartitionedHashJoin::getFillLane(size_t build_lane)
++{
++    if (build_lane >= fill_lane_slots.size())
++        return getFillLane();
++
++    if (FillLane * fast = fill_lane_slots[build_lane].load(std::memory_order_acquire))
++        return *fast;
++
++    /// First block of this lane: one mutexed emplace into the owning deque (whose elements are
++    /// stable), then every later block takes the atomic load above. A lane index is unique per
++    /// filling transform and a transform's work is serialized, so after publication the slot's
++    /// state is single-writer even when executor threads migrate.
++    std::lock_guard lock(fill_mutex);
++    if (FillLane * raced = fill_lane_slots[build_lane].load(std::memory_order_relaxed))
++        return *raced;
++    FillLane * fresh = &lanes.emplace_back();
++    fill_lane_slots[build_lane].store(fresh, std::memory_order_release);
++    return *fresh;
++}
++
+ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_limits)
++{
++    return addBlockToJoinImpl(source_block, check_limits, invalid_lane);
++}
++
++bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, size_t /*num_rows*/, bool check_limits, size_t build_lane)
++{
++    /// num_rows only matters for columnless CROSS-join blocks, a shape this algorithm never
++    /// plans; the row count comes from the block itself, as in the lane-less entry point.
++    return addBlockToJoinImpl(source_block, check_limits, build_lane);
++}
++
++bool PartitionedHashJoin::addBlockToJoinImpl(const Block & source_block, bool check_limits, size_t build_lane)
+ {
+     ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
+ 
+@@ -209,7 +250,7 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
+     /// sketches by the equi-key prefix only - the trailing inequality column goes into the
+     /// per-key sorted lookup, not into the map key.
+     fill.routes.resize_exact(rows);
+-    FillLane & lane = getFillLane();
++    FillLane & lane = build_lane == invalid_lane ? getFillLane() : getFillLane(build_lane);
+     if (leaf_join->getStrictness() == JoinStrictness::Asof)
+     {
+         ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
+@@ -411,11 +452,16 @@ void PartitionedHashJoin::onBuildPhaseFinish()
+ }
+ 
+ JoinResultPtr PartitionedHashJoin::joinBlock(Block block)
++{
++    return joinBlock(std::move(block), invalid_lane);
++}
++
++JoinResultPtr PartitionedHashJoin::joinBlock(Block block, size_t lane)
+ {
+     JoinResultPtr result;
+     {
+         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinProbeMicroseconds);
+-        result = delegate_mode ? leaf_join->joinBlock(std::move(block)) : probeDispatch(std::move(block));
++        result = delegate_mode ? leaf_join->joinBlock(std::move(block)) : probeDispatch(std::move(block), lane);
+     }
+     return std::make_unique<TimedJoinResult>(std::move(result), ProfileEvents::PartitionedHashJoinProbeMicroseconds);
+ }
+@@ -470,8 +516,13 @@ PartitionedHashJoin::BuildStats PartitionedHashJoin::getBuildStats() const
+     return res;
+ }
+ 
+-std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireProbeScratch()
++std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireProbeScratch(size_t lane)
+ {
++    /// Lane fast path: take the parked scratch of this probe stream with one atomic exchange.
++    if (lane < probe_scratch_slots.size())
++        if (ProbeScratch * parked = probe_scratch_slots[lane].exchange(nullptr, std::memory_order_acquire))
++            return std::unique_ptr<ProbeScratch>(parked);
++
+     {
+         std::lock_guard lock(probe_scratch_mutex);
+         if (!probe_scratch_pool.empty())
+@@ -484,8 +535,20 @@ std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireP
+     return std::make_unique<ProbeScratch>();
+ }
+ 
+-void PartitionedHashJoin::releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch)
++void PartitionedHashJoin::releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch, size_t lane)
+ {
++    /// Park back into the lane's slot when it is free; a collision (or an out-of-range lane)
++    /// falls through to the pool, so the scratch is never lost and never double-owned.
++    if (lane < probe_scratch_slots.size())
++    {
++        ProbeScratch * expected = nullptr;
++        if (probe_scratch_slots[lane].compare_exchange_strong(expected, scratch.get(), std::memory_order_release))
++        {
++            scratch.release(); /// NOLINT(bugprone-unused-return-value): ownership moved into the slot
++            return;
++        }
++    }
++
+     std::lock_guard lock(probe_scratch_mutex);
+     probe_scratch_pool.push_back(std::move(scratch));
+ }
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
+index d603255fe10..0dd5b176f19 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
+@@ -92,8 +92,10 @@ public:
+     const TableJoin & getTableJoin() const override;
+ 
+     bool addBlockToJoin(const Block & block, bool check_limits) override;
++    bool addBlockToJoin(const Block & block, size_t num_rows, bool check_limits, size_t build_lane) override;
+     void checkTypesOfKeys(const Block & block) const override;
+     JoinResultPtr joinBlock(Block block) override;
++    JoinResultPtr joinBlock(Block block, size_t lane) override;
+ 
+     /// With `supportParallelJoin` every parallel fill stream reports totals at its end-of-fill
+     /// (usually an empty block; at most one stream carries the real totals), so unlike the
+@@ -218,6 +220,8 @@ private:
+     struct PostBuildContext;
+ 
+     FillLane & getFillLane();
++    FillLane & getFillLane(size_t build_lane);
++    bool addBlockToJoinImpl(const Block & source_block, bool check_limits, size_t build_lane);
+     void decidePartitionPlan();
+     void storeBlocksInRowStore();
+ 
+@@ -269,13 +273,13 @@ private:
+     /// The routed probe (PartitionedHashJoinProbe*.cpp). `MapsShape` is the standard maps shape
+     /// (`HashJoin::MapsOne`/`MapsAll`/`MapsAsof`) the (kind, strictness) pair dispatches to; the
+     /// actual leaf maps are the partitioned counterpart holding identical cells.
+-    JoinResultPtr probeDispatch(Block block);
++    JoinResultPtr probeDispatch(Block block, size_t lane);
+ 
+     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape>
+-    JoinResultPtr probeImpl(Block block);
++    JoinResultPtr probeImpl(Block block, size_t lane);
+ 
+     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape, typename KeyGetter, typename Map, typename AddedColumnsType>
+-    size_t routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block);
++    size_t routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block, size_t lane);
+ 
+     /// Per-probe-stream scratch, pooled on the join and reused across probe blocks: the per-row
+     /// leaf ids, and the AMAC find pass's per-row results - the matched cell's
+@@ -291,8 +295,13 @@ private:
+         PaddedPODArray<UInt64> found_offset;
+     };
+ 
+-    std::unique_ptr<ProbeScratch> acquireProbeScratch();
+-    void releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch);
++    /// The pipeline-carried lane index binds a lock-free scratch slot per probe stream; lanes
++    /// outside the slot table (or the lane-less legacy entry points) fall back to the mutexed
++    /// pool, so lane collisions and out-of-range indices stay correct, just slower.
++    static constexpr size_t invalid_lane = std::numeric_limits<size_t>::max();
++
++    std::unique_ptr<ProbeScratch> acquireProbeScratch(size_t lane);
++    void releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch, size_t lane);
+ 
+     std::shared_ptr<TableJoin> table_join;
+     SharedHeader right_sample_block;
+@@ -317,10 +326,14 @@ private:
+     std::mutex totals_mutex;
+     Block totals;
+ 
+-    /// Fill phase.
++    /// Fill phase. `lanes` owns the per-lane state (the barrier iterates it); the slot table
++    /// gives pipeline-carried lane indices a lock-free lookup (one mutexed emplace on a lane's
++    /// FIRST block, atomic loads afterwards; the table is sized once and never resized, so the
++    /// fast path never races a rehash). Lane-less callers keep the thread-id map.
+     std::mutex fill_mutex;
+     std::deque<FillLane> lanes;
+     std::unordered_map<std::thread::id, FillLane *> lane_by_thread;
++    std::vector<std::atomic<FillLane *>> fill_lane_slots;
+     std::atomic<size_t> accumulated_rows{0};
+     std::atomic<size_t> accumulated_bytes{0};
+ 
+@@ -369,6 +382,9 @@ private:
+ 
+     std::mutex probe_scratch_mutex;
+     std::vector<std::unique_ptr<ProbeScratch>> probe_scratch_pool;
++    /// One parked scratch per probe lane (owned when non-null; freed by the destructor).
++    /// Acquire = atomic exchange out; release = CAS back in; misses go through the pool.
++    std::vector<std::atomic<ProbeScratch *>> probe_scratch_slots;
+ 
+     BuildStats stats;
+ 
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbe.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbe.cpp
+index b43ddbc6d9b..7d0374bdadd 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbe.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbe.cpp
+@@ -21,7 +21,7 @@ extern const int LOGICAL_ERROR;
+   * in the per-kind `PartitionedHashJoinProbe{Inner,Left,Right,Full}.cpp` files to keep any one
+   * translation unit small.
+   */
+-JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
++JoinResultPtr PartitionedHashJoin::probeDispatch(Block block, size_t lane)
+ {
+     const JoinKind kind = leaf_join->getKind();
+     const JoinStrictness strictness = leaf_join->getStrictness();
+@@ -33,9 +33,9 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
+     if (prefer_use_maps_all)
+     {
+         if (kind == Inner && strictness == RightAny)
+-            return probeImpl<Inner, RightAny, HashJoin::MapsAll>(std::move(block));
++            return probeImpl<Inner, RightAny, HashJoin::MapsAll>(std::move(block), lane);
+         if (kind == Left && strictness == RightAny)
+-            return probeImpl<Left, RightAny, HashJoin::MapsAll>(std::move(block));
++            return probeImpl<Left, RightAny, HashJoin::MapsAll>(std::move(block), lane);
+     }
+     else
+     {
+@@ -43,10 +43,10 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
+         {
+             switch (strictness)
+             {
+-                case All: return probeImpl<Inner, All, HashJoin::MapsAll>(std::move(block));
+-                case RightAny: return probeImpl<Inner, RightAny, HashJoin::MapsOne>(std::move(block));
+-                case Any: return probeImpl<Inner, Any, HashJoin::MapsOne>(std::move(block));
+-                case Asof: return probeImpl<Inner, Asof, HashJoin::MapsAsof>(std::move(block));
++                case All: return probeImpl<Inner, All, HashJoin::MapsAll>(std::move(block), lane);
++                case RightAny: return probeImpl<Inner, RightAny, HashJoin::MapsOne>(std::move(block), lane);
++                case Any: return probeImpl<Inner, Any, HashJoin::MapsOne>(std::move(block), lane);
++                case Asof: return probeImpl<Inner, Asof, HashJoin::MapsAsof>(std::move(block), lane);
+                 default: break;
+             }
+         }
+@@ -54,12 +54,12 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
+         {
+             switch (strictness)
+             {
+-                case All: return probeImpl<Left, All, HashJoin::MapsAll>(std::move(block));
+-                case RightAny: return probeImpl<Left, RightAny, HashJoin::MapsOne>(std::move(block));
+-                case Any: return probeImpl<Left, Any, HashJoin::MapsOne>(std::move(block));
+-                case Semi: return probeImpl<Left, Semi, HashJoin::MapsOne>(std::move(block));
+-                case Anti: return probeImpl<Left, Anti, HashJoin::MapsOne>(std::move(block));
+-                case Asof: return probeImpl<Left, Asof, HashJoin::MapsAsof>(std::move(block));
++                case All: return probeImpl<Left, All, HashJoin::MapsAll>(std::move(block), lane);
++                case RightAny: return probeImpl<Left, RightAny, HashJoin::MapsOne>(std::move(block), lane);
++                case Any: return probeImpl<Left, Any, HashJoin::MapsOne>(std::move(block), lane);
++                case Semi: return probeImpl<Left, Semi, HashJoin::MapsOne>(std::move(block), lane);
++                case Anti: return probeImpl<Left, Anti, HashJoin::MapsOne>(std::move(block), lane);
++                case Asof: return probeImpl<Left, Asof, HashJoin::MapsAsof>(std::move(block), lane);
+                 default: break;
+             }
+         }
+@@ -67,11 +67,11 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
+         {
+             switch (strictness)
+             {
+-                case All: return probeImpl<Right, All, HashJoin::MapsAll>(std::move(block));
+-                case RightAny: return probeImpl<Right, RightAny, HashJoin::MapsAll>(std::move(block));
+-                case Any: return probeImpl<Right, Any, HashJoin::MapsAll>(std::move(block));
+-                case Semi: return probeImpl<Right, Semi, HashJoin::MapsAll>(std::move(block));
+-                case Anti: return probeImpl<Right, Anti, HashJoin::MapsAll>(std::move(block));
++                case All: return probeImpl<Right, All, HashJoin::MapsAll>(std::move(block), lane);
++                case RightAny: return probeImpl<Right, RightAny, HashJoin::MapsAll>(std::move(block), lane);
++                case Any: return probeImpl<Right, Any, HashJoin::MapsAll>(std::move(block), lane);
++                case Semi: return probeImpl<Right, Semi, HashJoin::MapsAll>(std::move(block), lane);
++                case Anti: return probeImpl<Right, Anti, HashJoin::MapsAll>(std::move(block), lane);
+                 default: break;
+             }
+         }
+@@ -79,8 +79,8 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
+         {
+             switch (strictness)
+             {
+-                case All: return probeImpl<Full, All, HashJoin::MapsAll>(std::move(block));
+-                case RightAny: return probeImpl<Full, RightAny, HashJoin::MapsAll>(std::move(block));
++                case All: return probeImpl<Full, All, HashJoin::MapsAll>(std::move(block), lane);
++                case RightAny: return probeImpl<Full, RightAny, HashJoin::MapsAll>(std::move(block), lane);
+                 default: break;
+             }
+         }
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeFull.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeFull.cpp
+index a9a74bd03b9..ca46901520f 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeFull.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeFull.cpp
+@@ -4,7 +4,7 @@ namespace DB
+ {
+ 
+ /// Explicit instantiations of the routed probe for FULL kinds (see `probeDispatch`).
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Full, JoinStrictness::All, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Full, JoinStrictness::RightAny, HashJoin::MapsAll>(Block);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Full, JoinStrictness::All, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Full, JoinStrictness::RightAny, HashJoin::MapsAll>(Block, size_t);
+ 
+ }
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h
+index 7ec1c14e82f..1cb361be9bf 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h
+@@ -259,7 +259,7 @@ concept FlatLookupMap = AmacResumableMap<Map> && requires {
+   * standard `JoinUsedFlags` machinery keeps its single-map semantics.
+   */
+ template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape, typename KeyGetter, typename Map, typename AddedColumnsType>
+-size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block)
++size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block, size_t lane)
+ {
+     constexpr JoinFeatures<KIND, STRICTNESS, MapsShape> join_features;
+     /// Single disjunct only: the per-row-flags shapes run the delegated standard path.
+@@ -286,12 +286,12 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
+     std::unique_ptr<ProbeScratch> scratch;
+     SCOPE_EXIT({
+         if (scratch)
+-            releaseProbeScratch(std::move(scratch));
++            releaseProbeScratch(std::move(scratch), lane);
+     });
+     auto ensure_scratch = [&]() -> ProbeScratch &
+     {
+         if (!scratch)
+-            scratch = acquireProbeScratch();
++            scratch = acquireProbeScratch(lane);
+         return *scratch;
+     };
+ 
+@@ -854,7 +854,7 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
+ }
+ 
+ template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape>
+-JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
++JoinResultPtr PartitionedHashJoin::probeImpl(Block block, size_t lane)
+ {
+     HashJoin & join = *leaf_join;
+ 
+@@ -924,7 +924,7 @@ JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
+     case HashJoin::Type::TYPE: { \
+         using Map = const decltype(OurMaps::TYPE)::element_type; \
+         using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, Map>::Type; \
+-        routedJoinRightColumns<KIND, STRICTNESS, MapsShape, KeyGetter, Map>(added_columns, scattered_block); \
++        routedJoinRightColumns<KIND, STRICTNESS, MapsShape, KeyGetter, Map>(added_columns, scattered_block, lane); \
+         break; \
+     }
+             APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeInner.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeInner.cpp
+index 3bdc4aaf4b2..e433f070189 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeInner.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeInner.cpp
+@@ -4,10 +4,10 @@ namespace DB
+ {
+ 
+ /// Explicit instantiations of the routed probe for INNER kinds (see `probeDispatch`).
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::All, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::RightAny, HashJoin::MapsOne>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::RightAny, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::Any, HashJoin::MapsOne>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::Asof, HashJoin::MapsAsof>(Block);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::All, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::RightAny, HashJoin::MapsOne>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::RightAny, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::Any, HashJoin::MapsOne>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Inner, JoinStrictness::Asof, HashJoin::MapsAsof>(Block, size_t);
+ 
+ }
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeLeft.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeLeft.cpp
+index 9f5bbdf1736..0a19dbce458 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeLeft.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeLeft.cpp
+@@ -4,12 +4,12 @@ namespace DB
+ {
+ 
+ /// Explicit instantiations of the routed probe for LEFT kinds (see `probeDispatch`).
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::All, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::RightAny, HashJoin::MapsOne>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::RightAny, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Any, HashJoin::MapsOne>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Semi, HashJoin::MapsOne>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Anti, HashJoin::MapsOne>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Asof, HashJoin::MapsAsof>(Block);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::All, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::RightAny, HashJoin::MapsOne>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::RightAny, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Any, HashJoin::MapsOne>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Semi, HashJoin::MapsOne>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Anti, HashJoin::MapsOne>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Left, JoinStrictness::Asof, HashJoin::MapsAsof>(Block, size_t);
+ 
+ }
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeRight.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeRight.cpp
+index 9462ea52a2f..ae1d9c911f5 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeRight.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeRight.cpp
+@@ -4,10 +4,10 @@ namespace DB
+ {
+ 
+ /// Explicit instantiations of the routed probe for RIGHT kinds (see `probeDispatch`).
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::All, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::RightAny, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::Any, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::Semi, HashJoin::MapsAll>(Block);
+-template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::Anti, HashJoin::MapsAll>(Block);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::All, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::RightAny, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::Any, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::Semi, HashJoin::MapsAll>(Block, size_t);
++template JoinResultPtr PartitionedHashJoin::probeImpl<JoinKind::Right, JoinStrictness::Anti, HashJoin::MapsAll>(Block, size_t);
+ 
+ }
+diff --git a/src/Interpreters/PasteJoin.h b/src/Interpreters/PasteJoin.h
+index d3aa7669618..bc27d5d0cf5 100644
+--- a/src/Interpreters/PasteJoin.h
++++ b/src/Interpreters/PasteJoin.h
+@@ -19,6 +19,8 @@ namespace ErrorCodes
+ class PasteJoin : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     explicit PasteJoin(std::shared_ptr<TableJoin> table_join_, SharedHeader & right_sample_block_)
+         : table_join(table_join_)
+         , right_sample_header(right_sample_block_)
+diff --git a/src/Interpreters/SpillingHashJoin.h b/src/Interpreters/SpillingHashJoin.h
+index 5fdc60dc8ba..b7ad0ad54ad 100644
+--- a/src/Interpreters/SpillingHashJoin.h
++++ b/src/Interpreters/SpillingHashJoin.h
+@@ -46,6 +46,8 @@ class ConcurrentHashJoin;
+ class SpillingHashJoin final : public IJoin
+ {
+ public:
++    using IJoin::addBlockToJoin;
++    using IJoin::joinBlock;
+     /// Single-thread mode: wraps a HashJoin.
+     SpillingHashJoin(
+         std::shared_ptr<TableJoin> table_join_,
+diff --git a/src/Interpreters/tests/gtest_partitioned_hash_join.cpp b/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
+index e4d7822a512..be05f49b4d2 100644
+--- a/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
++++ b/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
+@@ -173,7 +173,7 @@ BuiltJoin buildJoin(
+ 
+ /// Probes every distinct key once (plus `misses` keys that are absent from the build) and
+ /// checks the exact multiset of joined rows.
+-void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, size_t misses)
++void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, size_t misses, bool use_lanes = false)
+ {
+     JoinedRows expected;
+     expected.reserve(distinct_keys * duplicates);
+@@ -189,6 +189,7 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
+     actual.reserve(expected.size());
+     std::vector<UInt64> keys;
+     std::vector<UInt64> ids;
++    size_t probe_block_index = 0;
+     for (size_t i = 0; i < distinct_keys + misses; ++i)
+     {
+         /// The +2 offset cannot collide with a built key: i * K + 2 == j * K + 1 would need
+@@ -197,7 +198,11 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
+         ids.push_back(i);
+         if (keys.size() == block_rows || i + 1 == distinct_keys + misses)
+         {
+-            auto result = built.join->joinBlock(twoColumnBlock("k", "probe_id", keys, ids));
++            Block probe_block = twoColumnBlock("k", "probe_id", keys, ids);
++            /// With lanes: rotate through in-range lane indices plus a deliberately
++            /// out-of-range one (% 9 on an 8-slot table) to exercise the pool fallback.
++            auto result = use_lanes ? built.join->joinBlock(std::move(probe_block), probe_block_index++ % 9)
++                                    : built.join->joinBlock(std::move(probe_block));
+             drainResult(*result, actual);
+             keys.clear();
+             ids.clear();
+@@ -210,6 +215,51 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
+ 
+ }
+ 
++TEST(PartitionedHashJoin, LaneIdentityParity)
++{
++    /// Build through the lane-carrying overloads (as the pipeline does) and probe with lane
++    /// indices, including out-of-range ones; results must match the lane-less path exactly.
++    constexpr size_t distinct_keys = 100000;
++    constexpr size_t duplicates = 2;
++
++    const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
++    const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
++    BuiltJoin built;
++    built.table_join = makeTableJoin(left_header, right_header, JoinKind::Inner);
++    built.join = std::make_shared<PartitionedHashJoin>(built.table_join, std::make_shared<const Block>(right_header), 4);
++
++    std::vector<UInt64> keys;
++    std::vector<UInt64> ids;
++    UInt64 id = 0;
++    size_t build_block_index = 0;
++    for (size_t i = 0; i < distinct_keys; ++i)
++    {
++        for (size_t d = 0; d < duplicates; ++d)
++        {
++            keys.push_back(i * 2654435761ULL + 1);
++            ids.push_back(id++);
++            if (keys.size() == block_rows)
++            {
++                const Block b = twoColumnBlock("rk", "build_id", keys, ids);
++                /// Lanes 0..3 in range (the slot table holds 2 x num_threads = 8), lane 8 out
++                /// of range - exercises the thread-id fallback of `getFillLane`.
++                EXPECT_TRUE(built.join->addBlockToJoin(b, b.rows(), /*check_limits=*/true, build_block_index++ % 9));
++                keys.clear();
++                ids.clear();
++            }
++        }
++    }
++    if (!keys.empty())
++    {
++        const Block b = twoColumnBlock("rk", "build_id", keys, ids);
++        EXPECT_TRUE(built.join->addBlockToJoin(b, b.rows(), /*check_limits=*/true, build_block_index++ % 9));
++    }
++    built.join->onBuildPhaseFinish();
++    built.join->runPostBuildPhase();
++
++    probeAndCheck(built, distinct_keys, duplicates, /*misses=*/100, /*use_lanes=*/true);
++}
++
+ TEST(PartitionedHashJoin, PartitionedBuildExactReservesAndParity)
+ {
+     constexpr size_t distinct_keys = 300000;
+diff --git a/src/Processors/Transforms/JoiningTransform.cpp b/src/Processors/Transforms/JoiningTransform.cpp
+index e2cc854f2bf..ecdc8ad3d2a 100644
+--- a/src/Processors/Transforms/JoiningTransform.cpp
++++ b/src/Processors/Transforms/JoiningTransform.cpp
+@@ -45,12 +45,14 @@ JoiningTransform::JoiningTransform(
+     size_t max_block_size_,
+     bool on_totals_,
+     bool default_totals_,
+-    FinishCounterPtr finish_counter_)
++    FinishCounterPtr finish_counter_,
++    size_t stream_index_)
+     : IProcessor({input_header}, {output_header})
+     , join(std::move(join_))
+     , on_totals(on_totals_)
+     , default_totals(default_totals_)
+     , finish_counter(std::move(finish_counter_))
++    , stream_index(stream_index_)
+     , max_block_size(max_block_size_)
+ {
+     if (!join->isFilled())
+@@ -243,7 +245,7 @@ Block JoiningTransform::readExecute(Chunk & chunk)
+     {
+         Block block = inputs.front().getHeader().cloneWithColumns(chunk.detachColumns());
+         ProfileEvents::increment(ProfileEvents::JoinProbeTableRowCount, block.rows());
+-        join_result = join->joinBlock(std::move(block));
++        join_result = join->joinBlock(std::move(block), stream_index);
+     }
+ 
+     auto data = join_result->next();
+@@ -260,8 +262,9 @@ Block JoiningTransform::readExecute(Chunk & chunk)
+     return std::move(data.block);
+ }
+ 
+-FillingRightJoinSideTransform::FillingRightJoinSideTransform(SharedHeader input_header, JoinPtr join_, FinishCounterPtr finish_counter_)
+-    : IProcessor({input_header}, {Block()}), join(std::move(join_)), finish_counter(std::move(finish_counter_))
++FillingRightJoinSideTransform::FillingRightJoinSideTransform(
++    SharedHeader input_header, JoinPtr join_, FinishCounterPtr finish_counter_, size_t build_lane_)
++    : IProcessor({input_header}, {Block()}), join(std::move(join_)), finish_counter(std::move(finish_counter_)), build_lane(build_lane_)
+ {
+     spillable = typeid_cast<GraceHashJoin *>(join.get());
+ }
+@@ -370,7 +373,7 @@ void FillingRightJoinSideTransform::work()
+     else
+     {
+         ProfileEvents::increment(ProfileEvents::JoinBuildTableRowCount, num_rows);
+-        stop_reading = !join->addBlockToJoin(block, num_rows, true);
++        stop_reading = !join->addBlockToJoin(block, num_rows, true, build_lane);
+     }
+ 
+     set_totals = for_totals;
+diff --git a/src/Processors/Transforms/JoiningTransform.h b/src/Processors/Transforms/JoiningTransform.h
+index 4a83529a91c..c163c757c48 100644
+--- a/src/Processors/Transforms/JoiningTransform.h
++++ b/src/Processors/Transforms/JoiningTransform.h
+@@ -48,7 +48,8 @@ public:
+         size_t max_block_size_,
+         bool on_totals_ = false,
+         bool default_totals_ = false,
+-        FinishCounterPtr finish_counter_ = nullptr);
++        FinishCounterPtr finish_counter_ = nullptr,
++        size_t stream_index_ = 0);
+ 
+     ~JoiningTransform() override;
+ 
+@@ -83,6 +84,9 @@ private:
+     JoinResultPtr join_result;
+ 
+     FinishCounterPtr finish_counter;
++    /// Stable 0-based probe lane index, passed to `IJoin::joinBlock` so the join can bind
++    /// lock-free per-lane probe scratch (see the lane overloads in IJoin.h).
++    size_t stream_index = 0;
+     IBlocksStreamPtr non_joined_blocks;
+     size_t max_block_size;
+ 
+@@ -95,7 +99,7 @@ private:
+ class FillingRightJoinSideTransform final : public IProcessor
+ {
+ public:
+-    FillingRightJoinSideTransform(SharedHeader input_header, JoinPtr join_, FinishCounterPtr finish_counter_);
++    FillingRightJoinSideTransform(SharedHeader input_header, JoinPtr join_, FinishCounterPtr finish_counter_, size_t build_lane_ = 0);
+     String getName() const override { return "FillingRightJoinSide"; }
+ 
+     InputPort * addTotalsPort();
+@@ -109,6 +113,8 @@ public:
+ private:
+     JoinPtr join;
+     FinishCounterPtr finish_counter;
++    /// Stable 0-based build lane index, passed to `IJoin::addBlockToJoin` (lane overload).
++    size_t build_lane = 0;
+     Chunk chunk;
+     bool stop_reading = false;
+     bool for_totals = false;
+diff --git a/src/QueryPipeline/QueryPipelineBuilder.cpp b/src/QueryPipeline/QueryPipelineBuilder.cpp
+index 68c582ae190..994c8b26c88 100644
+--- a/src/QueryPipeline/QueryPipelineBuilder.cpp
++++ b/src/QueryPipeline/QueryPipelineBuilder.cpp
+@@ -506,6 +506,9 @@ std::unique_ptr<QueryPipelineBuilder> QueryPipelineBuilder::joinPipelinesRightLe
+         auto concurrent_right_filling_transform = [&](const OutputPortRawPtrs & outports)
+         {
+             Processors processors;
++            /// One filling transform per resized outport == one build lane; a unique lane index
++            /// lets the join bind stable lock-free per-lane build state (see IJoin.h).
++            size_t build_lane = 0;
+             if (min_block_size_rows > 0 || min_block_size_bytes > 0)
+             {
+                 for (const auto & outport : outports)
+@@ -513,7 +516,8 @@ std::unique_ptr<QueryPipelineBuilder> QueryPipelineBuilder::joinPipelinesRightLe
+                     auto squashing = std::make_shared<SimpleSquashingChunksTransform>(right->getSharedHeader(), min_block_size_rows, min_block_size_bytes);
+                     connect(*outport, squashing->getInputs().front());
+                     processors.emplace_back(squashing);
+-                    auto adding_joined = std::make_shared<FillingRightJoinSideTransform>(right->getSharedHeader(), join, filling_finish_counter);
++                    auto adding_joined
++                        = std::make_shared<FillingRightJoinSideTransform>(right->getSharedHeader(), join, filling_finish_counter, build_lane++);
+                     connect(squashing->getOutputPort(), adding_joined->getInputs().front());
+                     processors.emplace_back(std::move(adding_joined));
+                 }
+@@ -522,7 +526,8 @@ std::unique_ptr<QueryPipelineBuilder> QueryPipelineBuilder::joinPipelinesRightLe
+             {
+                 for (const auto & outport : outports)
+                 {
+-                    auto adding_joined = std::make_shared<FillingRightJoinSideTransform>(right->getSharedHeader(), join, filling_finish_counter);
++                    auto adding_joined
++                        = std::make_shared<FillingRightJoinSideTransform>(right->getSharedHeader(), join, filling_finish_counter, build_lane++);
+                     connect(*outport, adding_joined->getInputs().front());
+                     processors.emplace_back(std::move(adding_joined));
+                 }
+@@ -598,7 +603,7 @@ std::unique_ptr<QueryPipelineBuilder> QueryPipelineBuilder::joinPipelinesRightLe
+         }
+ 
+         auto joining = std::make_shared<JoiningTransform>(
+-            left_header, output_header, join, max_block_size, false, default_totals, joining_finish_counter);
++            left_header, output_header, join, max_block_size, false, default_totals, joining_finish_counter, /*stream_index_=*/i);
+ 
+         connect(*left_port, joining->getInputs().front());
+         connect(**rit, joining->getInputs().back());
