@@ -8,8 +8,11 @@
 #include <Interpreters/PartitionedHashJoin/JoinRouteHashing.h>
 #include <Interpreters/TableJoin.h>
 #include <base/getL2CacheSize.h>
+#include <Common/CurrentMetrics.h>
+#include <Common/CurrentThread.h>
 #include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/ProfileEvents.h>
+#include <Common/ThreadGroupSwitcher.h>
 #include <Common/logger_useful.h>
 
 #include <fmt/ranges.h>
@@ -25,6 +28,13 @@ extern const Event PartitionedHashJoinProbeMicroseconds;
 extern const Event PartitionedHashJoinPartitions;
 extern const Event PartitionedHashJoinLeafRows;
 extern const Event PartitionedHashJoinTeardownMicroseconds;
+}
+
+namespace CurrentMetrics
+{
+extern const Metric PartitionedHashJoinPoolThreads;
+extern const Metric PartitionedHashJoinPoolThreadsActive;
+extern const Metric PartitionedHashJoinPoolThreadsScheduled;
 }
 
 namespace DB
@@ -96,6 +106,46 @@ PartitionedHashJoin::~PartitionedHashJoin()
     /// cells reference arena memory (string keys, duplicate-list nodes) and the row store, so
     /// the maps go first.
     ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinTeardownMicroseconds);
+
+    /// The per-leaf maps are the bulk of the teardown (one exact-reserved buffer per leaf, up to
+    /// tens of thousands of them); destroy them work-stealing over a short-lived pool, mirroring
+    /// `ConcurrentHashJoin`'s teardown rationale (hash-table destruction can be very
+    /// time-consuming). `post_build_pool` itself cannot be reused here: it is torn down right
+    /// after the post-build phase finishes (`PartitionedHashJoinBuild.cpp`, well before probing
+    /// even starts), so a fresh pool is spun up purely for this teardown. Destructors must not
+    /// throw: a scheduling failure just leaves the remaining leaves to the serial clear below.
+    if (!delegate_mode && leaf_maps.size() >= 64)
+    {
+        try
+        {
+            const size_t workers = std::min<size_t>(num_threads, leaf_maps.size());
+            ThreadPool teardown_pool(
+                CurrentMetrics::PartitionedHashJoinPoolThreads,
+                CurrentMetrics::PartitionedHashJoinPoolThreadsActive,
+                CurrentMetrics::PartitionedHashJoinPoolThreadsScheduled,
+                /*max_threads_*/ workers,
+                /*max_free_threads_*/ 0,
+                /*queue_size_*/ workers);
+            std::atomic<size_t> claim{0};
+            for (size_t w = 0; w < workers; ++w)
+                teardown_pool.scheduleOrThrow(
+                    [this, &claim, thread_group = CurrentThread::getGroup()]
+                    {
+                        ThreadGroupSwitcher switcher(thread_group, ThreadName::PARTITIONED_JOIN);
+                        while (true)
+                        {
+                            const size_t leaf = claim.fetch_add(1, std::memory_order_relaxed);
+                            if (leaf >= leaf_maps.size())
+                                break;
+                            leaf_maps[leaf] = PartitionedJoinMaps(maps_variant_index);
+                        }
+                    });
+            teardown_pool.wait();
+        }
+        catch (...) /// NOLINT(bugprone-empty-catch): fall through to the serial teardown below
+        {
+        }
+    }
     leaf_maps.clear();
     build_arenas.clear();
     leaf_join.reset();

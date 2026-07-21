@@ -196,3 +196,24 @@ Histogram phase inside the band on ALL points — the prereg's refutation condit
 Both points land cleanly inside their own round's band, on both the wall and the `PartitionedHashJoinBuildFillMicroseconds` phase — confirming the `c5r1` reading (A −3.4%, E +0.4%) and refuting the `ret_c5` reading (A +16.8%, E +15.7%) as contention noise, exactly as the phase-breakdown evidence predicted (fill flat, untouched phases inflated). Combined with the clean V/B/C/D points already recorded under `ret_c5`, all six grid points are now in-band across the two rounds. **No regression beyond the noise band on any point, correctness gates green (G1 first-cycle, G2 48 gtests + stateless 04603-04606).**
 
 **Disposition: matrix row `pipeline-lane-identity` → `ported`** (retained by requester GA amendment, WORKLOG it.10; no-regression requirement satisfied). `tmp/port_audit/check_matrix.py` re-run: exit 0.
+
+## Iteration 12 — candidate 7 retention: parallel teardown implemented, corrected, PORTED
+
+**Deviation from the staged patch (`tmp/port_audit/staged_c7_parallel_teardown.patch.txt`), found before applying it — documented per the never-silent rule:** the staged design guards the parallel branch on `post_build_pool` (the member) being non-null. That member is reset to `nullptr` right after the post-build phase finishes (`PartitionedHashJoinBuild.cpp:846`), well before the object is ever destroyed — probing runs after that reset, then the destructor. Applying the staged patch verbatim would have compiled, passed every gate, and silently never taken the parallel path (the guard is always false): a no-op dressed as a feature. Fix: the destructor spins up its own short-lived local `ThreadPool` (same three `PartitionedHashJoinPoolThreads*` metrics as `post_build_pool`) purely for the teardown, mirroring `ConcurrentHashJoin`'s teardown rationale instead of trying to reuse a pool that no longer exists at that point. `ThreadPool`'s own destructor calls `finalize()`, so the `catch (...)` needs no explicit `wait()` — simpler than the staged design. Same work-stealing shape otherwise (atomic claim over `leaf_maps`, guarded on `!delegate_mode && leaf_maps.size() >= 64`, `ThreadGroupSwitcher`/`ThreadName::PARTITIONED_JOIN` matching the build-side wave pattern). Three includes added to the `.cpp` (`Common/CurrentMetrics.h`, `Common/CurrentThread.h`, `Common/ThreadGroupSwitcher.h`); no header changes.
+
+**Gates:** G1 green, incremental (`build_port_ret_c7.log`, exit 0, 21s — 6 objects relinked). G2 green: 48 gtests (`test_port_ret_c7.log`), stateless 04603-04606 (`stateless_port_ret_c7.log`). Binary frozen `bin_ret_c7`.
+
+**Teardown magnitude discriminator (`c7_pred0_bp{1,4}.sql`, global-counter follow-up query, before=`bin_ret_c5`/after=`bin_ret_c7`):** narrow (bp1) shape: before 32495/35372 us (avg ~33.9ms) → after 16695/10929 us (avg ~13.8ms) — a clean, consistent ~2.5x drop across both runs, confirming the parallel path actually engages and helps. Wide (bp4) shape: first pair before 105474/97502 → after 74282/91006 (modest ~19% drop); box load spiked to 77.4 mid-session (a concurrent bench campaign), and two more bp4 pairs taken during that spike came back scattered in both directions (before 94685/144194, after 132276/65968) — not a clean read, dominated by contention. Not resolved further: the discriminator is illustrative (prediction-0 already showed the phase is structurally unmeasurable in the per-query packet, WORKLOG it.9), not itself an acceptance gate — the paired grid below is.
+
+**No-regression paired grid `ret_c7` (bin_ret_c5 vs bin_ret_c7, all 6 points, box load ~30-37 throughout — busy but the point-interleaved protocol is designed for exactly this):**
+
+| point | base med (ms) | cand med | wall delta | band | fill base (us) | fill cand | fill delta | verdict |
+|---|---|---|---|---|---|---|---|---|
+| V | 32 | 32 | +0.0% | 18.8% | 7502 | 7524 | +0.3% | in-band |
+| A | 115 | 116 | +0.9% | 12.2% | 14503 | 15423 | +6.3% | in-band |
+| B | 2471 | 2420 | −2.1% | 3.0% | 980185 | 958979 | −2.2% | in-band |
+| C | 4075 | 4097 | +0.5% | 3.0% | 1234569 | 1236228 | +0.1% | in-band |
+| D | 672 | 661 | −1.6% | 8.6% | 110114 | 109770 | −0.3% | in-band |
+| E | 540 | 537 | −0.6% | 3.0% | 158875 | 151840 | −4.4% | phase-improved |
+
+No wall regression beyond the band on any point (the `BuildFill` phase is unrelated to the teardown mechanism — checked here only as a general nothing-else-moved sanity check, since the teardown's own counter never appears in the per-query packet per WORKLOG it.9's prediction-0 finding). **Disposition: matrix row `parallel-hash-table-teardown` → `ported`** (retained by requester GA amendment; no-regression requirement satisfied; improvement requirement waived). `tmp/port_audit/check_matrix.py` re-run: exit 0.
