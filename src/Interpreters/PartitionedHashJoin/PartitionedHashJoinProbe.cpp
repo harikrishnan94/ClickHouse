@@ -21,7 +21,7 @@ extern const int LOGICAL_ERROR;
   * in the per-kind `PartitionedHashJoinProbe{Inner,Left,Right,Full}.cpp` files to keep any one
   * translation unit small.
   */
-JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
+JoinResultPtr PartitionedHashJoin::probeDispatch(Block block, size_t lane)
 {
     const JoinKind kind = leaf_join->getKind();
     const JoinStrictness strictness = leaf_join->getStrictness();
@@ -33,9 +33,9 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
     if (prefer_use_maps_all)
     {
         if (kind == Inner && strictness == RightAny)
-            return probeImpl<Inner, RightAny, HashJoin::MapsAll>(std::move(block));
+            return probeImpl<Inner, RightAny, HashJoin::MapsAll>(std::move(block), lane);
         if (kind == Left && strictness == RightAny)
-            return probeImpl<Left, RightAny, HashJoin::MapsAll>(std::move(block));
+            return probeImpl<Left, RightAny, HashJoin::MapsAll>(std::move(block), lane);
     }
     else
     {
@@ -43,10 +43,10 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
         {
             switch (strictness)
             {
-                case All: return probeImpl<Inner, All, HashJoin::MapsAll>(std::move(block));
-                case RightAny: return probeImpl<Inner, RightAny, HashJoin::MapsOne>(std::move(block));
-                case Any: return probeImpl<Inner, Any, HashJoin::MapsOne>(std::move(block));
-                case Asof: return probeImpl<Inner, Asof, HashJoin::MapsAsof>(std::move(block));
+                case All: return probeImpl<Inner, All, HashJoin::MapsAll>(std::move(block), lane);
+                case RightAny: return probeImpl<Inner, RightAny, HashJoin::MapsOne>(std::move(block), lane);
+                case Any: return probeImpl<Inner, Any, HashJoin::MapsOne>(std::move(block), lane);
+                case Asof: return probeImpl<Inner, Asof, HashJoin::MapsAsof>(std::move(block), lane);
                 default: break;
             }
         }
@@ -54,12 +54,12 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
         {
             switch (strictness)
             {
-                case All: return probeImpl<Left, All, HashJoin::MapsAll>(std::move(block));
-                case RightAny: return probeImpl<Left, RightAny, HashJoin::MapsOne>(std::move(block));
-                case Any: return probeImpl<Left, Any, HashJoin::MapsOne>(std::move(block));
-                case Semi: return probeImpl<Left, Semi, HashJoin::MapsOne>(std::move(block));
-                case Anti: return probeImpl<Left, Anti, HashJoin::MapsOne>(std::move(block));
-                case Asof: return probeImpl<Left, Asof, HashJoin::MapsAsof>(std::move(block));
+                case All: return probeImpl<Left, All, HashJoin::MapsAll>(std::move(block), lane);
+                case RightAny: return probeImpl<Left, RightAny, HashJoin::MapsOne>(std::move(block), lane);
+                case Any: return probeImpl<Left, Any, HashJoin::MapsOne>(std::move(block), lane);
+                case Semi: return probeImpl<Left, Semi, HashJoin::MapsOne>(std::move(block), lane);
+                case Anti: return probeImpl<Left, Anti, HashJoin::MapsOne>(std::move(block), lane);
+                case Asof: return probeImpl<Left, Asof, HashJoin::MapsAsof>(std::move(block), lane);
                 default: break;
             }
         }
@@ -67,11 +67,11 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
         {
             switch (strictness)
             {
-                case All: return probeImpl<Right, All, HashJoin::MapsAll>(std::move(block));
-                case RightAny: return probeImpl<Right, RightAny, HashJoin::MapsAll>(std::move(block));
-                case Any: return probeImpl<Right, Any, HashJoin::MapsAll>(std::move(block));
-                case Semi: return probeImpl<Right, Semi, HashJoin::MapsAll>(std::move(block));
-                case Anti: return probeImpl<Right, Anti, HashJoin::MapsAll>(std::move(block));
+                case All: return probeImpl<Right, All, HashJoin::MapsAll>(std::move(block), lane);
+                case RightAny: return probeImpl<Right, RightAny, HashJoin::MapsAll>(std::move(block), lane);
+                case Any: return probeImpl<Right, Any, HashJoin::MapsAll>(std::move(block), lane);
+                case Semi: return probeImpl<Right, Semi, HashJoin::MapsAll>(std::move(block), lane);
+                case Anti: return probeImpl<Right, Anti, HashJoin::MapsAll>(std::move(block), lane);
                 default: break;
             }
         }
@@ -79,8 +79,8 @@ JoinResultPtr PartitionedHashJoin::probeDispatch(Block block)
         {
             switch (strictness)
             {
-                case All: return probeImpl<Full, All, HashJoin::MapsAll>(std::move(block));
-                case RightAny: return probeImpl<Full, RightAny, HashJoin::MapsAll>(std::move(block));
+                case All: return probeImpl<Full, All, HashJoin::MapsAll>(std::move(block), lane);
+                case RightAny: return probeImpl<Full, RightAny, HashJoin::MapsAll>(std::move(block), lane);
                 default: break;
             }
         }

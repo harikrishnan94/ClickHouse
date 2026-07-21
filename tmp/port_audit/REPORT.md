@@ -2,6 +2,10 @@
 
 **Status: IN PROGRESS — this file is updated per candidate; the final version closes Unit 2.**
 
+## Retention round (GA amendment)
+
+After the four measurement verdicts were reported, the requester amended the acceptance rule (verbatim in WORKLOG it.10): candidates 1, 5, 7 are RETAINED; candidate 2 stays rejected; candidate 1 re-scoped to a per-partition distinct cache driving leaf count and per-leaf HT sizing. For the retained candidates the improvement requirement is waived; correctness gates and the no-regression requirement stay. Status: candidate 5 re-applied and PORTED (gates green, no-regression confirmed across two grid rounds, WORKLOG it.11), candidate 7 parallel destructor and candidate 1 v2 in progress.
+
 ## Verdicts at a glance
 
 | Unit | Verdict |
@@ -10,7 +14,7 @@
 | Approval checkpoint | GREEN — GA verbatim in WORKLOG it.4; predates every Phase B implementation commit |
 | Unit 1 candidate 1 (warm-run-cached-distinct-estimate) | GREEN (closed) — `rejected-by-measurement` |
 | Unit 1 candidate 2 (narrow-scatter-counters) | GREEN (closed) — `rejected-by-measurement` |
-| Unit 1 candidate 5 (pipeline-lane-identity) | in progress |
+| Unit 1 candidate 5 (pipeline-lane-identity) | GREEN (retained) — `ported` |
 | Unit 1 candidate 7 (parallel-hash-table-teardown) | not started |
 | Unit 2 (full regression + close-out) | not started |
 
@@ -46,7 +50,7 @@ Every invocation below is copy-paste re-runnable from the repo root. Raw outputs
 | G1 c2 | `ninja ... > build/reldeb/build_port_narrowhist.log` | exit 0 | — | GREEN |
 | G2 c2 | logs `test_port_narrowhist.log`, `stateless_port_narrowhist.log` | 48 gtests (incl. `WideCounterFallbackParity`); stateless 04603–04606 OK | — | GREEN |
 | G3 c2 | `run_paired.sh c2r1 <bin_base_c1> <bin_cand_c2>`; `compare_grids.py c2r1_base c2r1_cand PartitionedHashJoinBuildHistogramMicroseconds` | histogram −0.7..−8.2%, inside band on ALL points (prereg refutation condition); no wall improvement | — | REJECTED-BY-MEASUREMENT |
-| G3 c5 | *(pending)* | | | |
+| G3 c5 (retention) | `run_paired.sh ret_c5 <bin_final> <bin_ret_c5>` (V-E) then `ret_c5r2 <bin_final> <bin_ret_c5> A E` (repeat); `compare_grids.py ... PartitionedHashJoinBuildFillMicroseconds` | round 1: V/B/C/D in-band, A/E nominally regressed (+16.8%/+15.7%) but flagged contention-suspect (load 19.9→52.1 mid-grid, fill phase flat while untouched phases inflated); round 2 (A/E only, quiet box): A +0.9%/15.8% band, E +1.1%/3.3% band — both in-band, confirming contention | ret_c5/ret_c5r2 grid logs | PORTED (no regression beyond band on any of 6 points) |
 | G3 c7 | *(pending)* | | | |
 | G4 (Unit 2) | *(pending — full paired grid vs Unit-1-start baseline + checker with zero approved rows)* | | | |
 
@@ -58,8 +62,8 @@ Mechanism ported faithfully into `PartitionedHashJoin` idiom (dedicated `Partiti
 ### Candidate 2 — narrow-scatter-counters → rejected-by-measurement
 Dual-shape UInt32/UInt64 histogram+prefix counters (UInt64 fallback intact, forced-fallback parity gtest). The declared phase itself stayed inside the band everywhere — the histogram stage is bounded by bucket-id derivation and pid-array traffic, not counter width. Dropped diff: `tmp/port_audit/dropped/c2_narrow_scatter_counters.diff`. Evidence commit `3db90315f78`.
 
-### Candidate 5 — pipeline-lane-identity → rejected-by-measurement
-Full pipeline port (IJoin lane overloads, transform/builder plumbing, lock-free lane slots with collision-tolerant fallbacks; 22 files). All correctness gates green (incl. a lane-parity gtest with out-of-range lanes). G3 paired round `c5r1`: wall and BOTH declared phases inside the band on every point — the removed per-block mutex/map costs are sub-millisecond at realistic block counts, exactly as the prereg predicted. Dropped diff: `tmp/port_audit/dropped/c5_pipeline_lane_identity.diff`.
+### Candidate 5 — pipeline-lane-identity → ported (retained by requester)
+Full pipeline port (IJoin lane overloads, transform/builder plumbing, lock-free lane slots with collision-tolerant fallbacks; 22 files). All correctness gates green (incl. a lane-parity gtest with out-of-range lanes). Originally measured `rejected-by-measurement` (G3 round `c5r1`: wall and both declared phases inside the band on every point). Retained per the requester's GA amendment (WORKLOG it.10) with the improvement requirement waived; re-applied from the dropped diff with the destructor hunk merged against candidate 7's teardown-timing scope. No-regression re-confirmed across two grid rounds (`ret_c5`, `ret_c5r2`) — all six points in-band on both wall and the `BuildFill` phase (WORKLOG it.11). Superseded dropped diff (historical only): `tmp/port_audit/dropped/c5_pipeline_lane_identity.diff`.
 
 ### Candidate 7 — parallel-hash-table-teardown → rejected-by-measurement (prediction-0)
 The pre-registered decidability check settled it without needing the port: new teardown instrumentation (kept, flagged for veto) shows the destructor runs AFTER the per-query ProfileEvents packet — so the phase criterion is structurally unsatisfiable — and the total serial teardown at the largest shapes is 33–38ms (narrow) / 80–90ms (wide), i.e. at most 1.6–2.2% of the B/C walls: below the 3% band floor even if a perfect parallelization were fully on the measured wall. The parallel destructor was not implemented; its grid outcome is bounded in-band by arithmetic. Raw sequence in WORKLOG it.9; probe SQL in `tmp/port_audit/bench/c7_pred0*.sql`.

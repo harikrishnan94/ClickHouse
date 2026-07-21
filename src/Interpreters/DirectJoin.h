@@ -19,6 +19,8 @@ class NotJoinedBlocks;
 class DirectKeyValueJoin : public IJoin
 {
 public:
+    using IJoin::addBlockToJoin;
+    using IJoin::joinBlock;
     DirectKeyValueJoin(
         std::shared_ptr<TableJoin> table_join_,
         const Block & right_sample_block_,

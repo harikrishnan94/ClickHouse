@@ -259,7 +259,7 @@ concept FlatLookupMap = AmacResumableMap<Map> && requires {
   * standard `JoinUsedFlags` machinery keeps its single-map semantics.
   */
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape, typename KeyGetter, typename Map, typename AddedColumnsType>
-size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block)
+size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block, size_t lane)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsShape> join_features;
     /// Single disjunct only: the per-row-flags shapes run the delegated standard path.
@@ -286,12 +286,12 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     std::unique_ptr<ProbeScratch> scratch;
     SCOPE_EXIT({
         if (scratch)
-            releaseProbeScratch(std::move(scratch));
+            releaseProbeScratch(std::move(scratch), lane);
     });
     auto ensure_scratch = [&]() -> ProbeScratch &
     {
         if (!scratch)
-            scratch = acquireProbeScratch();
+            scratch = acquireProbeScratch(lane);
         return *scratch;
     };
 
@@ -854,7 +854,7 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape>
-JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
+JoinResultPtr PartitionedHashJoin::probeImpl(Block block, size_t lane)
 {
     HashJoin & join = *leaf_join;
 
@@ -924,7 +924,7 @@ JoinResultPtr PartitionedHashJoin::probeImpl(Block block)
     case HashJoin::Type::TYPE: { \
         using Map = const decltype(OurMaps::TYPE)::element_type; \
         using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, Map>::Type; \
-        routedJoinRightColumns<KIND, STRICTNESS, MapsShape, KeyGetter, Map>(added_columns, scattered_block); \
+        routedJoinRightColumns<KIND, STRICTNESS, MapsShape, KeyGetter, Map>(added_columns, scattered_block, lane); \
         break; \
     }
             APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)

@@ -92,8 +92,10 @@ public:
     const TableJoin & getTableJoin() const override;
 
     bool addBlockToJoin(const Block & block, bool check_limits) override;
+    bool addBlockToJoin(const Block & block, size_t num_rows, bool check_limits, size_t build_lane) override;
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;
+    JoinResultPtr joinBlock(Block block, size_t lane) override;
 
     /// With `supportParallelJoin` every parallel fill stream reports totals at its end-of-fill
     /// (usually an empty block; at most one stream carries the real totals), so unlike the
@@ -218,6 +220,8 @@ private:
     struct PostBuildContext;
 
     FillLane & getFillLane();
+    FillLane & getFillLane(size_t build_lane);
+    bool addBlockToJoinImpl(const Block & source_block, bool check_limits, size_t build_lane);
     void decidePartitionPlan();
     void storeBlocksInRowStore();
 
@@ -269,13 +273,13 @@ private:
     /// The routed probe (PartitionedHashJoinProbe*.cpp). `MapsShape` is the standard maps shape
     /// (`HashJoin::MapsOne`/`MapsAll`/`MapsAsof`) the (kind, strictness) pair dispatches to; the
     /// actual leaf maps are the partitioned counterpart holding identical cells.
-    JoinResultPtr probeDispatch(Block block);
+    JoinResultPtr probeDispatch(Block block, size_t lane);
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape>
-    JoinResultPtr probeImpl(Block block);
+    JoinResultPtr probeImpl(Block block, size_t lane);
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsShape, typename KeyGetter, typename Map, typename AddedColumnsType>
-    size_t routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block);
+    size_t routedJoinRightColumns(AddedColumnsType & added_columns, const ScatteredBlock & block, size_t lane);
 
     /// Per-probe-stream scratch, pooled on the join and reused across probe blocks: the per-row
     /// leaf ids, and the AMAC find pass's per-row results - the matched cell's
@@ -291,8 +295,13 @@ private:
         PaddedPODArray<UInt64> found_offset;
     };
 
-    std::unique_ptr<ProbeScratch> acquireProbeScratch();
-    void releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch);
+    /// The pipeline-carried lane index binds a lock-free scratch slot per probe stream; lanes
+    /// outside the slot table (or the lane-less legacy entry points) fall back to the mutexed
+    /// pool, so lane collisions and out-of-range indices stay correct, just slower.
+    static constexpr size_t invalid_lane = std::numeric_limits<size_t>::max();
+
+    std::unique_ptr<ProbeScratch> acquireProbeScratch(size_t lane);
+    void releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch, size_t lane);
 
     std::shared_ptr<TableJoin> table_join;
     SharedHeader right_sample_block;
@@ -317,10 +326,14 @@ private:
     std::mutex totals_mutex;
     Block totals;
 
-    /// Fill phase.
+    /// Fill phase. `lanes` owns the per-lane state (the barrier iterates it); the slot table
+    /// gives pipeline-carried lane indices a lock-free lookup (one mutexed emplace on a lane's
+    /// FIRST block, atomic loads afterwards; the table is sized once and never resized, so the
+    /// fast path never races a rehash). Lane-less callers keep the thread-id map.
     std::mutex fill_mutex;
     std::deque<FillLane> lanes;
     std::unordered_map<std::thread::id, FillLane *> lane_by_thread;
+    std::vector<std::atomic<FillLane *>> fill_lane_slots;
     std::atomic<size_t> accumulated_rows{0};
     std::atomic<size_t> accumulated_bytes{0};
 
@@ -369,6 +382,9 @@ private:
 
     std::mutex probe_scratch_mutex;
     std::vector<std::unique_ptr<ProbeScratch>> probe_scratch_pool;
+    /// One parked scratch per probe lane (owned when non-null; freed by the destructor).
+    /// Acquire = atomic exchange out; release = CAS back in; misses go through the pool.
+    std::vector<std::atomic<ProbeScratch *>> probe_scratch_slots;
 
     BuildStats stats;
 

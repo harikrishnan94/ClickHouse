@@ -82,6 +82,11 @@ PartitionedHashJoin::PartitionedHashJoin(
             ErrorCodes::LOGICAL_ERROR,
             "PartitionedHashJoin was created for an unsupported map type {}; the plan-time gate must reject this shape",
             leaf_join->data->type);
+
+    /// Sized once, never resized: the lock-free fast paths index these without synchronizing
+    /// against growth. Lanes past the table (rare pipeline shapes) take the legacy fallbacks.
+    fill_lane_slots = std::vector<std::atomic<FillLane *>>(2 * num_threads);
+    probe_scratch_slots = std::vector<std::atomic<ProbeScratch *>>(2 * num_threads);
 }
 
 PartitionedHashJoin::~PartitionedHashJoin()
@@ -95,6 +100,8 @@ PartitionedHashJoin::~PartitionedHashJoin()
     build_arenas.clear();
     leaf_join.reset();
     probe_scratch_pool.clear();
+    for (auto & slot : probe_scratch_slots)
+        delete slot.load(std::memory_order_acquire);
 }
 
 bool PartitionedHashJoin::isSupported(const TableJoin & table_join)
@@ -161,7 +168,39 @@ PartitionedHashJoin::FillLane & PartitionedHashJoin::getFillLane()
     return *it->second;
 }
 
+PartitionedHashJoin::FillLane & PartitionedHashJoin::getFillLane(size_t build_lane)
+{
+    if (build_lane >= fill_lane_slots.size())
+        return getFillLane();
+
+    if (FillLane * fast = fill_lane_slots[build_lane].load(std::memory_order_acquire))
+        return *fast;
+
+    /// First block of this lane: one mutexed emplace into the owning deque (whose elements are
+    /// stable), then every later block takes the atomic load above. A lane index is unique per
+    /// filling transform and a transform's work is serialized, so after publication the slot's
+    /// state is single-writer even when executor threads migrate.
+    std::lock_guard lock(fill_mutex);
+    if (FillLane * raced = fill_lane_slots[build_lane].load(std::memory_order_relaxed))
+        return *raced;
+    FillLane * fresh = &lanes.emplace_back();
+    fill_lane_slots[build_lane].store(fresh, std::memory_order_release);
+    return *fresh;
+}
+
 bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_limits)
+{
+    return addBlockToJoinImpl(source_block, check_limits, invalid_lane);
+}
+
+bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, size_t /*num_rows*/, bool check_limits, size_t build_lane)
+{
+    /// num_rows only matters for columnless CROSS-join blocks, a shape this algorithm never
+    /// plans; the row count comes from the block itself, as in the lane-less entry point.
+    return addBlockToJoinImpl(source_block, check_limits, build_lane);
+}
+
+bool PartitionedHashJoin::addBlockToJoinImpl(const Block & source_block, bool check_limits, size_t build_lane)
 {
     ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinBuildMicroseconds);
 
@@ -221,7 +260,7 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
     /// sketches by the equi-key prefix only - the trailing inequality column goes into the
     /// per-key sorted lookup, not into the map key.
     fill.routes.resize_exact(rows);
-    FillLane & lane = getFillLane();
+    FillLane & lane = build_lane == invalid_lane ? getFillLane() : getFillLane(build_lane);
     if (leaf_join->getStrictness() == JoinStrictness::Asof)
     {
         ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
@@ -424,10 +463,15 @@ void PartitionedHashJoin::onBuildPhaseFinish()
 
 JoinResultPtr PartitionedHashJoin::joinBlock(Block block)
 {
+    return joinBlock(std::move(block), invalid_lane);
+}
+
+JoinResultPtr PartitionedHashJoin::joinBlock(Block block, size_t lane)
+{
     JoinResultPtr result;
     {
         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinProbeMicroseconds);
-        result = delegate_mode ? leaf_join->joinBlock(std::move(block)) : probeDispatch(std::move(block));
+        result = delegate_mode ? leaf_join->joinBlock(std::move(block)) : probeDispatch(std::move(block), lane);
     }
     return std::make_unique<TimedJoinResult>(std::move(result), ProfileEvents::PartitionedHashJoinProbeMicroseconds);
 }
@@ -482,8 +526,13 @@ PartitionedHashJoin::BuildStats PartitionedHashJoin::getBuildStats() const
     return res;
 }
 
-std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireProbeScratch()
+std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireProbeScratch(size_t lane)
 {
+    /// Lane fast path: take the parked scratch of this probe stream with one atomic exchange.
+    if (lane < probe_scratch_slots.size())
+        if (ProbeScratch * parked = probe_scratch_slots[lane].exchange(nullptr, std::memory_order_acquire))
+            return std::unique_ptr<ProbeScratch>(parked);
+
     {
         std::lock_guard lock(probe_scratch_mutex);
         if (!probe_scratch_pool.empty())
@@ -496,8 +545,20 @@ std::unique_ptr<PartitionedHashJoin::ProbeScratch> PartitionedHashJoin::acquireP
     return std::make_unique<ProbeScratch>();
 }
 
-void PartitionedHashJoin::releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch)
+void PartitionedHashJoin::releaseProbeScratch(std::unique_ptr<ProbeScratch> scratch, size_t lane)
 {
+    /// Park back into the lane's slot when it is free; a collision (or an out-of-range lane)
+    /// falls through to the pool, so the scratch is never lost and never double-owned.
+    if (lane < probe_scratch_slots.size())
+    {
+        ProbeScratch * expected = nullptr;
+        if (probe_scratch_slots[lane].compare_exchange_strong(expected, scratch.get(), std::memory_order_release))
+        {
+            scratch.release(); /// NOLINT(bugprone-unused-return-value): ownership moved into the slot
+            return;
+        }
+    }
+
     std::lock_guard lock(probe_scratch_mutex);
     probe_scratch_pool.push_back(std::move(scratch));
 }

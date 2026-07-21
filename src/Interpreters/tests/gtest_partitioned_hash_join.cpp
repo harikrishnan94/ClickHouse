@@ -173,7 +173,7 @@ BuiltJoin buildJoin(
 
 /// Probes every distinct key once (plus `misses` keys that are absent from the build) and
 /// checks the exact multiset of joined rows.
-void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, size_t misses)
+void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, size_t misses, bool use_lanes = false)
 {
     JoinedRows expected;
     expected.reserve(distinct_keys * duplicates);
@@ -189,6 +189,7 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
     actual.reserve(expected.size());
     std::vector<UInt64> keys;
     std::vector<UInt64> ids;
+    size_t probe_block_index = 0;
     for (size_t i = 0; i < distinct_keys + misses; ++i)
     {
         /// The +2 offset cannot collide with a built key: i * K + 2 == j * K + 1 would need
@@ -197,7 +198,11 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
         ids.push_back(i);
         if (keys.size() == block_rows || i + 1 == distinct_keys + misses)
         {
-            auto result = built.join->joinBlock(twoColumnBlock("k", "probe_id", keys, ids));
+            Block probe_block = twoColumnBlock("k", "probe_id", keys, ids);
+            /// With lanes: rotate through in-range lane indices plus a deliberately
+            /// out-of-range one (% 9 on an 8-slot table) to exercise the pool fallback.
+            auto result = use_lanes ? built.join->joinBlock(std::move(probe_block), probe_block_index++ % 9)
+                                    : built.join->joinBlock(std::move(probe_block));
             drainResult(*result, actual);
             keys.clear();
             ids.clear();
@@ -208,6 +213,51 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
     ASSERT_TRUE(actual == expected);
 }
 
+}
+
+TEST(PartitionedHashJoin, LaneIdentityParity)
+{
+    /// Build through the lane-carrying overloads (as the pipeline does) and probe with lane
+    /// indices, including out-of-range ones; results must match the lane-less path exactly.
+    constexpr size_t distinct_keys = 100000;
+    constexpr size_t duplicates = 2;
+
+    const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
+    const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
+    BuiltJoin built;
+    built.table_join = makeTableJoin(left_header, right_header, JoinKind::Inner);
+    built.join = std::make_shared<PartitionedHashJoin>(built.table_join, std::make_shared<const Block>(right_header), 4);
+
+    std::vector<UInt64> keys;
+    std::vector<UInt64> ids;
+    UInt64 id = 0;
+    size_t build_block_index = 0;
+    for (size_t i = 0; i < distinct_keys; ++i)
+    {
+        for (size_t d = 0; d < duplicates; ++d)
+        {
+            keys.push_back(i * 2654435761ULL + 1);
+            ids.push_back(id++);
+            if (keys.size() == block_rows)
+            {
+                const Block b = twoColumnBlock("rk", "build_id", keys, ids);
+                /// Lanes 0..3 in range (the slot table holds 2 x num_threads = 8), lane 8 out
+                /// of range - exercises the thread-id fallback of `getFillLane`.
+                EXPECT_TRUE(built.join->addBlockToJoin(b, b.rows(), /*check_limits=*/true, build_block_index++ % 9));
+                keys.clear();
+                ids.clear();
+            }
+        }
+    }
+    if (!keys.empty())
+    {
+        const Block b = twoColumnBlock("rk", "build_id", keys, ids);
+        EXPECT_TRUE(built.join->addBlockToJoin(b, b.rows(), /*check_limits=*/true, build_block_index++ % 9));
+    }
+    built.join->onBuildPhaseFinish();
+    built.join->runPostBuildPhase();
+
+    probeAndCheck(built, distinct_keys, duplicates, /*misses=*/100, /*use_lanes=*/true);
 }
 
 TEST(PartitionedHashJoin, PartitionedBuildExactReservesAndParity)
