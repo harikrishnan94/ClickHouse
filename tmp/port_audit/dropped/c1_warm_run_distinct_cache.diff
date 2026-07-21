@@ -1,0 +1,411 @@
+diff --git a/src/Common/ProfileEvents.cpp b/src/Common/ProfileEvents.cpp
+index 9bd37f4b626..b4b1aeccbee 100644
+--- a/src/Common/ProfileEvents.cpp
++++ b/src/Common/ProfileEvents.cpp
+@@ -445,6 +445,7 @@
+     M(PartitionedHashJoinHashTableBytes, "Predicted total bytes of the exact-reserved per-leaf hash-table buffers of a partitioned_hash JOIN build.", ValueType::Bytes) \
+     M(PartitionedHashJoinHashTableGrowths, "Number of partitioned_hash JOIN leaf hash tables that resized past their planned exact reserve (a distinct-estimate shortfall; correct but slower than the planned path).", ValueType::Number) \
+     M(PartitionedHashJoinAmacRingGrowths, "Number of times a partitioned_hash JOIN leaf hash table grew during an AMAC insert ring: the ring is drained, the map resized, and the in-flight rows re-seeded (a distinct-estimate shortfall; correct, never silent).", ValueType::Number) \
++    M(PartitionedHashJoinDistinctEstimateReused, "Number of partitioned_hash JOIN builds that reused a cached distinct-key count from the hash-table statistics cache (a warm run), skipping the per-row HyperLogLog sketch feed of the build fill.", ValueType::Number) \
+     M(JoinReorderMicroseconds, "Total time spent executing JOIN reordering algorithm.", ValueType::Microseconds) \
+     M(JoinOptimizeMicroseconds, "Total time spent executing JOIN plan optimizations.", ValueType::Microseconds) \
+     M(QueryPlanOptimizeMicroseconds, "Total time spent executing query plan optimizations.", ValueType::Microseconds) \
+diff --git a/src/Interpreters/HashTablesStatistics.cpp b/src/Interpreters/HashTablesStatistics.cpp
+index 5f97f2ce966..d3a8ae18782 100644
+--- a/src/Interpreters/HashTablesStatistics.cpp
++++ b/src/Interpreters/HashTablesStatistics.cpp
+@@ -81,6 +81,12 @@ std::optional<HashTablesCacheStatistics> getHashTablesCacheStatistics()
+         res.hits += hash_join_stats->hits;
+         res.misses += hash_join_stats->misses;
+     }
++    if (auto partitioned_hash_join_stats = getHashTablesStatistics<PartitionedHashJoinEntry>().getCacheStats())
++    {
++        res.entries += partitioned_hash_join_stats->entries;
++        res.hits += partitioned_hash_join_stats->hits;
++        res.misses += partitioned_hash_join_stats->misses;
++    }
+     return res;
+ }
+ 
+@@ -138,4 +144,5 @@ std::optional<HashJoinEntry> getSizeHint(const DB::StatsCollectingParams & stats
+ 
+ template class HashTablesStatistics<AggregationEntry>;
+ template class HashTablesStatistics<HashJoinEntry>;
++template class HashTablesStatistics<PartitionedHashJoinEntry>;
+ }
+diff --git a/src/Interpreters/HashTablesStatistics.h b/src/Interpreters/HashTablesStatistics.h
+index dc8c9004be8..44eb70bd080 100644
+--- a/src/Interpreters/HashTablesStatistics.h
++++ b/src/Interpreters/HashTablesStatistics.h
+@@ -61,6 +61,23 @@ struct HashJoinEntry
+     size_t source_rows; // the number of rows in the source table
+ };
+ 
++struct PartitionedHashJoinEntry
++{
++    /// Same policy as `HashJoinEntry`: maintain the maximum observed value until a new
++    /// observation is much lower (indicating the data actually changed).
++    bool shouldBeUpdated(const PartitionedHashJoinEntry & new_entry) const
++    {
++        return new_entry.distinct_keys < distinct_keys / 2 || distinct_keys < new_entry.distinct_keys;
++    }
++
++    std::string dump() const { return fmt::format("distinct_keys={}", distinct_keys); }
++
++    /// Distinct join keys inserted into the leaf hash tables of a `partitioned_hash` build.
++    /// Kept apart from `HashJoinEntry` so `parallel_hash` and `partitioned_hash` never clobber
++    /// each other's entry for the same query key.
++    size_t distinct_keys;
++};
++
+ /** Collects observed HashTable-s sizes to avoid redundant intermediate resizes.
+   */
+ template <typename Entry>
+diff --git a/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.cpp b/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.cpp
+index 83cbba4787c..1eb60a0019a 100644
+--- a/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.cpp
++++ b/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.cpp
+@@ -152,6 +152,11 @@ void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, co
+         });
+ }
+ 
++void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, UInt16 * routes)
++{
++    computeJoinRouteWordsImpl(key_columns, rows, [&](size_t row, UInt32 word) { routes[row] = static_cast<UInt16>(word >> 16); });
++}
++
+ void computeJoinLeafIds(const ColumnRawPtrs & key_columns, size_t rows, size_t bits, UInt16 * leaf_ids)
+ {
+     chassert(bits > 0 && bits <= 16);
+diff --git a/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.h b/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.h
+index 0f5907c55fe..72215225c2a 100644
+--- a/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.h
++++ b/src/Interpreters/PartitionedHashJoin/JoinRouteHashing.h
+@@ -28,6 +28,13 @@ void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt3
+   */
+ void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, const UInt8 * skip, UInt16 * routes, DenseHyperLogLog & hll);
+ 
++/** The sketch-free fill variant, taken when a cached distinct-key count from a previous run of
++  * the same query replaces the sketch estimate entirely: routes are still stored for every row
++  * (the scatter's bucket derivation reads them), the per-row sketch feed is skipped. No `skip`
++  * parameter - it only ever filtered the sketch feed, never the route store.
++  */
++void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, UInt16 * routes);
++
+ /** The probe-side consumption, fused the same way: the leaf id `word >> (32 - bits)` is stored
+   * per row directly (no 32-bit word transient). Agrees with the build's stored-route slice
+   * `route >> (16 - bits)` on the shared top bits for every plan (`0 < bits <= 16`).
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp
+index d2e97fd0097..dc0f9d6ef0b 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.cpp
+@@ -24,6 +24,7 @@ extern const Event PartitionedHashJoinBuildFillMicroseconds;
+ extern const Event PartitionedHashJoinProbeMicroseconds;
+ extern const Event PartitionedHashJoinPartitions;
+ extern const Event PartitionedHashJoinLeafRows;
++extern const Event PartitionedHashJoinDistinctEstimateReused;
+ }
+ 
+ namespace DB
+@@ -65,7 +66,11 @@ private:
+ }
+ 
+ PartitionedHashJoin::PartitionedHashJoin(
+-    std::shared_ptr<TableJoin> table_join_, SharedHeader right_sample_block_, size_t num_threads_, bool any_take_last_row_)
++    std::shared_ptr<TableJoin> table_join_,
++    SharedHeader right_sample_block_,
++    size_t num_threads_,
++    bool any_take_last_row_,
++    const StatsCollectingParams & stats_collecting_params_)
+     : table_join(std::move(table_join_))
+     , right_sample_block(std::move(right_sample_block_))
+     , any_take_last_row(any_take_last_row_)
+@@ -74,6 +79,7 @@ PartitionedHashJoin::PartitionedHashJoin(
+     , delegate_mode(!table_join->oneDisjunct())
+     , maps_variant_index(leaf_join->data->maps.empty() ? 1 : leaf_join->data->maps.front().index())
+     , max_fanout_per_pass(ColumnsScatter::MAX_FANOUT_PER_PASS)
++    , stats_collecting_params(stats_collecting_params_)
+     , log(getLogger("PartitionedHashJoin"))
+ {
+     if (!PartitionedJoinMaps::isSupportedType(leaf_join->data->type))
+@@ -81,6 +87,14 @@ PartitionedHashJoin::PartitionedHashJoin(
+             ErrorCodes::LOGICAL_ERROR,
+             "PartitionedHashJoin was created for an unsupported map type {}; the plan-time gate must reject this shape",
+             leaf_join->data->type);
++
++    /// A cached distinct-key count from a previous run of the same query replaces the sketch
++    /// estimate wholesale: the decision is per build (all lanes fill the same way), so it is
++    /// made once here. A stale value only mis-sizes the leaf reserves - the maps grow past an
++    /// under-reserve (counted, never silent) - and the post-build republishes the fresh count.
++    if (!delegate_mode && stats_collecting_params.isCollectionAndUseEnabled())
++        if (const auto hint = getHashTablesStatistics<PartitionedHashJoinEntry>().getSizeHint(stats_collecting_params))
++            cached_distinct_keys = hint->distinct_keys;
+ }
+ 
+ PartitionedHashJoin::~PartitionedHashJoin() = default;
+@@ -213,7 +227,16 @@ bool PartitionedHashJoin::addBlockToJoin(const Block & source_block, bool check_
+     if (leaf_join->getStrictness() == JoinStrictness::Asof)
+     {
+         ColumnRawPtrs equi_columns(fill.key_columns.begin(), fill.key_columns.end() - 1);
+-        computeJoinRoutesForFill(equi_columns, rows, fill.skipData(), fill.routes.data(), lane.hll);
++        if (cached_distinct_keys)
++            computeJoinRoutesForFill(equi_columns, rows, fill.routes.data());
++        else
++            computeJoinRoutesForFill(equi_columns, rows, fill.skipData(), fill.routes.data(), lane.hll);
++    }
++    else if (cached_distinct_keys)
++    {
++        /// Warm run: a previous run published this query's distinct-key count, so the sketch
++        /// estimate is not needed and the per-row sketch feed is skipped.
++        computeJoinRoutesForFill(fill.key_columns, rows, fill.routes.data());
+     }
+     else
+     {
+@@ -385,7 +408,20 @@ void PartitionedHashJoin::onBuildPhaseFinish()
+     lanes.clear();
+     lane_by_thread.clear();
+ 
+-    hll_estimate = merged.estimate();
++    if (cached_distinct_keys)
++    {
++        /// The lanes' sketches were never fed (see `addBlockToJoin`); the cached count from the
++        /// previous run replaces the estimate. Downstream (partition plan, leaf reserves) is
++        /// clamped per leaf by exact row counts, so a stale value cannot inflate a leaf past
++        /// its rows and an under-estimate only triggers counted map growth.
++        hll_estimate = static_cast<double>(std::max<size_t>(1, *cached_distinct_keys));
++        stats.distinct_estimate_reused = true;
++        ProfileEvents::increment(ProfileEvents::PartitionedHashJoinDistinctEstimateReused);
++    }
++    else
++    {
++        hll_estimate = merged.estimate();
++    }
+     storeBlocksInRowStore();
+ 
+     /// The packed 4-byte locator encoding applies when every (block_no, row_no) fits 16+16 bits;
+@@ -504,7 +540,7 @@ PartitionedHashJoin::clone(const std::shared_ptr<TableJoin> & table_join_, Share
+     if (!isSupported(*table_join_))
+         throw Exception(
+             ErrorCodes::LOGICAL_ERROR, "PartitionedHashJoin: attempt to clone with a join shape the algorithm does not support");
+-    return std::make_shared<PartitionedHashJoin>(table_join_, right_sample_block_, num_threads, any_take_last_row);
++    return std::make_shared<PartitionedHashJoin>(table_join_, right_sample_block_, num_threads, any_take_last_row, stats_collecting_params);
+ }
+ 
+ std::shared_ptr<IJoin>
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
+index d603255fe10..814c8d4bf34 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
+@@ -3,6 +3,7 @@
+ #include <Columns/ColumnNullable.h>
+ #include <Core/Block_fwd.h>
+ #include <Interpreters/HashJoin/HashJoin.h>
++#include <Interpreters/HashTablesStatistics.h>
+ #include <Interpreters/IJoin.h>
+ #include <Interpreters/JoinUtils.h>
+ #include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
+@@ -79,7 +80,11 @@ class PartitionedHashJoin : public IJoin
+ {
+ public:
+     PartitionedHashJoin(
+-        std::shared_ptr<TableJoin> table_join_, SharedHeader right_sample_block_, size_t num_threads_, bool any_take_last_row_ = false);
++        std::shared_ptr<TableJoin> table_join_,
++        SharedHeader right_sample_block_,
++        size_t num_threads_,
++        bool any_take_last_row_ = false,
++        const StatsCollectingParams & stats_collecting_params_ = {});
+ 
+     ~PartitionedHashJoin() override;
+ 
+@@ -153,6 +158,9 @@ public:
+         UInt64 leaf_rows = 0;
+         /// Every leaf map's actual buffer bytes equaled the plan's prediction.
+         bool predictions_exact = true;
++        /// This build reused a cached distinct-key count from the hash-table statistics cache
++        /// (a warm run) and skipped the per-row sketch feed of the fill.
++        bool distinct_estimate_reused = false;
+         /// Per-leaf used-flag base offsets (prefix sums of the per-leaf bucket counts + 1),
+         /// size partitions + 1; empty when the join shape needs no right-side used flags.
+         std::vector<UInt64> flag_base;
+@@ -334,6 +342,12 @@ private:
+     size_t max_fanout_per_pass;
+     double hll_estimate = 0;
+     double reserve_safety = 1.2; /// covers the sketch error (~1.15% at precision 13) and per-leaf spread
++    /// Cross-run distinct-key statistics (same cache key derivation as the other join
++    /// algorithms, but a dedicated `PartitionedHashJoinEntry` cache). When a previous run of
++    /// this query published its distinct count, the fill skips the per-row sketch feed and the
++    /// barrier consumes the cached value instead of the sketch estimate.
++    StatsCollectingParams stats_collecting_params;
++    std::optional<size_t> cached_distinct_keys;
+     std::vector<FillBlock> build_blocks; /// concatenated lanes, row-store block numbers assigned
+     /// When every stored block number and row number fits 16 bits, the scattered locator column
+     /// uses a packed 4-byte encoding `(block_no << 16) | row_no`, decoded to the standard 8-byte
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp
+index c6d571e0bba..5362087b7da 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp
+@@ -557,6 +557,18 @@ void PartitionedHashJoin::runPostBuildPhase()
+     if (const UInt64 growths = amac_ring_growths.load(std::memory_order_relaxed))
+         ProfileEvents::increment(ProfileEvents::PartitionedHashJoinAmacRingGrowths, growths);
+ 
++    /// Publish the distinct-key count for the next run of this query. The map sizes are the
++    /// EXACT number of distinct inserted keys (each cell is one key; duplicates chain inside
++    /// the cell), strictly better than republishing an estimate.
++    if (stats_collecting_params.isCollectionAndUseEnabled())
++    {
++        const HashJoin::Type type = leaf_join->data->type;
++        size_t distinct_keys = 0;
++        for (const auto & maps : leaf_maps)
++            distinct_keys += maps.getTotalRowCount(type);
++        getHashTablesStatistics<PartitionedHashJoinEntry>().update({.distinct_keys = distinct_keys}, stats_collecting_params);
++    }
++
+     finishBuildPhase(all_values_unique);
+ 
+     LOG_TRACE(
+diff --git a/src/Interpreters/tests/gtest_partitioned_hash_join.cpp b/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
+index e4d7822a512..4844ca24b43 100644
+--- a/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
++++ b/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
+@@ -3,6 +3,7 @@
+ #include <fmt/format.h>
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <tuple>
+ #include <vector>
+ 
+@@ -124,14 +125,20 @@ BuiltJoin buildJoin(
+     size_t build_block_rows = block_rows,
+     JoinKind kind = JoinKind::Inner,
+     bool disable_amac = false,
+-    size_t max_fanout_per_pass_for_tests = 0)
++    size_t max_fanout_per_pass_for_tests = 0,
++    const StatsCollectingParams & stats_collecting_params = {})
+ {
+     const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
+     const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
+ 
+     BuiltJoin result;
+     result.table_join = makeTableJoin(left_header, right_header, kind);
+-    result.join = std::make_shared<PartitionedHashJoin>(result.table_join, std::make_shared<const Block>(right_header), num_threads);
++    result.join = std::make_shared<PartitionedHashJoin>(
++        result.table_join,
++        std::make_shared<const Block>(right_header),
++        num_threads,
++        /*any_take_last_row_=*/false,
++        stats_collecting_params);
+     if (reserve_safety_for_tests > 0)
+         result.join->setReserveSafetyFactorForTests(reserve_safety_for_tests);
+     /// Without the override the AMAC build insert and two-phase probe engage by default here
+@@ -210,6 +217,46 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
+ 
+ }
+ 
++TEST(PartitionedHashJoin, DistinctEstimateCacheWarmRun)
++{
++    /// A process-unique cache key per test invocation, so repeated runs in one process
++    /// (--gtest_repeat) never see a warm entry on the "cold" build.
++    static std::atomic<UInt64> key_counter{0};
++    const UInt64 key = 0xC1D15117C4C4E000ULL + key_counter.fetch_add(1);
++    const StatsCollectingParams params(
++        key, /*enable_=*/true, /*max_entries_for_hash_table_stats_=*/1024, /*max_size_to_preallocate_=*/1ULL << 40);
++
++    constexpr size_t distinct_keys = 200000;
++    constexpr size_t duplicates = 2;
++
++    /// Cold run: no cache entry, the sketch estimates, and the post-build publishes the exact
++    /// distinct count.
++    auto cold = buildJoin(
++        distinct_keys, duplicates, /*num_threads=*/4, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner,
++        /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
++    const auto cold_stats = cold.join->getBuildStats();
++    EXPECT_FALSE(cold_stats.distinct_estimate_reused);
++    /// The sketch estimate is approximate (~1.15% error at precision 13).
++    EXPECT_NEAR(cold_stats.hll_estimate, static_cast<double>(distinct_keys), 0.05 * distinct_keys);
++    probeAndCheck(cold, distinct_keys, duplicates, /*misses=*/100);
++
++    /// Warm run under the same key: the cached EXACT count replaces the sketch estimate and
++    /// the fill skips the sketch feed; results stay identical.
++    auto warm = buildJoin(
++        distinct_keys, duplicates, /*num_threads=*/4, /*reserve_safety_for_tests=*/0, block_rows, JoinKind::Inner,
++        /*disable_amac=*/false, /*max_fanout_per_pass_for_tests=*/0, params);
++    const auto warm_stats = warm.join->getBuildStats();
++    EXPECT_TRUE(warm_stats.distinct_estimate_reused);
++    EXPECT_EQ(warm_stats.hll_estimate, static_cast<double>(distinct_keys));
++    EXPECT_EQ(warm_stats.leaf_growths, 0u);
++    probeAndCheck(warm, distinct_keys, duplicates, /*misses=*/100);
++
++    /// Disabled statistics: never reused, sketch path as before.
++    auto disabled = buildJoin(distinct_keys, duplicates, /*num_threads=*/4);
++    EXPECT_FALSE(disabled.join->getBuildStats().distinct_estimate_reused);
++    probeAndCheck(disabled, distinct_keys, duplicates, /*misses=*/100);
++}
++
+ TEST(PartitionedHashJoin, PartitionedBuildExactReservesAndParity)
+ {
+     constexpr size_t distinct_keys = 300000;
+diff --git a/src/Planner/PlannerJoins.cpp b/src/Planner/PlannerJoins.cpp
+index 294dc03d874..2ec6d655a07 100644
+--- a/src/Planner/PlannerJoins.cpp
++++ b/src/Planner/PlannerJoins.cpp
+@@ -1241,7 +1241,11 @@ static std::shared_ptr<IJoin> tryCreateJoin(
+         if (algorithm == JoinAlgorithm::PARTITIONED_HASH && PartitionedHashJoin::isSupported(*table_join))
+         {
+             return std::make_shared<PartitionedHashJoin>(
+-                table_join, right_table_expression_header, params.max_threads, params.join_any_take_last_row);
++                table_join,
++                right_table_expression_header,
++                params.max_threads,
++                params.join_any_take_last_row,
++                stats_collecting_params);
+         }
+ 
+         if (table_join->allowParallelHashJoin())
+diff --git a/tmp/port_audit/PREREG.md b/tmp/port_audit/PREREG.md
+index 65fb1d27d34..7f7ed3bf921 100644
+--- a/tmp/port_audit/PREREG.md
++++ b/tmp/port_audit/PREREG.md
+@@ -63,3 +63,25 @@ python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
+ 5. No grid point's wall regresses beyond the band (the cold path is unchanged; the hit path only removes work).
+ 
+ **What refutes the port (=> rejected-by-measurement, revert):** wall delta inside the band on ALL points, or fill delta inside the band on ALL points, or any point regressing beyond the band, or any correctness gate red after the 3-cycle ceiling.
++
++**Round-1 result (2026-07-21): PAIR VOID by the drift check, as pre-registered.** Candidate grid showed reuse firing on all 6 points and fill -13..-47%, B wall -8.4% beyond its 3% band, but V/C/D/E walls +9.7..+21.4% — and the base-binary drift re-run moved -7.1% at B and +12.9% at V, both outside their bands, so baseline and candidate sampled different machine conditions (concurrent bench campaign's load varies). Neither acceptance nor rejection is valid on this pair.
++
++*Amendment 2 (before any round-2 data):* G3 measurement becomes POINT-INTERLEAVED — for each grid point, the base invocation and the candidate invocation run back-to-back (base first), so both sides sample the same conditions window; the band for each point is computed from the base invocation of the SAME round. The drift check is replaced by this pairing (it was the coarse form of it). Acceptance rule unchanged.
++
++---
++
++## Candidate 2 — narrow-scatter-counters (approved; rbm diff-derived, origin commit 832ebbbc51f)
++
++**Pre-registered 2026-07-21, before any implementing change. Written while candidate 1's G3 was in flight; candidate 2 implementation starts only after candidate 1 closes.**
++
++**Mechanism to implement:** the first-pass build histogram and prefix-sum arrays in `PartitionedHashJoinBuild.cpp` (`worker_hist`, `starts`, currently `PaddedPODArray<UInt64>` at ~354-356, plus the interleaved `hist_lanes` counters they merge) switch to `UInt32` when the accumulated build rows fit `UInt32` (RBM selected the counter type per scatter; the refine path at ahj is already 32-bit). Fallback to the existing `UInt64` shape when rows exceed `UInt32` (kept as the general form, exercised by a forced-plan test if feasible; rows > 4.29B are otherwise impractical in tests).
++
++**Declared phase counter:** `PartitionedHashJoinBuildHistogramMicroseconds`.
++
++**Predictions:**
++1. Histogram phase (thread-summed) drops on the high-fanout points B/C (32768 partitions x 32 workers: the histogram+prefix working set halves from 8 MB to 4 MB per array); baseline B histogram to be read from `c1_base2_B.log` PhaseEvents at analysis time.
++2. Whole-query wall: expected small; may land inside the band (fill/scatter dominate the build; honest reject possible).
++3. No behavioral change: partitions, leaf rows, verify status identical to baseline.
++4. No point regresses beyond the band (the change only narrows memory traffic; same algorithm).
++
++**What refutes the port:** wall or histogram delta inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
+diff --git a/tmp/port_audit/WORKLOG.md b/tmp/port_audit/WORKLOG.md
+index d1152bf8dbc..f287cc346a4 100644
+--- a/tmp/port_audit/WORKLOG.md
++++ b/tmp/port_audit/WORKLOG.md
+@@ -96,4 +96,12 @@ Merge → PORT_MATRIX.md → check_matrix.py → G0 → G0b spot checks (mine, n
+ 
+ **Band amendment (documented deviation, decided BEFORE any baseline/candidate comparison):** the harness reports median and min walls only, so the preregistered (max-min)/median spread is not computable; operative band = `max(3%, 2 x (median - min)/median)` of the baseline invocation. PREREG.md amended in place with the same text.
+ 
++**Candidate 1 gates G1/G2 (raw results):**
++- G1 GREEN: `ninja -C build/reldeb clickhouse unit_tests_dbms > build/reldeb/build_port_warmrun.log` → exit 0 (126/128 targets, ran after the c1_base2 grid finished so no bench contention).
++- G2 gtest GREEN: `build/reldeb/src/unit_tests_dbms --gtest_filter='PartitionedHashJoin*:*ColumnsScatter*' > build/reldeb/test_port_warmrun.log` → exit 0, "[  PASSED  ] 48 tests", including the new `PartitionedHashJoin.DistinctEstimateCacheWarmRun` (63 ms).
++- G2 stateless: two red-green cycles, both environmental/test-side, no production-code change:
++  (cycle 1) the borrowed server recipe wiped `/var/lib/clickhouse` which is not writable by this user → `run_stateless.sh` rewritten self-contained under `tmp/port_audit/stateless_data` with the in-tree `programs/server/config.xml`;
++  (cycle 2) `04607` failed `0 0` vs `1 1` — the fuzzer's randomized settings (`enable_parallel_replicas 1`, `enable_join_runtime_filters True`) made the plan fall back, and the path check used a timer; fixed by pinning `enable_analyzer/query_plan_join_swap_table/external-join/parallel_replicas/runtime_filters` like the sibling tests and asserting `PartitionedHashJoinPartitions > 0` (a count, cannot round to 0).
++  Final: `run_stateless.sh build/reldeb/stateless_port_warmrun2.log 4 partitioned_hash_join` → exit 0, all 5 tests OK (04603-04607).
++
+ **Candidate 1 implemented (working tree, commit follows green gates):** `PartitionedHashJoinEntry{distinct_keys}` in HashTablesStatistics (own cache, never clobbers `HashJoinEntry`); `StatsCollectingParams` plumbed PlannerJoins → ctor (5th arg, default `{}`) and through `clone`; ctor does the one-time `getSizeHint` (guarded: non-delegate + enabled); fill takes a new sketch-free `computeJoinRoutesForFill(cols, rows, routes)` overload on HIT (routes still stored for every row — the scatter reads them; only the sketch feed is skipped) in both the ASOF and plain branches; barrier consumes the cached count instead of `merged.estimate()`, sets `BuildStats.distinct_estimate_reused`, fires new event `PartitionedHashJoinDistinctEstimateReused`; `runPostBuildPhase` publishes the EXACT distinct count (sum of leaf map sizes — each cell is one distinct key) via `update()`. Tests: gtest `PartitionedHashJoin.DistinctEstimateCacheWarmRun` (cold: no reuse + sketch-accurate estimate; warm: reuse + exact estimate + probe parity; disabled: no reuse), stateless `04607_partitioned_hash_join_distinct_estimate_cache` (second identical query fires the reuse event on the partitioned path, results identical).

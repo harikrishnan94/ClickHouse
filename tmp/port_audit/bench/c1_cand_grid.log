@@ -1,0 +1,16 @@
+=== grid tag=c1_cand binary=build/reldeb/programs/clickhouse start 2026-07-21T14:28:32Z
+ 14:28:32 up 15 days,  6:22, 36 users,  load average: 18.86, 21.49, 27.86
+--- point V (c=4194304 r=1 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_cand_V.log
+point V exit=0
+--- point A (c=8388608 r=4 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_cand_A.log
+point A exit=0
+--- point B (c=524288000 r=1 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_cand_B.log
+point B exit=0
+--- point C (c=524288000 r=1 bp=4 pp=4 t=32) -> tmp/port_audit/bench/c1_cand_C.log
+point C exit=0
+--- point D (c=67108864 r=4 bp=0 pp=0 t=32) -> tmp/port_audit/bench/c1_cand_D.log
+point D exit=0
+--- point E (c=67108864 r=4 bp=1 pp=1 t=96) -> tmp/port_audit/bench/c1_cand_E.log
+point E exit=0
+=== grid tag=c1_cand done 2026-07-21T14:31:47Z
+ 14:31:47 up 15 days,  6:25, 36 users,  load average: 37.03, 30.77, 30.44

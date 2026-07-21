@@ -63,3 +63,25 @@ python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
 5. No grid point's wall regresses beyond the band (the cold path is unchanged; the hit path only removes work).
 
 **What refutes the port (=> rejected-by-measurement, revert):** wall delta inside the band on ALL points, or fill delta inside the band on ALL points, or any point regressing beyond the band, or any correctness gate red after the 3-cycle ceiling.
+
+**Round-1 result (2026-07-21): PAIR VOID by the drift check, as pre-registered.** Candidate grid showed reuse firing on all 6 points and fill -13..-47%, B wall -8.4% beyond its 3% band, but V/C/D/E walls +9.7..+21.4% — and the base-binary drift re-run moved -7.1% at B and +12.9% at V, both outside their bands, so baseline and candidate sampled different machine conditions (concurrent bench campaign's load varies). Neither acceptance nor rejection is valid on this pair.
+
+*Amendment 2 (before any round-2 data):* G3 measurement becomes POINT-INTERLEAVED — for each grid point, the base invocation and the candidate invocation run back-to-back (base first), so both sides sample the same conditions window; the band for each point is computed from the base invocation of the SAME round. The drift check is replaced by this pairing (it was the coarse form of it). Acceptance rule unchanged.
+
+---
+
+## Candidate 2 — narrow-scatter-counters (approved; rbm diff-derived, origin commit 832ebbbc51f)
+
+**Pre-registered 2026-07-21, before any implementing change. Written while candidate 1's G3 was in flight; candidate 2 implementation starts only after candidate 1 closes.**
+
+**Mechanism to implement:** the first-pass build histogram and prefix-sum arrays in `PartitionedHashJoinBuild.cpp` (`worker_hist`, `starts`, currently `PaddedPODArray<UInt64>` at ~354-356, plus the interleaved `hist_lanes` counters they merge) switch to `UInt32` when the accumulated build rows fit `UInt32` (RBM selected the counter type per scatter; the refine path at ahj is already 32-bit). Fallback to the existing `UInt64` shape when rows exceed `UInt32` (kept as the general form, exercised by a forced-plan test if feasible; rows > 4.29B are otherwise impractical in tests).
+
+**Declared phase counter:** `PartitionedHashJoinBuildHistogramMicroseconds`.
+
+**Predictions:**
+1. Histogram phase (thread-summed) drops on the high-fanout points B/C (32768 partitions x 32 workers: the histogram+prefix working set halves from 8 MB to 4 MB per array); baseline B histogram to be read from `c1_base2_B.log` PhaseEvents at analysis time.
+2. Whole-query wall: expected small; may land inside the band (fill/scatter dominate the build; honest reject possible).
+3. No behavioral change: partitions, leaf rows, verify status identical to baseline.
+4. No point regresses beyond the band (the change only narrows memory traffic; same algorithm).
+
+**What refutes the port:** wall or histogram delta inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.

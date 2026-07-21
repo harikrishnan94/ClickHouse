@@ -96,4 +96,33 @@ Merge → PORT_MATRIX.md → check_matrix.py → G0 → G0b spot checks (mine, n
 
 **Band amendment (documented deviation, decided BEFORE any baseline/candidate comparison):** the harness reports median and min walls only, so the preregistered (max-min)/median spread is not computable; operative band = `max(3%, 2 x (median - min)/median)` of the baseline invocation. PREREG.md amended in place with the same text.
 
+**Candidate 1 gates G1/G2 (raw results):**
+- G1 GREEN: `ninja -C build/reldeb clickhouse unit_tests_dbms > build/reldeb/build_port_warmrun.log` → exit 0 (126/128 targets, ran after the c1_base2 grid finished so no bench contention).
+- G2 gtest GREEN: `build/reldeb/src/unit_tests_dbms --gtest_filter='PartitionedHashJoin*:*ColumnsScatter*' > build/reldeb/test_port_warmrun.log` → exit 0, "[  PASSED  ] 48 tests", including the new `PartitionedHashJoin.DistinctEstimateCacheWarmRun` (63 ms).
+- G2 stateless: two red-green cycles, both environmental/test-side, no production-code change:
+  (cycle 1) the borrowed server recipe wiped `/var/lib/clickhouse` which is not writable by this user → `run_stateless.sh` rewritten self-contained under `tmp/port_audit/stateless_data` with the in-tree `programs/server/config.xml`;
+  (cycle 2) `04607` failed `0 0` vs `1 1` — the fuzzer's randomized settings (`enable_parallel_replicas 1`, `enable_join_runtime_filters True`) made the plan fall back, and the path check used a timer; fixed by pinning `enable_analyzer/query_plan_join_swap_table/external-join/parallel_replicas/runtime_filters` like the sibling tests and asserting `PartitionedHashJoinPartitions > 0` (a count, cannot round to 0).
+  Final: `run_stateless.sh build/reldeb/stateless_port_warmrun2.log 4 partitioned_hash_join` → exit 0, all 5 tests OK (04603-04607).
+
+## Iteration 6 — candidate 1 G3: void round, amendment 2, REJECTED-BY-MEASUREMENT
+
+**G3 round 1 (tags c1_base2 vs c1_cand, sequential grids): VOID.** Candidate numbers looked mixed (B wall −8.4% beyond its 3% band, but V/C/D/E +9.7..+21.4% "regressions"); the pre-registered drift check exposed the cause — the base binary re-run (c1_drift) moved −7.1% at B and +12.9% at V versus its own c1_base2 numbers, both outside band. The two grids sampled different machine conditions (the concurrent bench campaign's load varies); neither acceptance nor rejection was valid. Raw: `tmp/port_audit/bench/c1_{base2,cand,drift}_*.log`, comparison via `compare_grids.py`.
+
+**Amendment 2 (PREREG.md, recorded before round-2 data):** point-interleaved pairing — per grid point the base and candidate binaries run back-to-back, band computed from the same round's base invocation; supersedes the coarse drift check. Both binaries frozen as `bin_base_c1` / `bin_cand_c1`.
+
+**G3 round 2 (tag c1r2, 12 paired invocations, exit 0 all): REJECTED-BY-MEASUREMENT.**
+
+| point | base med (ms) | cand med | wall delta | band | fill base (us) | fill cand | fill delta |
+|---|---|---|---|---|---|---|---|
+| V | 32 | 33 | +3.1% | 6.2% | 7567 | 3906 | −48.4% |
+| A | 128 | 124 | −3.1% | 9.4% | 15807 | 8682 | −45.1% |
+| B | 2753 | 2762 | +0.3% | 4.7% | 1011914 | 587546 | −41.9% |
+| C | 4777 | 4818 | +0.9% | 9.7% | 1379262 | 1026133 | −25.6% |
+| D | 745 | 740 | −0.7% | 9.1% | 116273 | 56689 | −51.2% |
+| E | 655 | 659 | +0.6% | 8.2% | 168859 | 132428 | −21.6% |
+
+The mechanism verifiably works — `PartitionedHashJoinDistinctEstimateReused=1` on every candidate point, fill phase −21.6..−51.2% everywhere, V hash verification PASS on both sides — but the whole-query wall is inside the band on every point, in both directions. Per the GA rule (keep only what moves BOTH the wall and the phase): **rejected**. Mechanically the result makes sense: fill is ~6% of the build's thread-summed time, the sketch feed is less than half of fill, and the fill overlaps across lanes — ~0.5 ms of wall at B against a 2.75 s query.
+
+**Disposition:** matrix row `warm-run-cached-distinct-estimate` → `rejected-by-measurement` (checker re-run: exit 0). Dropped diff preserved at `tmp/port_audit/dropped/c1_warm_run_distinct_cache.diff` (411 lines); all production code reverted (`git checkout --` of the 10 files + removal of test 04607); `git status` clean vs `73f1d312ee4` apart from audit artifacts. Red-green cycles consumed: 2 of 3 (both test-side). The rejection is a first-class result: the fill-phase cost this candidate removes is real but not wall-relevant at these shapes.
+
 **Candidate 1 implemented (working tree, commit follows green gates):** `PartitionedHashJoinEntry{distinct_keys}` in HashTablesStatistics (own cache, never clobbers `HashJoinEntry`); `StatsCollectingParams` plumbed PlannerJoins → ctor (5th arg, default `{}`) and through `clone`; ctor does the one-time `getSizeHint` (guarded: non-delegate + enabled); fill takes a new sketch-free `computeJoinRoutesForFill(cols, rows, routes)` overload on HIT (routes still stored for every row — the scatter reads them; only the sketch feed is skipped) in both the ASOF and plain branches; barrier consumes the cached count instead of `merged.estimate()`, sets `BuildStats.distinct_estimate_reused`, fires new event `PartitionedHashJoinDistinctEstimateReused`; `runPostBuildPhase` publishes the EXACT distinct count (sum of leaf map sizes — each cell is one distinct key) via `update()`. Tests: gtest `PartitionedHashJoin.DistinctEstimateCacheWarmRun` (cold: no reuse + sketch-accurate estimate; warm: reuse + exact estimate + probe parity; disabled: no reuse), stateless `04607_partitioned_hash_join_distinct_estimate_cache` (second identical query fires the reuse event on the partitioned path, results identical).

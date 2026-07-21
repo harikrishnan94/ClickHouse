@@ -1,0 +1,8 @@
+=== grid tag=c1_drift binary=tmp/port_audit/bench/bin_base_c1 start 2026-07-21T14:31:47Z
+ 14:31:47 up 15 days,  6:25, 36 users,  load average: 37.03, 30.77, 30.44
+--- point V (c=4194304 r=1 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_drift_V.log
+point V exit=0
+--- point B (c=524288000 r=1 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_drift_B.log
+point B exit=0
+=== grid tag=c1_drift done 2026-07-21T14:32:46Z
+ 14:32:46 up 15 days,  6:26, 36 users,  load average: 37.90, 31.91, 30.83

@@ -1,0 +1,16 @@
+=== grid tag=c1_base2 binary=tmp/port_audit/bench/bin_base_c1 start 2026-07-21T14:18:32Z
+ 14:18:32 up 15 days,  6:12, 36 users,  load average: 31.74, 36.19, 33.00
+--- point V (c=4194304 r=1 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_base2_V.log
+point V exit=0
+--- point A (c=8388608 r=4 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_base2_A.log
+point A exit=0
+--- point B (c=524288000 r=1 bp=1 pp=1 t=32) -> tmp/port_audit/bench/c1_base2_B.log
+point B exit=0
+--- point C (c=524288000 r=1 bp=4 pp=4 t=32) -> tmp/port_audit/bench/c1_base2_C.log
+point C exit=0
+--- point D (c=67108864 r=4 bp=0 pp=0 t=32) -> tmp/port_audit/bench/c1_base2_D.log
+point D exit=0
+--- point E (c=67108864 r=4 bp=1 pp=1 t=96) -> tmp/port_audit/bench/c1_base2_E.log
+point E exit=0
+=== grid tag=c1_base2 done 2026-07-21T14:21:35Z
+ 14:21:35 up 15 days,  6:15, 36 users,  load average: 35.46, 38.34, 34.61
