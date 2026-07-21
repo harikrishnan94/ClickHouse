@@ -24,6 +24,7 @@ extern const Event PartitionedHashJoinBuildFillMicroseconds;
 extern const Event PartitionedHashJoinProbeMicroseconds;
 extern const Event PartitionedHashJoinPartitions;
 extern const Event PartitionedHashJoinLeafRows;
+extern const Event PartitionedHashJoinTeardownMicroseconds;
 }
 
 namespace DB
@@ -83,7 +84,18 @@ PartitionedHashJoin::PartitionedHashJoin(
             leaf_join->data->type);
 }
 
-PartitionedHashJoin::~PartitionedHashJoin() = default;
+PartitionedHashJoin::~PartitionedHashJoin()
+{
+    /// The heavy state is destroyed explicitly inside the timed scope - members are otherwise
+    /// destroyed after the destructor body, outside any timer. Order matters: the leaf maps'
+    /// cells reference arena memory (string keys, duplicate-list nodes) and the row store, so
+    /// the maps go first.
+    ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::PartitionedHashJoinTeardownMicroseconds);
+    leaf_maps.clear();
+    build_arenas.clear();
+    leaf_join.reset();
+    probe_scratch_pool.clear();
+}
 
 bool PartitionedHashJoin::isSupported(const TableJoin & table_join)
 {

@@ -61,7 +61,8 @@ Dual-shape UInt32/UInt64 histogram+prefix counters (UInt64 fallback intact, forc
 ### Candidate 5 — pipeline-lane-identity → rejected-by-measurement
 Full pipeline port (IJoin lane overloads, transform/builder plumbing, lock-free lane slots with collision-tolerant fallbacks; 22 files). All correctness gates green (incl. a lane-parity gtest with out-of-range lanes). G3 paired round `c5r1`: wall and BOTH declared phases inside the band on every point — the removed per-block mutex/map costs are sub-millisecond at realistic block counts, exactly as the prereg predicted. Dropped diff: `tmp/port_audit/dropped/c5_pipeline_lane_identity.diff`.
 
-### Candidate 7 — parallel-hash-table-teardown → (not started)
+### Candidate 7 — parallel-hash-table-teardown → rejected-by-measurement (prediction-0)
+The pre-registered decidability check settled it without needing the port: new teardown instrumentation (kept, flagged for veto) shows the destructor runs AFTER the per-query ProfileEvents packet — so the phase criterion is structurally unsatisfiable — and the total serial teardown at the largest shapes is 33–38ms (narrow) / 80–90ms (wide), i.e. at most 1.6–2.2% of the B/C walls: below the 3% band floor even if a perfect parallelization were fully on the measured wall. The parallel destructor was not implemented; its grid outcome is bounded in-band by arithmetic. Raw sequence in WORKLOG it.9; probe SQL in `tmp/port_audit/bench/c7_pred0*.sql`.
 
 ## Deviations (all documented at decision time)
 
