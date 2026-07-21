@@ -115,3 +115,18 @@ python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
 **Predictions:** teardown is largest on B/C (32768 leaf maps + large arenas); parallelizing over ~32 workers should cut the phase severalfold IF it is on the measured path. Wall: unknown magnitude — this is the one approved candidate whose target grew with the new base; measurement decides.
 
 **What refutes the port:** teardown phase or wall inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
+
+---
+
+# Retention round (GA amendment, WORKLOG it.10)
+
+The requester retains candidates 1, 5, 7 after their measured verdicts; the improvement requirement is waived for them, the NO-REGRESSION requirement and all correctness gates stay. Per-candidate acceptance for this round: G1+G2 green AND paired grid shows no wall regression beyond the band on any point. Measured deltas are recorded either way.
+
+## Candidate 5 retention — re-apply the dropped diff
+Re-apply `tmp/port_audit/dropped/c5_pipeline_lane_identity.diff` (22 files); the destructor hunk needs a manual merge with the teardown-timing destructor from `13900f0daca` (combined: timed scope + explicit heavy-state destruction + parked-scratch cleanup). No design change.
+
+## Candidate 7 retention — implement the parallel destructor (step B)
+Work-stealing destruction of the per-leaf maps (and per-arena release) over `post_build_pool` inside the timed scope, mirroring upstream `ConcurrentHashJoin`'s pool-parallel teardown; guards: pool exists, not delegate mode, partitions above a small floor, `try/catch` fallback to serial (destructors must not throw). Expected phase effect: `PartitionedHashJoinTeardownMicroseconds` (observable via the global counter / discriminator, NOT the per-query packet) drops severalfold at B/C; wall unaffected (off-path, previously measured).
+
+## Candidate 1 retention v2 — per-partition distinct cache (requester's design)
+Cache entry becomes `{bits, total_distinct, per_partition_distinct[2^bits]}` published post-build from the EXACT per-leaf map sizes at the built plan's bits. Warm run: fill skips the sketch (as v1); the barrier uses `total_distinct` for the partition-count decision and, when the warm plan's bits match the cached bits, sizes each leaf by its OWN cached distinct count (folded by summation when the warm plan is coarser; parent-count uniform split + row clamp when finer); every reserve stays clamped by the exact per-leaf row histogram, so a stale entry can only mis-size (growth path absorbs it, counted). Predictions: reuse event fires on warm runs; `leaf_growths`/`amac_ring_growths` not increased vs baseline; `PartitionedHashJoinHashTableBytes` on warm runs <= v1's uniform-rescale sizing on skewed-duplicate builds (exactness); wall in-band (waived); no regression beyond band. Refutation (this round): any correctness gate red after 3 cycles, or any wall regression beyond band, or leaf growths increasing on the standard grid.
