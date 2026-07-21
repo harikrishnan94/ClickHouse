@@ -152,4 +152,12 @@ void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, co
         });
 }
 
+void computeJoinLeafIds(const ColumnRawPtrs & key_columns, size_t rows, size_t bits, UInt16 * leaf_ids)
+{
+    chassert(bits > 0 && bits <= 16);
+    const auto shift = static_cast<UInt32>(32 - bits);
+    computeJoinRouteWordsImpl(
+        key_columns, rows, [&](size_t row, UInt32 word) { leaf_ids[row] = static_cast<UInt16>(word >> shift); });
+}
+
 }

@@ -846,3 +846,42 @@ TEST(PartitionedHashJoin, FusedFillRoutingMatchesTwoPass)
         expectFusedRoutingMatchesTwoPass(ColumnRawPtrs(asof_key_columns.begin(), asof_key_columns.end() - 1), rows, skip);
     }
 }
+
+TEST(PartitionedHashJoin, FusedProbeLeafIdsMatchTwoPass)
+{
+    constexpr size_t rows = 10007;
+
+    auto uint64_key = ColumnUInt64::create();
+    for (size_t i = 0; i < rows; ++i)
+        uint64_key->insertValue(i * 2654435761ULL + 1);
+    auto uint16_key = ColumnUInt16::create();
+    for (size_t i = 0; i < rows; ++i)
+        uint16_key->insertValue(static_cast<UInt16>(i * 40503));
+    auto string_key = ColumnString::create();
+    for (size_t i = 0; i < rows; ++i)
+    {
+        const std::string value = i % 7 == 0 ? "" : fmt::format("key-{}-{}", i, std::string(i % 19, 'x'));
+        string_key->insertData(value.data(), value.size());
+    }
+
+    const std::vector<ColumnRawPtrs> key_sets
+        = {{uint64_key.get()}, {uint64_key.get(), uint16_key.get()}, {string_key.get()}};
+    /// Every plan the 16-bit stored routes cover, including both edges.
+    for (const size_t bits : {1uz, 9uz, 16uz})
+    {
+        const auto shift = static_cast<UInt32>(32 - bits);
+        for (const auto & key_columns : key_sets)
+        {
+            PaddedPODArray<UInt32> words(rows);
+            computeJoinRouteWords(key_columns, rows, words.data());
+            PaddedPODArray<UInt16> expected(rows);
+            for (size_t i = 0; i < rows; ++i)
+                expected[i] = static_cast<UInt16>(words[i] >> shift);
+
+            PaddedPODArray<UInt16> leaf_ids;
+            leaf_ids.assign(rows, static_cast<UInt16>(0xDEAD));
+            computeJoinLeafIds(key_columns, rows, bits, leaf_ids.data());
+            ASSERT_EQ(0, memcmp(leaf_ids.data(), expected.data(), rows * sizeof(UInt16)));
+        }
+    }
+}

@@ -28,4 +28,10 @@ void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt3
   */
 void computeJoinRoutesForFill(const ColumnRawPtrs & key_columns, size_t rows, const UInt8 * skip, UInt16 * routes, DenseHyperLogLog & hll);
 
+/** The probe-side consumption, fused the same way: the leaf id `word >> (32 - bits)` is stored
+  * per row directly (no 32-bit word transient). Agrees with the build's stored-route slice
+  * `route >> (16 - bits)` on the shared top bits for every plan (`0 < bits <= 16`).
+  */
+void computeJoinLeafIds(const ColumnRawPtrs & key_columns, size_t rows, size_t bits, UInt16 * leaf_ids);
+
 }

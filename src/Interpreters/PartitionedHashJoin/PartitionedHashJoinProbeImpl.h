@@ -296,12 +296,8 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     {
         chassert(!join_features.is_asof_join);
         auto & routing = ensure_scratch();
-        routing.route_words.resize(source_rows);
-        computeJoinRouteWords(join_keys.key_columns, source_rows, routing.route_words.data());
         routing.leaf_ids.resize(source_rows);
-        const auto shift = static_cast<UInt32>(32 - bits);
-        for (size_t i = 0; i < source_rows; ++i)
-            routing.leaf_ids[i] = static_cast<UInt16>(routing.route_words[i] >> shift);
+        computeJoinLeafIds(join_keys.key_columns, source_rows, bits, routing.leaf_ids.data());
         leaf_ids = routing.leaf_ids.data();
     }
 
