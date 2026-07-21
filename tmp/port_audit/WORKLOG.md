@@ -240,3 +240,24 @@ No wall regression beyond the band on any point (the `BuildFill` phase is unrela
 `PartitionedHashJoinDistinctEstimateReused=1` on every candidate point (real bench harness, not just the gtest). `BuildFill` drops 24-56% everywhere - much larger than v1's 22-51% range, because v2 additionally sizes each leaf from its own cached count instead of the uniform rescale, so fewer leaves need a mid-build grower resize during the fill-adjacent path. No point regresses beyond the band, and unlike the original v1 measurement, this round is not merely in-band: **B improves the wall beyond its own band (−9.8% vs 3.0%)** - a genuine, if unrequired, improvement (the retention's improvement requirement is waived; this is a bonus, not what saved the candidate). `PartitionedHashJoinHashTableGrowths` (added to the bench harness's tracked `EVENTS` this iteration, tooling-only change) reads `0` on both `bin_ret_c7` and `bin_ret_c1` at the two largest shapes (B, C; `ret_c1_growths` grid) - the per-leaf sizing does not increase growths at these standard shapes.
 
 **Disposition: matrix row `warm-run-cached-distinct-estimate` → `ported`.** `tmp/port_audit/check_matrix.py` re-run: exit 0. With this, all three retained candidates (1, 5, 7) are ported; candidate 2 stays `rejected-by-measurement`; zero `approved`/`port-candidate` matrix rows remain.
+
+## Iteration 14 — Unit 2 close-out: final cumulative regression, full suites, checker
+
+**Final cumulative paired grid `g4final2` (baseline `bin_base_c1` = the Unit-1-start binary, frozen before ANY of the four candidates were implemented; candidate = the final binary after all three retained candidates, byte-identical to `bin_ret_c1` per `md5sum`; all 6 points, 2026-07-21, box load 42→44 throughout - busy but the paired protocol is designed for exactly this):**
+
+| point | base med (ms) | cand med | wall delta | band | fill base (us) | fill cand | fill delta | verdict |
+|---|---|---|---|---|---|---|---|---|
+| V | 32 | 31 | −3.1% | 18.8% | 7295 | 3507 | −51.9% | phase-improved |
+| A | 114 | 116 | +1.8% | 10.5% | 14626 | 8305 | −43.2% | phase-improved |
+| B | 2473 | 2407 | −2.7% | 3.0% | 972166 | 515285 | −47.0% | phase-improved |
+| C | 4149 | 4096 | −1.3% | 3.0% | 1233087 | 679376 | −44.9% | phase-improved |
+| D | 668 | 660 | −1.2% | 8.1% | 109899 | 47769 | −56.5% | phase-improved |
+| E | 542 | 544 | +0.4% | 6.6% | 154572 | 108834 | −29.6% | phase-improved |
+
+**No cumulative wall regression beyond the band on any point across the ENTIRE campaign** (four candidates' worth of production changes: candidate 5's lane plumbing, candidate 7's parallel teardown, candidate 1 v2's per-partition distinct cache; candidate 2 was rejected and reverted, contributing nothing). `BuildFill` drops 30-57% everywhere versus the campaign's starting point - primarily candidate 1's contribution, since 5 and 7 were measured wall/off-path neutral on this phase.
+
+**Full suites (final sanity, superset filter):** gtest `PartitionedHashJoin*:*ColumnsScatter*:*HashJoin*` → 51 tests PASSED (`test_final_close.log`). Stateless `partitioned_hash_join` → all 5 tests OK, 04603-04607 (`stateless_final_close.log`).
+
+**Checker:** `python3 tmp/port_audit/check_matrix.py` → `OK: 78 rbm + 255 phj5 commits covered by 53 rows, all dispositions valid, all evidence non-empty`, exit 0. Disposition census: 20 `already-present`, 18 `process-artifact`, 7 `not-applicable`, 4 `deferred-by-requester`, 3 `ported` (candidates 1, 5, 7), 1 `rejected-by-measurement` (candidate 2). Zero `approved`/`port-candidate` rows.
+
+**Unit 1 is closed.** Unit 2 (this iteration) confirms no regression at the cumulative level; the remaining close-out steps are REPORT.md finalization and an independent verification pass, both outside this file.

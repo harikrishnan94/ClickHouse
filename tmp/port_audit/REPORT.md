@@ -1,6 +1,6 @@
 # Port audit report — `RadixHashJoin` → `PartitionedHashJoin` (`ahj`)
 
-**Status: IN PROGRESS — Unit 1 (all four candidates) is closed; Unit 2 (final regression + independent verification) remains.**
+**Status: Unit 1 and the Unit 2 regression/suite/checker gates are GREEN and closed (WORKLOG it.14). The independent verification pass is the one remaining step before this report can be marked final and the frozen benchmark binaries deleted.**
 
 ## Retention round (GA amendment)
 
@@ -16,7 +16,8 @@ After the four measurement verdicts were reported, the requester amended the acc
 | Unit 1 candidate 2 (narrow-scatter-counters) | GREEN (closed) — `rejected-by-measurement`, not retained |
 | Unit 1 candidate 5 (pipeline-lane-identity) | GREEN — measured `rejected-by-measurement` → RETAINED, `ported` |
 | Unit 1 candidate 7 (parallel-hash-table-teardown) | GREEN — measured `rejected-by-measurement` (prediction-0) → RETAINED, `ported` |
-| Unit 2 (full regression + close-out) | in progress |
+| Unit 2 (full cumulative regression, suites, checker) | GREEN — WORKLOG it.14 |
+| Independent verification | pending |
 
 ## Pinned SHAs and bases
 
@@ -57,7 +58,9 @@ Every invocation below is copy-paste re-runnable from the repo root. Raw outputs
 | G3 c2 | `run_paired.sh c2r1 <bin_base_c1> <bin_cand_c2>`; `compare_grids.py c2r1_base c2r1_cand PartitionedHashJoinBuildHistogramMicroseconds` | histogram −0.7..−8.2%, inside band on ALL points (prereg refutation condition); no wall improvement | — | REJECTED-BY-MEASUREMENT |
 | G3 c5 (retention) | `run_paired.sh ret_c5 <bin_final> <bin_ret_c5>` (V-E) then `ret_c5r2 <bin_final> <bin_ret_c5> A E` (repeat); `compare_grids.py ... PartitionedHashJoinBuildFillMicroseconds` | round 1: V/B/C/D in-band, A/E nominally regressed (+16.8%/+15.7%) but flagged contention-suspect (load 19.9→52.1 mid-grid, fill phase flat while untouched phases inflated); round 2 (A/E only, quiet box): A +0.9%/15.8% band, E +1.1%/3.3% band — both in-band, confirming contention | ret_c5/ret_c5r2 grid logs | PORTED (no regression beyond band on any of 6 points) |
 | G3 c7 (retention) | teardown discriminator `c7_pred0_bp{1,4}.sql` (global counter, before=bin_ret_c5/after=bin_ret_c7) + `run_paired.sh ret_c7 <bin_ret_c5> <bin_ret_c7>` (V-E) | narrow discriminator ~2.5x drop (33.9ms→13.8ms avg, both runs consistent); wide discriminator inconclusive under a box-load spike to 77 (illustrative only); paired grid wall −2.1%..+0.9% vs 3.0-18.8% bands, all in-band | ret_c7 grid log | PORTED (no regression beyond band on any point) |
-| G4 (Unit 2) | *(pending — full paired grid vs Unit-1-start baseline + checker with zero approved rows)* | | | |
+| G4 (Unit 2) | `run_paired.sh g4final2 <bin_base_c1> <bin_ret_c1>` (V-E, cumulative — bin_ret_c1 is the final binary after all 3 retentions, md5-verified identical to the tip build) | no wall regression beyond band on any point (−3.1%..+1.8% vs 3.0-18.8% bands); `BuildFill` −29.6%..−56.5% everywhere vs the Unit-1-start baseline | g4final2 grid log | GREEN |
+| G4 suites (Unit 2) | gtest `PartitionedHashJoin*:*ColumnsScatter*:*HashJoin*` (`test_final_close.log`); stateless `partitioned_hash_join` (`stateless_final_close.log`) | 51 gtests PASSED; 5/5 stateless OK (04603-04607) | — | GREEN |
+| G4 checker (Unit 2) | `python3 tmp/port_audit/check_matrix.py` | `OK: 78 rbm + 255 phj5 commits covered by 53 rows, all dispositions valid, all evidence non-empty` → exit 0; 3 `ported`, 1 `rejected-by-measurement`, zero `approved`/`port-candidate` rows | — | GREEN |
 
 ## Per-candidate detail
 
