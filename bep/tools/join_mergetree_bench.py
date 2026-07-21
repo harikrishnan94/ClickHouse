@@ -59,6 +59,18 @@ EVENTS = (
     "PartitionedHashJoinLeafRows",
     "ConcurrentHashJoinBuildMicroseconds",
     "MemoryTrackerPeakUsage",
+    # Phase sub-events, printed as a `PhaseEvents` line per algorithm below the
+    # per-point table. Names absent from the binary under test parse as 0 (only
+    # PATH_ASSERTION_EVENTS existence is asserted), so this list may run ahead
+    # of the binary.
+    "PartitionedHashJoinBuildFillMicroseconds",
+    "PartitionedHashJoinBuildHistogramMicroseconds",
+    "PartitionedHashJoinBuildScatterMicroseconds",
+    "PartitionedHashJoinBuildLeafMicroseconds",
+    "PartitionedHashJoinProbeLookupMicroseconds",
+    "PartitionedHashJoinDistinctEstimateReused",
+    "HashJoinResultFilterLeftMicroseconds",
+    "HashJoinResultBuildOutputMicroseconds",
 )
 # `MemoryTrackerPeakUsage` is a `(gauge)` snapshot of the query memory tracker's
 # peak, not a `(increment)` counter like the rest of `EVENTS`.
@@ -1767,6 +1779,13 @@ def _print_point_results(
     for result in results:
         if result.detail:
             print(f"  {result.algorithm}: {result.detail}")
+    for result in results:
+        if result.measurements is None:
+            continue
+        print(
+            f"PhaseEvents {result.algorithm}: "
+            + " ".join(f"{name}={value}" for name, value in sorted(result.measurements.events.items()))
+        )
 
     if verification[0] in ("FAIL", "ERROR") or any(
         result.status != "OK" for result in results

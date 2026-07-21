@@ -31,6 +31,8 @@ python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
 
 **Noise band:** max(3%, observed run-to-run spread of the baseline at that point), where spread = (max-min)/median of the 5 timed walls. Effects inside the band are "no result".
 
+*Amendment (documented deviation, before any candidate comparison was made):* the harness prints only the median and min of the timed walls, not all samples, so (max-min)/median is not computable from its output. The operative band is `max(3%, 2 x (median - min) / median)` of the baseline invocation — symmetric-spread proxy, conservative for the acceptance direction. Recorded in WORKLOG iteration 5 before the first baseline/candidate comparison.
+
 **Acceptance (G3, includes the requester's tightening from GA):** a candidate is kept only if, on at least one grid point, BOTH (a) median whole-query wall of `partitioned_hash` improves beyond the band AND (b) the candidate's declared phase counter improves beyond the band — and NO grid point's wall regresses beyond the band. Phase counters come from the median-closest run's packet (one sample per invocation); if a phase delta lands between 1x and 2x the band, one repeat invocation settles direction before deciding. Anything else = `rejected-by-measurement`, revert, record numbers.
 
 **Environment:** 96-core box; a concurrent session is running its own bench campaign (32T) as of Phase B start. Concurrent load is recorded in the worklog per G3 run (`uptime` + `ps` snapshot before/after); the drift check above is the guard. If drift repeatedly voids pairs, escalate to the requester rather than widening the band silently.
