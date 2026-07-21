@@ -125,4 +125,21 @@ The mechanism verifiably works — `PartitionedHashJoinDistinctEstimateReused=1`
 
 **Disposition:** matrix row `warm-run-cached-distinct-estimate` → `rejected-by-measurement` (checker re-run: exit 0). Dropped diff preserved at `tmp/port_audit/dropped/c1_warm_run_distinct_cache.diff` (411 lines); all production code reverted (`git checkout --` of the 10 files + removal of test 04607); `git status` clean vs `73f1d312ee4` apart from audit artifacts. Red-green cycles consumed: 2 of 3 (both test-side). The rejection is a first-class result: the fill-phase cost this candidate removes is real but not wall-relevant at these shapes.
 
+## Iteration 7 — candidate 2 (narrow-scatter-counters): REJECTED-BY-MEASUREMENT
+
+**Implementation:** dual-shape counters in `PostBuildContext` (`narrow_counters` + `worker_hist32`/`starts32` + `histAt`/`startAt` accessors), `histogramWorker` templated over the counter type (the `UInt32` `ColumnsScatter` kernel overloads pre-existed), prefix sum writes either shape, `UInt64` fallback intact behind `accumulated_rows <= UInt32::max()` plus a `setNarrowCountersForTests` knob; gtest `WideCounterFallbackParity` (narrow vs forced-wide: probe parity, equal partitions, identical `leaf_row_counts`).
+
+**Gates:** G1 green (`build_port_narrowhist.log` exit 0). G2 green: 48 gtests incl. the new one (`test_port_narrowhist.log`), stateless 04603-04606 OK (`stateless_port_narrowhist.log`). G3 paired round `c2r1` (12 invocations, all exit 0):
+
+| point | base med (ms) | cand med | wall delta | band | hist base (us) | hist cand | hist delta |
+|---|---|---|---|---|---|---|---|
+| V | 35 | 35 | +0.0% | 11.4% | 3569 | 3277 | −8.2% |
+| A | 128 | 126 | −1.6% | 14.1% | 6609 | 6563 | −0.7% |
+| B | 2783 | 2798 | +0.5% | 3.0% | 336506 | 329984 | −1.9% |
+| C | 4789 | 4726 | −1.3% | 14.0% | 329034 | 315963 | −4.0% |
+| D | 669 | 741 | +10.8% | 9.3% | 39697 | 41538 | +4.6% |
+| E | 643 | 643 | +0.0% | 9.3% | 43705 | 42808 | −2.1% |
+
+Histogram phase inside the band on ALL points — the prereg's refutation condition verbatim; no wall improvement anywhere (D's +10.8% vs 9.3% band is moot under rejection and consistent with D's noise history). Interpretation: at these fanouts the phase is bounded by the bucket-id derivation and pid-array traffic, not the counter-array width. **Matrix row → `rejected-by-measurement`** (checker exit 0); dropped diff at `tmp/port_audit/dropped/c2_narrow_scatter_counters.diff`; code reverted, src/ clean vs HEAD. Red-green cycles: 0.
+
 **Candidate 1 implemented (working tree, commit follows green gates):** `PartitionedHashJoinEntry{distinct_keys}` in HashTablesStatistics (own cache, never clobbers `HashJoinEntry`); `StatsCollectingParams` plumbed PlannerJoins → ctor (5th arg, default `{}`) and through `clone`; ctor does the one-time `getSizeHint` (guarded: non-delegate + enabled); fill takes a new sketch-free `computeJoinRoutesForFill(cols, rows, routes)` overload on HIT (routes still stored for every row — the scatter reads them; only the sketch feed is skipped) in both the ASOF and plain branches; barrier consumes the cached count instead of `merged.estimate()`, sets `BuildStats.distinct_estimate_reused`, fires new event `PartitionedHashJoinDistinctEstimateReused`; `runPostBuildPhase` publishes the EXACT distinct count (sum of leaf map sizes — each cell is one distinct key) via `update()`. Tests: gtest `PartitionedHashJoin.DistinctEstimateCacheWarmRun` (cold: no reuse + sketch-accurate estimate; warm: reuse + exact estimate + probe parity; disabled: no reuse), stateless `04607_partitioned_hash_join_distinct_estimate_cache` (second identical query fires the reuse event on the partitioned path, results identical).

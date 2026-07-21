@@ -85,3 +85,33 @@ python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
 4. No point regresses beyond the band (the change only narrows memory traffic; same algorithm).
 
 **What refutes the port:** wall or histogram delta inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
+
+---
+
+## Candidate 5 — pipeline-lane-identity (approved; rbm 6503c7cfa9a + phj5 27872ed292a)
+
+**Pre-registered 2026-07-21, before any implementing change (written while candidate 2's G3 was in flight; implementation starts after candidate 2 closes).**
+
+**Mechanism to implement:** IJoin overloads `addBlockToJoin(block, num_rows, check_limits, build_lane)` and `joinBlock(block, lane)` with defaulted forwarding for all implementers; lane indices assigned as counters in `QueryPipelineBuilder::joinPipelinesRightLeft` and carried by `FillingRightJoinSideTransform` / `JoiningTransform` (source forms read via `git show 6503c7cfa9a` / `git show 27872ed292a`). `PartitionedHashJoin` binds its fill lane by index (replacing the `fill_mutex` + `unordered_map<thread::id, FillLane*>` lookup per fill block) and its probe scratch by index (replacing the `probe_scratch_mutex` pool acquire/release per probe block). The source branches' documented caveat (lane indices not guaranteed distinct across probe streams) must be handled collision-tolerantly.
+
+**Declared phase counters:** `PartitionedHashJoinBuildFillMicroseconds` (fill-side mutex+map removal) and `PartitionedHashJoinProbeMicroseconds` (scratch pool mutex removal); acceptance requires whichever is declared per point to improve beyond band alongside the wall.
+
+**Predictions (honest):** the removed cost is per-BLOCK (one mutex+hash lookup per fill block; one mutexed acquire/release per probe block) — at the grid's block counts this is sub-millisecond total. Best shot is E (96 threads, highest contention). REALISTIC EXPECTATION: all points inside the band on the wall ⇒ rejected-by-measurement, mirroring candidate 1's pattern. The candidate is implemented and measured because the requester approved it; the measurement is the deliverable either way.
+
+**What refutes the port:** wall or declared-phase delta inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
+
+---
+
+## Candidate 7 — parallel-hash-table-teardown (approved; rbm diff-derived, upstream-mirrored)
+
+**Pre-registered 2026-07-21, before any implementing change (implementation starts after candidate 5 closes).**
+
+**Mechanism to implement:** parallelize `~PartitionedHashJoin` teardown — per-leaf map destruction (and arena/stored-block release where separable) work-stealing over `post_build_pool` (alive in the destructor body; members destroy after it), mirroring upstream `ConcurrentHashJoin::~ConcurrentHashJoin`'s pool-parallel `clearAndShrink` and RBM's `partition_joins[p].reset()` parallelRun. Premise strengthened by the requester's base commit `d8f6f57ee65`: teardown now frees one exact-reserved allocation per leaf (up to 32768 at point B) plus per-worker arenas, all sequential today.
+
+**Instrumentation prerequisite (part of this candidate):** new ProfileEvent `PartitionedHashJoinTeardownMicroseconds` timing the destructor body, appended to the harness `EVENTS` list. Prediction 0 (settles measurability): if the event appears with nonzero value in the harness's per-query packet, teardown is inside the measured query scope and the wall criterion is decidable; if it never appears (destruction deferred past the packet), the wall criterion cannot be satisfied and the candidate resolves per the GA rule on the wall evidence as measured — reported explicitly either way.
+
+**Declared phase counter:** `PartitionedHashJoinTeardownMicroseconds` (added by this candidate; measured on BOTH sides of the pair — the baseline side gets the event via a preparatory instrumentation-only commit so the pair compares like for like).
+
+**Predictions:** teardown is largest on B/C (32768 leaf maps + large arenas); parallelizing over ~32 workers should cut the phase severalfold IF it is on the measured path. Wall: unknown magnitude — this is the one approved candidate whose target grew with the new base; measurement decides.
+
+**What refutes the port:** teardown phase or wall inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.

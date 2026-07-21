@@ -1,0 +1,290 @@
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
+index d603255fe10..0b5eb825d40 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoin.h
+@@ -172,6 +172,10 @@ public:
+     /// exercise the refine passes without a ~500M-key build.
+     void setMaxFanoutPerPassForTests(size_t value) { max_fanout_per_pass = value; }
+ 
++    /// Forces the UInt64 histogram/offset counters regardless of the build size - lets tests
++    /// exercise the wide-counter fallback (its natural trigger is a > 4.29B-row build).
++    void setNarrowCountersForTests(bool value) { narrow_counters_enabled = value; }
++
+ private:
+     /// The non-joined-rows filler for RIGHT/FULL output over the partitioned leaf maps.
+     friend class NotJoinedPartitioned;
+@@ -364,6 +368,9 @@ private:
+     /// AMAC state: the test override, the engagement decision of this build's leaf inserts
+     /// (made once, before the leaf-build wave), and the ring-growth counter.
+     bool amac_enabled = true;
++    /// Narrow 4-byte histogram/offset counters in the build scatter when the rows fit UInt32
++    /// (see `PostBuildContext::narrow_counters`); false pins the UInt64 general form.
++    bool narrow_counters_enabled = true;
+     bool amac_build_engaged = false;
+     std::atomic<UInt64> amac_ring_growths{0};
+ 
+diff --git a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp
+index c6d571e0bba..f38019cfd35 100644
+--- a/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp
++++ b/src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp
+@@ -354,6 +354,23 @@ struct PartitionedHashJoin::PostBuildContext
+     std::vector<UInt64> bucket_rows; /// per bucket
+     PaddedPODArray<UInt64> starts; /// fanout x workers
+ 
++    /// Narrow 4-byte histogram/offset counters, engaged when the accumulated build rows fit
++    /// UInt32: halves the workers x fanout counter traffic of the histogram and prefix-sum
++    /// stages (the refine passes are already 32-bit). The UInt64 arrays above stay as the
++    /// general form for larger builds; exactly one of the two shapes is allocated per build.
++    bool narrow_counters = false;
++    PaddedPODArray<UInt32> worker_hist32;
++    PaddedPODArray<UInt32> starts32;
++
++    UInt64 histAt(size_t worker, size_t bucket) const
++    {
++        return narrow_counters ? worker_hist32[worker * fanout + bucket] : worker_hist[worker * fanout + bucket];
++    }
++    UInt64 startAt(size_t bucket, size_t worker) const
++    {
++        return narrow_counters ? starts32[bucket * workers + worker] : starts[bucket * workers + worker];
++    }
++
+     /// Fixed mode: one exact uninitialized column per (key column, bucket), written cooperatively.
+     std::vector<MutableColumns> fixed_out;
+     std::vector<std::vector<char *>> fixed_base;
+@@ -691,9 +708,19 @@ bool PartitionedHashJoin::postBuildPartitioned()
+             ctx.generic_mode = true;
+     }
+ 
+-    ctx.worker_hist.resize_fill(ctx.workers * ctx.fanout, 0);
++    ctx.narrow_counters
++        = narrow_counters_enabled && accumulated_rows.load(std::memory_order_relaxed) <= std::numeric_limits<UInt32>::max();
++    if (ctx.narrow_counters)
++    {
++        ctx.worker_hist32.resize_fill(ctx.workers * ctx.fanout, 0);
++        ctx.starts32.resize(ctx.fanout * ctx.workers);
++    }
++    else
++    {
++        ctx.worker_hist.resize_fill(ctx.workers * ctx.fanout, 0);
++        ctx.starts.resize(ctx.fanout * ctx.workers);
++    }
+     ctx.bucket_rows.assign(ctx.fanout, 0);
+-    ctx.starts.resize(ctx.fanout * ctx.workers);
+     if (narrow_locators)
+         ctx.locators32.resize(ctx.fanout);
+     else
+@@ -858,27 +885,33 @@ bool PartitionedHashJoin::postBuildPartitioned()
+ 
+ void PartitionedHashJoin::histogramWorker(PostBuildContext & ctx, size_t worker) const
+ {
+-    UInt64 * hist = ctx.worker_hist.data() + worker * ctx.fanout;
+-
+-    PaddedPODArray<UInt64> hist_lanes_mem;
+-    UInt64 * hist_lanes = nullptr;
+-    if (ctx.fanout <= ColumnsScatter::HIST_INTERLEAVE_MAX_FANOUT)
++    const auto run = [&]<typename Counter>(Counter * hist)
+     {
+-        hist_lanes_mem.resize_fill(4 * ctx.fanout, 0);
+-        hist_lanes = hist_lanes_mem.data();
+-    }
++        PaddedPODArray<Counter> hist_lanes_mem;
++        Counter * hist_lanes = nullptr;
++        if (ctx.fanout <= ColumnsScatter::HIST_INTERLEAVE_MAX_FANOUT)
++        {
++            hist_lanes_mem.resize_fill(4 * ctx.fanout, 0);
++            hist_lanes = hist_lanes_mem.data();
++        }
+ 
+-    PaddedPODArray<UInt16> bucket_ids;
+-    const auto [begin, end] = ctx.blockStripe(worker, build_blocks.size());
+-    for (size_t b = begin; b < end; ++b)
+-    {
+-        const FillBlock & fill = build_blocks[b];
+-        bucket_ids.resize(fill.rows);
+-        deriveBucketIds(fill.routes, fill.skipData(), ctx.route_bits, ctx.fanout - 1, bucket_ids.data());
+-        ColumnsScatter::histogramPidChunk(bucket_ids.data(), fill.rows, hist, hist_lanes, ctx.fanout);
+-    }
+-    if (hist_lanes)
+-        ColumnsScatter::reduceHistogramLanes(hist, hist_lanes, ctx.fanout);
++        PaddedPODArray<UInt16> bucket_ids;
++        const auto [begin, end] = ctx.blockStripe(worker, build_blocks.size());
++        for (size_t b = begin; b < end; ++b)
++        {
++            const FillBlock & fill = build_blocks[b];
++            bucket_ids.resize(fill.rows);
++            deriveBucketIds(fill.routes, fill.skipData(), ctx.route_bits, ctx.fanout - 1, bucket_ids.data());
++            ColumnsScatter::histogramPidChunk(bucket_ids.data(), fill.rows, hist, hist_lanes, ctx.fanout);
++        }
++        if (hist_lanes)
++            ColumnsScatter::reduceHistogramLanes(hist, hist_lanes, ctx.fanout);
++    };
++
++    if (ctx.narrow_counters)
++        run(ctx.worker_hist32.data() + worker * ctx.fanout);
++    else
++        run(ctx.worker_hist.data() + worker * ctx.fanout);
+ }
+ 
+ void PartitionedHashJoin::allocateWorker(PostBuildContext & ctx, size_t worker) const
+@@ -893,8 +926,11 @@ void PartitionedHashJoin::allocateWorker(PostBuildContext & ctx, size_t worker)
+         UInt64 running = 0;
+         for (size_t w = 0; w < ctx.workers; ++w)
+         {
+-            ctx.starts[p * ctx.workers + w] = running;
+-            running += ctx.worker_hist[w * ctx.fanout + p];
++            if (ctx.narrow_counters)
++                ctx.starts32[p * ctx.workers + w] = static_cast<UInt32>(running);
++            else
++                ctx.starts[p * ctx.workers + w] = running;
++            running += ctx.histAt(w, p);
+         }
+         ctx.bucket_rows[p] = running;
+         if (narrow_locators)
+@@ -929,7 +965,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
+         state.locator_piece.resize(locator_piece_rows);
+     for (size_t p = 0; p < ctx.fanout; ++p)
+     {
+-        const UInt64 start = ctx.starts[p * ctx.workers + worker];
++        const UInt64 start = ctx.startAt(p, worker);
+         char * cursor = narrow_locators ? reinterpret_cast<char *>(ctx.locators32[p].data() + start)
+                                         : reinterpret_cast<char *>(ctx.locators[p].data() + start);
+         state.locator_scratch.seed(p, cursor);
+@@ -943,7 +979,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
+         state.route_scratch.init(ctx.fanout, route_swwc);
+         for (size_t p = 0; p < ctx.fanout; ++p)
+         {
+-            const UInt64 start = ctx.starts[p * ctx.workers + worker];
++            const UInt64 start = ctx.startAt(p, worker);
+             state.route_scratch.seed(p, reinterpret_cast<char *>(ctx.routes[p].data() + start));
+         }
+     }
+@@ -1002,7 +1038,7 @@ void PartitionedHashJoin::scatterWorker(PostBuildContext & ctx, size_t worker)
+             key_swwc[c] = ctx.fanout >= ColumnsScatter::SWWC_MIN_FANOUT && ColumnsScatter::widthSupportsSwwc(ctx.fixed_widths[c]);
+             state.key_scratch[c].init(ctx.fanout, key_swwc[c]);
+             for (size_t p = 0; p < ctx.fanout; ++p)
+-                state.key_scratch[c].seed(p, ctx.fixed_base[c][p] + ctx.starts[p * ctx.workers + worker] * ctx.fixed_widths[c]);
++                state.key_scratch[c].seed(p, ctx.fixed_base[c][p] + ctx.startAt(p, worker) * ctx.fixed_widths[c]);
+         }
+ 
+         /// Fused batched scatter: whole-block batches sized by `scatterBatchRowsTarget`; the
+@@ -1236,7 +1272,7 @@ void PartitionedHashJoin::refinePassWave(
+                         for (size_t w = 0; w < ctx.workers; ++w)
+                         {
+                             sources.push_back(ctx.pieces[c][w][g].get());
+-                            pid_spans.emplace_back(pids.data() + ctx.starts[g * ctx.workers + w], ctx.worker_hist[w * ctx.fanout + g]);
++                            pid_spans.emplace_back(pids.data() + ctx.startAt(g, w), ctx.histAt(w, g));
+                         }
+                     }
+                     else
+@@ -1400,12 +1436,12 @@ void PartitionedHashJoin::leafBuildWorker(PostBuildContext & ctx, size_t worker)
+             /// The pieces of one leaf, in worker order, are exactly the locator layout.
+             for (size_t piece_worker = 0; piece_worker < ctx.workers; ++piece_worker)
+             {
+-                const size_t piece_rows = ctx.worker_hist[piece_worker * ctx.fanout + leaf];
++                const size_t piece_rows = ctx.histAt(piece_worker, leaf);
+                 if (piece_rows == 0)
+                     continue;
+                 for (size_t c = 0; c < ctx.num_key_columns; ++c)
+                     section_columns[c] = ctx.pieces[c][piece_worker][leaf].get();
+-                const UInt64 piece_start = ctx.starts[leaf * ctx.workers + piece_worker];
++                const UInt64 piece_start = ctx.startAt(leaf, piece_worker);
+                 insertLeafSection(
+                     leaf_maps[leaf],
+                     section_columns,
+diff --git a/src/Interpreters/tests/gtest_partitioned_hash_join.cpp b/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
+index e4d7822a512..b8e03b11aca 100644
+--- a/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
++++ b/src/Interpreters/tests/gtest_partitioned_hash_join.cpp
+@@ -210,6 +210,54 @@ void probeAndCheck(BuiltJoin & built, size_t distinct_keys, size_t duplicates, s
+ 
+ }
+ 
++TEST(PartitionedHashJoin, WideCounterFallbackParity)
++{
++    /// The narrow UInt32 histogram/offset counters engage by default (every test build fits
++    /// UInt32); force the UInt64 fallback and check the two counter shapes agree end to end.
++    constexpr size_t distinct_keys = 200000;
++    constexpr size_t duplicates = 2;
++
++    auto narrow = buildJoin(distinct_keys, duplicates, /*num_threads=*/4);
++    probeAndCheck(narrow, distinct_keys, duplicates, /*misses=*/100);
++
++    const Block left_header = twoColumnBlock("k", "probe_id", {}, {});
++    const Block right_header = twoColumnBlock("rk", "build_id", {}, {});
++    BuiltJoin wide;
++    wide.table_join = makeTableJoin(left_header, right_header, JoinKind::Inner);
++    wide.join = std::make_shared<PartitionedHashJoin>(wide.table_join, std::make_shared<const Block>(right_header), 4);
++    wide.join->setNarrowCountersForTests(false);
++    {
++        std::vector<UInt64> keys;
++        std::vector<UInt64> ids;
++        UInt64 id = 0;
++        for (size_t i = 0; i < distinct_keys; ++i)
++        {
++            for (size_t d = 0; d < duplicates; ++d)
++            {
++                keys.push_back(i * 2654435761ULL + 1);
++                ids.push_back(id++);
++                if (keys.size() == block_rows)
++                {
++                    EXPECT_TRUE(wide.join->addBlockToJoin(twoColumnBlock("rk", "build_id", keys, ids), /*check_limits=*/true));
++                    keys.clear();
++                    ids.clear();
++                }
++            }
++        }
++        if (!keys.empty())
++            EXPECT_TRUE(wide.join->addBlockToJoin(twoColumnBlock("rk", "build_id", keys, ids), /*check_limits=*/true));
++    }
++    wide.join->onBuildPhaseFinish();
++    wide.join->runPostBuildPhase();
++    probeAndCheck(wide, distinct_keys, duplicates, /*misses=*/100);
++
++    /// Same partition plan and identical per-leaf row distribution from both counter shapes.
++    const auto narrow_stats = narrow.join->getBuildStats();
++    const auto wide_stats = wide.join->getBuildStats();
++    EXPECT_EQ(narrow_stats.partitions, wide_stats.partitions);
++    EXPECT_TRUE(narrow_stats.leaf_row_counts == wide_stats.leaf_row_counts);
++}
++
+ TEST(PartitionedHashJoin, PartitionedBuildExactReservesAndParity)
+ {
+     constexpr size_t distinct_keys = 300000;
+diff --git a/tmp/port_audit/PREREG.md b/tmp/port_audit/PREREG.md
+index 7f7ed3bf921..764ec06bba2 100644
+--- a/tmp/port_audit/PREREG.md
++++ b/tmp/port_audit/PREREG.md
+@@ -85,3 +85,33 @@ python3 bep/tools/join_mergetree_bench.py run --path /mnt/data/join_bench_data \
+ 4. No point regresses beyond the band (the change only narrows memory traffic; same algorithm).
+ 
+ **What refutes the port:** wall or histogram delta inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
++
++---
++
++## Candidate 5 — pipeline-lane-identity (approved; rbm 6503c7cfa9a + phj5 27872ed292a)
++
++**Pre-registered 2026-07-21, before any implementing change (written while candidate 2's G3 was in flight; implementation starts after candidate 2 closes).**
++
++**Mechanism to implement:** IJoin overloads `addBlockToJoin(block, num_rows, check_limits, build_lane)` and `joinBlock(block, lane)` with defaulted forwarding for all implementers; lane indices assigned as counters in `QueryPipelineBuilder::joinPipelinesRightLeft` and carried by `FillingRightJoinSideTransform` / `JoiningTransform` (source forms read via `git show 6503c7cfa9a` / `git show 27872ed292a`). `PartitionedHashJoin` binds its fill lane by index (replacing the `fill_mutex` + `unordered_map<thread::id, FillLane*>` lookup per fill block) and its probe scratch by index (replacing the `probe_scratch_mutex` pool acquire/release per probe block). The source branches' documented caveat (lane indices not guaranteed distinct across probe streams) must be handled collision-tolerantly.
++
++**Declared phase counters:** `PartitionedHashJoinBuildFillMicroseconds` (fill-side mutex+map removal) and `PartitionedHashJoinProbeMicroseconds` (scratch pool mutex removal); acceptance requires whichever is declared per point to improve beyond band alongside the wall.
++
++**Predictions (honest):** the removed cost is per-BLOCK (one mutex+hash lookup per fill block; one mutexed acquire/release per probe block) — at the grid's block counts this is sub-millisecond total. Best shot is E (96 threads, highest contention). REALISTIC EXPECTATION: all points inside the band on the wall ⇒ rejected-by-measurement, mirroring candidate 1's pattern. The candidate is implemented and measured because the requester approved it; the measurement is the deliverable either way.
++
++**What refutes the port:** wall or declared-phase delta inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
++
++---
++
++## Candidate 7 — parallel-hash-table-teardown (approved; rbm diff-derived, upstream-mirrored)
++
++**Pre-registered 2026-07-21, before any implementing change (implementation starts after candidate 5 closes).**
++
++**Mechanism to implement:** parallelize `~PartitionedHashJoin` teardown — per-leaf map destruction (and arena/stored-block release where separable) work-stealing over `post_build_pool` (alive in the destructor body; members destroy after it), mirroring upstream `ConcurrentHashJoin::~ConcurrentHashJoin`'s pool-parallel `clearAndShrink` and RBM's `partition_joins[p].reset()` parallelRun. Premise strengthened by the requester's base commit `d8f6f57ee65`: teardown now frees one exact-reserved allocation per leaf (up to 32768 at point B) plus per-worker arenas, all sequential today.
++
++**Instrumentation prerequisite (part of this candidate):** new ProfileEvent `PartitionedHashJoinTeardownMicroseconds` timing the destructor body, appended to the harness `EVENTS` list. Prediction 0 (settles measurability): if the event appears with nonzero value in the harness's per-query packet, teardown is inside the measured query scope and the wall criterion is decidable; if it never appears (destruction deferred past the packet), the wall criterion cannot be satisfied and the candidate resolves per the GA rule on the wall evidence as measured — reported explicitly either way.
++
++**Declared phase counter:** `PartitionedHashJoinTeardownMicroseconds` (added by this candidate; measured on BOTH sides of the pair — the baseline side gets the event via a preparatory instrumentation-only commit so the pair compares like for like).
++
++**Predictions:** teardown is largest on B/C (32768 leaf maps + large arenas); parallelizing over ~32 workers should cut the phase severalfold IF it is on the measured path. Wall: unknown magnitude — this is the one approved candidate whose target grew with the new base; measurement decides.
++
++**What refutes the port:** teardown phase or wall inside the band on ALL points, or any point regressing beyond the band, or any gate red after 3 cycles.
