@@ -1,6 +1,6 @@
 # Port audit report — `RadixHashJoin` → `PartitionedHashJoin` (`ahj`)
 
-**Status: Unit 1 and the Unit 2 regression/suite/checker gates are GREEN and closed (WORKLOG it.14). The independent verification pass is the one remaining step before this report can be marked final and the frozen benchmark binaries deleted.**
+**Status: FINAL. Unit 1, Unit 2, and independent verification are all GREEN (see the verdict below). The campaign is closed; the frozen benchmark binaries are deleted post-verification.**
 
 ## Retention round (GA amendment)
 
@@ -17,7 +17,7 @@ After the four measurement verdicts were reported, the requester amended the acc
 | Unit 1 candidate 5 (pipeline-lane-identity) | GREEN — measured `rejected-by-measurement` → RETAINED, `ported` |
 | Unit 1 candidate 7 (parallel-hash-table-teardown) | GREEN — measured `rejected-by-measurement` (prediction-0) → RETAINED, `ported` |
 | Unit 2 (full cumulative regression, suites, checker) | GREEN — WORKLOG it.14 |
-| Independent verification | pending |
+| Independent verification | GREEN — **SHIP** (see verdict section below) |
 
 ## Pinned SHAs and bases
 
@@ -91,3 +91,19 @@ Originally settled `rejected-by-measurement` via the pre-registered prediction-0
 ## Environment caveats
 
 A concurrent bench campaign (another session) ran on the box throughout Phase B; the paired protocol was adopted specifically to neutralize it. Load snapshots per grid run are in the `*_grid.log` files.
+
+## Independent verification — SHIP
+
+A fresh reviewer, who did not implement any of this campaign's code, independently re-derived every claim below from the actual repository state rather than trusting this report's own text (read-only; no commits made by the reviewer).
+
+**Verdict: SHIP.**
+
+1. **Checker** — PASS. `python3 tmp/port_audit/check_matrix.py` exits 0; the reviewer independently re-parsed all 53 matrix rows and got the identical breakdown (3 `ported`, 1 `rejected-by-measurement`, zero `approved`/`port-candidate`).
+2. **Build + correctness gates** — PASS. Build was already current at HEAD; the gtest filter ran 50 tests, all green, including the three tests named in this report.
+3. **Independent re-derivation of the 4 retention/rejection dispositions, plus one spot-checked `already-present` row** — PASS. Confirmed by reading the actual source, not the matrix's own evidence text: lane-indexed overloads and lock-free scratch really exist in `IJoin.h`/`JoiningTransform.*`/`QueryPipelineBuilder.cpp`/`PartitionedHashJoin.cpp`; the parallel destructor really work-steals over a locally-constructed `ThreadPool` (not the reset member), and the abandoned staged patch's dead-guard bug is real (`post_build_pool.reset()` at `PartitionedHashJoinBuild.cpp:864`, well before any destructor could run); `PartitionedHashJoinEntry{bits, total_distinct, per_partition}` and the fold/split logic in `planHashTables` are real, not stubs; every identifier from the dropped `narrow-scatter-counters` diff is absent from current source (genuinely reverted); the spot-checked `scatter-pass-fanout-cap-1024` row's file:line citation matches verbatim.
+4. **Commit ordering / GA and prereg timing** — PASS. The initial GA commit precedes all four initial candidate commits; the retention GA amendment precedes all three retention commits; every `PREREG.md` candidate section predates its implementing commit.
+5. **WORKLOG honesty** — PASS. The iteration 11/13 self-correction of the stale "candidate 1 already implemented" claim reads as genuine and undramatic, not buried.
+
+Non-blocking notes the reviewer flagged: the frozen `bin_*` benchmark binaries were still present at review time (deleted immediately after, per plan below); candidate 7's rejection commit added measurement instrumentation before the mechanism itself was implemented, which is called out in that commit's own message.
+
+Full transcript: [Independent verify port-audit campaign](bcd36b0b-3a14-4c4f-a9bd-818aae1e42fc).
