@@ -176,19 +176,19 @@ void computeRoutesAndBucketsStrided(
     }
 }
 
-/// Zip one row's BuildRef and packed key into a fused record `[ ref | key ]`.
+/// Zip one row's RowRef and packed key into a fused record `[ ref | key ]`.
 template <size_t key_width>
-void fuseKeyRefChunkFixed(const BuildRef * refs, const char * keys, size_t n, size_t record_width, char * dst)
+void fuseKeyRefChunkFixed(const RowRef * refs, const char * keys, size_t n, size_t record_width, char * dst)
 {
     for (size_t row = 0; row < n; ++row)
     {
         char * rec = dst + row * record_width;
-        __builtin_memcpy_inline(rec, &refs[row], sizeof(BuildRef));
+        __builtin_memcpy_inline(rec, &refs[row], sizeof(RowRef));
         __builtin_memcpy_inline(rec + PACKED_KEY_OFFSET_IN_RECORD, keys + row * key_width, key_width);
     }
 }
 
-void fuseKeyRefChunk(const BuildRef * refs, const char * keys, size_t n, size_t key_width, size_t record_width, char * dst)
+void fuseKeyRefChunk(const RowRef * refs, const char * keys, size_t n, size_t key_width, size_t record_width, char * dst)
 {
     switch (key_width)
     {
@@ -310,7 +310,7 @@ BuildSide::BuildSide(PartitionPlan plan_, std::vector<size_t> key_positions_, st
         acc += key_widths[col];
     }
     key_width = acc;
-    record_width = key_width + sizeof(BuildRef);
+    record_width = key_width + sizeof(RowRef);
 
     local.reserve(max_threads);
     for (size_t slot = 0; slot < max_threads; ++slot)
@@ -341,7 +341,7 @@ void BuildSide::add(const Block & block, size_t lane)
     /// (1) Zero copy: a COW shared_ptr move, no column data copied.
     Block kept = block;
     const size_t n = kept.rows();
-    chassert(n <= std::numeric_limits<UInt32>::max()); /// row_no is a 0-based UInt32 (DB::BuildRef::row_no)
+    chassert(n <= std::numeric_limits<UInt32>::max()); /// row_no is a 0-based UInt32 (DB::RowRef::row_no)
 
     if (n > 0)
     {
@@ -388,7 +388,7 @@ void BuildSide::finishBuild()
     for (const auto & up : local)
         if (up)
             num_blocks += up->blocks.size();
-    chassert(num_blocks <= DB::BuildRef::BLOCK_NO_MASK); /// block_no uses the low 31 bits (MSB is the singleton marker)
+    chassert(num_blocks <= DB::RowRef::BLOCK_NO_MASK); /// block_no uses the low 31 bits (MSB is the singleton marker)
 
     all_blocks.reserve(num_blocks);
     rows_per_block.reserve(num_blocks);
@@ -502,7 +502,7 @@ void BuildSide::scatterBlockRanges(
             }
         }
 
-        std::vector<BuildRef> refs;
+        std::vector<RowRef> refs;
         std::vector<char> packed;
         std::vector<char> fused;
         std::vector<UInt32> route(SCATTER_CHUNK_ROWS);
@@ -523,7 +523,7 @@ void BuildSide::scatterBlockRanges(
 
             refs.resize(n);
             for (size_t row = 0; row < n; ++row)
-                refs[row] = BuildRef(static_cast<UInt32>(block_idx), static_cast<UInt32>(row));
+                refs[row] = RowRef(static_cast<UInt32>(block_idx), static_cast<UInt32>(row));
 
             const char * raw_keys = multi_col
                 ? nullptr

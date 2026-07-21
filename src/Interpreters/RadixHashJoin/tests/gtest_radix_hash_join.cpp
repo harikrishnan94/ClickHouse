@@ -129,7 +129,7 @@ void collectMatchesTest(
     size_t n,
     bool pos_fits_u32,
     std::vector<UInt32> & out_left_rows,
-    std::vector<BuildRef> & out_refs)
+    std::vector<RowRef> & out_refs)
 {
     collectMatches(key_width, grouped, leaf_shift, total_bits, packed_keys, n, pos_fits_u32, out_left_rows, out_refs);
 }
@@ -180,12 +180,12 @@ void checkBuildAndProbe(
 
     const ParallelFor parallel_for = makeParallelFor(post_build_threads);
 
-    /// The build key stored at a matched BuildRef, read back from the (possibly reordered, under
+    /// The build key stored at a matched RowRef, read back from the (possibly reordered, under
     /// parallel add) accumulated blocks. The flat-row order need not match the original vector — only
     /// the matched KEY VALUES and per-probe-row match COUNTS are part of the join contract. These are
     /// independent of how the leaf tables are sized, so compute them once.
     const auto & blocks = build_side.blocks();
-    auto build_key_at = [&](BuildRef ref) -> UInt64
+    auto build_key_at = [&](RowRef ref) -> UInt64
     {
         const auto & col = typeid_cast<const ColumnUInt64 &>(*blocks[ref.blockNo()].getByPosition(0).column);
         return col.getData()[ref.rowNo()];
@@ -232,7 +232,7 @@ void checkBuildAndProbe(
             EXPECT_LE(tables.cell_alloc_count, MAX_UNIQUE_BUCKET_SIZES);
 
         std::vector<UInt32> out_rows;
-        std::vector<BuildRef> out_refs;
+        std::vector<RowRef> out_refs;
         collectMatchesTest(
             key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
             probe_keys.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
@@ -604,7 +604,7 @@ TEST(RadixHashJoin, DistinctEstimateNeverUndersizesLeaf)
     for (UInt64 i = 0; i < 20000; ++i)
         probe_miss.push_back(0x8000000000000000ULL + i);
     std::vector<UInt32> out_rows;
-    std::vector<BuildRef> out_refs;
+    std::vector<RowRef> out_refs;
     collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
@@ -660,7 +660,7 @@ TEST(RadixHashJoin, GroupedLeavesEmptyLeafSlotInitialized)
         probe_miss.push_back(0xD000000000000000ULL + i);
 
     std::vector<UInt32> out_rows;
-    std::vector<BuildRef> out_refs;
+    std::vector<RowRef> out_refs;
     collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         probe_miss.data(), probe_miss.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
@@ -712,13 +712,13 @@ TEST(RadixHashJoin, BuildProbeGroupedLeaves64ByteKeys)
         std::memcpy(packed_probe.data() + i * key_width, &probe_keys[i], sizeof(UInt64));
 
     std::vector<UInt32> out_rows;
-    std::vector<BuildRef> out_refs;
+    std::vector<RowRef> out_refs;
     collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         packed_probe.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_rows, out_refs);
 
     const auto & blocks = build_side.blocks();
-    auto build_key_at = [&](BuildRef ref) -> UInt64
+    auto build_key_at = [&](RowRef ref) -> UInt64
     {
         const auto & col = typeid_cast<const ColumnFixedString &>(*blocks[ref.blockNo()].getByPosition(0).column);
         UInt64 v = 0;
@@ -814,7 +814,7 @@ TEST_P(FusedKeyWidthFanout, BuildProbe)
 
     const ParallelFor parallel_for = makeParallelFor(2);
     LeafArrays leaves = build_side.scatterToLeaves(parallel_for, 2, /*estimate_distinct_keys=*/false);
-    EXPECT_EQ(leaves.record_width, key_width + sizeof(BuildRef));
+    EXPECT_EQ(leaves.record_width, key_width + sizeof(RowRef));
     LeafTables tables = buildLeafTables(leaves, build_side.totalRows(), key_width, 2, parallel_for);
 
     std::vector<char> packed_probe(probe_keys.size() * key_width, 0);
@@ -822,7 +822,7 @@ TEST_P(FusedKeyWidthFanout, BuildProbe)
         std::memcpy(packed_probe.data() + i * key_width, &probe_keys[i], std::min(sizeof(UInt64), key_width));
 
     std::vector<UInt32> out_left;
-    std::vector<BuildRef> out_refs;
+    std::vector<RowRef> out_refs;
     collectMatchesTest(
         key_width, tables.grouped, plan.leaf_shift, plan.total_bits,
         packed_probe.data(), probe_keys.size(), tables.max_bucket_bits <= 31, out_left, out_refs);

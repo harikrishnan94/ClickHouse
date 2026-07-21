@@ -436,12 +436,12 @@ int main(int argc, char ** argv)
     build_side.finishBuild();
 
     const UInt64 total_rows = build_side.totalRows();
-    const UInt64 key_ref_volume = total_rows * (KEY_WIDTH + sizeof(BuildRef));
+    const UInt64 key_ref_volume = total_rows * (KEY_WIDTH + sizeof(RowRef));
     fmt::print(stderr, "total_rows={} key_ref_volume={} ({:.2f} GiB)\n",
                total_rows, key_ref_volume, static_cast<double>(key_ref_volume) / (1024.0 * 1024.0 * 1024.0));
 
     /// ── Phase runners. ─────────────────────────────────────────────────────────────────────────────
-    std::vector<BuildRef> ref_scratch(args.block_rows, BuildRef(0, 0));
+    std::vector<RowRef> ref_scratch(args.block_rows, RowRef(0, 0));
 
     auto scatter_once = [&]() -> UInt64 {
         LeafArrays leaves = build_side.scatterToLeaves(parallel_for, num_workers, /*estimate_distinct_keys=*/false);
@@ -451,7 +451,7 @@ int main(int argc, char ** argv)
     auto memcpy_once = [&]() -> UInt64 {
         const auto & bl = build_side.blocks();
         const size_t nb = bl.size();
-        const size_t record_width = KEY_WIDTH + sizeof(BuildRef);
+        const size_t record_width = KEY_WIDTH + sizeof(RowRef);
         RadixJoin::Arena arena;
         std::vector<char *> bases(nb, nullptr);
         parallel_for(nb, [&](size_t b, size_t) {
@@ -468,8 +468,8 @@ int main(int argc, char ** argv)
             for (size_t row = 0; row < n; ++row)
             {
                 char * rec = base + row * record_width;
-                std::memcpy(rec, &ref_scratch[row], sizeof(BuildRef));
-                std::memcpy(rec + sizeof(BuildRef), key_src + row * KEY_WIDTH, KEY_WIDTH);
+                std::memcpy(rec, &ref_scratch[row], sizeof(RowRef));
+                std::memcpy(rec + sizeof(RowRef), key_src + row * KEY_WIDTH, KEY_WIDTH);
             }
         });
         return key_ref_volume;

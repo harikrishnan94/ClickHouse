@@ -121,7 +121,7 @@ struct BuildPolicy
     PosT mask;             /// num_buckets - 1 (hoisted)
     const LeafArrays * la = nullptr;
     size_t leaf = 0;
-    DB::Arena & arena;     /// this build worker's arena for BuildRefList Batch nodes
+    DB::Arena & arena;     /// this build worker's arena for RowRefList Batch nodes
     bool saw_dup = false;
     /// First-occurrence claims placed so far, and whether this leaf was undersized. The distinct-key
     /// ESTIMATE that sized this leaf can under-count (it estimates distinct low-32 hashes, but two distinct
@@ -157,7 +157,7 @@ struct BuildPolicy
         if (overflowed) /// undersized leaf: stop placing keys and let the ring drain; the group is rebuilt.
             return true;
         char * cell = cells + static_cast<size_t>(s.pos) * stride;
-        auto * list = reinterpret_cast<DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        auto * list = reinterpret_cast<DB::RowRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         const void * row_key = la->keyAt(leaf, s.row);
         if (list->word == 0) /// fresh read: empty cell -> claim it for this key (first occurrence)
         {
@@ -169,14 +169,14 @@ struct BuildPolicy
                 overflowed = true;
                 return true;
             }
-            __builtin_memcpy_inline(cell + sizeof(DB::BuildRefList), row_key, key_width);
-            list->insert(la->refAt(leaf, s.row).word(), arena);
+            __builtin_memcpy_inline(cell + sizeof(DB::RowRefList), row_key, key_width);
+            list->insert(la->refAt(leaf, s.row).encode(), arena);
             ++claimed;
             return true; /// done
         }
-        if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), row_key, key_width) == 0)
+        if (__builtin_memcmp(cell + sizeof(DB::RowRefList), row_key, key_width) == 0)
         {
-            list->insert(la->refAt(leaf, s.row).word(), arena); /// duplicate key: append (allocates a Batch on the first dup)
+            list->insert(la->refAt(leaf, s.row).encode(), arena); /// duplicate key: append (allocates a Batch on the first dup)
             saw_dup = true;
             return true; /// done
         }
@@ -189,7 +189,7 @@ struct BuildPolicy
 
 /// Fill one non-empty leaf by inserting all its scattered (key, ref) rows via the shared adaptive AMAC
 /// ring. The bucket is the low 32 bits of the key's hash, recomputed here from the key (no hash is stored
-/// on the leaves). A duplicate appends to the cell's BuildRefList (the first duplicate of a key allocates
+/// on the leaves). A duplicate appends to the cell's RowRefList (the first duplicate of a key allocates
 /// one Batch node from this worker's `arena`).
 /// Returns whether the leaf overflowed — i.e. its distinct-estimate sizing was too small to hold every
 /// distinct key with a spare empty cell. `buildLeafTables` rebuilds such a group with safe row-count sizing.
@@ -296,12 +296,12 @@ struct OutPtrs
 {
     UInt32 * row_cur;
     UInt32 * row_end;
-    BuildRef * ref_cur;
+    RowRef * ref_cur;
 };
 
 /// Cold: a multi-row (duplicate) key overflowed the n-match reservation -> grow the buffers ~2x and re-fetch
 /// the cursors. Only reachable in a build that has duplicates.
-[[gnu::noinline]] inline OutPtrs growOutPtrs(std::vector<UInt32> & rows, std::vector<BuildRef> & refs, size_t begin, OutPtrs p)
+[[gnu::noinline]] inline OutPtrs growOutPtrs(std::vector<UInt32> & rows, std::vector<RowRef> & refs, size_t begin, OutPtrs p)
 {
     const size_t used = static_cast<size_t>(p.row_cur - rows.data());
     const size_t new_cap = used + (used - begin) + 64;
@@ -310,18 +310,18 @@ struct OutPtrs
     return {rows.data() + used, rows.data() + new_cap, refs.data() + used};
 }
 
-/// Cold: a multi-row key (duplicate build) -> iterate its whole BuildRefList, emitting one ref per build row
+/// Cold: a multi-row key (duplicate build) -> iterate its whole RowRefList, emitting one ref per build row
 /// (growing the buffers as needed). Out of line so the ring's `step` stays small enough to inline.
 [[gnu::noinline]] inline OutPtrs
-emitMatchListCold(std::vector<UInt32> & rows, std::vector<BuildRef> & refs, size_t begin, OutPtrs p, UInt32 row, const char * cell)
+emitMatchListCold(std::vector<UInt32> & rows, std::vector<RowRef> & refs, size_t begin, OutPtrs p, UInt32 row, const char * cell)
 {
-    const auto & list = *reinterpret_cast<const DB::BuildRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto & list = *reinterpret_cast<const DB::RowRefList *>(cell); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     for (auto it = list.begin(); it.ok(); ++it)
     {
         if (p.row_cur == p.row_end)
             p = growOutPtrs(rows, refs, begin, p);
         *p.row_cur++ = row;
-        *p.ref_cur++ = BuildRef::fromWord(*it);
+        *p.ref_cur++ = RowRef(refWordBlockNo(*it), refWordRowNo(*it));
     }
     return p;
 }
@@ -348,7 +348,7 @@ void collectMatchesPipelined(
     const char * keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,
-    std::vector<BuildRef> & out_refs)
+    std::vector<RowRef> & out_refs)
 {
     static_assert(std::is_same_v<PosT, UInt32> || std::is_same_v<PosT, UInt64>, "PosT must be UInt32 or UInt64");
     static constexpr size_t cell_stride = leafCellBytes(key_width);
@@ -365,7 +365,7 @@ void collectMatchesPipelined(
     out_refs.resize(out_begin + n);
     UInt32 * row_cur = out_left_rows.data() + out_begin;
     UInt32 * row_end = out_left_rows.data() + out_begin + n;
-    BuildRef * ref_cur = out_refs.data() + out_begin;
+    RowRef * ref_cur = out_refs.data() + out_begin;
 
     /// Hot singleton emit on register locals; the (cold) grow goes through the by-value helper so these
     /// pointers stay in registers across the ring sweep.
@@ -379,7 +379,7 @@ void collectMatchesPipelined(
             ref_cur = p.ref_cur;
         }
         *row_cur++ = row;
-        *ref_cur++ = BuildRef::fromWord(ref_word);
+        *ref_cur++ = RowRef(refWordBlockNo(ref_word), refWordRowNo(ref_word));
     };
 
     struct PipelineSlot
@@ -423,10 +423,10 @@ void collectMatchesPipelined(
         __builtin_memcpy(&word, cell, sizeof(UInt64)); /// the dependent miss, prefetched on the prev visit
         if (word == 0)
             return true; /// empty cell: this probe row has no match
-        if (__builtin_memcmp(cell + sizeof(DB::BuildRefList), keys + static_cast<size_t>(s.row) * key_width, key_width) == 0)
+        if (__builtin_memcmp(cell + sizeof(DB::RowRefList), keys + static_cast<size_t>(s.row) * key_width, key_width) == 0)
         {
             /// Key match. Singleton (the common case): the word IS the encoded ref — emit with no 2nd
-            /// load. Multi-row key (rare, duplicate build): iterate the whole BuildRefList via the out-of-
+            /// load. Multi-row key (rare, duplicate build): iterate the whole RowRefList via the out-of-
             /// line cold helper (keeps `step` small enough to inline; pointers passed/returned by value).
             if (refWordIsInline(word))
             {
@@ -498,7 +498,7 @@ void collectMatchesPipelinedDispatch(
     const char * keys,
     size_t n,
     std::vector<UInt32> & out_left_rows,
-    std::vector<BuildRef> & out_refs)
+    std::vector<RowRef> & out_refs)
 {
 #define RHJ_PIPE_DISPATCH(W) \
     case W: \
@@ -559,7 +559,7 @@ LeafTables buildLeafTables(
     const size_t num_leaves = leaf_arrays.num_leaves;
     const UInt32 total_bits = num_leaves <= 1 ? 0u : static_cast<UInt32>(std::countr_zero(num_leaves));
 
-    /// One arena per build worker for the BuildRefList Batch nodes. Each worker only ever allocates from
+    /// One arena per build worker for the RowRefList Batch nodes. Each worker only ever allocates from
     /// its own arena (single-writer, no locking); the arenas live in `out` so the nodes outlive the
     /// probe. Constructed up front so the worker index maps to a fixed, stable slot.
     out.build_arenas.resize(num_workers);
@@ -690,7 +690,7 @@ void collectMatches(
     size_t n,
     bool pos_fits_u32,
     std::vector<UInt32> & out_left_rows,
-    std::vector<BuildRef> & out_refs)
+    std::vector<RowRef> & out_refs)
 {
     const auto * keys = static_cast<const char *>(packed_keys);
 

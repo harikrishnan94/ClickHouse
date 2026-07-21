@@ -10,17 +10,17 @@
 namespace DB::RadixJoin
 {
 
-/// The build-row reference is the shared `DB::BuildRef` (see Interpreters/RowRefs.h): an 8-byte
+/// The build-row reference is the shared `DB::RowRef` (see Interpreters/RowRefs.h): an 8-byte
 /// `{ row_no, block_no }` whose `block_no` MSB is the inline/singleton flag (set by the ctor, so every
 /// RadixHashJoin ref carries it). Callers index with `ref.blockNo()` / `ref.rowNo()`, which mask the
-/// flag; a leaf cell head is a `DB::BuildRefList` and an empty cell is the all-zero word (see LeafTable).
-using DB::BuildRef;
+/// flag; a leaf cell head is a `DB::RowRefList` and an empty cell is the all-zero word (see LeafTable).
+using DB::RowRef;
 
 /** Fixed-width, fused-record radix scatter for the build side.
   *
   * The build never moves payload — it only partitions one interleaved record per row into per-leaf
-  * arrays: `[ BuildRef (8 B) | packed key (key_width B) ]` (ref-first, matching the leaf cell layout
-  * `[ BuildRefList word | key ]`). Each record is routed by `part = (route >> shift) & mask` computed
+  * arrays: `[ RowRef (8 B) | packed key (key_width B) ]` (ref-first, matching the leaf cell layout
+  * `[ RowRefList word | key ]`). Each record is routed by `part = (route >> shift) & mask` computed
   * from the key sub-field. One output stream per partition halves the simultaneously-written output
   * pages versus separate key/ref columns (fewer dTLB store page walks at high fanout); both fields are
   * needed per row so there is no space waste.

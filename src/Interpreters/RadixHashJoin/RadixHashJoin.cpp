@@ -197,7 +197,7 @@ struct ProbeScratch
 
     /// Matches (one (left_row, ref) per match), in probe order.
     std::vector<UInt32> left_rows;
-    std::vector<RadixJoin::BuildRef> refs;
+    std::vector<RadixJoin::RowRef> refs;
 
     /// Counting sort of the matches by build block (only when `grouped`).
     bool grouped = false;                       /// true -> use the sorted arrays + runs; false -> probe order
@@ -277,7 +277,7 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
     const size_t num_blocks = ctx.block_base.size() - 1;
 
     s.block_start.assign(num_blocks + 1, 0);
-    for (const RadixJoin::BuildRef ref : s.refs)
+    for (const RadixJoin::RowRef ref : s.refs)
         ++s.block_start[ref.blockNo() + 1];
     for (size_t b = 1; b <= num_blocks; ++b)
         s.block_start[b] += s.block_start[b - 1];
@@ -287,7 +287,7 @@ void sortMatchesByBlock(const ProbeContext & ctx, ProbeScratch & s)
     s.sorted_row_no.resize(out_rows);
     for (size_t m = 0; m < out_rows; ++m)
     {
-        const RadixJoin::BuildRef ref = s.refs[m];
+        const RadixJoin::RowRef ref = s.refs[m];
         const UInt64 pos = s.cursor[ref.blockNo()]++;
         s.sorted_left_rows[pos] = s.left_rows[m];
         s.sorted_row_no[pos] = ref.rowNo();
@@ -424,16 +424,16 @@ void gatherLeft(const OutputPlan & plan, const Block & block, ProbeScratch & s, 
 template <typename T>
 void gatherNumericDirect(
     IColumn & out_col,
-    const ColumnsInfo * const * stored_columns,
+    const StoredBlock * const * stored_columns,
     size_t col_idx,
-    const RadixJoin::BuildRef * refs,
+    const RadixJoin::RowRef * refs,
     size_t out_rows)
 {
     auto & dst = assert_cast<ColumnVector<T> &>(out_col).getData();
     dst.resize(out_rows);
     for (size_t i = 0; i < out_rows; ++i)
     {
-        const RadixJoin::BuildRef ref = refs[i];
+        const RadixJoin::RowRef ref = refs[i];
         const IColumn * src = stored_columns[ref.blockNo()]->columns[col_idx].get();
         dst[i] = assert_cast<const ColumnVector<T> *>(src)->getData()[ref.rowNo()];
     }
@@ -445,9 +445,9 @@ void gatherNumericDirect(
 /// `right_sample_block`; `stored_columns[block_no]->columns[col_idx]` is the build column.
 void gatherPayloadDirect(
     const PayOut & po,
-    const ColumnsInfo * const * stored_columns,
+    const StoredBlock * const * stored_columns,
     size_t col_idx,
-    const RadixJoin::BuildRef * refs,
+    const RadixJoin::RowRef * refs,
     size_t out_rows,
     ColumnsWithTypeAndName & out)
 {
@@ -471,7 +471,7 @@ void gatherPayloadDirect(
             col->reserve(out_rows);
             for (size_t i = 0; i < out_rows; ++i)
             {
-                const RadixJoin::BuildRef ref = refs[i];
+                const RadixJoin::RowRef ref = refs[i];
                 const IColumn * src = stored_columns[ref.blockNo()]->columns[col_idx].get();
                 col->insertFrom(*src, ref.rowNo());
             }
@@ -483,11 +483,11 @@ void gatherPayloadDirect(
 /// Two paths, chosen in probeBlock: the duplicate-free direct typed gather (probe order), or, when the
 /// build had duplicates, gathering one build block at a time over the sorted runs (one IColumn::index +
 /// one insertRangeFrom per block). Neither path does per-row virtual dispatch on a numeric payload.
-/// `stored_columns` resolves a `BuildRef::blockNo()` to the stored block's `ColumnsInfo`;
+/// `stored_columns` resolves a `RowRef::blockNo()` to its `StoredBlock`;
 /// `payload_right_indexes[po.payload_idx]` is the payload column's position in `right_sample_block`.
 void gatherRight(
     const OutputPlan & plan,
-    const ColumnsInfo * const * stored_columns,
+    const StoredBlock * const * stored_columns,
     const std::vector<size_t> & payload_right_indexes,
     ProbeScratch & s,
     ColumnsWithTypeAndName & out)
@@ -546,12 +546,12 @@ struct RadixHashJoin::State
     RadixJoin::LeafTables leaf_tables;
 
     /// Build-block payload resolution, shared with the other join algorithms (see RowRefs.h). Each stored
-    /// right block is registered (in accumulation order) so `BuildRef::blockNo()` indexes `blocksData()`
-    /// directly. `columns_infos` owns the `ColumnsInfo` objects (stable addresses; the index holds raw
-    /// `const ColumnsInfo *`). `payload_right_indexes[payload_idx]` is the payload column's position in
+    /// right block is registered (in accumulation order) so `RowRef::blockNo()` indexes `blocksData()`
+    /// directly. `stored_blocks_owned` owns the `StoredBlock` objects (stable addresses; the index holds raw
+    /// `const StoredBlock *`). `payload_right_indexes[payload_idx]` is the payload column's position in
     /// `right_sample_block` (computed once in the constructor), mirroring CHJ's `right_indexes`.
     StoredColumnsIndexPtr stored_columns_index;
-    std::vector<std::unique_ptr<ColumnsInfo>> columns_infos;
+    std::vector<std::unique_ptr<StoredBlock>> stored_blocks_owned;
     std::vector<size_t> payload_right_indexes;
 
     std::vector<UInt64> block_base;
@@ -657,7 +657,7 @@ RadixHashJoin::RadixHashJoin(
         state->payload_output_names.push_back(table_join->renamedRightColumnName(col.name));
 
     /// Resolve each payload column's position in `right_sample_block` once. Stored blocks are normalised
-    /// to right-sample column order, so this position indexes the block's `ColumnsInfo::columns` directly.
+    /// to right-sample column order, so this position indexes the block's `StoredBlock::columns` directly.
     /// `payload_idx` (the position in `columns_to_add`) indexes this vector.
     state->payload_right_indexes.reserve(state->columns_to_add.columns());
     for (const auto & col : state->columns_to_add)
@@ -802,18 +802,18 @@ void RadixHashJoin::runPostBuild()
             getHashTablesStatistics<RadixHashJoinEntry>().update({.distinct_keys = distinct_total}, stats_collecting_params);
     }
 
-    /// Register each stored right block (in accumulation order) so a `BuildRef::blockNo()` indexes
+    /// Register each stored right block (in accumulation order) so a `RowRef::blockNo()` indexes
     /// `blocksData()` directly. `add` returns size()-1, so block_no == build index (the chassert below).
     /// Serial, on this thread — charged to the build phase to match the parallel sections above.
     {
         ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::RadixHashJoinBuildMicroseconds);
         state->stored_columns_index = std::make_shared<StoredColumnsIndex>();
-        state->columns_infos.reserve(state->build_side->blocks().size());
+        state->stored_blocks_owned.reserve(state->build_side->blocks().size());
         for (const auto & block : state->build_side->blocks())
         {
-            state->columns_infos.emplace_back(std::make_unique<ColumnsInfo>(block.getColumns()));
-            const UInt32 bn = state->stored_columns_index->add(state->columns_infos.back().get()); /// NOLINT(clang-analyzer-deadcode.DeadStores)
-            chassert(bn + 1 == state->columns_infos.size()); /// block_no == build index (bn read only in the chassert)
+            state->stored_blocks_owned.emplace_back(std::make_unique<StoredBlock>(block.getColumns()));
+            const UInt32 bn = state->stored_columns_index->add(state->stored_blocks_owned.back().get()); /// NOLINT(clang-analyzer-deadcode.DeadStores)
+            chassert(bn + 1 == state->stored_blocks_owned.size()); /// block_no == build index (bn read only in the chassert)
         }
 
         state->total_bytes = state->leaf_tables.arena.bytesReserved();
@@ -894,7 +894,7 @@ JoinResultPtr RadixHashJoin::joinBlock(Block block, size_t lane)
     gatherLeft(st.out_plan, block, s, out);
     /// `stored_columns_index` is populated only by runPostBuild; on the header / empty-probe path there
     /// are no runs/refs, so gatherRight never dereferences the (null) base — pass it through unguarded.
-    const ColumnsInfo * const * stored_columns
+    const StoredBlock * const * stored_columns
         = st.stored_columns_index ? st.stored_columns_index->blocksData() : nullptr;
     gatherRight(st.out_plan, stored_columns, st.payload_right_indexes, s, out);
 

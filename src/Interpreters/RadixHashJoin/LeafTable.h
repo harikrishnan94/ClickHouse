@@ -20,21 +20,21 @@ namespace DB::RadixJoin
 
 /** One open-addressing, linear-probe hash table per leaf. A cell is laid out as
   *
-  *     [ BuildRefList word (8 B) | packed key (key_width B) ]
+  *     [ RowRefList word (8 B) | packed key (key_width B) ]
   *
-  * so the cell head is a `DB::BuildRefList` (see Interpreters/RowRefs.h): the unified ALL-join row-ref
-  * value. A unique key holds the build row inline (the word IS the encoded singleton `BuildRef`); the
-  * first duplicate of a key allocates a `BuildRefList::Batch` node from the owning build worker's arena
+  * so the cell head is a `DB::RowRefList` (see Interpreters/RowRefs.h): the unified ALL-join row-ref
+  * value. A unique key holds the build row inline (the word IS the encoded singleton `RowRef`); the
+  * first duplicate of a key allocates a `RowRefList::Batch` node from the owning build worker's arena
   * and the word becomes a count-tagged pointer to it. A probe match reads the cell word and either
   * emits the one inline ref directly (the common single-row fast path, NO extra load) or iterates the
   * list.
   *
-  * Empty sentinel: the cell word is 0 (`BuildRefList::word == 0`). The cell array is carved from a
+  * Empty sentinel: the cell word is 0 (`RowRefList::word == 0`). The cell array is carved from a
   * (non-zeroed) Arena and `memset` to 0 by the worker that owns the leaf, so every cell starts empty
   * with no separate init pass. (A valid inline ref always has bit 63 set — the singleton flag — so it
   * can never collide with the all-zero empty word.)
   *
-  * Singleton fast path: a unique key's cell word is the encoded singleton `BuildRef` (bit 63 set), so a
+  * Singleton fast path: a unique key's cell word is the encoded singleton `RowRef` (bit 63 set), so a
   * probe emits it with NO node access — saving a likely LLC/DRAM miss for the common single-row keys
   * even in a build that also contains duplicates. The Batch node is allocated only when the first
   * duplicate of a key arrives.
@@ -96,10 +96,10 @@ struct GroupedLeaves
     std::vector<LeafHT> groups; /// one descriptor per group; LeafHT{} (cells null) == empty group
 };
 
-/// Cell stride for a key of `key_width` bytes (BuildRefList head word + key).
+/// Cell stride for a key of `key_width` bytes (RowRefList head word + key).
 constexpr size_t leafCellBytes(size_t key_width) noexcept
 {
-    return sizeof(DB::BuildRefList) + key_width;
+    return sizeof(DB::RowRefList) + key_width;
 }
 
 /// Bucket index in [0, num_buckets): the low bits of the hash's low word. `num_buckets` is a non-zero
@@ -110,11 +110,11 @@ inline UInt64 leafBucket(UInt32 low_hash, UInt64 num_buckets) noexcept
 }
 
 /// All the built leaf tables; owns the arena backing the cells plus the per-worker arenas backing the
-/// BuildRefList Batch nodes (all read-only for the whole probe).
+/// RowRefList Batch nodes (all read-only for the whole probe).
 struct LeafTables
 {
     GroupedLeaves grouped;
-    /// Per-build-worker arenas holding the BuildRefList Batch nodes. One per worker (single-writer
+    /// Per-build-worker arenas holding the RowRefList Batch nodes. One per worker (single-writer
     /// during build); their stable addresses must outlive the probe, hence they live here.
     std::vector<std::unique_ptr<DB::Arena>> build_arenas;
     /// Set during build the first time any key gets a duplicate row. Selects the grouped probe path.
@@ -158,7 +158,7 @@ struct LeafTables
 };
 
 /// Build every leaf table from a finished `LeafArrays`. Cell arrays are allocated, 0-initialised and
-/// filled in parallel via `parallel_for`; the BuildRefList Batch nodes are allocated from the per-worker
+/// filled in parallel via `parallel_for`; the RowRefList Batch nodes are allocated from the per-worker
 /// `build_arenas` (`num_workers` of them, indexed by the unit callback's dense `worker` id under a
 /// single-writer invariant). `num_workers` must match the worker-id space of `parallel_for`.
 LeafTables buildLeafTables(
@@ -168,12 +168,12 @@ LeafTables buildLeafTables(
     size_t num_workers,
     const ParallelFor & parallel_for);
 
-/// Probe `n` left rows (their packed keys) against the leaf tables, appending one `(left_row, BuildRef)`
+/// Probe `n` left rows (their packed keys) against the leaf tables, appending one `(left_row, RowRef)`
 /// per match to the output buffers (singleton keys emit one ref; multi-row keys iterate the whole
-/// BuildRefList). The 32-bit `HashT` hash of each key is computed internally, inside the probe pipeline, so its
+/// RowRefList). The 32-bit `HashT` hash of each key is computed internally, inside the probe pipeline, so its
 /// latency overlaps with the in-flight cell misses (no precomputed hash array is passed in).
 /// The probe is the AMAC ring pipeline for every key width and both duplicate-free and duplicate builds
-/// (singletons emit inline; multi-row keys iterate their BuildRefList). `pos_fits_u32` selects the UInt32
+/// (singletons emit inline; multi-row keys iterate their RowRefList). `pos_fits_u32` selects the UInt32
 /// bucket-index ring slot (pass `LeafTables::max_bucket_bits <= 31`); when false a UInt64-index slot keeps a
 /// >2^31-bucket group correct.
 void collectMatches(
@@ -185,6 +185,6 @@ void collectMatches(
     size_t n,
     bool pos_fits_u32,
     std::vector<UInt32> & out_left_rows,
-    std::vector<BuildRef> & out_refs);
+    std::vector<RowRef> & out_refs);
 
 }

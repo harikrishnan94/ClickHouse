@@ -63,7 +63,7 @@ using namespace DB::RadixJoin;
 /// One generated block carries this many rows by default (close to the server's default max_block_size).
 constexpr UInt64 DEFAULT_BLOCK_ROWS = 65536;
 /// The two narrow build columns the scatter and the memcpy baseline both move: the packed key and the
-/// 8-byte BuildRef. Single UInt64 key => key_width == 8.
+/// 8-byte RowRef. Single UInt64 key => key_width == 8.
 constexpr size_t KEY_WIDTH = 8;
 
 void pinToCore(int core)
@@ -226,7 +226,7 @@ ScatteredBlocks scatterWithSelector(size_t num_shards, const IColumn::Selector &
 /// ── The two RHJ final batches (the only operations of interest) ──────────────────────────────────────
 
 /// One interface over the two RHJ final batches; both run over the same finished BuildSide and return the
-/// key+ref bytes moved (the common numerator = total_rows * (key_width + sizeof(BuildRef))).
+/// key+ref bytes moved (the common numerator = total_rows * (key_width + sizeof(RowRef))).
 struct Batch
 {
     virtual ~Batch() = default;
@@ -256,18 +256,18 @@ struct ScatterBatch : Batch
 };
 
 /// RHJ memcpy baseline: carve one fused-record buffer per block exactly like allocExactPartitions
-/// (BuildSide.cpp) — line-aligned, line-padded, ref-first `[ BuildRef | key ]` — and memcpy each
-/// block's keys and generated BuildRef scratch into it. No routing: the lower-bound sequential copy the
+/// (BuildSide.cpp) — line-aligned, line-padded, ref-first `[ RowRef | key ]` — and memcpy each
+/// block's keys and generated RowRef scratch into it. No routing: the lower-bound sequential copy the
 /// scatter is measured against.
 struct MemcpyBatch : Batch
 {
     BuildSide & build_side;
     UInt64 key_ref_volume;
-    std::vector<BuildRef> ref_scratch; /// read-only; content irrelevant for a copy-bandwidth measurement
+    std::vector<RowRef> ref_scratch; /// read-only; content irrelevant for a copy-bandwidth measurement
 
     MemcpyBatch(BuildSide & bs, UInt64 vol, size_t max_block_rows) : build_side(bs), key_ref_volume(vol)
     {
-        ref_scratch.assign(max_block_rows, BuildRef(0, 0));
+        ref_scratch.assign(max_block_rows, RowRef(0, 0));
     }
 
     const char * name() const override { return "memcpy"; }
@@ -276,7 +276,7 @@ struct MemcpyBatch : Batch
     {
         const auto & blocks = build_side.blocks();
         const size_t num_blocks = blocks.size();
-        const size_t record_width = KEY_WIDTH + sizeof(BuildRef);
+        const size_t record_width = KEY_WIDTH + sizeof(RowRef);
 
         RadixJoin::Arena arena;
         std::vector<char *> bases(num_blocks, nullptr);
@@ -301,8 +301,8 @@ struct MemcpyBatch : Batch
             for (size_t row = 0; row < n; ++row)
             {
                 char * rec = base + row * record_width;
-                std::memcpy(rec, &ref_scratch[row], sizeof(BuildRef));
-                std::memcpy(rec + sizeof(BuildRef), key_src + row * KEY_WIDTH, KEY_WIDTH);
+                std::memcpy(rec, &ref_scratch[row], sizeof(RowRef));
+                std::memcpy(rec + sizeof(RowRef), key_src + row * KEY_WIDTH, KEY_WIDTH);
             }
             total_bytes.fetch_add(n * record_width, std::memory_order_relaxed);
         });
@@ -477,7 +477,7 @@ int main(int argc, char ** argv)
     const double t_hist = nowMs(hist_t0, std::chrono::steady_clock::now());
 
     const UInt64 total_rows = build_side.totalRows();
-    const UInt64 key_ref_volume = total_rows * (KEY_WIDTH + sizeof(BuildRef));
+    const UInt64 key_ref_volume = total_rows * (KEY_WIDTH + sizeof(RowRef));
 
     /// ── T_dispatch: the CHJ zero-copy dispatch replica over all retained blocks (COW retain + selector +
     /// ScatteredBlocks), with a sink to defeat DCE. Repeatable.

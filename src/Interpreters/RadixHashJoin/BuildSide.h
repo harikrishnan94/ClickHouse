@@ -17,12 +17,12 @@
 namespace DB::RadixJoin
 {
 
-/// Byte offset of the packed key within a fused scatter record `[ BuildRef | key ]` (ref-first, matching
-/// the leaf cell layout `[ BuildRefList word | key ]`).
-inline constexpr size_t PACKED_KEY_OFFSET_IN_RECORD = sizeof(BuildRef);
+/// Byte offset of the packed key within a fused scatter record `[ RowRef | key ]` (ref-first, matching
+/// the leaf cell layout `[ RowRefList word | key ]`).
+inline constexpr size_t PACKED_KEY_OFFSET_IN_RECORD = sizeof(RowRef);
 
 /** The per-leaf output of the deferred scatter: for each leaf, a dense fused-record array
-  * (`leaf_rows[L]` elements of `record_width` bytes — ref-first `[ BuildRef | packed key ]`),
+  * (`leaf_rows[L]` elements of `record_width` bytes — ref-first `[ RowRef | packed key ]`),
   * carved exactly once and 64-byte-aligned. `keyAt(L,i)` and `refAt(L,i)` address the two sub-fields.
   * An empty leaf has a null base. The leaf hash table (LeafTable) is built from these; afterwards the
   * arrays are dropped. Move-only (owns its arena).
@@ -31,7 +31,7 @@ struct LeafArrays
 {
     size_t num_leaves = 0;
     size_t key_width = 0;
-    size_t record_width = 0; /// key_width + sizeof(BuildRef)
+    size_t record_width = 0; /// key_width + sizeof(RowRef)
 
     std::vector<void *> record_base; /// num_leaves; null for an empty leaf
     std::vector<UInt64> leaf_rows;   /// num_leaves; == global histogram
@@ -52,15 +52,15 @@ struct LeafArrays
         return static_cast<const char *>(record_base[leaf]) + i * record_width + PACKED_KEY_OFFSET_IN_RECORD;
     }
 
-    const BuildRef & refAt(size_t leaf, size_t i) const
+    const RowRef & refAt(size_t leaf, size_t i) const
     {
-        return *reinterpret_cast<const BuildRef *>( /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        return *reinterpret_cast<const RowRef *>( /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             static_cast<const char *>(record_base[leaf]) + i * record_width);
     }
 };
 
 /** The build side: accumulate right blocks (zero copy), count rows per leaf, then scatter the fused
-  * `[ BuildRef | packed key ]` of every row into the per-leaf arrays. Three phases:
+  * `[ RowRef | packed key ]` of every row into the per-leaf arrays. Three phases:
   *
   *   add(block, lane)   per build lane, lock-free. COW-move the block into this lane's store, and
   *                      route each row by recomputing its packed-key hash (the route word = the high
