@@ -1,0 +1,78 @@
+0081cf97b24 Add hash join bandwidth model benchmarks
+e187c681bd8 Enhance hash join benchmarks with fingerprinting support
+edbafd0ebf1 Refactor hash join construction in benchmarks to use default query settings
+265f84e53c3 Enhance ConcurrentHashJoinBench to support statistics collection
+2fc85984ba2 Refactor hash join bandwidth model to improve thread handling and block generation
+0efde737bb0 Refine scatterPass function in hash join benchmarks to improve memory management.
+d374cc043a7 Update hash join bandwidth model to refine partitioning logic and improve memory budget calculations. Adjusted partition working set calculations to include both hash table and build rows, enhancing performance metrics in benchmark outputs.
+e6a3551c2f6 Enhance hash join profiling by adding new metrics for probe phases
+a528d9c64a6 Fix I9, I10, M2, I7 (exec), I11a, I11b, M3, M1: scatter internals overhaul
+d961cd0ba04 Fix C1 (RPHJ half), C3, I1, M9, C2 (makeTableJoin half): reserve, dynamic scheduling, and symmetric teardown in radix join bench
+f681884d985 Fix C1 (kernel half), C2, C3, C4, I4, I5, I6, I7 (model half), I8, I15, M4, M5, M10, M1: model, kernels, and driver fixes for hash_join_bandwidth_model
+b99401bfbc0 Refine hash join bandwidth model and improve memory management
+74dd2f55e1f Refine hash join scatter implementation to optimize memory usage and routing efficiency.
+0709d550de9 Add fraction crossover and BEP wave sweep functions to hash join bandwidth model
+4938e9bdad7 Port RadixHashJoin component library from phj5-real (U1 seam a)
+fe8263f0e9a Add ColumnScatter: production radix scatter kernels + barrier wave loop (U1 seam b)
+40b23b1aa9d bep: RADIX-JOIN-V1 audit trail - U0 discovery + U1 prereg/methodology/reviews/report
+6503c7cfa9a Add build-lane and probe-stream identity to the join pipeline (U2 seam C1)
+d8bd320606c Add join_algorithm value 'radix_join' and its settings (U2 seam C2)
+4c039eb816c Add RadixHashJoin: radix-partitioned IJoin with lazy leaf-table builds (U2 seam C3)
+0dee4ea0d38 Select radix_join in the planner, with gate and fallback (U2 seam C4)
+8175276f3ef bep: U2 audit trail - prereg, decisions D-0003..D-0011, matrix tooling+results, report
+8a6bffc80a6 Enhance U3 implementation with new decisions and performance metrics
+802d41c679b Refactor RadixHashJoin.cpp by removing unused includes and restructuring code for clarity. This cleanup reduces complexity and improves maintainability without altering functionality.
+3a3eb887563 Add persistent `MergeTree` join benchmark tool and unit tests
+a885e9ad45a Remove decision log, methodology log, pre-registration, and reports for RADIX-JOIN-V1 as part of cleanup. These files are no longer needed for the current implementation and have been deleted to streamline the project structure.
+016c5689464 Add persistent `MergeTree` benchmark tool and documentation
+13f63e6b0b5 Update RadixHashJoin implementation and related benchmarks
+832ebbbc51f Port benchmark scatter behavior to `RadixHashJoin`
+a26480af562 Fix vacuous 04511_radix_join_multi_pass: engage the radix path and assert it
+2eca779370f Probe radix partitions largest-first under work stealing
+94a84be56a0 Initialize `key` variable in `routeWordFixed` function to prevent uninitialized memory access. This change enhances code safety and clarity without altering the existing functionality.
+bb6bc35b686 Add scatter-kernel reference benchmark (U0 of ColumnsScatter work)
+665f5c363da Add DB::ColumnsScatter: layered scatter API with fixed-width kernels (U1)
+80c3e636d2d ColumnsScatter: variable-length and composite kernels (U2)
+036e32e95b8 ColumnsScatter: exotic-leaf fallback coverage and dispatch-table completeness (U3)
+646c2c3b4a2 ColumnsScatter: Gate-1 benchmark matrix, thread sweep, and review hardening (U4)
+f8b4e081443 RadixHashJoin: migrate onto ColumnsScatter kernels (U5)
+227d9313f6a Implement exact-byte row copy and enhance scatter functionality
+8e018e71ff8 Refactor ColumnsScatter: Improve memory safety and clarity
+c034aba53c3 Avoid redundant composite route accumulator initialization
+06bacbca351 Revert "Avoid redundant composite route accumulator initialization"
+35cb5a53569 ColumnsScatter: copy 32-byte chunks in copyRowExact for wide-row scatters
+02b7ae9d93d RadixHashJoin: fix the wave-lifecycle deadlock with a shared, cooperatively drained wave
+b8557c1f56b RadixHashJoin: worklog and report for the wave-deadlock repair
+b1fa64c7286 RadixHashJoin: adopt the T16 bounded-consumer remedy (uncommitted by its campaign)
+4f0ef35d365 RadixHashJoin probe campaign: worklog with Unit-0 wait evidence and baseline decision
+88301abfebe RadixHashJoin probe campaign: Unit-1 accounting tables, findings, E1/E2 preregistrations
+a8b4c058483 RadixHashJoin: merge wave-worker output blocks before queueing them
+c614a408248 RadixHashJoin probe campaign: E2 mechanism check and E3 preregistration
+3fccb389f77 RadixHashJoin: bound the wave consumer set to keep probe lanes scanning
+9f985d69105 RadixHashJoin: worklog and report for the T16 consumer-cap recovery
+161e3c39607 RadixHashJoin probe campaign: E3 refutation and E4 preregistration
+ea8da8ed924 RadixHashJoin probe campaign: E4/E5 refutations, Unit-2 close-out
+7e83b090d6b RadixHashJoin probe campaign: Unit-3 gates green, evidence matrix, cumulative comparison
+2f9f435f926 RadixHashJoin probe campaign: independent verification (SHIP) and close-out
+9c56f97e008 Merge radix-join-probe-perf: probe-time accounting campaign and the kept wave-worker output merging
+35b75e08c33 RadixHashJoin probe campaign: record the T16-adoption reconciliation after the merge
+069c287d9a0 Remove WORKLOG.md as part of the RadixHashJoin wave-lifecycle deadlock resolution. This file contained extensive documentation of the investigation and testing process, which is no longer needed following the completion of the related campaigns and verifications.
+17cf66400f8 Add WaveJoinProbe TLA module for RadixHashJoin implementation.
+af54d1acc00 Refactor WaveJoinProbe TLA module: Introduce new functions for result counting, bag operations, and worker management.
+7a1c9b39664 RadixHashJoin cooperative probe: import the frozen wave-join evidence artifacts
+01407136160 Correct WaveJoinProbe TLA module: worker ownership, budget invariant, checked refinement
+e725eedc528 WaveJoinProbe TLA: close the adversarial-review gaps; freeze the gate-10 verdict script
+271ca612034 WaveJoinProbe TLA: record the round-1 SHIP verdict; add the budget mutation witness
+e8227fee213 WaveJoin cooperative: preregister Unit 2 (independent design and failing tests)
+dd4e15b434f WaveJoin cooperative: seal INDEPENDENT_DESIGN.md before opening the implementation
+f64a7e45d05 WaveJoin cooperative: capture pre-change source and freeze the structural gate
+6c09d127cdb WaveJoin cooperative: record Unit 2 results (sealed design, frozen gate, red contract test)
+c7054c80123 RadixHashJoin: replace the wave probe with the cooperative TLA-derived machine
+5e9c364bd1b WaveJoin cooperative: Gate 8 register amendment v2 (user sign-off)
+a02a024c904 RadixHashJoin: never wait on a CAS-mutated control-word snapshot
+4da9003925d WaveJoin cooperative: preregister the Unit 4 performance run
+05949c6f588 RadixHashJoin: reuse the worker's scatter scratch; record the gate-9 diagnosis and ruling
+532f4463eb5 WaveJoin cooperative: final report and final verification evidence
+c2f50791501 RadixHashJoin: run the wave's exact sizing as claimable per-partition prepare jobs
+b13b0a5a3cd RadixHashJoin: default radix_join_max_partitions_per_pass to 1024
+ca217fc57eb Add MemoryTrackerPeakUsage event and update event validation logic

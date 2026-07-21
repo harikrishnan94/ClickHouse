@@ -1,0 +1,255 @@
+82005a0cc26 RadixHashJoin: adapt to upstream's BuildRef/BuildRefList -> RowRef/RowRefList rename
+fe23a099f04 Expose ScatterScratch peel API and add multi-pass SWWC regression test.
+5a5101329a1 Implement fused-record handling in RadixHashJoin for efficient key and reference scattering
+2f3d227ec96 Refactor LeafHT structure to separate cell-array base and bucket count, improving clarity and memory alignment
+48880389173 Refactor RadixHashJoin to streamline probe pipeline and remove unused seed buffers
+874fce9ca06 Refactor hashPackedKey to use HashT type for consistency across RadixHashJoin components
+a50b1daaf77 Add top-down microarchitecture analysis and branch misprediction metrics to performance report
+a1607631ded RadixHashJoin: probe cleanup — drop redundant batch loop, reuse seed buffers
+1fb3eb0d32e RadixHashJoin: tiled AMAC-over-seeds probe, generalized over key width and duplicates
+39b4679c949 Add dTLB page-walk metrics to performance report for enhanced analysis
+a7ef4f3c8bc Refactor RadixHashJoin to support grouped leaves for improved memory efficiency
+85c7808700b RadixHashJoin: byte-balanced leaf cell allocation in buildLeafTables
+87527378246 RHJ/CHJ benchmarking ProfileEvents + ScopedLLCMissCounter (stripped from production by 9bbf8516de9; pop to re-enable for local profiling)
+04cf7213df9 Add support for benchmarks in CMake configuration
+6a72604811b RadixHashJoin/ConcurrentHashJoin: re-add the benchmarking ProfileEvents
+3faf01c1e90 RadixHashJoin: skip the HLL distinct-key estimation on warm runs
+787f767998c RadixHashJoin/ConcurrentHashJoin: drop the benchmarking ProfileEvents from production
+ed390b0406b RadixHashJoin: keep an empty cell in every HLL-sized leaf (fix infinite loop)
+2d85a907407 RadixHashJoin: size leaf tables by a per-leaf HyperLogLog distinct-key estimate
+593a3324be2 RadixHashJoin: share one adaptive AMAC ring between probe and build
+d24eb7de59f RadixHashJoin: shrink the AMAC probe slot to 16 bytes and deepen the ring to 32
+72d1443b69a RadixHashJoin: hash build keys once in `fillLeaf`
+85b56431df5 RadixHashJoin: hash probe keys inside the AMAC probe ring
+17bb2aeb0d9 RadixHashJoin: encode probe-ring slot activeness in `cells`
+922754cfbcf RadixHashJoin: simplify the AMAC probe ring slot state
+da949097f50 RadixHashJoin/ConcurrentHashJoin: scoped probe-stage LLC-miss instrumentation
+18c75e08328 RadixHashJoin: eager `ThreadPool` post-build and an 8-byte `LeafHT`
+bebc2e4ddea RadixHashJoin: adopt `DB::BuildRefList` with per-worker build arenas
+a8a44a4c6c9 RadixHashJoin: resolve build rows via `StoredColumnsIndex`/`ColumnsInfo`
+59a9ce4ac7c RadixHashJoin: use the shared `DB::BuildRef` row reference
+cf2ff338bf6 Silence pre-existing fixed-seed clang-tidy warnings in the `RadixHashJoin` gtest
+b2c636d7c72 Adopt an AMAC probe in `RadixHashJoin`
+473bf1157d0 Drop the leaf-partitioned scattered probe from `RadixHashJoin`
+8cff0231cee Add collectMatchesScattered for leaf-partitioned probing
+14e5b2115a3 Update ProfileEvents for ConcurrentHashJoin and RadixHashJoin
+27872ed292a Refactor join interfaces to support lane-based operations
+39ee21dfb42 RadixHashJoin: implement output schema and sorting for probe matches
+d2122dff4d5 RadixHashJoin: initialise hash scratch locals (clang-tidy)
+ac93725a94a RadixHashJoin: stateless test for the key gate and fallback
+7ef5f922b69 RadixHashJoin: unit tests for the build-side foundation
+3f290a49779 RadixHashJoin: the IJoin class and the planner gate
+aa0634039ff RadixHashJoin: build-side foundation (hash, partition plan, scatter, leaf tables)
+85fa486b1e6 RadixHashJoin: add the radix_hash algorithm value, setting and ProfileEvents
+1310d6c1172 Merge pull request #110519 from ClickHouse/fix/tolerate-broken-tmp-txn-version-diagnostic
+8a6d4e1e09e Merge pull request #110905 from Blargian/codex/fix-docs-sidebar-sticky-controls
+c2f8484598c Merge pull request #110491 from ClickHouse/fix-common-subplan-buffer-shared-root
+c06cac3cbd0 Merge pull request #110598 from ClickHouse/move-private-integration-tests-to-public
+37f1805bb89 Merge pull request #110528 from cwurm/cloud-default-value-annotations
+65b416012be Fix sticky docs sidebar controls
+1b44eadcc32 Merge pull request #110282 from ClickHouse/vskipin/bump-silk
+918f32fd070 Merge pull request #110817 from ClickHouse/blob-killer-adaptive-scaling
+eef43af2200 Merge pull request #110866 from ClickHouse/mintlify/1a1c8643
+100905a58ed Merge pull request #108871 from groeneai/fix-multi-lowcardinality-default-impl
+b1da6ff72e7 Merge pull request #110547 from groeneai/groeneai/test-with-cte-over-distributed
+1bc2ec610c9 Merge pull request #110769 from groeneai/fix-praktika-gh-auth-retry-503
+bf6d8377587 Merge pull request #108944 from ClickHouse/feat/mysql-geometry-types
+bc370060eb9 Merge pull request #110332 from ClickHouse/fix-with-fill-max-execution-time
+194c1fa2dc1 Merge pull request #110614 from ClickHouse/pg-engine-settings
+eda0515a30a Merge pull request #110664 from ClickHouse/fix-zerocopylock-missing-keeper-component
+892e59dd03a Merge pull request #110742 from ClickHouse/fix-04502-fips-md5
+8ba3d12bf4b Merge pull request #110537 from ClickHouse/fix/02539-no-shared-merge-tree
+af3ed200b87 Merge pull request #110433 from ClickHouse/play-bfloat16-number
+c6b6f90c11f Merge pull request #110203 from ClickHouse/arithmetic-weak-context
+d1131b7ad61 Merge pull request #110200 from ClickHouse/keeper-max-requests-batch-size-nonzero
+e998669ffce Merge pull request #110198 from ClickHouse/fix-51586-cancel-mutation-in-subquery-set-build
+1d3aa4e5a16 Merge pull request #109357 from ClickHouse/web-ui-duplicate-tab
+50fb3f546df Merge pull request #110189 from raimannma/vectorize-delta-decode
+0bea9560011 docs: port PR6490 - document Connection via selector in BYOC Connect dialog
+6c10ce5b197 Merge pull request #106724 from vitlibar/timeseries-window-aligned-buckets
+235e9ea124d Merge pull request #109901 from nihalzp/fix-reverse-key-pruning-without-final-mark
+bfe0af92c2a Merge branch 'master' of https://github.com/ClickHouse/ClickHouse into cloud-default-value-annotations
+907592a8cac Merge pull request #110666 from Blargian/codex/fix-doc-image-sizing
+2009efe776f Merge pull request #110649 from ClickHouse/robot/cloud-api-docs
+51a7acde1c0 Merge pull request #110440 from ClickHouse/mintlify/bcc606f4
+a90ede6cfea Merge pull request #109864 from ClickHouse/update-toolchain-9ba77fe6
+3e4b22e9e43 Merge remote-tracking branch 'origin/master' into fix-common-subplan-buffer-shared-root
+3ae005cdc19 Merge pull request #110806 from ClickHouse/mintlify/ea806c2f
+e470b108d17 Merge pull request #110233 from groeneai/fix-iceberg-sort-order-special-char-column-110123
+d7ab988785e Merge pull request #106386 from ClickHouse/untracked-memory-race
+55bf62f6626 Merge pull request #109273 from ClickHouse/show_tables_fix_datalake_catalog
+4cccdc97934 fix build
+2bd0689b1ff sync blob killer adaptive scaling
+a365fd14a9d Docs: address broken-link review feedback
+29130c628c9 Merge remote-tracking branch 'origin/master' into groeneai/test-with-cte-over-distributed
+8fb3108d687 Fix style check: annotate the catch-all in PreparedSetsCache::findOrPromiseToBuild
+fc237d95deb docs: port broken-link fixes from clickhouse-docs PR #6538
+63bd4641968 Docs: sync Cloud API reference from the OpenAPI spec
+527ce10cd21 Merge remote-tracking branch 'origin/master' into web-ui-duplicate-tab
+00d8330a443 Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+70a750e98c7 Make the zero-copy lock regression test discriminate the fix from the bug
+ebbb745196c Address review: don't let a cancelled mutation set build poison the shared PreparedSetsCache
+fea4fd27373 Hard-stop WITH FILL before starting a new sorting-prefix group after the deadline
+839c86b5f86 Merge remote-tracking branch 'origin/master' into fix-with-fill-max-execution-time
+d2f457e45e6 Merge remote-tracking branch 'origin/master' into fix-common-subplan-buffer-shared-root
+c3146da1eaf Merge remote-tracking branch 'origin/master' into fix/02539-no-shared-merge-tree
+b4e50743658 Web UI: recognize numeric value types under scalar wrappers
+cf90641f728 Merge remote-tracking branch 'origin/master' into feat/mysql-geometry-types
+2fd4fc4ffb6 Use non-cryptographic cityHash64 in 04502 so it runs in every build
+e500d66ebd6 Merge remote-tracking branch 'origin/master' into fix-04502-fips-md5
+a669052545f Merge remote-tracking branch 'origin/master' into keeper-max-requests-batch-size-nonzero
+cd8aaebb4ac Merge remote-tracking branch 'origin/master' into vectorize-delta-decode
+7a0c3eacf9b Merge branch 'master' into update-toolchain-9ba77fe6
+fc424174d66 Merge remote-tracking branch 'origin/master' into web-ui-duplicate-tab
+75adb808587 Merge remote-tracking branch 'origin/master' into web-ui-duplicate-tab
+1502ba9683f Retry gh auth token validation on transient GitHub API errors
+43032531d5b Merge remote-tracking branch 'origin/master' into play-bfloat16-number
+9628efdfc37 Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+5ea61b780b4 Add a deterministic regression test for zero-copy lock release without a Keeper component
+7f01b31b3ea Use SHA256 instead of MD5 in 04502_alter_drop_column_default_with_alias for FIPS builds
+6b694d23fc1 Make the WITH FILL timeout test assert on query duration so Bugfix validation can reproduce the bug
+f8577171081 Merge remote-tracking branch 'origin/master' into fix-51586-cancel-mutation-in-subquery-set-build
+3d004b92f4b Merge remote-tracking branch 'origin/master' into fix-with-fill-max-execution-time
+03bcc9e2bea Merge remote-tracking branch 'origin/master' into fix-common-subplan-buffer-shared-root
+87e1163237c Preserve optimizer state in JoinStepLogical::clone
+c064ad54ca2 Document the PostgreSQL pool settings in the named collections guide
+b40205d102e Mark the test as no-parallel: it creates global named collections
+8fefa88b489 Address AI review: fix SETTINGS precedence and honor-or-reject the pool settings everywhere
+2d5a6fde85f test_sts_smoke: prove `extra_credentials` survives the `BACKUP`/`RESTORE` round trip
+4154e251f26 Match private changes
+62da4c8be29 Merge remote-tracking branch 'origin/master' into play-bfloat16-number
+7bf9c474f2d Merge remote-tracking branch 'origin/master' into fix-zerocopylock-missing-keeper-component
+32b6cc8429b Add missing Keeper component guard to the zero-copy part-move path
+07baaf4ade2 Merge branch 'master' of github.com:ClickHouse/ClickHouse into timeseries-window-aligned-buckets
+f34642c9801 Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+afc1e926ccb Merge remote-tracking branch 'origin/master' into web-ui-duplicate-tab
+4f36699deb1 Merge remote-tracking branch 'origin/master' into fix-common-subplan-buffer-shared-root
+38aa94638b0 test_create_dictionary_in_startup_script: verify the fix survives a restart
+e811a50619b Restore responsive docs image sizing
+ac8c70994d6 test_create_dictionary_in_startup_script: fix drop_dictionary target mismatch
+726545174cf Address AI review: document the SETTINGS clause on the postgresql table function
+8437ab30564 Address AI review: load PostgreSQLSettings from named collections
+4831ffb2a79 Renumber the PostgreSQL SETTINGS test to avoid a number collision
+4f8f87c2b42 Add missing Keeper component guard to MutateFromLogEntryTask/MergeFromLogEntryTask destructors
+e9deb7f30a5 Add transform-branch regression case for Iceberg sort order on special-char column names
+7e3aeaf88a6 test_storage_delta_shuffles: prove the Stateless Worker exchange path is not exercised by a bare count()
+d427be64733 Merge remote-tracking branch 'origin/master' into pg-engine-settings
+31abf0c9174 Merge remote-tracking branch 'origin/master' into move-private-integration-tests-to-public
+6cd1efc64ec Merge branch 'master' into fix-iceberg-sort-order-special-char-column-110123
+4185404e9e7 Merge branch 'master' into show_tables_fix_datalake_catalog
+39fa16f4150 Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+48ab8d5b0d1 Merge remote-tracking branch 'origin/master' into play-bfloat16-number
+af110a226e2 Address review: unwrap LowCardinality before the numeric/date type check
+3d91b60025a Harden 02539_vertical_merge_compact_parts instead of skipping under SharedMergeTree
+76db4eebede Merge remote-tracking branch 'origin/master' into fix/02539-no-shared-merge-tree
+a518f993b1f Merge remote-tracking branch 'origin/master' into fix/tolerate-broken-tmp-txn-version-diagnostic
+ce708f441af Merge remote-tracking branch 'origin/master' into fix-common-subplan-buffer-shared-root
+a5cfc3498ac Add SETTINGS clause support to the PostgreSQL table engine
+990fe401aca Add integration tests ported from the Cloud-only test suite
+29839e59544 Update src/Common/UntrackedMemoryRegistry.cpp
+d1f1a709e37 Shrink the bulk part in the delta decode roundtrip test
+c402955fc3a Restrict Delta SIMD decode guard to real x86 and AArch64
+2b648a039b6 Merge remote-tracking branch 'origin/master' into vectorize-delta-decode
+e2c6e153daa Merge remote-tracking branch 'origin/master' into groeneai/test-with-cte-over-distributed
+d0e3306c374 Add expired-context regression coverage for the interval and array cached-builder paths
+594f7220905 Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+e9a5dfd1c38 Add test for WITH (CTE) over a distributed table
+d665fe1f040 Merge remote-tracking branch 'origin/master' into vectorize-delta-decode
+e636f2be7b9 Add no-shared-merge-tree tag to 02539_vertical_merge_compact_parts
+a7decfeda81 Remove stale and redundant Cloud default value annotations
+91eb1f66401 Merge remote-tracking branch 'origin/master' into play-bfloat16-number
+0f840ee892d Merge remote-tracking branch 'origin/master' into fix-with-fill-max-execution-time
+d34ccec4929 Tolerate a broken txn_version.txt.tmp when loading a part
+6990b2ef8bd Merge remote-tracking branch 'origin/master' into vectorize-delta-decode
+7054178c7da Remove orphan settings-history entry left by the master merge
+655f94151f6 Address review: reserve macOS Ctrl+Click for the context menu when duplicating a tab
+52811f85bd4 Merge remote-tracking branch 'origin/master' into fix-51586-cancel-mutation-in-subquery-set-build
+bab9eafcb3f Remap CommonSubplanReference roots when cloning a query plan
+40d8dce05b8 Narrow the array scope claim: arrays of tuple-family elements still pin the context
+d19ce655144 Fix logical error in functions with LowCardinality arguments over distributed tables
+b6e8f3aa341 docs: port PR6526 - expand replica-aware routing docs
+d88ed3ff78a Web UI: recognize BFloat16 as a floating point number
+23ad3a17b91 Merge remote-tracking branch 'origin/master' into fix-with-fill-max-execution-time
+64d6b545061 Stop WITH FILL outer loops on soft (break-mode) timeout, add break-mode tests
+ff114fa9048 Merge remote-tracking branch 'origin/master' into vectorize-delta-decode
+dcdabc13df8 Merge remote-tracking branch 'origin/master' into feat/mysql-geometry-types
+43e2b4a173a Bump `silk` to the latest `clickhouse-public`
+9a4bf57254e Merge remote-tracking branch 'origin/master' into web-ui-duplicate-tab
+6487481b79b Merge remote-tracking branch 'origin/master' into keeper-max-requests-batch-size-nonzero
+489dd4fbdc8 Add roundtrip correctness test for Delta codec decoding
+859feb16003 Remove comment from the delta decode performance test
+11f4f26acdc Make the gap-pattern stride depend on the type width in the delta perf test
+1f371d112fa Cover all delta widths and data patterns in the decode performance test
+3fe2b20e2c4 Add performance test for Delta codec decoding
+0271ac344b0 Merge remote-tracking branch 'origin/vectorize-delta-decode' into vectorize-delta-decode
+567e1d993f6 Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+0b4e84992e2 Gate the SIMD delta decoder on little-endian builds
+2e65615bfac Merge remote-tracking branch 'origin/master' into vectorize-delta-decode
+6660457de14 Enforce max_execution_time and prompt cancellation for WITH FILL
+681739a33dd Merge branch 'master' into feat/mysql-geometry-types
+3737d47989d Merge branch 'master' into keeper-max-requests-batch-size-nonzero
+41fb31111fd Merge branch 'master' into fix-51586-cancel-mutation-in-subquery-set-build
+cd50299a399 Address AI review: state the tuple-family context-retention caveat explicitly
+96bb05bc0dc Fix `Context has expired` when JIT-compiling stored arithmetic expressions
+1187e765e49 Merge remote-tracking branch 'origin/master' into keeper-max-requests-batch-size-nonzero
+cbdf5d9a287 Merge remote-tracking branch 'origin/master' into fix-51586-cancel-mutation-in-subquery-set-build
+2221957dad0 Address review: fail hard when the mutation never reaches the running state
+b20331d6437 Merge remote-tracking branch 'origin/master' into keeper-max-requests-batch-size-nonzero
+8e1cd802488 Address review: tighten the mutation cancel-callback comment
+d7c4294a3ed Fix reading Iceberg tables sorted on special-char column names
+4ae3411bf34 Merge remote-tracking branch 'origin/master' into fix-51586-cancel-mutation-in-subquery-set-build
+ded224ff223 Merge remote-tracking branch 'origin/master' into keeper-max-requests-batch-size-nonzero
+3c930caef8a Merge remote-tracking branch 'origin/master' into arithmetic-weak-context
+e48a524d210 Style: allow WithContext in FunctionBinaryArithmetic.h
+82bffb5d79a Web UI: make middle-click paste guard layout-independent
+4bbc4e03d85 Resolve context-dependent arithmetic sub-functions at build time
+82a9af6bfa8 Keeper: reject zero max_requests_batch_size
+67c333b66a2 Cancel a mutation's IN-subquery set build on shutdown / KILL MUTATION
+be5e7e359c6 Unify the SSE2 and NEON prefix-sum kernels into one generic implementation
+40d686fb7f4 Merge remote-tracking branch 'origin/master' into web-ui-duplicate-tab
+7b97dadb7df Merge remote-tracking branch 'origin/master' into feat/mysql-geometry-types
+6f8ea3f01ca Vectorize Delta codec decompression
+e9af7ad94d2 Add test
+c46094bc278 Fix edge case for reverse nullable keys
+7a9e0124149 Merge remote-tracking branch 'origin/master' into untracked-memory-race
+bc5d014e15a Pin wide-part settings in the test to avoid a warning under randomized settings
+650bc1bf49e Fix style
+497c69d1309 Evaluate key chain direction over the function input type
+fe2d2b1a280 Fix primary key pruning for reversed key columns in parts without a final mark
+19272279ad8 remove non-critical changes in behaviour
+b2a30564a2c Update PGO+BOLT toolchain to 9ba77fe6
+f9d0bf358ce Merge branch 'master' into show_tables_fix_datalake_catalog
+b29683041bc Fix comments and test
+ac8a474eef4 Web UI: flush an open tab rename on every tab-bar rerender, not just on duplicate
+349e4358170 Web UI: don't lose an in-progress tab rename when duplicating another tab
+e3edf8251ce Web UI: do not duplicate a tab while its title is being edited
+793109b5639 Web UI: never strip user digits when duplicating a tab
+882ddb674b6 fix
+1d5aad93420 Merge commit 'a6127fc73b5e' into feat/mysql-geometry-types
+5819947b3c3 Web UI: preserve user-authored numeric titles when duplicating a tab
+2c02489c622 Web UI: swallow the X11 PRIMARY paste on middle-click tab duplicate
+2ee1625399e Web UI: duplicate a tab on middle-click or Ctrl/Shift/Cmd+click of the title
+1618295aa43 Fix bug in SHOW TABLES
+8998331d18e Give named-collection/SETTINGS precedence over session in MySQL type mapping
+c1af6b6ba9a Honor mysql_datatypes_support_level on query-backed MySQL inference
+7e8427366fc Fix stale SettingsChangesHistory note for the geometry flag
+5873568d1e7 Map the generic MySQL GEOMETRY type to the umbrella Geometry type
+8262da8fa51 Merge remote-tracking branch 'origin/master' into feat/mysql-geometry-types
+11b59a1a5b0 Merge remote-tracking branch 'origin/master' into feat/mysql-geometry-types
+3410a1d35a8 Honor max_wkb_geometry_elements in the MySQL geometry read path
+6d70f47544d Honor mysql_datatypes_support_level in the mysql(...) table function
+7ef7d7ac244 Merge remote-tracking branch 'origin/master' into feat/mysql-geometry-types
+aabc613f91a Honor per-engine mysql_datatypes_support_level in MySQL schema inference
+f515b851b34 Address review: keep generic MySQL GEOMETRY mapped to String
+59d9baa9dc3 Merge branch 'master' into feat/mysql-geometry-types
+cea1b5cc410 Map MySQL geometry types to ClickHouse geometric types
+9244f15e814 document new expectations for MemoryTrackerSwitcher in unit tests
+1c71e4afb89 Fix style
+ae7e6894bb4 Add `timeSeries*ToGrid` performance test
+d164813ed19 Add two-stacks sliding window for `timeSeries*ToGrid` linear regression
+d7bef8b9c26 Add `std::sort` bucket iteration for sparse `timeSeries*ToGrid` grids
+31959f12437 Rework `timeSeries*ToGrid` grid-fill with window-aligned buckets
+bdcbe032cce better
+542869dae35 Merge remote-tracking branch 'origin/master' into untracked-memory-race
+2a8da7975dc join poco thread pool threads before unit tests exit
+767b2cacddb Revert "Revert "Add `UntrackedMemory` asynchronous metric""
