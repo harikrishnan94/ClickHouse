@@ -272,16 +272,21 @@ concept FlatLookupMap = AmacResumableMap<Map> && requires {
     requires std::is_same_v<typename Map::cell_type::State, HashTableNoState>;
 };
 
-/** The wide multi-column fixed keys (`keys128`/`keys256`) probe through the flat loop with the
-  * look-ahead prefetcher instead of the AMAC find ring. Measured on the phase-2 K1/K2 losing
-  * cells (m8g.24xlarge, Neoverse-V2): the ring pays a per-visit stack round-trip of the 16/32-
-  * byte key plus the limb-by-limb compare and slot bookkeeping, which costs more than its
-  * miss overlap recovers over the flat loop's look-ahead prefetch - the worst loss
+/** The wide multi-column fixed keys (`keys128`/`keys256`) mostly probe through the flat loop
+  * with the look-ahead prefetcher instead of the AMAC find ring: the ring pays a per-visit
+  * stack round-trip of the 16/32-byte key plus the limb-by-limb compare and slot bookkeeping,
+  * which costs more than its miss overlap recovers while the leaf tables stay near-L2-resident.
+  * Measured on the phase-2 K1/K2 losing cells (m8g.24xlarge, Neoverse-V2): the worst loss
   * (`D1M keys256 m_p=64 T8`, -38% vs `parallel_hash`) turns into a +7% win, `D32M keys256 T8`
-  * -7% into +15%, with probe-lookup thread-time at parity. The single-column numeric getters
-  * (the ring beats look-ahead: 99 vs 109 ms on the `D32M key64 T16` anchor) and the string
-  * getters (no look-ahead at all; AMAC is the only miss-overlap mechanism, 328 vs 524 ms on
-  * `D32M String16 h=0.25 T8`) keep the ring.
+  * -7% into +11%, with probe-lookup thread-time at parity. The exception is the very top of
+  * the cardinality ladder: the leaf count is capped, so past ~64M build keys each leaf itself
+  * is several times L2 (6-10 MiB at 128M) and nearly every lookup misses to DRAM - there the
+  * ring's 32 in-flight rows overlap misses deeper than the look-ahead prefetch and win by
+  * 4-8% (e.g. `D128M keys256 T8` 2827 vs 2943 ms); the per-leaf-size gate below keeps the
+  * ring for that regime. The single-column numeric getters (the ring beats look-ahead:
+  * 99 vs 109 ms on the `D32M key64 T16` anchor) and the string getters (no look-ahead at all;
+  * AMAC is the only miss-overlap mechanism, 328 vs 524 ms on `D32M String16 h=0.25 T8`)
+  * keep the ring unconditionally.
   */
 template <typename T>
 inline constexpr bool is_wide_fixed_join_key_getter = false;
@@ -408,19 +413,29 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     /// ring is pure overhead), and a row floor so tiny blocks keep the plain loop (G6); the
     /// loops below serve those regimes and the AMAC-incapable getters.
     using MapNonConst = std::remove_const_t<Map>;
-    constexpr bool amac_supported = amac_join_supported<KeyGetter, MapNonConst> && !is_wide_fixed_join_key_getter<KeyGetter>;
+    constexpr bool amac_supported = amac_join_supported<KeyGetter, MapNonConst>;
     constexpr bool prefetch_supported = join_prefetch_supported<KeyGetter, Map>;
     /// The cheap-key open-addressing shapes run the flat-descriptor loop below instead of the
     /// plain routed loop.
     constexpr bool flat_lookup_supported = prefetch_supported && FlatLookupMap<MapNonConst>;
     bool use_amac = false;
     if constexpr (amac_supported)
+    {
         /// The last conjunct guards the ring's wrap-free `++cell` walk (the find pass itself
         /// runs in 64K-row chunks, so the row count needs no bound): a build where some chain
         /// reached a leaf buffer's last pad cell - practically never - keeps the wrap-aware
         /// flat/plain loops below.
         use_amac = amac_enabled && added_columns.enable_prefetch && ht_total_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
             && !any_leaf_chain_wrapped;
+        if constexpr (is_wide_fixed_join_key_getter<KeyGetter>)
+        {
+            /// Wide fixed keys ride the flat loop until the leaves themselves are deep in DRAM
+            /// (see `is_wide_fixed_join_key_getter`). The measured crossover on Neoverse-V2 sits
+            /// between 2.5x and 3x L2 per leaf; `getMinBytesForPrefetchInJoin` is the L2 size.
+            const size_t leaf_count = std::max<size_t>(1, leaf_map_ptrs.size());
+            use_amac = use_amac && (ht_total_bytes / leaf_count) >= 3 * getMinBytesForPrefetchInJoin();
+        }
+    }
 
     /// Routed look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC
     /// pass; same engagement threshold (the leaf tables are cache-sized by design, so both fire
