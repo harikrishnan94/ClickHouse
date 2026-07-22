@@ -7,6 +7,7 @@
 #include <Interpreters/JoinUtils.h>
 #include <Interpreters/PartitionedHashJoin/JoinRouteHashing.h>
 #include <Interpreters/TableJoin.h>
+#include <base/getL1CacheSize.h>
 #include <base/getL2CacheSize.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/CurrentThread.h>
@@ -459,6 +460,19 @@ void PartitionedHashJoin::decidePartitionPlan()
         while (bits < 16
                && PartitionedJoinMaps::predictedBufferBytes(maps_variant_index, type, reserve_for(1uz << bits)) > leaf_budget_bytes)
             ++bits;
+
+        /// The single-pass descriptor cap: past this many leaves, the flat per-leaf lookup
+        /// descriptor array (`LeafMapDesc`, gathered once per probe row at AMAC-ring admit) stops
+        /// being a single cache-resident load, so growing further to keep leaf hash-table buckets
+        /// L2-resident only adds probe-side traffic and a second scatter pass for it. Budgeted
+        /// against L1 - the descriptor gather is meant to cost one L1-latency load per row - with
+        /// only a quarter of it charged to the array, leaving headroom for the rest of the probe's
+        /// per-row working set (the hash-bucket cell it points at, key and result columns) that
+        /// shares L1 alongside it.
+        const size_t l1_bytes = std::max<size_t>(getL1CacheSize(), 32 << 10);
+        const size_t max_leaves_for_descs = std::max<size_t>(1, l1_bytes / 4 / sizeof(LeafMapDesc));
+        const auto descriptor_cap_bits = static_cast<size_t>(std::bit_width(max_leaves_for_descs) - 1);
+        bits = std::min(bits, descriptor_cap_bits);
 
         if (bits > 0)
         {
