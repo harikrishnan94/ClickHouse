@@ -36,7 +36,6 @@ DEFAULT_REMOTE_CONFIG = "/home/ubuntu/ch/programs/server/config.xml"
 DEFAULT_REMOTE_SERVER_DIR = "/home/ubuntu/ch/programs/server"
 DEFAULT_REMOTE_DATA_PATH = "/home/ubuntu/bench/data"
 DEFAULT_REMOTE_LOG_DIR = "/home/ubuntu/bench/logs"
-DEFAULT_REMOTE_PIDFILE = "/home/ubuntu/bench/server.pid"
 
 ALGORITHMS = ("partitioned_hash", "parallel_hash")
 UINT64_MAX = (1 << 64) - 1
@@ -207,7 +206,6 @@ class RemoteArgs:
     server_dir: str
     data_path: str
     log_dir: str
-    pidfile: str
 
 
 def remote_args_from_ns(args: argparse.Namespace) -> RemoteArgs:
@@ -219,7 +217,6 @@ def remote_args_from_ns(args: argparse.Namespace) -> RemoteArgs:
         server_dir=args.remote_server_dir,
         data_path=args.remote_data_path,
         log_dir=args.remote_log_dir,
-        pidfile=args.remote_pidfile,
     )
 
 
@@ -231,7 +228,6 @@ def add_remote_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--remote-server-dir", default=DEFAULT_REMOTE_SERVER_DIR)
     parser.add_argument("--remote-data-path", default=DEFAULT_REMOTE_DATA_PATH)
     parser.add_argument("--remote-log-dir", default=DEFAULT_REMOTE_LOG_DIR)
-    parser.add_argument("--remote-pidfile", default=DEFAULT_REMOTE_PIDFILE)
 
 
 def ssh_base(remote: RemoteArgs) -> list[str]:
@@ -318,37 +314,62 @@ def server_is_up(remote: RemoteArgs) -> bool:
 def start_server(remote: RemoteArgs, *, timeout: float = 60.0) -> None:
     if server_is_up(remote):
         return
+    # Any previous instance must be fully gone (including the watchdog
+    # process, which otherwise respawns a killed server child -- see
+    # WORKLOG "server lifecycle" finding) before starting a new one, or the
+    # new process fails to bind :9000 and the whole SSH call hangs.
+    ensure_server_stopped(remote, timeout=timeout)
     script = (
         f"mkdir -p {shlex.quote(remote.log_dir)} {shlex.quote(remote.data_path)} && "
         f"cd {shlex.quote(remote.server_dir)} && "
-        f"rm -f {shlex.quote(remote.pidfile)} && "
         f"nohup setsid {shlex.quote(remote.clickhouse)} server -C "
         f"{shlex.quote(remote.config)} </dev/null "
-        f">{shlex.quote(remote.log_dir)}/stdout.log 2>&1 & "
-        f"echo $! > {shlex.quote(remote.pidfile)}"
+        f">{shlex.quote(remote.log_dir)}/stdout.log 2>&1 &"
     )
-    rc, _, stderr = run_ssh(remote, script, timeout=20)
-    require_ok(rc, stderr, "server start")
+    # Deliberately fire-and-forget: even with `nohup setsid ... &`, OpenSSH
+    # keeps a session's channel open until every process that inherited a
+    # copy of its stdio pipes closes them, and a plain `subprocess.run(...,
+    # timeout=...)` here blocks (and eventually times out) waiting for that,
+    # even though the *remote shell* itself returns immediately after
+    # backgrounding the job (measured: the outer `bash -c` process is gone
+    # in well under a second, but the local `ssh` call still hangs ~20s+).
+    # We never need this SSH process's own exit code; we only need the
+    # server to become reachable, which we poll for separately below.
+    argv = ssh_base(remote) + [script]
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if server_is_up(remote):
+            proc.poll()  # reap if it has in fact exited by now; harmless otherwise
             return
         time.sleep(1.0)
+    proc.poll()
     raise RuntimeError(f"server did not become reachable within {timeout}s")
 
 
-def stop_server(remote: RemoteArgs, *, timeout: float = 60.0) -> None:
+def _server_pids_script(remote: RemoteArgs) -> str:
+    # Match on the (quoted, absolute) config path, which appears in BOTH
+    # the `clickhouse-watchdog` process and its `clickhouse server` child,
+    # but never in an unrelated `clickhouse client` invocation.
+    return f"pgrep -f {shlex.quote(remote.config)} 2>/dev/null || true"
+
+
+def ensure_server_stopped(remote: RemoteArgs, *, timeout: float = 60.0) -> None:
     script = (
-        f"if [ -f {shlex.quote(remote.pidfile)} ]; then "
-        f"PID=$(cat {shlex.quote(remote.pidfile)}); "
-        f"kill $PID 2>/dev/null || true; "
+        f"PIDS=$({_server_pids_script(remote)}); "
+        '[ -n "$PIDS" ] && kill -9 $PIDS 2>/dev/null; '
         f"for i in $(seq 1 {int(timeout)}); do "
-        f"kill -0 $PID 2>/dev/null || break; sleep 1; done; "
-        f"kill -9 $PID 2>/dev/null || true; "
-        f"rm -f {shlex.quote(remote.pidfile)}; "
-        f"fi; pkill -9 -f 'clickhouse server' 2>/dev/null || true; echo stopped"
+        f"PIDS=$({_server_pids_script(remote)}); "
+        '[ -z "$PIDS" ] && break; '
+        'kill -9 $PIDS 2>/dev/null; sleep 1; done; echo stopped'
     )
     run_ssh(remote, script, timeout=timeout + 10)
+
+
+def stop_server(remote: RemoteArgs, *, timeout: float = 60.0) -> None:
+    ensure_server_stopped(remote, timeout=timeout)
 
 
 # --------------------------------------------------------------------------
@@ -826,23 +847,25 @@ def _flush_logs(remote: RemoteArgs) -> None:
     require_ok(rc, stderr, "SYSTEM FLUSH LOGS")
 
 
-def _export_logs_for_cell(remote: RemoteArgs, local_dir: pathlib.Path, cell_id: str, algorithm: str) -> None:
+def _export_logs_for_cell(
+    remote: RemoteArgs, local_dir: pathlib.Path, log_comment_base: str, algorithm: str
+) -> None:
     local_dir.mkdir(parents=True, exist_ok=True)
     tables = {
-        "query_log": f"log_comment LIKE '{cell_id}%{algorithm}%'",
+        "query_log": f"log_comment LIKE '{log_comment_base}%'",
         "trace_log": (
             f"query_id IN (SELECT query_id FROM system.query_log "
-            f"WHERE log_comment LIKE '{cell_id}%{algorithm}%')"
+            f"WHERE log_comment LIKE '{log_comment_base}%')"
         ),
         "processors_profile_log": (
             f"query_id IN (SELECT query_id FROM system.query_log "
-            f"WHERE log_comment LIKE '{cell_id}%{algorithm}%')"
+            f"WHERE log_comment LIKE '{log_comment_base}%')"
         ),
     }
     for table, where in tables.items():
         sql = f"SELECT * FROM system.{table} WHERE {where} FORMAT JSONEachRow"
         rc, stdout, stderr = run_remote_sql(remote, sql, timeout=120)
-        require_ok(rc, stderr, f"export {table} for {cell_id}/{algorithm}")
+        require_ok(rc, stderr, f"export {table} for {log_comment_base}/{algorithm}")
         (local_dir / f"{table}.{algorithm}.jsonl").write_bytes(stdout)
 
 
@@ -857,10 +880,19 @@ def run_one_algorithm(
     algorithm: str,
     threads: int,
     cell_id: str,
+    run_nonce: str,
     *,
     expected_rows: int,
 ) -> dict:
-    log_comment_base = f"{cell_id}|{algorithm}"
+    # `run_nonce` disambiguates this attempt from any earlier attempt at the
+    # same `cell_id` still sitting in `system.query_log` (which persists
+    # across per-cell server restarts by design -- see the mission's
+    # per-cell protocol). Without it, re-running a cell (e.g. after a bug
+    # fix, or a resumed sweep re-attempting a cell that previously errored)
+    # would double-count old rows matching the same `log_comment` pattern
+    # (measured directly: a second run-cell attempt on an identical
+    # cell_id found 10 matching query_log rows instead of the expected 5).
+    log_comment_base = f"{cell_id}|{run_nonce}|{algorithm}"
     # 1 untimed warmup.
     warm_sql = join_query_sql(cfg, algorithm, threads, profiled=False, log_comment=f"{log_comment_base}|warmup")
     rc, stdout, stderr = run_remote_sql(remote, warm_sql, timeout=650)
@@ -998,18 +1030,19 @@ def run_cell_command(args: argparse.Namespace) -> int:
         fill_seconds = time.monotonic() - t0
         print(f"Cell {cell['cell_id']}: filled in {fill_seconds:.1f}s, expected_rows={expected_rows}")
 
+        run_nonce = f"{int(time.time())}_{os.getpid()}"
         results = {}
         for algorithm in ALGORITHMS:
             print(f"Cell {cell['cell_id']}: running {algorithm} ...")
             t0 = time.monotonic()
             result = run_one_algorithm(
-                remote, KEY_CONFIGS[cell["key"]], algorithm, cell["threads"], cell["cell_id"],
+                remote, KEY_CONFIGS[cell["key"]], algorithm, cell["threads"], cell["cell_id"], run_nonce,
                 expected_rows=expected_rows,
             )
             result["wall_seconds"] = time.monotonic() - t0
             results[algorithm] = result
-            print(f"Cell {cell['cell_id']}: {algorithm} -> {result['status']}")
-            _export_logs_for_cell(remote, local_dir, cell["cell_id"], algorithm)
+            print(f"Cell {cell['cell_id']}: {algorithm} -> {result['status']}" + (f" ({result.get('reason')})" if result.get("reason") else ""))
+            _export_logs_for_cell(remote, local_dir, f"{cell['cell_id']}|{run_nonce}", algorithm)
 
         correctness = "SKIP"
         if all(results[a]["status"] == "OK" for a in ALGORITHMS):
