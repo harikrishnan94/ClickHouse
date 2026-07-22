@@ -851,15 +851,23 @@ def _export_logs_for_cell(
     remote: RemoteArgs, local_dir: pathlib.Path, log_comment_base: str, algorithm: str
 ) -> None:
     local_dir.mkdir(parents=True, exist_ok=True)
+    # The algorithm belongs in the filter, not just the filename: the
+    # log_comment layout is `<cell_id>|<run_nonce>|<algorithm>|<run tag>`,
+    # and this export runs once per algorithm AFTER that algorithm's runs,
+    # so a prefix filter without the algorithm would sweep up the earlier
+    # algorithm's rows into the later algorithm's files (per-algorithm
+    # correctness of the *measurements* was never affected -- the timing
+    # query always filtered on the full `...|<algorithm>` prefix).
+    like_prefix = f"{log_comment_base}|{algorithm}"
     tables = {
-        "query_log": f"log_comment LIKE '{log_comment_base}%'",
+        "query_log": f"log_comment LIKE '{like_prefix}%'",
         "trace_log": (
             f"query_id IN (SELECT query_id FROM system.query_log "
-            f"WHERE log_comment LIKE '{log_comment_base}%')"
+            f"WHERE log_comment LIKE '{like_prefix}%')"
         ),
         "processors_profile_log": (
             f"query_id IN (SELECT query_id FROM system.query_log "
-            f"WHERE log_comment LIKE '{log_comment_base}%')"
+            f"WHERE log_comment LIKE '{like_prefix}%')"
         ),
     }
     for table, where in tables.items():
