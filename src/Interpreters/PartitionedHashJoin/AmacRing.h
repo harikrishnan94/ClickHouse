@@ -58,6 +58,10 @@ struct ResumableHashMap : public Base
     /// Step: the next cell of the collision resolution chain.
     size_t cursorNext(size_t place) const { return this->grower.next(place); }
 
+    /// The home mask of the grower's power-of-two region. With a tail-padded grower this is
+    /// NOT `getBufferSizeInCells() - 1`; the flat leaf descriptors must carry this one.
+    size_t cursorMask() const { return this->grower.mask(); }
+
     Cell * cursorCell(size_t place) { return &this->buf[place]; }
     const Cell * cursorCell(size_t place) const { return &this->buf[place]; }
 
@@ -102,28 +106,32 @@ constexpr bool cell_stores_hash = requires(const Cell & cell) { cell.saved_hash;
   * from the row index (the key, the selector index) is recomputed per visit, and per-section
   * invariants (map, locators, key getter) live in the policy - measured slot minimalism. A policy
   * may extend its slot with address material resolved once at admit (the routed probe carries
-  * the leaf's cell buffer and mask) when the steady step would otherwise re-resolve it per visit.
+  * the leaf's resolved cell pointer) when the steady step would otherwise re-resolve it per
+  * visit. `PosT` is the cell-index width: a policy whose buffer provably stays within 2^32
+  * cells for the whole run (growths included) narrows it to `UInt32` for the 8-byte slot.
   */
-template <bool store_hash>
+template <bool store_hash, typename PosT = size_t>
 struct AmacRingSlot
 {
     static constexpr UInt32 inactive_row = std::numeric_limits<UInt32>::max();
 
-    size_t pos = 0;
+    PosT pos = 0;
     UInt32 row = inactive_row;
 
     bool isActive() const { return row != inactive_row; }
     void deactivate() { row = inactive_row; }
 };
 
-template <>
-struct AmacRingSlot<true> : public AmacRingSlot<false>
+template <typename PosT>
+struct AmacRingSlot<true, PosT> : public AmacRingSlot<false, PosT>
 {
     size_t hash = 0;
 };
 
 static_assert(sizeof(AmacRingSlot<false>) == 16);
 static_assert(sizeof(AmacRingSlot<true>) == 24);
+static_assert(sizeof(AmacRingSlot<false, UInt32>) == 8);
+static_assert(sizeof(AmacRingSlot<true, UInt32>) == 16);
 
 /// ~8-10 in-flight rows saturate a core's L1-D miss handling; beyond 32 slots the ring risks
 /// TLB thrashing (Kocberber et al., PVLDB 2015). Power of two for the branch-free wrap.

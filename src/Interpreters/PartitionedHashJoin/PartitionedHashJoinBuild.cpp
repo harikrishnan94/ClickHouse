@@ -87,7 +87,7 @@ applyBuildRowToMapped(Mapped & mapped, bool inserted, UInt64 ref, Arena & pool, 
   * Rows whose key is the zero sentinel are handled synchronously through the standard `emplace`
   * (the zero cell has no memory-dependent walk to overlap) and never occupy a ring slot.
   */
-template <typename KeyGetter, typename Map>
+template <typename KeyGetter, typename Map, typename PosT = size_t>
 struct AmacBuildInsertPolicy
 {
     using Cell = Map::cell_type;
@@ -98,7 +98,9 @@ struct AmacBuildInsertPolicy
     /// getter; the `KeysFixed` getter is not copyable (prepared-keys buffer, shuffle masks) and
     /// keeps the by-reference run.
     static constexpr bool copy_into_frame = std::is_copy_constructible_v<KeyGetter>;
-    using Slot = AmacRingSlot<store_hash>;
+    /// `PosT = UInt32` at the caller's dispatch when the buffer index provably fits 32 bits for
+    /// the whole run, growths included - the common case, halving the slot to 8 bytes.
+    using Slot = AmacRingSlot<store_hash, PosT>;
 
     Map & map;
     /// Cached cell buffer base, so the per-visit cell address is one add off a register instead
@@ -141,7 +143,7 @@ struct AmacBuildInsertPolicy
             return false;
         }
         const size_t hash = map.hash(key);
-        slot.pos = map.cursorPlace(hash);
+        slot.pos = static_cast<PosT>(map.cursorPlace(hash));
         slot.row = static_cast<UInt32>(row);
         if constexpr (store_hash)
             slot.hash = hash;
@@ -172,7 +174,7 @@ struct AmacBuildInsertPolicy
             applyBuildRowToMapped(cell->getMapped(), /*inserted=*/false, refWordAt(slot.row), pool, any_take_last_row, all_unique);
             return AmacStepResult::Done;
         }
-        slot.pos = map.cursorNext(slot.pos);
+        slot.pos = static_cast<PosT>(map.cursorNext(slot.pos));
         __builtin_prefetch(cells + slot.pos, 1, 3);
         return AmacStepResult::Advance;
     }
@@ -258,19 +260,30 @@ void insertSectionImpl(
     {
         if (use_amac && rows >= amac_min_rows && rows < AmacRingSlot<false>::inactive_row)
         {
-            AmacBuildInsertPolicy<KeyGetter, Map> policy{
-                .map = map,
-                .cells = map.cursorCells(),
-                .key_getter = key_getter,
-                .locators = locators,
-                .narrow_locators = narrow_locators,
-                .skip_bytes = skip_bytes,
-                .block_no = block_no,
-                .any_take_last_row = any_take_last_row,
-                .pool = pool};
-            amacRun(policy, rows);
-            all_values_unique = all_values_unique && policy.all_unique;
-            amac_ring_growths += policy.growths;
+            auto run_ring = [&]<typename PosT>()
+            {
+                AmacBuildInsertPolicy<KeyGetter, Map, PosT> policy{
+                    .map = map,
+                    .cells = map.cursorCells(),
+                    .key_getter = key_getter,
+                    .locators = locators,
+                    .narrow_locators = narrow_locators,
+                    .skip_bytes = skip_bytes,
+                    .block_no = block_no,
+                    .any_take_last_row = any_take_last_row,
+                    .pool = pool};
+                amacRun(policy, rows);
+                all_values_unique = all_values_unique && policy.all_unique;
+                amac_ring_growths += policy.growths;
+            };
+            /// The 8-byte narrow slot when the cell index provably fits 32 bits for the whole
+            /// run, growths included: the create-time buffer is within 2^32 cells and the final
+            /// size cannot trigger a growth past it (a growth fires at fill > bufSize / 2 and
+            /// at degree >= 23 doubles, so a buffer only outgrows 2^32 cells past 2^31 keys).
+            if (map.getBufferSizeInCells() <= (1uz << 32) && map.size() + rows <= (1uz << 30))
+                run_ring.template operator()<UInt32>();
+            else
+                run_ring.template operator()<size_t>();
             return;
         }
     }
@@ -431,6 +444,7 @@ void PartitionedHashJoin::collectLeafMapPointers()
 {
     leaf_map_ptrs.resize(leaf_maps.size());
     leaf_map_descs.assign(leaf_maps.size(), LeafMapDesc{});
+    any_leaf_chain_wrapped = false;
     for (size_t leaf = 0; leaf < leaf_maps.size(); ++leaf)
     {
         std::visit(
@@ -443,7 +457,13 @@ void PartitionedHashJoin::collectLeafMapPointers()
         const auto & map = *shape_maps.TYPE; \
         leaf_map_ptrs[leaf] = &map; \
         if constexpr (AmacResumableMap<std::remove_cvref_t<decltype(map)>>) \
-            leaf_map_descs[leaf] = LeafMapDesc{map.cursorCell(0), map.getBufferSizeInCells() - 1}; \
+        { \
+            leaf_map_descs[leaf] = LeafMapDesc{map.cursorCell(0), map.cursorMask()}; \
+            /* An occupied last pad cell means a chain may have wrapped past the pad; the \
+               wrap-free probe walks are then off for the whole plan (see the grower). */ \
+            any_leaf_chain_wrapped \
+                = any_leaf_chain_wrapped || !map.cursorCellIsEmpty(map.cursorCell(map.getBufferSizeInCells() - 1)); \
+        } \
         break; \
     }
                     APPLY_FOR_PARTITIONED_JOIN_VARIANTS(M)

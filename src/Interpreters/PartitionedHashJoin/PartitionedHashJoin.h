@@ -380,6 +380,11 @@ private:
     std::vector<const void *> leaf_map_ptrs;
     /// One `LeafMapDesc` per leaf, filled by `collectLeafMapPointers`.
     std::vector<LeafMapDesc> leaf_map_descs;
+    /// Whether any leaf's collision chain reached the last cell of its tail-padded buffer (see
+    /// `TailPaddedHashTableGrower`) - i.e. a chain may have wrapped. Filled by
+    /// `collectLeafMapPointers`; practically always false. While false, the probe walks run
+    /// wrap-free (`++pos` with no bound check); a wrapped plan keeps the wrap-aware loops.
+    bool any_leaf_chain_wrapped = false;
     /// Per-leaf used-flag base offsets: leaf L's flags live at `[flag_base[L], flag_base[L + 1])`
     /// of the shared per-offset flag space (`flag_base[L + 1] - flag_base[L]` = leaf bucket
     /// count + 1, the +1 covering the hash table's zero-value cell). Size partitions + 1;

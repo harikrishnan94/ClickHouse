@@ -4,10 +4,12 @@
 #include <Interpreters/PartitionedHashJoin/AmacRing.h>
 #include <Interpreters/RowRefs.h>
 #include <Common/Allocator.h>
+#include <Common/CacheLine.h>
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/Hash.h>
 #include <Common/HashTable/HashMap.h>
 
+#include <cmath>
 #include <cstring>
 #include <variant>
 
@@ -70,18 +72,103 @@ private:
     Allocator<false, false> heap;
 };
 
+/** The leaf grower: `HashTableGrowerWithPrecalculation` plus a fixed tail pad of always-present
+  * cells past the power-of-two region. The home cell and the load/growth rules are exactly the
+  * standard ones (the pad does not count as capacity), but a collision chain reaching the end of
+  * the power-of-two region continues into the pad instead of wrapping; the walk wraps only at
+  * the END OF THE PAD - reachable only through a chain longer than the pad, which a load factor
+  * of 0.5 makes astronomically rare (though not impossible: adversarially colliding keys can
+  * build such a chain, so the wrap MUST stay for correctness - dropping it entirely would turn
+  * hash flooding into unbounded walks past the allocation). Probe-side walks that verified
+  * post-build that no chain reached the pad's last cell (`collectLeafMapPointers`) drop their
+  * per-step wrap handling entirely: every lookup then terminates at an empty cell at or before
+  * the buffer's last cell, `++pos` with no mask and no bound check.
+  */
+template <size_t initial_size_degree = 8>
+class alignas(DB::CH_CACHE_LINE_SIZE) TailPaddedHashTableGrower
+{
+    UInt8 size_degree = initial_size_degree;
+    size_t precalculated_mask = (1ULL << initial_size_degree) - 1;
+    size_t precalculated_max_fill = 1ULL << (initial_size_degree - 1);
+    size_t precalculated_buf_size = (1ULL << initial_size_degree) + tail_pad;
+    static constexpr size_t max_size_degree = 23;
+
+    void recalculate()
+    {
+        precalculated_mask = (1ULL << size_degree) - 1;
+        precalculated_max_fill = 1ULL << (size_degree - 1);
+        precalculated_buf_size = (1ULL << size_degree) + tail_pad;
+    }
+
+public:
+    /// A chain longer than this spills past the pad and wraps (never legitimately: the
+    /// probability of a 64-cell chain at load 0.5 is negligible). 64 cells cost 1-3 KB per leaf.
+    static constexpr size_t tail_pad = 64;
+
+    static constexpr auto initial_count = 1ULL << initial_size_degree;
+
+    /// If collision resolution chains are contiguous, we can implement erase operation by moving the elements.
+    static constexpr auto performs_linear_probing_with_single_step = true;
+
+    /// The size of the hash table in the cells (the power-of-two region plus the tail pad).
+    size_t bufSize() const { return precalculated_buf_size; }
+
+    /// The home mask of the power-of-two region (NOT `bufSize() - 1`).
+    size_t mask() const { return precalculated_mask; }
+
+    /// From the hash value, get the cell number in the hash table.
+    size_t place(size_t x) const { return x & precalculated_mask; }
+
+    /// The next cell in the collision resolution chain: straight into the tail pad, wrapping
+    /// only at the pad's end.
+    size_t next(size_t pos) const
+    {
+        ++pos;
+        return pos == precalculated_buf_size ? 0 : pos;
+    }
+
+    /// Whether the hash table is sufficiently full (on the power-of-two capacity; the pad is
+    /// overflow room, not capacity).
+    bool overflow(size_t elems) const { return elems > precalculated_max_fill; }
+
+    void increaseSize()
+    {
+        size_degree += size_degree >= max_size_degree ? 1 : 2;
+        recalculate();
+    }
+
+    /// Set the buffer size by the number of elements in the hash table. Used when deserializing a hash table.
+    void set(size_t num_elems)
+    {
+        if (num_elems <= 1)
+            size_degree = initial_size_degree;
+        else if (initial_size_degree > static_cast<size_t>(log2(num_elems - 1)) + 2)
+            size_degree = initial_size_degree;
+        else
+            size_degree = static_cast<UInt8>(log2(num_elems - 1)) + 2;
+        recalculate();
+    }
+
+    void setBufSize(size_t buf_size_)
+    {
+        size_degree = static_cast<UInt8>(log2(buf_size_ - 1) + 1);
+        recalculate();
+    }
+};
+
 namespace PartitionedJoinMapsDetail
 {
 
 /** The leaf map type for a standard join hash map type, keeping every other template argument -
-  * cell layout, hash, grower - exactly as `HashJoin::MapsTemplate` declares it, with only the
-  * allocator rebound to `ZeroingHashTableAllocator` (see above). Deriving the leaf map types
-  * from the standard ones (instead of mirroring their declarations) means a master-side change
-  * of a cell type, hash function or grower propagates here automatically, and an incompatible
-  * restructuring breaks the build instead of silently diverging. The open-addressing maps
-  * additionally carry the resumable-cursor API of `ResumableHashMap` (the seed/step
-  * decomposition the AMAC build and probe rings drive); `FixedHashMap` has no collision chain
-  * to pipeline and keeps the plain interface.
+  * cell layout, hash - exactly as `HashJoin::MapsTemplate` declares it, with the allocator
+  * rebound to `ZeroingHashTableAllocator` (see above) and the grower to
+  * `TailPaddedHashTableGrower` (same home/load/growth math, tail-padded buffer). Deriving the
+  * leaf map types from the standard ones (instead of mirroring their declarations) means a
+  * master-side change of a cell type or hash function propagates here automatically, and an
+  * incompatible restructuring breaks the build instead of silently diverging. The
+  * open-addressing maps additionally carry the resumable-cursor API of `ResumableHashMap` (the
+  * seed/step decomposition the AMAC build and probe rings drive); `FixedHashMap` has no
+  * collision chain to pipeline and keeps the plain interface.
   */
 template <typename Map>
 struct LeafMap;
@@ -89,7 +176,7 @@ struct LeafMap;
 template <typename Key, typename Cell, typename Hash, typename Grower, typename Alloc>
 struct LeafMap<HashMapTable<Key, Cell, Hash, Grower, Alloc>>
 {
-    using Type = ResumableHashMap<HashMapTable<Key, Cell, Hash, Grower, ZeroingHashTableAllocator>>;
+    using Type = ResumableHashMap<HashMapTable<Key, Cell, Hash, TailPaddedHashTableGrower<>, ZeroingHashTableAllocator>>;
 };
 
 template <typename Key, typename Mapped, typename Cell, typename Size, typename Alloc, size_t size_bits>

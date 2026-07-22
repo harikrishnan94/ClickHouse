@@ -60,10 +60,14 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
         return RowRef::fromWord(word);
 }
 
+/// The grower contract of the descriptor-based lookups below: linear probing with a
+/// power-of-two home mask and the tail-padded buffer of `TailPaddedHashTableGrower` (the walk
+/// runs into the pad and wraps only at its end; see the grower's comment). Every leaf map is
+/// built on it; a map on any other grower must keep the map-resolved paths.
 template <typename Grower>
-inline constexpr bool is_power_of_two_linear_grower = false;
+inline constexpr bool is_tail_padded_linear_grower = false;
 template <size_t initial_size_degree>
-inline constexpr bool is_power_of_two_linear_grower<HashTableGrowerWithPrecalculation<initial_size_degree>> = true;
+inline constexpr bool is_tail_padded_linear_grower<TailPaddedHashTableGrower<initial_size_degree>> = true;
 
 /** The AMAC find policy of the two-phase probe (phase A): out-of-order lookups that only fill
   * the per-row result arrays - the matched cell's mapped value copied by value into `found_word`
@@ -75,14 +79,18 @@ inline constexpr bool is_power_of_two_linear_grower<HashTableGrowerWithPrecalcul
   * scheme, storing its bits in the same array. Nothing is emitted here; phase B consumes the
   * results in row order - the flagless word-mapped lazy shapes through the degenerate cursor
   * pass (`word_loop`), the rest through the standard `processMatch`.
-  * One ring serves MANY maps - each row's leaf. The leaf's address material - the cell buffer
-  * and the grower mask - is resolved once at admit from the flat descriptor array and carried in
-  * the slot, so a steady visit dereferences nothing but the cell itself and the probe key: the
-  * map headers, scattered across as many heap objects as there are partitions, would otherwise
-  * sit on the address chain of every visit (2-3 dependent loads; the flat loop got the same fix
-  * in descriptor form). The selector variant is a template parameter for the same reason - it
-  * was a per-visit kind branch. Cell prefetches use read intent and low locality: a probed cell
-  * is not revisited.
+  * One ring serves MANY maps - each row's leaf. The leaf's address material is resolved once at
+  * admit from the flat descriptor array and carried in the slot as the RESOLVED CELL POINTER,
+  * so a steady visit dereferences nothing but the cell itself and the probe key: the map
+  * headers, scattered across as many heap objects as there are partitions, would otherwise sit
+  * on the address chain of every visit (2-3 dependent loads; the flat loop got the same fix in
+  * descriptor form). The collision walk is a bare `++cell` - no mask, no bound check: the leaf
+  * buffers are tail-padded (`TailPaddedHashTableGrower`) and the engagement gate requires the
+  * post-build check that no chain reached the pad's last cell, so every walk terminates at an
+  * empty cell at or before the buffer's last cell (a wrapped plan - practically never - keeps
+  * the wrap-aware flat loop instead). The selector variant is a template parameter for the same
+  * reason - it was a per-visit kind branch. Cell prefetches use read intent and low locality: a
+  * probed cell is not revisited.
   */
 template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
 struct RoutedAmacFindPolicy
@@ -95,22 +103,41 @@ struct RoutedAmacFindPolicy
     static constexpr bool mapped_by_value = amac_mapped_fits_word<typename MapNonConst::mapped_type>;
 
     /// The slot-register walk below is `HashMapTable::find` only under the contract of the flat
-    /// lookup (`FlatLookupMap`): a power-of-two linear-probing grower - the home cell is
-    /// `hash & mask`, the walk step `(pos + 1) & mask` - and stateless cells, whose zero-check
-    /// and key-compare read nothing through the map object. Every map the AMAC gate admits
-    /// satisfies it; one that does not must keep the map-resolved cursor instead.
-    static_assert(is_power_of_two_linear_grower<typename MapNonConst::grower_type>);
+    /// lookup (`FlatLookupMap`): the tail-padded linear grower - the home cell is `hash & mask`,
+    /// the walk `++pos` into the pad - and stateless cells, whose zero-check and key-compare
+    /// read nothing through the map object. Every map the AMAC gate admits satisfies it; one
+    /// that does not must keep the map-resolved cursor instead.
+    static_assert(is_tail_padded_linear_grower<typename MapNonConst::grower_type>);
     static_assert(std::is_same_v<typename Cell::State, HashTableNoState>);
     static constexpr HashTableNoState no_state{};
 
-    /// The leaf id stays for the record path (the used-flags base of the leaf).
-    struct Slot : public AmacRingSlot<store_hash>
+    /** The compact find slot: 16 bytes for the cheap-key cells, 24 with the saved string hash.
+      * The resolved cell pointer replaces the {buffer, mask, position} triple, and the
+      * tail-padded buffers plus the no-wrapped-chain gate make the walk a bare `++cell`.
+      * `cell == nullptr` is the inactive sentinel, freeing `row` for the full 16-bit range of
+      * the driver's 64K-row chunks. The leaf id stays for the record path (the used-flags base
+      * of the leaf); the hit position for the used-flags offset is recovered as `cell - buf`
+      * through the descriptor, once per matched row.
+      */
+    struct SlotBase
     {
+        const Cell * cell = nullptr; /// the cell the next visit reads; nullptr == inactive
+        UInt16 row = 0; /// chunk-local probe row
         UInt16 leaf = 0;
-        const Cell * buf = nullptr;
-        size_t mask = 0;
+
+        bool isActive() const { return cell != nullptr; }
+        void deactivate() { cell = nullptr; }
     };
-    static_assert(sizeof(Slot) == (store_hash ? 48 : 32));
+    struct SlotWithHash : public SlotBase
+    {
+        size_t hash = 0;
+    };
+    using Slot = std::conditional_t<store_hash, SlotWithHash, SlotBase>;
+    static_assert(sizeof(Slot) == (store_hash ? 24 : 16));
+
+    /// The driver runs the find pass in chunks of this many rows, so the slot's row index fits
+    /// 16 bits; the default probe block (65409 rows) is a single chunk.
+    static constexpr size_t chunk_rows_max = 1uz << 16;
 
     /// A by-value copy of a trivially copyable key getter keeps its key-column pointer a plain
     /// field of the (frame-local) policy instead of two dependent loads behind a reference.
@@ -156,8 +183,10 @@ struct RoutedAmacFindPolicy
             found_offset[row] = map.offsetInternal(cell) + flag_base_data[leaf];
     }
 
-    /// A ring hit: the cell is `slot.buf + slot.pos` and known non-zero, so its used-flags
-    /// offset is `slot.pos + 1` - `offsetInternal` without touching the map.
+    /// A ring hit: the cell is known non-zero, so its used-flags offset is its buffer position
+    /// + 1 - `offsetInternal` without touching the map. The position left the slot with the
+    /// pointer-walk layout; recovering it costs one descriptor load on this once-per-matched-row
+    /// path only (and only for the flagged shapes).
     ALWAYS_INLINE void recordHit(const Slot & slot, const Cell * cell)
     {
         if constexpr (mapped_by_value)
@@ -165,7 +194,10 @@ struct RoutedAmacFindPolicy
         else
             found_word[slot.row] = reinterpret_cast<UInt64>(&cell->getMapped());
         if constexpr (need_flags)
-            found_offset[slot.row] = slot.pos + 1 + flag_base_data[slot.leaf];
+        {
+            const auto pos = static_cast<size_t>(cell - static_cast<const Cell *>(leaf_descs[slot.leaf].buf));
+            found_offset[slot.row] = pos + 1 + flag_base_data[slot.leaf];
+        }
     }
 
     ALWAYS_INLINE bool start(Slot & slot, size_t i)
@@ -188,20 +220,18 @@ struct RoutedAmacFindPolicy
         }
         const size_t hash = map0.hash(key);
         const LeafMapDesc & desc = leaf_descs[leaf];
-        slot.pos = hash & desc.mask;
-        slot.row = static_cast<UInt32>(i);
+        slot.cell = static_cast<const Cell *>(desc.buf) + (hash & desc.mask);
+        slot.row = static_cast<UInt16>(i);
+        slot.leaf = static_cast<UInt16>(leaf);
         if constexpr (store_hash)
             slot.hash = hash;
-        slot.leaf = static_cast<UInt16>(leaf);
-        slot.buf = static_cast<const Cell *>(desc.buf);
-        slot.mask = desc.mask;
-        __builtin_prefetch(slot.buf + slot.pos, 0, 1);
+        __builtin_prefetch(slot.cell, 0, 1);
         return true;
     }
 
     ALWAYS_INLINE AmacStepResult step(Slot & slot)
     {
-        const Cell * cell = slot.buf + slot.pos;
+        const Cell * cell = slot.cell;
         if (cell->isZero(no_state))
         {
             found_word[slot.row] = 0;
@@ -220,22 +250,25 @@ struct RoutedAmacFindPolicy
             recordHit(slot, cell);
             return AmacStepResult::Done;
         }
-        slot.pos = (slot.pos + 1) & slot.mask;
-        __builtin_prefetch(slot.buf + slot.pos, 0, 1);
+        /// No wrap and no bound check: the buffer is tail-padded and the engagement gate
+        /// verified no chain reached its last cell, so an empty cell terminates the walk at or
+        /// before it (see `TailPaddedHashTableGrower`).
+        ++slot.cell;
+        __builtin_prefetch(slot.cell, 0, 1);
         return AmacStepResult::Advance;
     }
 };
 
 /** The compile-time gate of the flat-descriptor lookup: an open-addressing map whose find needs
-  * nothing from the map object itself - a power-of-two linear-probing grower, so the cell
-  * address is `hash & mask` and the walk step `(pos + 1) & mask`, both computable from the
+  * nothing from the map object itself - the tail-padded linear grower, so the cell address is
+  * `hash & mask` and the walk `++pos` with the wrap at the pad's end, both computable from the
   * 16-byte leaf descriptor, and stateless cells, whose `isZero`/`keyEquals` read only the cell
   * and the key. The fixed-size maps (`key8`/`key16`) have no cursor API; the string, `hashed`
   * and LowCardinality getters are excluded by the caller's cheap-key gate.
   */
 template <typename Map>
 concept FlatLookupMap = AmacResumableMap<Map> && requires {
-    requires is_power_of_two_linear_grower<typename Map::grower_type>;
+    requires is_tail_padded_linear_grower<typename Map::grower_type>;
     requires std::is_same_v<typename Map::cell_type::State, HashTableNoState>;
 };
 
@@ -365,8 +398,12 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     constexpr bool flat_lookup_supported = prefetch_supported && FlatLookupMap<MapNonConst>;
     bool use_amac = false;
     if constexpr (amac_supported)
+        /// The last conjunct guards the ring's wrap-free `++cell` walk (the find pass itself
+        /// runs in 64K-row chunks, so the row count needs no bound): a build where some chain
+        /// reached a leaf buffer's last pad cell - practically never - keeps the wrap-aware
+        /// flat/plain loops below.
         use_amac = amac_enabled && added_columns.enable_prefetch && ht_total_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
-            && rows < AmacRingSlot<false>::inactive_row;
+            && !any_leaf_chain_wrapped;
 
     /// Routed look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC
     /// pass; same engagement threshold (the leaf tables are cache-sized by design, so both fire
@@ -703,7 +740,14 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
                         const Cell * buf = static_cast<const Cell *>(desc.buf);
                         size_t pos = hash & desc.mask;
                         while (!buf[pos].isZero(no_state) && !buf[pos].keyEquals(key, hash, no_state))
-                            pos = (pos + 1) & desc.mask;
+                        {
+                            /// The tail-padded walk (`TailPaddedHashTableGrower`): straight
+                            /// through the pad, wrapping only at its end - this loop is also
+                            /// the fallback for the wrapped-chain plans, so the wrap stays.
+                            ++pos;
+                            if (unlikely(pos == desc.mask + 1 + MapNonConst::grower_type::tail_pad))
+                                pos = 0;
+                        }
                         if (!buf[pos].isZero(no_state))
                         {
                             cell = buf + pos;
@@ -751,28 +795,37 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
                 results.found_offset.resize(rows);
                 found_offset_data = results.found_offset.data();
             }
+            /// The pass runs in 64K-row chunks so the compact slot's row index fits 16 bits;
+            /// the selector view and the result arrays are re-based per chunk (the row-indexed
+            /// side arrays - skip bytes, leaf ids - are indexed by the selector's global row and
+            /// need no re-base). The default probe block (65409 rows) is a single chunk.
             auto amac_find = [&]<bool selector_is_range>()
             {
+                using Policy = RoutedAmacFindPolicy<KeyGetter, Map, join_features.need_flags, selector_is_range>;
                 size_t selector_base = 0;
                 const UInt64 * selector_indexes = nullptr;
                 if constexpr (selector_is_range)
                     selector_base = selector.getRange().first;
                 else
                     selector_indexes = selector.getIndexes().getData().data();
-                RoutedAmacFindPolicy<KeyGetter, Map, join_features.need_flags, selector_is_range> policy{
-                    .key_getter = key_getter,
-                    .map0 = map_at(0),
-                    .leaf_maps_data = leaf_maps_data,
-                    .leaf_descs = leaf_map_descs.data(),
-                    .leaf_ids = leaf_ids,
-                    .selector_base = selector_base,
-                    .selector_indexes = selector_indexes,
-                    .skip_data = skip_data,
-                    .flag_base_data = flag_base_data,
-                    .pool = pool,
-                    .found_word = results.found_word.data(),
-                    .found_offset = found_offset_data};
-                amacRun(policy, rows);
+                for (size_t chunk_begin = 0; chunk_begin < rows; chunk_begin += Policy::chunk_rows_max)
+                {
+                    const size_t chunk_rows = std::min(Policy::chunk_rows_max, rows - chunk_begin);
+                    Policy policy{
+                        .key_getter = key_getter,
+                        .map0 = map_at(0),
+                        .leaf_maps_data = leaf_maps_data,
+                        .leaf_descs = leaf_map_descs.data(),
+                        .leaf_ids = leaf_ids,
+                        .selector_base = selector_base + chunk_begin,
+                        .selector_indexes = selector_indexes ? selector_indexes + chunk_begin : nullptr,
+                        .skip_data = skip_data,
+                        .flag_base_data = flag_base_data,
+                        .pool = pool,
+                        .found_word = results.found_word.data() + chunk_begin,
+                        .found_offset = found_offset_data ? found_offset_data + chunk_begin : nullptr};
+                    amacRun(policy, chunk_rows);
+                }
             };
             if (selector.isContinuousRange())
                 amac_find.template operator()<true>();
