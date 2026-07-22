@@ -272,6 +272,23 @@ concept FlatLookupMap = AmacResumableMap<Map> && requires {
     requires std::is_same_v<typename Map::cell_type::State, HashTableNoState>;
 };
 
+/** The wide multi-column fixed keys (`keys128`/`keys256`) probe through the flat loop with the
+  * look-ahead prefetcher instead of the AMAC find ring. Measured on the phase-2 K1/K2 losing
+  * cells (m8g.24xlarge, Neoverse-V2): the ring pays a per-visit stack round-trip of the 16/32-
+  * byte key plus the limb-by-limb compare and slot bookkeeping, which costs more than its
+  * miss overlap recovers over the flat loop's look-ahead prefetch - the worst loss
+  * (`D1M keys256 m_p=64 T8`, -38% vs `parallel_hash`) turns into a +7% win, `D32M keys256 T8`
+  * -7% into +15%, with probe-lookup thread-time at parity. The single-column numeric getters
+  * (the ring beats look-ahead: 99 vs 109 ms on the `D32M key64 T16` anchor) and the string
+  * getters (no look-ahead at all; AMAC is the only miss-overlap mechanism, 328 vs 524 ms on
+  * `D32M String16 h=0.25 T8`) keep the ring.
+  */
+template <typename T>
+inline constexpr bool is_wide_fixed_join_key_getter = false;
+template <typename Value, typename Key, typename Mapped, bool has_nullable, bool has_low_cardinality, bool use_cache, bool need_offset>
+inline constexpr bool is_wide_fixed_join_key_getter<
+    ColumnsHashing::HashMethodKeysFixed<Value, Key, Mapped, has_nullable, has_low_cardinality, use_cache, need_offset>> = sizeof(Key) > 8;
+
 /** The routed probe: the single-map `joinRightColumns` loop with one difference - each row's map
   * is the leaf its recomputed route word points at. Probe blocks are never scattered, buffered or
   * materialized (G2); everything around the loop (`AddedColumns`, `processMatch`, the lazy
@@ -391,7 +408,7 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
     /// ring is pure overhead), and a row floor so tiny blocks keep the plain loop (G6); the
     /// loops below serve those regimes and the AMAC-incapable getters.
     using MapNonConst = std::remove_const_t<Map>;
-    constexpr bool amac_supported = amac_join_supported<KeyGetter, MapNonConst>;
+    constexpr bool amac_supported = amac_join_supported<KeyGetter, MapNonConst> && !is_wide_fixed_join_key_getter<KeyGetter>;
     constexpr bool prefetch_supported = join_prefetch_supported<KeyGetter, Map>;
     /// The cheap-key open-addressing shapes run the flat-descriptor loop below instead of the
     /// plain routed loop.

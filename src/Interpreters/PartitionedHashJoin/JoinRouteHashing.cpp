@@ -6,6 +6,8 @@
 #include <Interpreters/PartitionedHashJoin/DenseHyperLogLog.h>
 #include <Common/PODArray.h>
 
+#include <algorithm>
+
 namespace DB
 {
 
@@ -121,6 +123,33 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
     columns.reserve(key_columns.size());
     for (const auto * column : key_columns)
         columns.emplace_back(*column, rows);
+
+    /// All-fixed fast path (multi-column numeric keys, e.g. `keys128`/`keys256`): fold each
+    /// row with the accumulator in a register, in one pass over the rows. The column-outer
+    /// loop below would instead stream the accumulator array through memory once per column
+    /// (~4x the memops for `keys256`) - measured 6.6% of the probe query's CPU on the
+    /// dimension-join loss cell. The per-row fold chain (all columns in clause order) is
+    /// bit-identical to the column-outer accumulation, preserving the build/probe contract.
+    if (std::ranges::all_of(columns, [](const RouteColumn & c) { return c.kind == RouteColumnKind::Fixed; }))
+    {
+        struct FixedSource
+        {
+            const char * data;
+            size_t width;
+        };
+        std::vector<FixedSource> sources; /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+        sources.reserve(columns.size());
+        for (const auto & column : columns)
+            sources.push_back({column.data, column.width});
+        for (size_t i = 0; i < rows; ++i)
+        {
+            UInt64 h = 0;
+            for (const auto & source : sources)
+                h = ColumnsScatter::foldBytes(h, source.data + i * source.width, source.width);
+            sink(i, ColumnsScatter::finalizeRoute(h));
+        }
+        return;
+    }
 
     /// Column-outer accumulation keeps the per-column dispatch out of the row loop; the per-row
     /// fold chain (all columns in clause order) is the same as a row-outer loop would produce.

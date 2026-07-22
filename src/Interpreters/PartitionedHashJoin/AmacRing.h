@@ -239,7 +239,12 @@ void amacRun(Policy & policy_arg, size_t rows)
 
     /// Pull pending rows into a slot until one of them enters the ring (rows handled
     /// synchronously by `start` leave the slot free) or the rows are exhausted.
-    auto refill = [&](Policy::Slot & slot)
+    /// Force-inlined: as an out-of-line call (measured: clang leaves it outlined for the
+    /// multi-column fixed-key policies) it escapes the frame-local policy copy's address,
+    /// which defeats the SSA promotion described above and reintroduces per-visit stack
+    /// reloads of every policy invariant in the steady loop - plus one full call per
+    /// completed row.
+    auto refill = [&](Policy::Slot & slot) __attribute__((always_inline))
     {
         while (next < rows)
         {
