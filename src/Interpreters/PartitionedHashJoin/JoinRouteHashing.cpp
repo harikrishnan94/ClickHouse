@@ -7,6 +7,8 @@
 #include <Common/PODArray.h>
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 
 namespace DB
 {
@@ -141,6 +143,56 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
         sources.reserve(columns.size());
         for (const auto & column : columns)
             sources.push_back({column.data, column.width});
+
+        /// The multi-column numeric keys are almost always all-8-byte columns (`keys128` =
+        /// 2xUInt64, `keys256` = 4xUInt64, the `hashed` shapes 8x). With the width only known
+        /// at runtime the row loop above re-evaluates `foldBytes`' width loop AND its tail
+        /// switch per column per row, and reloads the source pointer/width pair from the
+        /// vector each time - measured 11-19% of the probe query's cycles as the row-loop
+        /// hot spot. A compile-time width-8 fold (bit-identical: `foldBytes(h, p, 8)` is
+        /// exactly one full `mixStep` step with no tail) with the column count unrolled for
+        /// the common counts keeps the column pointers in registers and the fold branch-free.
+        if (std::ranges::all_of(sources, [](const FixedSource & s) { return s.width == 8; }))
+        {
+            auto fold_all_w8 = [&]<size_t n_columns>()
+            {
+                std::array<const char *, n_columns> data;
+                for (size_t c = 0; c < n_columns; ++c)
+                    data[c] = sources[c].data;
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    UInt64 h = 0;
+                    for (size_t c = 0; c < n_columns; ++c)
+                    {
+                        UInt64 x;
+                        memcpy(&x, data[c] + i * 8, sizeof(x));
+                        h = ColumnsScatter::mixStep(h, x);
+                    }
+                    sink(i, ColumnsScatter::finalizeRoute(h));
+                }
+            };
+            switch (sources.size())
+            {
+                case 2: fold_all_w8.template operator()<2>(); return;
+                case 3: fold_all_w8.template operator()<3>(); return;
+                case 4: fold_all_w8.template operator()<4>(); return;
+                default: {
+                    for (size_t i = 0; i < rows; ++i)
+                    {
+                        UInt64 h = 0;
+                        for (const auto & source : sources)
+                        {
+                            UInt64 x;
+                            memcpy(&x, source.data + i * 8, sizeof(x));
+                            h = ColumnsScatter::mixStep(h, x);
+                        }
+                        sink(i, ColumnsScatter::finalizeRoute(h));
+                    }
+                    return;
+                }
+            }
+        }
+
         for (size_t i = 0; i < rows; ++i)
         {
             UInt64 h = 0;
