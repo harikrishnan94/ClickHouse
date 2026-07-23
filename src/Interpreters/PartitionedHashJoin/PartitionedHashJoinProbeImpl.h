@@ -111,31 +111,47 @@ struct RoutedAmacFindPolicy
     static_assert(std::is_same_v<typename Cell::State, HashTableNoState>);
     static constexpr HashTableNoState no_state{};
 
-    /** The compact find slot: 16 bytes for the cheap-key cells, 24 with the saved string hash.
-      * The resolved cell pointer replaces the {buffer, mask, position} triple, and the
-      * tail-padded buffers plus the no-wrapped-chain gate make the walk a bare `++cell`.
-      * `cell == nullptr` is the inactive sentinel, freeing `row` for the full 16-bit range of
-      * the driver's 64K-row chunks. The leaf id stays for the record path (the used-flags base
-      * of the leaf); the hit position for the used-flags offset is recovered as `cell - buf`
-      * through the descriptor, once per matched row.
+    /// The key exactly as the map compares it (`keyHolderGetKey` of an lvalue holder, matching
+    /// the call sites): the fixed keys by value, the string keys as a view into the probe
+    /// column - trivially copyable across the whole AMAC getter set (the serialized getter is
+    /// excluded by the engagement gate, and the arena-backed string holder persists nothing on
+    /// the find path).
+    using KeyHolder = std::remove_reference_t<decltype(std::declval<KeyGetter &>().getKeyHolder(0uz, std::declval<Arena &>()))>;
+    using StoredKey = std::decay_t<decltype(keyHolderGetKey(std::declval<KeyHolder &>()))>;
+    static_assert(std::is_trivially_copyable_v<StoredKey>);
+
+    /** The find-ring state, one parallel array per per-row field (see `amacRun`). The resolved
+      * cell pointer replaces the {buffer, mask, position} triple, and the tail-padded buffers
+      * plus the no-wrapped-chain gate make the walk a bare `++cell`. `cell == nullptr` is the
+      * inactive sentinel (value-initialization = all-inactive), freeing `row` for the full
+      * 16-bit range of the driver's 64K-row chunks. The leaf id stays for the record path (the
+      * used-flags base of the leaf); the hit position for the used-flags offset is recovered as
+      * `cell - buf` through the descriptor, once per matched row. The key is packed once at
+      * admit and read per visit: re-fetching it through `getKeyHolder` re-packed the wide fixed
+      * keys (keys128/keys256) from the column pointers on EVERY visit - measured as the dominant
+      * per-visit cost of the wide-key ring (the K1/K2 lookup-phase regression).
       */
-    struct SlotBase
+    template <size_t ring_size>
+    struct RingBase
     {
-        const Cell * cell = nullptr; /// the cell the next visit reads; nullptr == inactive
-        UInt16 row = 0; /// chunk-local probe row
-        UInt16 leaf = 0;
+        std::array<const Cell *, ring_size> cell{}; /// the cell the next visit reads; nullptr == inactive
+        std::array<UInt16, ring_size> row{}; /// chunk-local probe row
+        std::array<UInt16, ring_size> leaf{};
+        alignas(64) std::array<StoredKey, ring_size> key{};
 
-        bool isActive() const { return cell != nullptr; }
-        void deactivate() { cell = nullptr; }
+        bool isActive(size_t s) const { return cell[s] != nullptr; }
+        void deactivate(size_t s) { cell[s] = nullptr; }
+        UInt32 rowAt(size_t s) const { return row[s]; }
     };
-    struct SlotWithHash : public SlotBase
+    template <size_t ring_size>
+    struct RingWithHash : public RingBase<ring_size>
     {
-        size_t hash = 0;
+        std::array<size_t, ring_size> hash{};
     };
-    using Slot = std::conditional_t<store_hash, SlotWithHash, SlotBase>;
-    static_assert(sizeof(Slot) == (store_hash ? 24 : 16));
+    template <size_t ring_size>
+    using Ring = std::conditional_t<store_hash, RingWithHash<ring_size>, RingBase<ring_size>>;
 
-    /// The driver runs the find pass in chunks of this many rows, so the slot's row index fits
+    /// The driver runs the find pass in chunks of this many rows, so the ring's row index fits
     /// 16 bits; the default probe block (65409 rows) is a single chunk.
     static constexpr size_t chunk_rows_max = 1uz << 16;
 
@@ -184,23 +200,24 @@ struct RoutedAmacFindPolicy
     }
 
     /// A ring hit: the cell is known non-zero, so its used-flags offset is its buffer position
-    /// + 1 - `offsetInternal` without touching the map. The position left the slot with the
+    /// + 1 - `offsetInternal` without touching the map. The position left the ring with the
     /// pointer-walk layout; recovering it costs one descriptor load on this once-per-matched-row
     /// path only (and only for the flagged shapes).
-    ALWAYS_INLINE void recordHit(const Slot & slot, const Cell * cell)
+    ALWAYS_INLINE void recordHit(size_t row, size_t leaf [[maybe_unused]], const Cell * cell)
     {
         if constexpr (mapped_by_value)
-            found_word[slot.row] = mappedWordOf(cell->getMapped());
+            found_word[row] = mappedWordOf(cell->getMapped());
         else
-            found_word[slot.row] = reinterpret_cast<UInt64>(&cell->getMapped());
+            found_word[row] = reinterpret_cast<UInt64>(&cell->getMapped());
         if constexpr (need_flags)
         {
-            const auto pos = static_cast<size_t>(cell - static_cast<const Cell *>(leaf_descs[slot.leaf].buf));
-            found_offset[slot.row] = pos + 1 + flag_base_data[slot.leaf];
+            const auto pos = static_cast<size_t>(cell - static_cast<const Cell *>(leaf_descs[leaf].buf));
+            found_offset[row] = pos + 1 + flag_base_data[leaf];
         }
     }
 
-    ALWAYS_INLINE bool start(Slot & slot, size_t i)
+    template <typename RingT>
+    ALWAYS_INLINE bool start(RingT & ring, size_t s, size_t i)
     {
         const size_t ind = indexAt(i);
         if (skip_data && skip_data[ind])
@@ -219,42 +236,59 @@ struct RoutedAmacFindPolicy
             return false;
         }
         const size_t hash = map0.hash(key);
+        ring.key[s] = key;
         const LeafMapDesc & desc = leaf_descs[leaf];
-        slot.cell = static_cast<const Cell *>(desc.buf) + (hash & desc.mask);
-        slot.row = static_cast<UInt16>(i);
-        slot.leaf = static_cast<UInt16>(leaf);
+        const Cell * cell = static_cast<const Cell *>(desc.buf) + (hash & desc.mask);
+        ring.cell[s] = cell;
+        ring.row[s] = static_cast<UInt16>(i);
+        ring.leaf[s] = static_cast<UInt16>(leaf);
         if constexpr (store_hash)
-            slot.hash = hash;
-        __builtin_prefetch(slot.cell, 0, 1);
+            ring.hash[s] = hash;
+        prefetchCell(cell);
         return true;
     }
 
-    ALWAYS_INLINE AmacStepResult step(Slot & slot)
+    /// High-locality (L1) prefetch of the WHOLE cell. Locality 1 ("the cell is not revisited")
+    /// compiles to `prfm pldl3keep` on AArch64 - it staged the line in L3 only, and the visit's
+    /// demand load then paid the whole L1-miss latency at use; measured on the keys256 anchor as
+    /// the ring's dominant stall (see the K1/K2 analysis). Not revisiting the line makes L1
+    /// pollution cheap, but the latency of an L3-resident demand load is not. Cells wider than
+    /// 24 bytes regularly straddle two lines (a 40-byte keys256 cell does on ~61% of positions);
+    /// the second line was unprefetched and its limb compares stalled the same way, so prefetch
+    /// the cell's last byte's line too.
+    static ALWAYS_INLINE void prefetchCell(const Cell * cell)
     {
-        const Cell * cell = slot.cell;
+        __builtin_prefetch(cell, 0, 3);
+        if constexpr (sizeof(Cell) > 24)
+            __builtin_prefetch(reinterpret_cast<const char *>(cell) + sizeof(Cell) - 1, 0, 3);
+    }
+
+    template <typename RingT>
+    ALWAYS_INLINE AmacStepResult step(RingT & ring, size_t s)
+    {
+        const Cell * cell = ring.cell[s];
         if (cell->isZero(no_state))
         {
-            found_word[slot.row] = 0;
+            found_word[ring.row[s]] = 0;
             return AmacStepResult::Done;
         }
-        const size_t ind = indexAt(slot.row);
-        auto && key_holder = key_getter.getKeyHolder(ind, pool);
-        const auto & key = keyHolderGetKey(key_holder);
+        const StoredKey & key = ring.key[s];
         size_t hash = 0;
         if constexpr (store_hash)
-            hash = slot.hash;
+            hash = ring.hash[s];
         else
             hash = map0.hash(key);
         if (cell->keyEquals(key, hash, no_state))
         {
-            recordHit(slot, cell);
+            recordHit(ring.row[s], ring.leaf[s], cell);
             return AmacStepResult::Done;
         }
         /// No wrap and no bound check: the buffer is tail-padded and the engagement gate
         /// verified no chain reached its last cell, so an empty cell terminates the walk at or
         /// before it (see `TailPaddedHashTableGrower`).
-        ++slot.cell;
-        __builtin_prefetch(slot.cell, 0, 1);
+        ++cell;
+        ring.cell[s] = cell;
+        prefetchCell(cell);
         return AmacStepResult::Advance;
     }
 };
@@ -271,28 +305,6 @@ concept FlatLookupMap = AmacResumableMap<Map> && requires {
     requires is_tail_padded_linear_grower<typename Map::grower_type>;
     requires std::is_same_v<typename Map::cell_type::State, HashTableNoState>;
 };
-
-/** The wide multi-column fixed keys (`keys128`/`keys256`) mostly probe through the flat loop
-  * with the look-ahead prefetcher instead of the AMAC find ring: the ring pays a per-visit
-  * stack round-trip of the 16/32-byte key plus the limb-by-limb compare and slot bookkeeping,
-  * which costs more than its miss overlap recovers while the leaf tables stay near-L2-resident.
-  * Measured on the phase-2 K1/K2 losing cells (m8g.24xlarge, Neoverse-V2): the worst loss
-  * (`D1M keys256 m_p=64 T8`, -38% vs `parallel_hash`) turns into a +7% win, `D32M keys256 T8`
-  * -7% into +11%, with probe-lookup thread-time at parity. The exception is the very top of
-  * the cardinality ladder: the leaf count is capped, so past ~64M build keys each leaf itself
-  * is several times L2 (6-10 MiB at 128M) and nearly every lookup misses to DRAM - there the
-  * ring's 32 in-flight rows overlap misses deeper than the look-ahead prefetch and win by
-  * 4-8% (e.g. `D128M keys256 T8` 2827 vs 2943 ms); the per-leaf-size gate below keeps the
-  * ring for that regime. The single-column numeric getters (the ring beats look-ahead:
-  * 99 vs 109 ms on the `D32M key64 T16` anchor) and the string getters (no look-ahead at all;
-  * AMAC is the only miss-overlap mechanism, 328 vs 524 ms on `D32M String16 h=0.25 T8`)
-  * keep the ring unconditionally.
-  */
-template <typename T>
-inline constexpr bool is_wide_fixed_join_key_getter = false;
-template <typename Value, typename Key, typename Mapped, bool has_nullable, bool has_low_cardinality, bool use_cache, bool need_offset>
-inline constexpr bool is_wide_fixed_join_key_getter<
-    ColumnsHashing::HashMethodKeysFixed<Value, Key, Mapped, has_nullable, has_low_cardinality, use_cache, need_offset>> = sizeof(Key) > 8;
 
 /** The routed probe: the single-map `joinRightColumns` loop with one difference - each row's map
   * is the leaf its recomputed route word points at. Probe blocks are never scattered, buffered or
@@ -427,14 +439,16 @@ size_t PartitionedHashJoin::routedJoinRightColumns(AddedColumnsType & added_colu
         /// flat/plain loops below.
         use_amac = amac_enabled && added_columns.enable_prefetch && ht_total_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows
             && !any_leaf_chain_wrapped;
-        if constexpr (is_wide_fixed_join_key_getter<KeyGetter>)
-        {
-            /// Wide fixed keys ride the flat loop until the leaves themselves are deep in DRAM
-            /// (see `is_wide_fixed_join_key_getter`). The measured crossover on Neoverse-V2 sits
-            /// between 2.5x and 3x L2 per leaf; `getMinBytesForPrefetchInJoin` is the L2 size.
-            const size_t leaf_count = std::max<size_t>(1, leaf_map_ptrs.size());
-            use_amac = use_amac && (ht_total_bytes / leaf_count) >= 3 * getMinBytesForPrefetchInJoin();
-        }
+        /// The wide fixed keys (`keys128`/`keys256`) used to ride the flat loop here unless the
+        /// leaves were DRAM-deep: with the key re-packed from the column pointers on every ring
+        /// visit and the cell only L3-staged by the old low-locality prefetch, the ring lost to
+        /// the look-ahead-prefetched flat loop while the leaves stayed cache-resident. Both
+        /// defects are fixed (the ring reads the key packed once at admit from its stored-key
+        /// array, and `prefetchCell` stages every cell line into L1), and the measured picture
+        /// inverted: on the former worst cell (`D1M keys256 m_p=64 T8`, Neoverse-V2) the ring's
+        /// lookup runs 35% faster than the flat loop, and the K1/K2 grid shows -14..-56%
+        /// lookup thread-time at every cardinality with no regression elsewhere - so the ring
+        /// is unconditional again.
     }
 
     /// Routed look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC

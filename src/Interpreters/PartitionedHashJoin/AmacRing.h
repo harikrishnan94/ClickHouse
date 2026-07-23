@@ -21,8 +21,9 @@ namespace DB
   *  - `ResumableHashMap` - the leaf hash-table type with the monolithic emplace/find decomposed
   *    into a resumable cursor: seed (`hash` + `cursorPlace` + prefetch) and step (inspect ONE
   *    cell: `cursorCellIsEmpty` / `cursorKeyEquals` -> done, or `cursorNext` + prefetch).
-  *  - `AmacRingSlot` - the per-row ring state, kept minimal (a fat slot spills the ring state to
-  *    the stack and kills the memory-level parallelism the ring exists for).
+  *  - the policy's `Ring` - the per-row ring state as parallel arrays (struct-of-arrays), kept
+  *    minimal (fat ring state spills to the stack and kills the memory-level parallelism the
+  *    ring exists for).
   *  - `amacRun` - the policy driver with the steady/drain split and the growth cancellation
   *    point (`amacDrainAndGrow`).
   *
@@ -102,36 +103,9 @@ struct ResumableHashMap : public Base
 template <typename Cell>
 constexpr bool cell_stores_hash = requires(const Cell & cell) { cell.saved_hash; };
 
-/** A ring slot: the resumable cursor position and the row it belongs to. Everything recomputable
-  * from the row index (the key, the selector index) is recomputed per visit, and per-section
-  * invariants (map, locators, key getter) live in the policy - measured slot minimalism. A policy
-  * may extend its slot with address material resolved once at admit (the routed probe carries
-  * the leaf's resolved cell pointer) when the steady step would otherwise re-resolve it per
-  * visit. `PosT` is the cell-index width: a policy whose buffer provably stays within 2^32
-  * cells for the whole run (growths included) narrows it to `UInt32` for the 8-byte slot.
-  */
-template <bool store_hash, typename PosT = size_t>
-struct AmacRingSlot
-{
-    static constexpr UInt32 inactive_row = std::numeric_limits<UInt32>::max();
-
-    PosT pos = 0;
-    UInt32 row = inactive_row;
-
-    bool isActive() const { return row != inactive_row; }
-    void deactivate() { row = inactive_row; }
-};
-
-template <typename PosT>
-struct AmacRingSlot<true, PosT> : public AmacRingSlot<false, PosT>
-{
-    size_t hash = 0;
-};
-
-static_assert(sizeof(AmacRingSlot<false>) == 16);
-static_assert(sizeof(AmacRingSlot<true>) == 24);
-static_assert(sizeof(AmacRingSlot<false, UInt32>) == 8);
-static_assert(sizeof(AmacRingSlot<true, UInt32>) == 16);
+/// The inactive-row sentinel of a build ring's row array (the probe ring marks inactivity in
+/// its cell-pointer array instead); also the driver's row-count bound.
+constexpr UInt32 amac_inactive_row = std::numeric_limits<UInt32>::max();
 
 /// ~8-10 in-flight rows saturate a core's L1-D miss handling; beyond 32 slots the ring risks
 /// TLB thrashing (Kocberber et al., PVLDB 2015). Power of two for the branch-free wrap.
@@ -183,17 +157,17 @@ constexpr bool amac_join_supported
   * inside the steady loop: as an out-of-line call it would capture the policy and ring
   * addresses and force conservative per-visit reloads of the policy invariants there.
   */
-template <size_t ring_size, typename Policy>
-ALWAYS_INLINE void amacDrainAndGrow(Policy & policy, std::array<typename Policy::Slot, ring_size> & ring, size_t skip)
+template <size_t ring_size, typename Policy, typename Ring>
+ALWAYS_INLINE void amacDrainAndGrow(Policy & policy, Ring & ring, size_t skip)
 {
     std::array<UInt32, ring_size> pending_rows{};
     size_t pending_count = 0;
     for (size_t j = 0; j < ring_size; ++j)
     {
-        if (j == skip || !ring[j].isActive())
+        if (j == skip || !ring.isActive(j))
             continue;
-        pending_rows[pending_count++] = ring[j].row;
-        ring[j].deactivate();
+        pending_rows[pending_count++] = ring.rowAt(j);
+        ring.deactivate(j);
     }
 
     policy.grow();
@@ -203,14 +177,23 @@ ALWAYS_INLINE void amacDrainAndGrow(Policy & policy, std::array<typename Policy:
     {
         if (j == skip)
             continue;
-        [[maybe_unused]] const bool restarted = policy.start(ring[j], pending_rows[k++]);
+        [[maybe_unused]] const bool restarted = policy.start(ring, j, pending_rows[k++]);
         chassert(restarted); /// rows handled synchronously by `start` never entered the ring
     }
 }
 
-/** The ring driver. The policy provides `Slot`, `may_grow`, `start(slot, row) -> bool` (seed +
-  * home prefetch; false = the row was handled synchronously and the slot stays free) and
-  * `step(slot) -> AmacStepResult` (ONE fused read -> act).
+/** The ring driver. The policy provides `Ring<ring_size>` - the whole ring state as a struct of
+  * PARALLEL ARRAYS, one per per-row field (the resumable cursor position or resolved cell
+  * pointer, the row, the saved hash, the probe's stored key), value-initialized to all-inactive,
+  * with `isActive(s)` / `deactivate(s)` / `rowAt(s)` - plus `may_grow`, `start(ring, s, row) ->
+  * bool` (seed slot `s` + home prefetch; false = the row was handled synchronously and the slot
+  * stays free) and `step(ring, s) -> AmacStepResult` (ONE fused read -> act). Struct-of-arrays
+  * rather than an array of slot structs so a wide field (a 16/32-byte stored key) cannot
+  * misalign every other field against cache lines, and each field array stays densely packed.
+  * Everything recomputable from the row index is recomputed per visit, and per-section
+  * invariants (map, locators, key getter) live in the policy - measured ring-state minimalism;
+  * a policy carries address material resolved once at admit (the probe's resolved cell pointer
+  * and packed key) only when the steady step would otherwise re-resolve it per visit.
   *
   * Steady/drain split: while rows remain and every refill succeeded, every slot is provably
   * active, so the steady phase sweeps the ring with a plain array `for` - no per-visit active
@@ -221,7 +204,7 @@ template <typename Policy, size_t ring_size = amac_ring_size>
 void amacRun(Policy & policy_arg, size_t rows)
 {
     static_assert(std::has_single_bit(ring_size));
-    chassert(rows < AmacRingSlot<false>::inactive_row);
+    chassert(rows < amac_inactive_row);
 
     /// A policy whose fields are per-run invariants opts in to running on a frame-local copy:
     /// the copy's address never escapes (every policy call inlines), so its fields become SSA
@@ -233,7 +216,7 @@ void amacRun(Policy & policy_arg, size_t rows)
     static constexpr bool run_on_copy = requires { requires Policy::copy_into_frame; };
     std::conditional_t<run_on_copy, Policy, Policy &> policy = policy_arg;
 
-    std::array<typename Policy::Slot, ring_size> ring{};
+    typename Policy::template Ring<ring_size> ring{};
     size_t next = 0;
     size_t active = 0;
 
@@ -244,13 +227,13 @@ void amacRun(Policy & policy_arg, size_t rows)
     /// which defeats the SSA promotion described above and reintroduces per-visit stack
     /// reloads of every policy invariant in the steady loop - plus one full call per
     /// completed row.
-    auto refill = [&](Policy::Slot & slot) ALWAYS_INLINE
+    auto refill = [&](size_t s) ALWAYS_INLINE
     {
         while (next < rows)
         {
             const size_t row = next;
             ++next;
-            if (policy.start(slot, row))
+            if (policy.start(ring, s, row))
                 break;
         }
     };
@@ -258,8 +241,8 @@ void amacRun(Policy & policy_arg, size_t rows)
     /// Prime the ring: after this loop either every slot is active or the rows are exhausted.
     for (size_t s = 0; s < ring_size; ++s)
     {
-        refill(ring[s]);
-        active += ring[s].isActive();
+        refill(s);
+        active += ring.isActive(s);
     }
 
     if (active == ring_size)
@@ -269,7 +252,7 @@ void amacRun(Policy & policy_arg, size_t rows)
         {
             for (size_t s = 0; s < ring_size; ++s)
             {
-                const AmacStepResult result = policy.step(ring[s]);
+                const AmacStepResult result = policy.step(ring, s);
                 if (result == AmacStepResult::Advance)
                     continue;
                 if constexpr (Policy::may_grow)
@@ -277,9 +260,9 @@ void amacRun(Policy & policy_arg, size_t rows)
                     if (result == AmacStepResult::DoneNeedsGrow)
                         amacDrainAndGrow<ring_size>(policy, ring, s);
                 }
-                ring[s].deactivate();
-                refill(ring[s]);
-                if (!ring[s].isActive())
+                ring.deactivate(s);
+                refill(s);
+                if (!ring.isActive(s))
                 {
                     --active;
                     full = false;
@@ -293,9 +276,9 @@ void amacRun(Policy & policy_arg, size_t rows)
     {
         for (size_t s = 0; s < ring_size; ++s)
         {
-            if (!ring[s].isActive())
+            if (!ring.isActive(s))
                 continue;
-            const AmacStepResult result = policy.step(ring[s]);
+            const AmacStepResult result = policy.step(ring, s);
             if (result == AmacStepResult::Advance)
                 continue;
             if constexpr (Policy::may_grow)
@@ -303,7 +286,7 @@ void amacRun(Policy & policy_arg, size_t rows)
                 if (result == AmacStepResult::DoneNeedsGrow)
                     amacDrainAndGrow<ring_size>(policy, ring, s);
             }
-            ring[s].deactivate();
+            ring.deactivate(s);
             --active;
         }
     }

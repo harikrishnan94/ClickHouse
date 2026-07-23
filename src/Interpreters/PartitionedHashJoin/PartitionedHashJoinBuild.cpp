@@ -98,9 +98,29 @@ struct AmacBuildInsertPolicy
     /// getter; the `KeysFixed` getter is not copyable (prepared-keys buffer, shuffle masks) and
     /// keeps the by-reference run.
     static constexpr bool copy_into_frame = std::is_copy_constructible_v<KeyGetter>;
-    /// `PosT = UInt32` at the caller's dispatch when the buffer index provably fits 32 bits for
-    /// the whole run, growths included - the common case, halving the slot to 8 bytes.
-    using Slot = AmacRingSlot<store_hash, PosT>;
+    /// The insert-ring state, one parallel array per per-row field (see `amacRun`): the cursor
+    /// position (`PosT = UInt32` at the caller's dispatch when the buffer index provably fits
+    /// 32 bits for the whole run, growths included - the common case, halving the position
+    /// array) and the row, plus the saved hash for the cells that store one. Unlike the probe
+    /// ring the inactive sentinel lives in the row array, so it must be filled at construction.
+    template <size_t ring_size>
+    struct RingBase
+    {
+        std::array<PosT, ring_size> pos{};
+        std::array<UInt32, ring_size> row; /// `amac_inactive_row` == inactive
+
+        RingBase() { row.fill(amac_inactive_row); }
+        bool isActive(size_t s) const { return row[s] != amac_inactive_row; }
+        void deactivate(size_t s) { row[s] = amac_inactive_row; }
+        UInt32 rowAt(size_t s) const { return row[s]; }
+    };
+    template <size_t ring_size>
+    struct RingWithHash : public RingBase<ring_size>
+    {
+        std::array<size_t, ring_size> hash{};
+    };
+    template <size_t ring_size>
+    using Ring = std::conditional_t<store_hash, RingWithHash<ring_size>, RingBase<ring_size>>;
 
     Map & map;
     /// Cached cell buffer base, so the per-visit cell address is one add off a register instead
@@ -128,7 +148,8 @@ struct AmacBuildInsertPolicy
         return RowRef(block_no, static_cast<UInt32>(row)).encode();
     }
 
-    ALWAYS_INLINE bool start(Slot & slot, size_t row)
+    template <typename RingT>
+    ALWAYS_INLINE bool start(RingT & ring, size_t s, size_t row)
     {
         if (skip_bytes && skip_bytes[row])
             return false;
@@ -143,39 +164,43 @@ struct AmacBuildInsertPolicy
             return false;
         }
         const size_t hash = map.hash(key);
-        slot.pos = static_cast<PosT>(map.cursorPlace(hash));
-        slot.row = static_cast<UInt32>(row);
+        const size_t pos = map.cursorPlace(hash);
+        ring.pos[s] = static_cast<PosT>(pos);
+        ring.row[s] = static_cast<UInt32>(row);
         if constexpr (store_hash)
-            slot.hash = hash;
-        __builtin_prefetch(cells + slot.pos, 1, 3);
+            ring.hash[s] = hash;
+        __builtin_prefetch(cells + pos, 1, 3);
         return true;
     }
 
-    ALWAYS_INLINE AmacStepResult step(Slot & slot)
+    template <typename RingT>
+    ALWAYS_INLINE AmacStepResult step(RingT & ring, size_t s)
     {
-        auto && key_holder = key_getter.getKeyHolder(slot.row, pool);
+        const size_t row = ring.row[s];
+        auto && key_holder = key_getter.getKeyHolder(row, pool);
         const auto & key = keyHolderGetKey(key_holder);
         size_t hash = 0;
         if constexpr (store_hash)
-            hash = slot.hash;
+            hash = ring.hash[s];
         else
             hash = map.hash(key);
-        Cell * cell = cells + slot.pos;
+        Cell * cell = cells + ring.pos[s];
         if (map.cursorCellIsEmpty(cell))
         {
             /// Claim the empty cell and write the mapped value in the SAME visit (fused): a
             /// later same-key or colliding row can never also observe this cell empty.
             const bool needs_grow = map.cursorClaim(cell, key_holder, hash);
-            applyBuildRowToMapped(cell->getMapped(), /*inserted=*/true, refWordAt(slot.row), pool, any_take_last_row, all_unique);
+            applyBuildRowToMapped(cell->getMapped(), /*inserted=*/true, refWordAt(row), pool, any_take_last_row, all_unique);
             return needs_grow ? AmacStepResult::DoneNeedsGrow : AmacStepResult::Done;
         }
         if (map.cursorKeyEquals(cell, key, hash))
         {
-            applyBuildRowToMapped(cell->getMapped(), /*inserted=*/false, refWordAt(slot.row), pool, any_take_last_row, all_unique);
+            applyBuildRowToMapped(cell->getMapped(), /*inserted=*/false, refWordAt(row), pool, any_take_last_row, all_unique);
             return AmacStepResult::Done;
         }
-        slot.pos = static_cast<PosT>(map.cursorNext(slot.pos));
-        __builtin_prefetch(cells + slot.pos, 1, 3);
+        const size_t next_pos = map.cursorNext(ring.pos[s]);
+        ring.pos[s] = static_cast<PosT>(next_pos);
+        __builtin_prefetch(cells + next_pos, 1, 3);
         return AmacStepResult::Advance;
     }
 
@@ -258,7 +283,7 @@ void insertSectionImpl(
     /// insert appends to a per-key sorted lookup - not a one-cell fused action.
     if constexpr (!mapped_asof && amac_join_supported<KeyGetter, Map>)
     {
-        if (use_amac && rows >= amac_min_rows && rows < AmacRingSlot<false>::inactive_row)
+        if (use_amac && rows >= amac_min_rows && rows < amac_inactive_row)
         {
             auto run_ring = [&]<typename PosT>()
             {
