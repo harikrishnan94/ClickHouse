@@ -11,15 +11,23 @@ per cell and filled from that store. Every command is stdlib-only Python.
 Commands: plan, prepare-keys, run-cell, sweep, selftest, report.
 See `--help` on each subcommand for its flags.
 
-Three plans exist: `--phase 1` (the original 104-cell sweep, kept verbatim
-so its coverage remains re-checkable), `--phase 2` (the 266-cell
-regret-bounding sweep) and `--phase 3` (the merged 370-cell plan: every
-phase-1 and phase-2 cell in ONE plan; the 23 phase-1 cells whose cell_id
-also exists in phase 2 stay as distinct `_p1`-suffixed sentinel cells).
-Phases 2 and 3 run multi-instance, sharded via `plan --phase N --shards S`
-/ `sweep --phase N --shard k --shards S`: one `sweep` process per
-instance, each with its own `--ssh-host` and its own `--results-path`;
+ONE plan exists: the 347 distinct cells of the two historical sweeps (the
+original 104-cell plan and the 266-cell regret-bounding plan, deduplicated
+by cell_id - 23 cells appear in both sources and their group tags are
+merged), sharded across N instances via `plan --shards N [--shard-summary]`
+/ `sweep --shard k --shards N`: one `sweep` process per instance, each
+with its own `--ssh-host` and its own `--results-path`;
 `report --results a.jsonl,b.jsonl,...` merges them.
+
+Multi-architecture: fleets of DIFFERENT CPU architectures (e.g. one
+aarch64 fleet and one x86_64 fleet, each with its own shards) may sweep
+CONCURRENTLY from one orchestration host. Each sweep auto-detects the
+remote architecture (`uname -m`), stamps it into every results row, and
+keeps per-cell log exports under `cells/<arch>/<cell_id>/` so the two
+fleets never collide on disk. Architectures are never mixed within one
+benchmark: `report` renders one architecture at a time (`--arch`, or
+auto when the results contain only one), and `--coverage` checks each
+architecture found in the results independently.
 """
 
 from __future__ import annotations
@@ -1020,29 +1028,31 @@ def generate_plan_phase2(shards: int = 4) -> list[dict]:
     return ordered
 
 
-def generate_plan_merged(shards: int = 4) -> list[dict]:
-    """Phase-3 plan: the union of the phase-1 (104-cell) and phase-2 (266-cell)
-    plans as ONE 370-cell plan, sharded across `shards` instances by the same
-    deterministic LPT the phase-2 plan uses. The 23 phase-1 cells whose cell_id
-    also exists in phase 2 are kept as DISTINCT cells with a `_p1` suffix:
-    identical shape, separate server lifecycle - cross-plan replication
-    sentinels rather than silent duplicates - so the merged plan preserves all
-    370 observations of the two-phase dataset and per-cell log exports never
-    collide on disk (they did when the two phases shared one local root)."""
-    phase2 = generate_plan_phase2(shards=1)
-    phase2_ids = {c["cell_id"] for c in phase2}
-    merged = [dict(c) for c in phase2]
-    for cell in generate_plan():
-        c = dict(cell)
-        if c["cell_id"] in phase2_ids:
-            c["cell_id"] += "_p1"
-            c["groups"] = c["groups"] + ["R"]
-            c["note"] = (c.get("note", "") + ";phase1-duplicate-sentinel").strip(";")
-        merged.append(c)
+def build_plan(shards: int = 1) -> list[dict]:
+    """THE plan: every distinct cell of the two historical sweeps (the original
+    104-cell plan and the 266-cell regret-bounding plan), deduplicated by
+    cell_id into one 347-cell plan - 23 cells appear in both sources; their
+    group tags and notes are merged and the larger run count wins - and
+    assigned to `shards` instances by deterministic LPT on the cost
+    estimate."""
+    cells: dict[str, dict] = {}
+    for source in (generate_plan_phase2(shards=1), generate_plan()):
+        for cell in source:
+            c = dict(cell)
+            c.pop("shard", None)
+            existing = cells.get(c["cell_id"])
+            if existing is None:
+                cells[c["cell_id"]] = c
+                continue
+            for group in c["groups"]:
+                if group not in existing["groups"]:
+                    existing["groups"].append(group)
+            if c.get("note") and c["note"] not in existing.get("note", ""):
+                existing["note"] = (existing.get("note", "") + ";" + c["note"]).strip(";")
+            if c.get("runs", 5) > existing.get("runs", 5):
+                existing["runs"] = c["runs"]
 
-    ordered = sorted(merged, key=lambda c: c["cell_id"])
-    if len(ordered) != len({c["cell_id"] for c in ordered}):
-        raise RuntimeError("merged plan has colliding cell_ids; the _p1 suffix rule no longer disambiguates")
+    ordered = sorted(cells.values(), key=lambda c: c["cell_id"])
 
     # Deterministic LPT: heaviest cell first onto the least-loaded shard.
     loads = [0.0] * shards
@@ -1054,9 +1064,8 @@ def generate_plan_merged(shards: int = 4) -> list[dict]:
 
 
 def plan_command(args: argparse.Namespace) -> int:
-    phase = getattr(args, "phase", 1)
     shards = getattr(args, "shards", 4)
-    plan = plan_for_phase(phase, shards=shards)
+    plan = build_plan(shards=shards)
     if getattr(args, "shard_summary", False):
         by_shard: dict[int, list[dict]] = {}
         for c in plan:
@@ -1082,7 +1091,7 @@ def plan_command(args: argparse.Namespace) -> int:
         for g in c["groups"]:
             group_counts[g] = group_counts.get(g, 0) + 1
     print(
-        f"# phase={phase} total unique cells={len(plan)} group members={group_counts} "
+        f"# total unique cells={len(plan)} group members={group_counts} "
         "(a cell may belong to more than one group, so these do not simply add to the total)",
         file=sys.stderr,
     )
@@ -1365,14 +1374,16 @@ def prepare_cell_tables(remote: RemoteArgs, cell: dict) -> int:
     return expected
 
 
-def plan_for_phase(phase: int, shards: int = 1) -> list[dict]:
-    if phase == 1:
-        return generate_plan()
-    if phase == 2:
-        return generate_plan_phase2(shards=shards)
-    if phase == 3:
-        return generate_plan_merged(shards=shards)
-    raise ValueError(f"unknown phase {phase}")
+def detect_remote_arch(remote: RemoteArgs) -> str:
+    """The benchmark host's CPU architecture (`uname -m`, e.g. `aarch64` /
+    `x86_64`). Stamped into every results row and used to keep concurrent
+    fleets of different architectures separate on disk; fail-closed - a row
+    with a guessed architecture would silently merge two machines' data."""
+    rc, stdout, stderr = run_ssh(remote, "uname -m", timeout=15)
+    arch = stdout.decode("utf-8", "replace").strip()
+    if rc != 0 or not arch:
+        raise RuntimeError(f"cannot detect remote architecture (rc={rc}): {stderr or 'empty uname -m output'}")
+    return arch
 
 
 def run_cell_command(args: argparse.Namespace) -> int:
@@ -1382,14 +1393,16 @@ def run_cell_command(args: argparse.Namespace) -> int:
     elif getattr(args, "cell_json", None):
         cell = json.loads(args.cell_json)
     else:
-        plan = plan_for_phase(getattr(args, "phase", 1))
+        plan = build_plan()
         matches = [c for c in plan if c["cell_id"] == args.cell_id]
         if not matches:
-            print(f"ERROR: cell_id {args.cell_id!r} not found in phase-{getattr(args, 'phase', 1)} plan", file=sys.stderr)
+            print(f"ERROR: cell_id {args.cell_id!r} not found in the plan", file=sys.stderr)
             return 2
         cell = matches[0]
 
-    local_dir = pathlib.Path(args.local_root) / "cells" / cell["cell_id"]
+    # Detected once per sweep and passed down; a bare run-cell detects here.
+    arch = getattr(args, "detected_arch", None) or detect_remote_arch(remote)
+    local_dir = pathlib.Path(args.local_root) / "cells" / arch / cell["cell_id"]
     local_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Cell {cell['cell_id']}: starting server ...")
@@ -1422,6 +1435,7 @@ def run_cell_command(args: argparse.Namespace) -> int:
 
         record = {
             "cell": cell,
+            "arch": arch,
             "expected_rows": expected_rows,
             "results": results,
             "correctness": correctness,
@@ -1436,6 +1450,7 @@ def run_cell_command(args: argparse.Namespace) -> int:
                 line = {
                     "cell_id": cell["cell_id"],
                     "cell": cell,
+                    "arch": arch,
                     "algorithm": algorithm,
                     "expected_rows": expected_rows,
                     "correctness": correctness,
@@ -1462,7 +1477,11 @@ def _results_path_from_args(args: argparse.Namespace) -> pathlib.Path:
 # --------------------------------------------------------------------------
 
 
-def _load_completed_cells(results_path: pathlib.Path) -> set[str]:
+def _load_completed_cells(results_path: pathlib.Path, arch: str | None = None) -> set[str]:
+    """Cells with both algorithms recorded. Rows from a DIFFERENT architecture
+    never mark a cell complete (a shared results file must not let the aarch64
+    fleet's rows satisfy the x86_64 sweep's resume check); legacy rows without
+    an arch stamp count for any architecture."""
     if not results_path.exists():
         return set()
     counts: dict[str, set[str]] = {}
@@ -1470,14 +1489,16 @@ def _load_completed_cells(results_path: pathlib.Path) -> set[str]:
         if not line.strip():
             continue
         row = json.loads(line)
+        row_arch = row.get("arch")
+        if arch is not None and row_arch is not None and row_arch != arch:
+            continue
         counts.setdefault(row["cell_id"], set()).add(row["algorithm"])
     return {cid for cid, algos in counts.items() if algos == set(ALGORITHMS)}
 
 
 def sweep_command(args: argparse.Namespace) -> int:
-    phase = getattr(args, "phase", 1)
     shards = getattr(args, "shards", 1) or 1
-    plan = plan_for_phase(phase, shards=shards)
+    plan = build_plan(shards=shards)
     if getattr(args, "shard", None) is not None:
         plan = [c for c in plan if c.get("shard") == args.shard]
         if not plan:
@@ -1490,7 +1511,7 @@ def sweep_command(args: argparse.Namespace) -> int:
         unknown = wanted - {c["cell_id"] for c in plan}
         if unknown:
             print(
-                f"ERROR: cell ids not in the phase-{phase} plan (a silent skip here would lose cells): "
+                f"ERROR: cell ids not in the plan (a silent skip here would lose cells): "
                 f"{sorted(unknown)}",
                 file=sys.stderr,
             )
@@ -1500,6 +1521,7 @@ def sweep_command(args: argparse.Namespace) -> int:
     # Fail fast if the remote keys_store is missing or undersized for any key
     # config this sweep needs -- hours before a cell would hit it.
     remote = remote_args_from_ns(args)
+    arch = detect_remote_arch(remote)
     start_server(remote)
     needed = sorted({c["key"] for c in plan})
     for key_id in needed:
@@ -1521,11 +1543,15 @@ def sweep_command(args: argparse.Namespace) -> int:
             return 2
 
     results_path = _results_path_from_args(args)
-    completed = _load_completed_cells(results_path)
+    completed = _load_completed_cells(results_path, arch)
     remaining = [c for c in plan if c["cell_id"] not in completed]
-    print(f"sweep: {len(plan)} planned, {len(completed & {c['cell_id'] for c in plan})} already complete, {len(remaining)} to run")
+    print(
+        f"sweep: arch={arch}, {len(plan)} planned, "
+        f"{len(completed & {c['cell_id'] for c in plan})} already complete, {len(remaining)} to run"
+    )
 
     ns = argparse.Namespace(**vars(args))
+    ns.detected_arch = arch
     for i, cell in enumerate(remaining, 1):
         print(f"\n=== sweep {i}/{len(remaining)}: {cell['cell_id']} ===")
         ns.anchor = False
@@ -1841,12 +1867,15 @@ def _noise_band_tie(median_a: float, median_b: float, stdev_a: float, stdev_b: f
     return diff <= band
 
 
-def load_results(results_spec: pathlib.Path | str) -> dict[str, dict[str, dict]]:
+def load_results(results_spec: pathlib.Path | str, arch: str | None = None) -> dict[str, dict[str, dict]]:
     """Load one results file, or several comma-separated ones merged (the
-    phase-2 multi-instance mode writes one file per shard). Later files
-    override earlier ones on a (cell_id, algorithm) collision -- collisions
-    only happen when a cell was re-run, and the last line is the freshest,
-    matching single-file append semantics."""
+    multi-instance mode writes one file per shard). Later files override
+    earlier ones on a (cell_id, algorithm) collision -- collisions only
+    happen when a cell was re-run, and the last line is the freshest,
+    matching single-file append semantics. With `arch`, rows of OTHER
+    architectures are dropped (legacy rows without an arch stamp always
+    pass); without it, everything merges - callers that render one table
+    must first prove the results are single-architecture (`result_arches`)."""
     by_cell: dict[str, dict[str, dict]] = {}
     for part in str(results_spec).split(","):
         path = pathlib.Path(part.strip())
@@ -1856,40 +1885,77 @@ def load_results(results_spec: pathlib.Path | str) -> dict[str, dict[str, dict]]
             if not line.strip():
                 continue
             row = json.loads(line)
+            row_arch = row.get("arch")
+            if arch is not None and row_arch is not None and row_arch != arch:
+                continue
             by_cell.setdefault(row["cell_id"], {})[row["algorithm"]] = row
     return by_cell
 
 
+def result_arches(results_spec: pathlib.Path | str) -> set[str | None]:
+    """The distinct architecture stamps present in the results files
+    (`None` = legacy rows recorded before the stamp existed)."""
+    arches: set[str | None] = set()
+    for part in str(results_spec).split(","):
+        path = pathlib.Path(part.strip())
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            arches.add(json.loads(line).get("arch"))
+    return arches
+
+
 def report_coverage(args: argparse.Namespace) -> int:
-    plan = plan_for_phase(getattr(args, "phase", 1))
+    """Coverage per architecture: each architecture found in the results (or
+    the one selected with --arch) is checked independently against the plan."""
+    plan = build_plan()
     if args.group:
         plan = [c for c in plan if args.group in c["groups"]]
-    by_cell = load_results(args.results)
-    missing = []
-    invalid = []
-    ok_missing_exports = []
-    for cell in plan:
-        cid = cell["cell_id"]
-        algos = by_cell.get(cid, {})
-        if set(algos) != set(ALGORITHMS):
-            missing.append(cid)
-            continue
-        statuses = {a: algos[a]["status"] for a in ALGORITHMS}
-        if any(s != "OK" for s in statuses.values()):
-            invalid.append((cid, statuses))
-            continue
-        export_dir = pathlib.Path(args.local_root) / "cells" / cid
-        needed = [f"query_log.{a}.jsonl" for a in ALGORITHMS]
-        if not export_dir.exists() or any(not (export_dir / f).exists() for f in needed):
-            ok_missing_exports.append(cid)
-    print(f"coverage: planned={len(plan)} missing={len(missing)} invalid={len(invalid)} ok_missing_exports={len(ok_missing_exports)}")
-    for cid in missing:
-        print(f"  MISSING: {cid}")
-    for cid, statuses in invalid:
-        print(f"  INVALID: {cid} {statuses}")
-    for cid in ok_missing_exports:
-        print(f"  OK_BUT_MISSING_EXPORTS: {cid}")
-    return 0 if not missing and not ok_missing_exports else 1
+
+    if getattr(args, "arch", None):
+        arches: list[str | None] = [args.arch]
+    else:
+        found = result_arches(args.results)
+        arches = sorted(found, key=lambda a: a or "") or [None]
+
+    rc = 0
+    for arch in arches:
+        by_cell = load_results(args.results, arch=arch)
+        missing = []
+        invalid = []
+        ok_missing_exports = []
+        for cell in plan:
+            cid = cell["cell_id"]
+            algos = by_cell.get(cid, {})
+            if set(algos) != set(ALGORITHMS):
+                missing.append(cid)
+                continue
+            statuses = {a: algos[a]["status"] for a in ALGORITHMS}
+            if any(s != "OK" for s in statuses.values()):
+                invalid.append((cid, statuses))
+                continue
+            cells_root = pathlib.Path(args.local_root) / "cells"
+            candidates = [cells_root / arch / cid] if arch else []
+            candidates.append(cells_root / cid)  # legacy pre-arch layout
+            needed = [f"query_log.{a}.jsonl" for a in ALGORITHMS]
+            if not any(d.exists() and all((d / f).exists() for f in needed) for d in candidates):
+                ok_missing_exports.append(cid)
+        label = f"arch={arch or 'unstamped'} " if len(arches) > 1 or arch else ""
+        print(
+            f"coverage: {label}planned={len(plan)} missing={len(missing)} "
+            f"invalid={len(invalid)} ok_missing_exports={len(ok_missing_exports)}"
+        )
+        for cid in missing:
+            print(f"  MISSING: {cid}")
+        for cid, statuses in invalid:
+            print(f"  INVALID: {cid} {statuses}")
+        for cid in ok_missing_exports:
+            print(f"  OK_BUT_MISSING_EXPORTS: {cid}")
+        if missing or ok_missing_exports:
+            rc = 1
+    return rc
 
 
 def _format_ms(v: float) -> str:
@@ -1934,11 +2000,21 @@ def generate_report_markdown(
     results_path: pathlib.Path | str,
     local_root: str,
     *,
-    phase: int = 1,
+    arch: str | None = None,
     baseline_path: str | None = None,
 ) -> tuple[str, dict]:
-    by_cell = load_results(results_path)
-    plan_by_id = {c["cell_id"]: c for c in plan_for_phase(phase)}
+    """One architecture per report: without --arch the results must be
+    single-architecture (fail-closed otherwise - averaging two machines'
+    medians into one table would be silently wrong)."""
+    if arch is None:
+        stamped = {a for a in result_arches(results_path) if a is not None}
+        if len(stamped) > 1:
+            raise RuntimeError(
+                f"results contain multiple architectures {sorted(stamped)}; pass --arch to render one report per architecture"
+            )
+        arch = next(iter(stamped), None)
+    by_cell = load_results(results_path, arch=arch)
+    plan_by_id = {c["cell_id"]: c for c in build_plan()}
 
     lines: list[str] = []
     wins = ties = losses = invalid = 0
@@ -1999,6 +2075,7 @@ def generate_report_markdown(
         )
 
     lines.append("<!-- generated by `report`; do not hand-edit -->")
+    lines.append(f"Architecture: `{arch or 'unstamped (legacy results)'}`\n")
     lines.append(f"## Claim line\n\n**{claim}**\n")
     lines.append(
         "Noise band: a cell's medians are classified `tie` when "
@@ -2059,7 +2136,7 @@ def generate_report_markdown(
 
     # Sentinel drift vs a baseline results file (phase 1), when given.
     if baseline_path:
-        base_by_cell = load_results(baseline_path)
+        base_by_cell = load_results(baseline_path, arch=arch)
         shared = sorted(set(by_cell) & set(base_by_cell))
         lines.append(f"\n## Sentinel drift vs baseline ({baseline_path})\n")
         if not shared:
@@ -2125,7 +2202,7 @@ def report_command(args: argparse.Namespace) -> int:
     markdown, summary = generate_report_markdown(
         args.results,
         args.local_root,
-        phase=getattr(args, "phase", 1),
+        arch=getattr(args, "arch", None),
         baseline_path=getattr(args, "baseline", None),
     )
     print(markdown)
@@ -2149,8 +2226,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_plan = sub.add_parser("plan", help="emit the full cell plan as JSON")
     p_plan.add_argument("--out", help="write plan JSON to this path instead of stdout")
-    p_plan.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="1=original 104, 2=regret-bounding 266, 3=merged 370")
-    p_plan.add_argument("--shards", type=int, default=4, help="instance count for phase-2 shard assignment (default: 4)")
+    p_plan.add_argument("--shards", type=int, default=4, help="instance count for shard assignment (default: 4)")
     p_plan.add_argument("--shard-summary", action="store_true", help="print per-shard cell counts, est cost, and required key configs")
     p_plan.set_defaults(handler=plan_command)
 
@@ -2166,7 +2242,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--cell-id")
     p_run.add_argument("--cell-json", help=argparse.SUPPRESS)  # internal: sweep passes the full cell dict
     p_run.add_argument("--anchor", action="store_true", help="run the anchor cell instead of --cell-id")
-    p_run.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="plan to resolve --cell-id against (3=merged 370)")
     p_run.add_argument("--threads", type=int, default=96)
     p_run.add_argument("--results-path", help="append results here (default: <local-root>/results.jsonl)")
     p_run.add_argument("--keep-server-running", action="store_true")
@@ -2175,9 +2250,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep = sub.add_parser("sweep", help="run every not-yet-complete planned cell, resumably")
     add_remote_args(p_sweep)
     p_sweep.add_argument("--local-root", default=DEFAULT_LOCAL_ROOT)
-    p_sweep.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="1=original 104, 2=regret-bounding 266, 3=merged 370")
-    p_sweep.add_argument("--shards", type=int, default=4, help="total shard count the phase-2 plan is split into")
-    p_sweep.add_argument("--shard", type=int, help="run only this shard's cells (phase 2 multi-instance mode)")
+    p_sweep.add_argument("--shards", type=int, default=4, help="total shard count the plan is split into")
+    p_sweep.add_argument("--shard", type=int, help="run only this shard's cells (multi-instance mode)")
     p_sweep.add_argument("--group", choices=("backbone", "ofat", "interaction") + PHASE2_GROUPS)
     p_sweep.add_argument("--cell-ids", help="comma-separated explicit cell_id allowlist")
     p_sweep.add_argument("--results-path", help="append results here (default: <local-root>/results.jsonl); use one file per shard")
@@ -2208,7 +2282,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="results file(s); comma-separated to merge per-shard files",
     )
     p_report.add_argument("--local-root", default=DEFAULT_LOCAL_ROOT)
-    p_report.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="plan used by --coverage (3=merged 370)")
+    p_report.add_argument("--arch", help="architecture to report on (e.g. aarch64, x86_64); required when the results contain more than one")
     p_report.add_argument("--out", help="write markdown to this path")
     p_report.add_argument("--coverage", action="store_true", help="check plan coverage instead of rendering tables")
     p_report.add_argument(
@@ -2218,7 +2292,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_report.add_argument(
         "--baseline",
-        help="a baseline results.jsonl (e.g. phase 1's); adds a sentinel-drift section for cells present in both",
+        help="a baseline results.jsonl (e.g. a previous run of the same architecture); adds a sentinel-drift section for cells present in both",
     )
     p_report.set_defaults(handler=report_command)
 
