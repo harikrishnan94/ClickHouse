@@ -153,7 +153,7 @@ struct RoutedAmacFindPolicy
 
     /// The driver runs the find pass in chunks of this many rows, so the ring's row index fits
     /// 16 bits; the default probe block (65409 rows) is a single chunk.
-    static constexpr size_t chunk_rows_max = 1uz << 16;
+    static constexpr size_t chunk_rows_max = 1uz << 13;
 
     /// A by-value copy of a trivially copyable key getter keeps its key-column pointer a plain
     /// field of the (frame-local) policy instead of two dependent loads behind a reference.
