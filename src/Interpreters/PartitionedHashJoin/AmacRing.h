@@ -244,7 +244,7 @@ void amacRun(Policy & policy_arg, size_t rows)
     /// which defeats the SSA promotion described above and reintroduces per-visit stack
     /// reloads of every policy invariant in the steady loop - plus one full call per
     /// completed row.
-    auto refill = [&](Policy::Slot & slot) __attribute__((always_inline))
+    auto refill = [&](Policy::Slot & slot) ALWAYS_INLINE
     {
         while (next < rows)
         {
