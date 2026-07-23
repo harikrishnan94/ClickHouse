@@ -11,12 +11,15 @@ per cell and filled from that store. Every command is stdlib-only Python.
 Commands: plan, prepare-keys, run-cell, sweep, selftest, report.
 See `--help` on each subcommand for its flags.
 
-Two plans exist: `--phase 1` (the original 104-cell sweep, kept verbatim so
-its coverage remains re-checkable) and `--phase 2` (the ~266-cell
-regret-bounding sweep, sharded across N instances via `plan --phase 2
---shards N` / `sweep --phase 2 --shard k`). Phase 2 runs multi-instance:
-one `sweep` process per instance, each with its own `--ssh-host` and its
-own `--results-path`; `report --results a.jsonl,b.jsonl,...` merges them.
+Three plans exist: `--phase 1` (the original 104-cell sweep, kept verbatim
+so its coverage remains re-checkable), `--phase 2` (the 266-cell
+regret-bounding sweep) and `--phase 3` (the merged 370-cell plan: every
+phase-1 and phase-2 cell in ONE plan; the 23 phase-1 cells whose cell_id
+also exists in phase 2 stay as distinct `_p1`-suffixed sentinel cells).
+Phases 2 and 3 run multi-instance, sharded via `plan --phase N --shards S`
+/ `sweep --phase N --shard k --shards S`: one `sweep` process per
+instance, each with its own `--ssh-host` and its own `--results-path`;
+`report --results a.jsonl,b.jsonl,...` merges them.
 """
 
 from __future__ import annotations
@@ -1017,6 +1020,39 @@ def generate_plan_phase2(shards: int = 4) -> list[dict]:
     return ordered
 
 
+def generate_plan_merged(shards: int = 4) -> list[dict]:
+    """Phase-3 plan: the union of the phase-1 (104-cell) and phase-2 (266-cell)
+    plans as ONE 370-cell plan, sharded across `shards` instances by the same
+    deterministic LPT the phase-2 plan uses. The 23 phase-1 cells whose cell_id
+    also exists in phase 2 are kept as DISTINCT cells with a `_p1` suffix:
+    identical shape, separate server lifecycle - cross-plan replication
+    sentinels rather than silent duplicates - so the merged plan preserves all
+    370 observations of the two-phase dataset and per-cell log exports never
+    collide on disk (they did when the two phases shared one local root)."""
+    phase2 = generate_plan_phase2(shards=1)
+    phase2_ids = {c["cell_id"] for c in phase2}
+    merged = [dict(c) for c in phase2]
+    for cell in generate_plan():
+        c = dict(cell)
+        if c["cell_id"] in phase2_ids:
+            c["cell_id"] += "_p1"
+            c["groups"] = c["groups"] + ["R"]
+            c["note"] = (c.get("note", "") + ";phase1-duplicate-sentinel").strip(";")
+        merged.append(c)
+
+    ordered = sorted(merged, key=lambda c: c["cell_id"])
+    if len(ordered) != len({c["cell_id"] for c in ordered}):
+        raise RuntimeError("merged plan has colliding cell_ids; the _p1 suffix rule no longer disambiguates")
+
+    # Deterministic LPT: heaviest cell first onto the least-loaded shard.
+    loads = [0.0] * shards
+    for cell in sorted(ordered, key=lambda c: (-cell_cost_estimate(c), c["cell_id"])):
+        shard = loads.index(min(loads))
+        cell["shard"] = shard
+        loads[shard] += cell_cost_estimate(cell)
+    return ordered
+
+
 def plan_command(args: argparse.Namespace) -> int:
     phase = getattr(args, "phase", 1)
     shards = getattr(args, "shards", 4)
@@ -1334,6 +1370,8 @@ def plan_for_phase(phase: int, shards: int = 1) -> list[dict]:
         return generate_plan()
     if phase == 2:
         return generate_plan_phase2(shards=shards)
+    if phase == 3:
+        return generate_plan_merged(shards=shards)
     raise ValueError(f"unknown phase {phase}")
 
 
@@ -2111,7 +2149,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_plan = sub.add_parser("plan", help="emit the full cell plan as JSON")
     p_plan.add_argument("--out", help="write plan JSON to this path instead of stdout")
-    p_plan.add_argument("--phase", type=int, choices=(1, 2), default=1)
+    p_plan.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="1=original 104, 2=regret-bounding 266, 3=merged 370")
     p_plan.add_argument("--shards", type=int, default=4, help="instance count for phase-2 shard assignment (default: 4)")
     p_plan.add_argument("--shard-summary", action="store_true", help="print per-shard cell counts, est cost, and required key configs")
     p_plan.set_defaults(handler=plan_command)
@@ -2128,7 +2166,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--cell-id")
     p_run.add_argument("--cell-json", help=argparse.SUPPRESS)  # internal: sweep passes the full cell dict
     p_run.add_argument("--anchor", action="store_true", help="run the anchor cell instead of --cell-id")
-    p_run.add_argument("--phase", type=int, choices=(1, 2), default=1, help="plan to resolve --cell-id against")
+    p_run.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="plan to resolve --cell-id against (3=merged 370)")
     p_run.add_argument("--threads", type=int, default=96)
     p_run.add_argument("--results-path", help="append results here (default: <local-root>/results.jsonl)")
     p_run.add_argument("--keep-server-running", action="store_true")
@@ -2137,7 +2175,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep = sub.add_parser("sweep", help="run every not-yet-complete planned cell, resumably")
     add_remote_args(p_sweep)
     p_sweep.add_argument("--local-root", default=DEFAULT_LOCAL_ROOT)
-    p_sweep.add_argument("--phase", type=int, choices=(1, 2), default=1)
+    p_sweep.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="1=original 104, 2=regret-bounding 266, 3=merged 370")
     p_sweep.add_argument("--shards", type=int, default=4, help="total shard count the phase-2 plan is split into")
     p_sweep.add_argument("--shard", type=int, help="run only this shard's cells (phase 2 multi-instance mode)")
     p_sweep.add_argument("--group", choices=("backbone", "ofat", "interaction") + PHASE2_GROUPS)
@@ -2170,7 +2208,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="results file(s); comma-separated to merge per-shard files",
     )
     p_report.add_argument("--local-root", default=DEFAULT_LOCAL_ROOT)
-    p_report.add_argument("--phase", type=int, choices=(1, 2), default=1, help="plan used by --coverage")
+    p_report.add_argument("--phase", type=int, choices=(1, 2, 3), default=1, help="plan used by --coverage (3=merged 370)")
     p_report.add_argument("--out", help="write markdown to this path")
     p_report.add_argument("--coverage", action="store_true", help="check plan coverage instead of rendering tables")
     p_report.add_argument(
