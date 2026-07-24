@@ -1,0 +1,5521 @@
+{
+ "version": 1,
+ "specs": [
+  {
+   "id": "tpch__supplier_s_nationkey__nation_n_nationkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "supplier",
+   "probe_keys": [
+    "s_nationkey"
+   ],
+   "probe_projection": [
+    "s_nationkey",
+    "s_suppkey",
+    "s_name",
+    "s_address"
+   ],
+   "build_table": "nation",
+   "build_keys": [
+    "n_nationkey"
+   ],
+   "build_projection": [
+    "n_nationkey",
+    "n_name",
+    "n_regionkey"
+   ],
+   "probe_rows_tier_a": 400000,
+   "build_rows_tier_a": 25,
+   "source_weight": 10,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__lineitem_l_orderkey__orders_o_orderkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "lineitem",
+   "probe_keys": [
+    "l_orderkey"
+   ],
+   "probe_projection": [
+    "l_orderkey",
+    "l_extendedprice",
+    "l_quantity",
+    "l_discount"
+   ],
+   "build_table": "orders",
+   "build_keys": [
+    "o_orderkey"
+   ],
+   "build_projection": [
+    "o_orderkey",
+    "o_orderdate",
+    "o_custkey",
+    "o_orderpriority"
+   ],
+   "probe_rows_tier_a": 240000000,
+   "build_rows_tier_a": 60000000,
+   "source_weight": 10,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__lineitem_l_orderkey__orders_o_orderkey__left_semi",
+   "dataset": "tpch",
+   "kind": "LEFT SEMI",
+   "probe_table": "lineitem",
+   "probe_keys": [
+    "l_orderkey"
+   ],
+   "probe_projection": [
+    "l_orderkey",
+    "l_extendedprice",
+    "l_quantity",
+    "l_discount"
+   ],
+   "build_table": "orders",
+   "build_keys": [
+    "o_orderkey"
+   ],
+   "build_projection": [
+    "o_orderkey",
+    "o_orderdate",
+    "o_custkey",
+    "o_orderpriority"
+   ],
+   "probe_rows_tier_a": 240000000,
+   "build_rows_tier_a": 60000000,
+   "source_weight": 10,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__orders_o_custkey__customer_c_custkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "orders",
+   "probe_keys": [
+    "o_custkey"
+   ],
+   "probe_projection": [
+    "o_custkey",
+    "o_orderdate",
+    "o_orderkey",
+    "o_orderpriority"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_custkey"
+   ],
+   "build_projection": [
+    "c_custkey",
+    "c_acctbal",
+    "c_phone",
+    "c_nationkey"
+   ],
+   "probe_rows_tier_a": 60000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__orders_o_custkey__customer_c_custkey__filtered",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "orders",
+   "probe_keys": [
+    "o_custkey"
+   ],
+   "probe_projection": [
+    "o_custkey",
+    "o_orderdate",
+    "o_orderkey",
+    "o_orderpriority"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_custkey"
+   ],
+   "build_projection": [
+    "c_custkey",
+    "c_acctbal",
+    "c_phone",
+    "c_nationkey"
+   ],
+   "probe_rows_tier_a": 60000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 8,
+   "filter": "c_mktsegment = 'BUILDING'",
+   "band": null
+  },
+  {
+   "id": "tpch__orders_o_custkey__customer_c_custkey__left",
+   "dataset": "tpch",
+   "kind": "LEFT",
+   "probe_table": "orders",
+   "probe_keys": [
+    "o_custkey"
+   ],
+   "probe_projection": [
+    "o_custkey",
+    "o_orderdate",
+    "o_orderkey",
+    "o_orderpriority"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_custkey"
+   ],
+   "build_projection": [
+    "c_custkey",
+    "c_acctbal",
+    "c_phone",
+    "c_nationkey"
+   ],
+   "probe_rows_tier_a": 60000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__orders_o_custkey__customer_c_custkey__left_anti",
+   "dataset": "tpch",
+   "kind": "LEFT ANTI",
+   "probe_table": "orders",
+   "probe_keys": [
+    "o_custkey"
+   ],
+   "probe_projection": [
+    "o_custkey",
+    "o_orderdate",
+    "o_orderkey",
+    "o_orderpriority"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_custkey"
+   ],
+   "build_projection": [
+    "c_custkey",
+    "c_acctbal",
+    "c_phone",
+    "c_nationkey"
+   ],
+   "probe_rows_tier_a": 60000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__lineitem_l_partkey__part_p_partkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "lineitem",
+   "probe_keys": [
+    "l_partkey"
+   ],
+   "probe_projection": [
+    "l_partkey",
+    "l_orderkey",
+    "l_extendedprice",
+    "l_quantity"
+   ],
+   "build_table": "part",
+   "build_keys": [
+    "p_partkey"
+   ],
+   "build_projection": [
+    "p_partkey",
+    "p_size",
+    "p_brand",
+    "p_type"
+   ],
+   "probe_rows_tier_a": 240000000,
+   "build_rows_tier_a": 8000000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__lineitem_l_partkey__part_p_partkey__filtered",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "lineitem",
+   "probe_keys": [
+    "l_partkey"
+   ],
+   "probe_projection": [
+    "l_partkey",
+    "l_orderkey",
+    "l_extendedprice",
+    "l_quantity"
+   ],
+   "build_table": "part",
+   "build_keys": [
+    "p_partkey"
+   ],
+   "build_projection": [
+    "p_partkey",
+    "p_size",
+    "p_brand",
+    "p_type"
+   ],
+   "probe_rows_tier_a": 240000000,
+   "build_rows_tier_a": 8000000,
+   "source_weight": 8,
+   "filter": "p_size = 15 AND p_type LIKE '%BRASS'",
+   "band": null
+  },
+  {
+   "id": "tpch__lineitem_l_suppkey__supplier_s_suppkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "lineitem",
+   "probe_keys": [
+    "l_suppkey"
+   ],
+   "probe_projection": [
+    "l_suppkey",
+    "l_orderkey",
+    "l_extendedprice",
+    "l_quantity"
+   ],
+   "build_table": "supplier",
+   "build_keys": [
+    "s_suppkey"
+   ],
+   "build_projection": [
+    "s_suppkey",
+    "s_nationkey",
+    "s_name",
+    "s_address"
+   ],
+   "probe_rows_tier_a": 240000000,
+   "build_rows_tier_a": 400000,
+   "source_weight": 5,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__partsupp_ps_suppkey__supplier_s_suppkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "partsupp",
+   "probe_keys": [
+    "ps_suppkey"
+   ],
+   "probe_projection": [
+    "ps_suppkey",
+    "ps_partkey",
+    "ps_supplycost",
+    "ps_availqty"
+   ],
+   "build_table": "supplier",
+   "build_keys": [
+    "s_suppkey"
+   ],
+   "build_projection": [
+    "s_suppkey",
+    "s_nationkey",
+    "s_name",
+    "s_address"
+   ],
+   "probe_rows_tier_a": 32000000,
+   "build_rows_tier_a": 400000,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__nation_n_regionkey__region_r_regionkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "nation",
+   "probe_keys": [
+    "n_regionkey"
+   ],
+   "probe_projection": [
+    "n_regionkey",
+    "n_name",
+    "n_nationkey"
+   ],
+   "build_table": "region",
+   "build_keys": [
+    "r_regionkey"
+   ],
+   "build_projection": [
+    "r_regionkey",
+    "r_name"
+   ],
+   "probe_rows_tier_a": 25,
+   "build_rows_tier_a": 5,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__partsupp_ps_partkey__part_p_partkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "partsupp",
+   "probe_keys": [
+    "ps_partkey"
+   ],
+   "probe_projection": [
+    "ps_partkey",
+    "ps_suppkey",
+    "ps_supplycost",
+    "ps_availqty"
+   ],
+   "build_table": "part",
+   "build_keys": [
+    "p_partkey"
+   ],
+   "build_projection": [
+    "p_partkey",
+    "p_size",
+    "p_brand",
+    "p_type"
+   ],
+   "probe_rows_tier_a": 32000000,
+   "build_rows_tier_a": 8000000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__partsupp_ps_partkey__part_p_partkey__filtered",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "partsupp",
+   "probe_keys": [
+    "ps_partkey"
+   ],
+   "probe_projection": [
+    "ps_partkey",
+    "ps_suppkey",
+    "ps_supplycost",
+    "ps_availqty"
+   ],
+   "build_table": "part",
+   "build_keys": [
+    "p_partkey"
+   ],
+   "build_projection": [
+    "p_partkey",
+    "p_size",
+    "p_brand",
+    "p_type"
+   ],
+   "probe_rows_tier_a": 32000000,
+   "build_rows_tier_a": 8000000,
+   "source_weight": 3,
+   "filter": "p_size = 15 AND p_type LIKE '%BRASS'",
+   "band": null
+  },
+  {
+   "id": "tpch__customer_c_nationkey__nation_n_nationkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_nationkey"
+   ],
+   "probe_projection": [
+    "c_nationkey",
+    "c_custkey",
+    "c_acctbal",
+    "c_phone"
+   ],
+   "build_table": "nation",
+   "build_keys": [
+    "n_nationkey"
+   ],
+   "build_projection": [
+    "n_nationkey",
+    "n_name",
+    "n_regionkey"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 25,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__customer_c_nationkey__supplier_s_nationkey",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_nationkey"
+   ],
+   "probe_projection": [
+    "c_nationkey",
+    "c_custkey",
+    "c_acctbal",
+    "c_phone"
+   ],
+   "build_table": "supplier",
+   "build_keys": [
+    "s_nationkey"
+   ],
+   "build_projection": [
+    "s_nationkey",
+    "s_suppkey",
+    "s_name",
+    "s_address"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 400000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_sold_date_sk"
+   ],
+   "probe_projection": [
+    "ss_sold_date_sk",
+    "ss_item_sk",
+    "ss_quantity",
+    "ss_store_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 63,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_sold_date_sk"
+   ],
+   "probe_projection": [
+    "ss_sold_date_sk",
+    "ss_item_sk",
+    "ss_quantity",
+    "ss_store_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 63,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_item_sk"
+   ],
+   "probe_projection": [
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity",
+    "ss_store_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 38,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_item_sk"
+   ],
+   "probe_projection": [
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity",
+    "ss_store_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 38,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_sold_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_sold_date_sk"
+   ],
+   "probe_projection": [
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 38,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_sold_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_sold_date_sk"
+   ],
+   "probe_projection": [
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 38,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_store_sk__store_s_store_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_store_sk"
+   ],
+   "probe_projection": [
+    "ss_store_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_store_sk"
+   ],
+   "build_projection": [
+    "s_store_sk",
+    "s_store_name",
+    "s_state",
+    "s_store_id"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 300,
+   "source_weight": 36,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_store_sk__store_s_store_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_store_sk"
+   ],
+   "probe_projection": [
+    "ss_store_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_store_sk"
+   ],
+   "build_projection": [
+    "s_store_sk",
+    "s_store_name",
+    "s_state",
+    "s_store_id"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 300,
+   "source_weight": 36,
+   "filter": "s_state = 'TN'",
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_sold_date_sk"
+   ],
+   "probe_projection": [
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk",
+    "ws_ext_sales_price"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 35,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_sold_date_sk"
+   ],
+   "probe_projection": [
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk",
+    "ws_ext_sales_price"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 35,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_customer_sk__customer_c_customer_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_customer_sk"
+   ],
+   "probe_projection": [
+    "ss_customer_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_customer_sk"
+   ],
+   "build_projection": [
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name",
+    "c_customer_id"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 23,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__left_semi",
+   "dataset": "tpcds",
+   "kind": "LEFT SEMI",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_customer_sk"
+   ],
+   "probe_projection": [
+    "ss_customer_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_customer_sk"
+   ],
+   "build_projection": [
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name",
+    "c_customer_id"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 23,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_current_addr_sk"
+   ],
+   "probe_projection": [
+    "c_current_addr_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 19,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_item_sk"
+   ],
+   "probe_projection": [
+    "cs_item_sk",
+    "cs_sold_date_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 19,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_item_sk"
+   ],
+   "probe_projection": [
+    "cs_item_sk",
+    "cs_sold_date_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 19,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_item_sk"
+   ],
+   "probe_projection": [
+    "ws_item_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_ext_sales_price"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 15,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_item_sk"
+   ],
+   "probe_projection": [
+    "ws_item_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_ext_sales_price"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 15,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_hdemo_sk__household_demographics_hd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_hdemo_sk"
+   ],
+   "probe_projection": [
+    "ss_hdemo_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "household_demographics",
+   "build_keys": [
+    "hd_demo_sk"
+   ],
+   "build_projection": [
+    "hd_demo_sk",
+    "hd_dep_count",
+    "hd_vehicle_count",
+    "hd_buy_potential"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 7200,
+   "source_weight": 13,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_addr_sk"
+   ],
+   "probe_projection": [
+    "ss_addr_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 11,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_bill_customer_sk"
+   ],
+   "probe_projection": [
+    "ws_bill_customer_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_customer_sk"
+   ],
+   "build_projection": [
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name",
+    "c_customer_id"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 10,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_cdemo_sk"
+   ],
+   "probe_projection": [
+    "ss_cdemo_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "customer_demographics",
+   "build_keys": [
+    "cd_demo_sk"
+   ],
+   "build_projection": [
+    "cd_demo_sk",
+    "cd_marital_status",
+    "cd_education_status",
+    "cd_gender"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 1920800,
+   "source_weight": 9,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_sold_time_sk"
+   ],
+   "probe_projection": [
+    "ss_sold_time_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "time_dim",
+   "build_keys": [
+    "t_time_sk"
+   ],
+   "build_projection": [
+    "t_time_sk",
+    "t_hour",
+    "t_minute",
+    "t_time"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 86400,
+   "source_weight": 9,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_returned_date_sk"
+   ],
+   "probe_projection": [
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number",
+    "sr_return_quantity"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 7,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_returned_date_sk"
+   ],
+   "probe_projection": [
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number",
+    "sr_return_quantity"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 7,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_current_cdemo_sk__customer_demographics_cd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_current_cdemo_sk"
+   ],
+   "probe_projection": [
+    "c_current_cdemo_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "customer_demographics",
+   "build_keys": [
+    "cd_demo_sk"
+   ],
+   "build_projection": [
+    "cd_demo_sk",
+    "cd_marital_status",
+    "cd_education_status",
+    "cd_gender"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 1920800,
+   "source_weight": 7,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__inventory_inv_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "inventory",
+   "probe_keys": [
+    "inv_date_sk"
+   ],
+   "probe_projection": [
+    "inv_date_sk",
+    "inv_quantity_on_hand",
+    "inv_item_sk",
+    "inv_warehouse_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 130000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 7,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__inventory_inv_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "inventory",
+   "probe_keys": [
+    "inv_date_sk"
+   ],
+   "probe_projection": [
+    "inv_date_sk",
+    "inv_quantity_on_hand",
+    "inv_item_sk",
+    "inv_warehouse_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 130000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 7,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_bill_customer_sk"
+   ],
+   "probe_projection": [
+    "cs_bill_customer_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_customer_sk"
+   ],
+   "build_projection": [
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name",
+    "c_customer_id"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 6,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__inventory_inv_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "inventory",
+   "probe_keys": [
+    "inv_item_sk"
+   ],
+   "probe_projection": [
+    "inv_item_sk",
+    "inv_quantity_on_hand",
+    "inv_date_sk",
+    "inv_warehouse_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 130000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 6,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__inventory_inv_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "inventory",
+   "probe_keys": [
+    "inv_item_sk"
+   ],
+   "probe_projection": [
+    "inv_item_sk",
+    "inv_quantity_on_hand",
+    "inv_date_sk",
+    "inv_warehouse_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 130000000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 6,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_promo_sk__promotion_p_promo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_promo_sk"
+   ],
+   "probe_projection": [
+    "ss_promo_sk",
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity"
+   ],
+   "build_table": "promotion",
+   "build_keys": [
+    "p_promo_sk"
+   ],
+   "build_projection": [
+    "p_promo_sk",
+    "p_channel_tv",
+    "p_channel_email",
+    "p_channel_event"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 1000,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__inventory_inv_warehouse_sk__warehouse_w_warehouse_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "inventory",
+   "probe_keys": [
+    "inv_warehouse_sk"
+   ],
+   "probe_projection": [
+    "inv_warehouse_sk",
+    "inv_quantity_on_hand",
+    "inv_item_sk",
+    "inv_date_sk"
+   ],
+   "build_table": "warehouse",
+   "build_keys": [
+    "w_warehouse_sk"
+   ],
+   "build_projection": [
+    "w_warehouse_sk",
+    "w_warehouse_name",
+    "w_warehouse_sq_ft",
+    "w_state"
+   ],
+   "probe_rows_tier_a": 130000000,
+   "build_rows_tier_a": 10,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_bill_addr_sk"
+   ],
+   "probe_projection": [
+    "ws_bill_addr_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_web_site_sk__web_site_web_site_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_web_site_sk"
+   ],
+   "probe_projection": [
+    "ws_web_site_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "web_site",
+   "build_keys": [
+    "web_site_sk"
+   ],
+   "build_projection": [
+    "web_site_sk",
+    "web_site_id",
+    "web_name",
+    "web_company_name"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 30,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_returns",
+   "probe_keys": [
+    "cr_returned_date_sk"
+   ],
+   "probe_projection": [
+    "cr_returned_date_sk",
+    "cr_order_number",
+    "cr_item_sk",
+    "cr_return_amount"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 4600000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_returns",
+   "probe_keys": [
+    "cr_returned_date_sk"
+   ],
+   "probe_projection": [
+    "cr_returned_date_sk",
+    "cr_order_number",
+    "cr_item_sk",
+    "cr_return_amount"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 4600000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 4,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_web_page_sk__web_page_wp_web_page_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_web_page_sk"
+   ],
+   "probe_projection": [
+    "ws_web_page_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "web_page",
+   "build_keys": [
+    "wp_web_page_sk"
+   ],
+   "build_projection": [
+    "wp_web_page_sk",
+    "wp_char_count"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 2000,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_ship_customer_sk"
+   ],
+   "probe_projection": [
+    "cs_ship_customer_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "customer",
+   "build_keys": [
+    "c_customer_sk"
+   ],
+   "build_projection": [
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name",
+    "c_customer_id"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 6000000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_ship_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_ship_date_sk"
+   ],
+   "probe_projection": [
+    "cs_ship_date_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_ship_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_ship_date_sk"
+   ],
+   "probe_projection": [
+    "cs_ship_date_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 3,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_call_center_sk__call_center_cc_call_center_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_call_center_sk"
+   ],
+   "probe_projection": [
+    "cs_call_center_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "call_center",
+   "build_keys": [
+    "cc_call_center_sk"
+   ],
+   "build_projection": [
+    "cc_call_center_sk",
+    "cc_name",
+    "cc_call_center_id",
+    "cc_manager"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 30,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_bill_customer_sk"
+   ],
+   "probe_projection": [
+    "cs_bill_customer_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "store_returns",
+   "build_keys": [
+    "sr_customer_sk"
+   ],
+   "build_projection": [
+    "sr_customer_sk",
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 9200000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_item_sk__store_returns_sr_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_item_sk"
+   ],
+   "probe_projection": [
+    "cs_item_sk",
+    "cs_sold_date_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "build_table": "store_returns",
+   "build_keys": [
+    "sr_item_sk"
+   ],
+   "build_projection": [
+    "sr_item_sk",
+    "sr_returned_date_sk",
+    "sr_ticket_number",
+    "sr_return_quantity"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 9200000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_bill_cdemo_sk"
+   ],
+   "probe_projection": [
+    "cs_bill_cdemo_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "customer_demographics",
+   "build_keys": [
+    "cd_demo_sk"
+   ],
+   "build_projection": [
+    "cd_demo_sk",
+    "cd_marital_status",
+    "cd_education_status",
+    "cd_gender"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 1920800,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_promo_sk__promotion_p_promo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_promo_sk"
+   ],
+   "probe_projection": [
+    "cs_promo_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "promotion",
+   "build_keys": [
+    "p_promo_sk"
+   ],
+   "build_projection": [
+    "p_promo_sk",
+    "p_channel_tv",
+    "p_channel_email",
+    "p_channel_event"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 1000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_returned_date_sk"
+   ],
+   "probe_projection": [
+    "wr_returned_date_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_returned_date_sk"
+   ],
+   "probe_projection": [
+    "wr_returned_date_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 3,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_bill_addr_sk"
+   ],
+   "probe_projection": [
+    "cs_bill_addr_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_warehouse_sk__warehouse_w_warehouse_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_warehouse_sk"
+   ],
+   "probe_projection": [
+    "cs_warehouse_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "warehouse",
+   "build_keys": [
+    "w_warehouse_sk"
+   ],
+   "build_projection": [
+    "w_warehouse_sk",
+    "w_warehouse_name",
+    "w_warehouse_sq_ft",
+    "w_state"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 10,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_ship_date_sk"
+   ],
+   "probe_projection": [
+    "ws_ship_date_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_ship_date_sk"
+   ],
+   "probe_projection": [
+    "ws_ship_date_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 3,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_current_hdemo_sk__household_demographics_hd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_current_hdemo_sk"
+   ],
+   "probe_projection": [
+    "c_current_hdemo_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "household_demographics",
+   "build_keys": [
+    "hd_demo_sk"
+   ],
+   "build_projection": [
+    "hd_demo_sk",
+    "hd_dep_count",
+    "hd_vehicle_count",
+    "hd_buy_potential"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 7200,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "household_demographics",
+   "probe_keys": [
+    "hd_income_band_sk"
+   ],
+   "probe_projection": [
+    "hd_income_band_sk",
+    "hd_dep_count",
+    "hd_vehicle_count",
+    "hd_demo_sk"
+   ],
+   "build_table": "income_band",
+   "build_keys": [
+    "ib_income_band_sk"
+   ],
+   "build_projection": [
+    "ib_income_band_sk",
+    "ib_lower_bound",
+    "ib_upper_bound"
+   ],
+   "probe_rows_tier_a": 7200,
+   "build_rows_tier_a": 20,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_sold_time_sk"
+   ],
+   "probe_projection": [
+    "ws_sold_time_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "time_dim",
+   "build_keys": [
+    "t_time_sk"
+   ],
+   "build_projection": [
+    "t_time_sk",
+    "t_hour",
+    "t_minute",
+    "t_time"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 86400,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_address_ca_zip__store_s_zip",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer_address",
+   "probe_keys": [
+    "ca_zip"
+   ],
+   "probe_projection": [
+    "ca_zip",
+    "ca_address_sk",
+    "ca_state",
+    "ca_city"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_zip"
+   ],
+   "build_projection": [
+    "s_zip",
+    "s_store_sk",
+    "s_store_name",
+    "s_state"
+   ],
+   "probe_rows_tier_a": 500000,
+   "build_rows_tier_a": 300,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_address_ca_zip__store_s_zip__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer_address",
+   "probe_keys": [
+    "ca_zip"
+   ],
+   "probe_projection": [
+    "ca_zip",
+    "ca_address_sk",
+    "ca_state",
+    "ca_city"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_zip"
+   ],
+   "build_projection": [
+    "s_zip",
+    "s_store_sk",
+    "s_store_name",
+    "s_state"
+   ],
+   "probe_rows_tier_a": 500000,
+   "build_rows_tier_a": 300,
+   "source_weight": 2,
+   "filter": "s_state = 'TN'",
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_warehouse_sk__warehouse_w_warehouse_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_warehouse_sk"
+   ],
+   "probe_projection": [
+    "ws_warehouse_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "warehouse",
+   "build_keys": [
+    "w_warehouse_sk"
+   ],
+   "build_projection": [
+    "w_warehouse_sk",
+    "w_warehouse_name",
+    "w_warehouse_sq_ft",
+    "w_state"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 10,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_ship_mode_sk__ship_mode_sm_ship_mode_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_ship_mode_sk"
+   ],
+   "probe_projection": [
+    "ws_ship_mode_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "ship_mode",
+   "build_keys": [
+    "sm_ship_mode_sk"
+   ],
+   "build_projection": [
+    "sm_ship_mode_sk",
+    "sm_type",
+    "sm_carrier"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 20,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_ship_mode_sk__ship_mode_sm_ship_mode_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_ship_mode_sk"
+   ],
+   "probe_projection": [
+    "cs_ship_mode_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "ship_mode",
+   "build_keys": [
+    "sm_ship_mode_sk"
+   ],
+   "build_projection": [
+    "sm_ship_mode_sk",
+    "sm_type",
+    "sm_carrier"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 20,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_ship_hdemo_sk__household_demographics_hd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_ship_hdemo_sk"
+   ],
+   "probe_projection": [
+    "ws_ship_hdemo_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "household_demographics",
+   "build_keys": [
+    "hd_demo_sk"
+   ],
+   "build_projection": [
+    "hd_demo_sk",
+    "hd_dep_count",
+    "hd_vehicle_count",
+    "hd_buy_potential"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 7200,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_ship_addr_sk"
+   ],
+   "probe_projection": [
+    "ws_ship_addr_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_ship_addr_sk"
+   ],
+   "probe_projection": [
+    "cs_ship_addr_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_returning_addr_sk"
+   ],
+   "probe_projection": [
+    "wr_returning_addr_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_address_ca_county__store_s_county",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer_address",
+   "probe_keys": [
+    "ca_county"
+   ],
+   "probe_projection": [
+    "ca_county",
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_county"
+   ],
+   "build_projection": [
+    "s_county",
+    "s_store_sk",
+    "s_store_name",
+    "s_state"
+   ],
+   "probe_rows_tier_a": 500000,
+   "build_rows_tier_a": 300,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_address_ca_county__store_s_county__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer_address",
+   "probe_keys": [
+    "ca_county"
+   ],
+   "probe_projection": [
+    "ca_county",
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_county"
+   ],
+   "build_projection": [
+    "s_county",
+    "s_store_sk",
+    "s_store_name",
+    "s_state"
+   ],
+   "probe_rows_tier_a": 500000,
+   "build_rows_tier_a": 300,
+   "source_weight": 1,
+   "filter": "s_state = 'TN'",
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_address_ca_state__store_s_state",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer_address",
+   "probe_keys": [
+    "ca_state"
+   ],
+   "probe_projection": [
+    "ca_state",
+    "ca_address_sk",
+    "ca_zip",
+    "ca_city"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_state"
+   ],
+   "build_projection": [
+    "s_state",
+    "s_store_sk",
+    "s_store_name",
+    "s_store_id"
+   ],
+   "probe_rows_tier_a": 500000,
+   "build_rows_tier_a": 300,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_address_ca_state__store_s_state__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer_address",
+   "probe_keys": [
+    "ca_state"
+   ],
+   "probe_projection": [
+    "ca_state",
+    "ca_address_sk",
+    "ca_zip",
+    "ca_city"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_state"
+   ],
+   "build_projection": [
+    "s_state",
+    "s_store_sk",
+    "s_store_name",
+    "s_store_id"
+   ],
+   "probe_rows_tier_a": 500000,
+   "build_rows_tier_a": 300,
+   "source_weight": 1,
+   "filter": "s_state = 'TN'",
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_first_sales_date_sk"
+   ],
+   "probe_projection": [
+    "c_first_sales_date_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_first_sales_date_sk"
+   ],
+   "probe_projection": [
+    "c_first_sales_date_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 1,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_first_shipto_date_sk"
+   ],
+   "probe_projection": [
+    "c_first_shipto_date_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_first_shipto_date_sk"
+   ],
+   "probe_projection": [
+    "c_first_shipto_date_sk",
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name"
+   ],
+   "build_table": "date_dim",
+   "build_keys": [
+    "d_date_sk"
+   ],
+   "build_projection": [
+    "d_date_sk",
+    "d_year",
+    "d_moy",
+    "d_date"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 73049,
+   "source_weight": 1,
+   "filter": "d_year = 2000",
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_sold_time_sk"
+   ],
+   "probe_projection": [
+    "cs_sold_time_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "time_dim",
+   "build_keys": [
+    "t_time_sk"
+   ],
+   "build_projection": [
+    "t_time_sk",
+    "t_hour",
+    "t_minute",
+    "t_time"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 86400,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__inventory_inv_item_sk__catalog_sales_cs_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "inventory",
+   "probe_keys": [
+    "inv_item_sk"
+   ],
+   "probe_projection": [
+    "inv_item_sk",
+    "inv_quantity_on_hand",
+    "inv_date_sk",
+    "inv_warehouse_sk"
+   ],
+   "build_table": "catalog_sales",
+   "build_keys": [
+    "cs_item_sk"
+   ],
+   "build_projection": [
+    "cs_item_sk",
+    "cs_sold_date_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "probe_rows_tier_a": 130000000,
+   "build_rows_tier_a": 46000000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_bill_hdemo_sk__household_demographics_hd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_bill_hdemo_sk"
+   ],
+   "probe_projection": [
+    "cs_bill_hdemo_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "household_demographics",
+   "build_keys": [
+    "hd_demo_sk"
+   ],
+   "build_projection": [
+    "hd_demo_sk",
+    "hd_dep_count",
+    "hd_vehicle_count",
+    "hd_buy_potential"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 7200,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_store_sk__store_s_store_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_store_sk"
+   ],
+   "probe_projection": [
+    "sr_store_sk",
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_store_sk"
+   ],
+   "build_projection": [
+    "s_store_sk",
+    "s_store_name",
+    "s_state",
+    "s_store_id"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 300,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_store_sk__store_s_store_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_store_sk"
+   ],
+   "probe_projection": [
+    "sr_store_sk",
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "build_table": "store",
+   "build_keys": [
+    "s_store_sk"
+   ],
+   "build_projection": [
+    "s_store_sk",
+    "s_store_name",
+    "s_state",
+    "s_store_id"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 300,
+   "source_weight": 1,
+   "filter": "s_state = 'TN'",
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_web_page_sk__web_page_wp_web_page_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_web_page_sk"
+   ],
+   "probe_projection": [
+    "wr_web_page_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "web_page",
+   "build_keys": [
+    "wp_web_page_sk"
+   ],
+   "build_projection": [
+    "wp_web_page_sk",
+    "wp_char_count"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 2000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_item_sk__web_sales_ws_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_item_sk"
+   ],
+   "probe_projection": [
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity",
+    "ss_store_sk"
+   ],
+   "build_table": "web_sales",
+   "build_keys": [
+    "ws_item_sk"
+   ],
+   "build_projection": [
+    "ws_item_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_ext_sales_price"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 23000000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_sales_ss_item_sk__catalog_sales_cs_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_item_sk"
+   ],
+   "probe_projection": [
+    "ss_item_sk",
+    "ss_sold_date_sk",
+    "ss_quantity",
+    "ss_store_sk"
+   ],
+   "build_table": "catalog_sales",
+   "build_keys": [
+    "cs_item_sk"
+   ],
+   "build_projection": [
+    "cs_item_sk",
+    "cs_sold_date_sk",
+    "cs_quantity",
+    "cs_sales_price"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 46000000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_catalog_page_sk__catalog_page_cp_catalog_page_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_catalog_page_sk"
+   ],
+   "probe_projection": [
+    "cs_catalog_page_sk",
+    "cs_sold_date_sk",
+    "cs_item_sk",
+    "cs_quantity"
+   ],
+   "build_table": "catalog_page",
+   "build_keys": [
+    "cp_catalog_page_sk"
+   ],
+   "build_projection": [
+    "cp_catalog_page_sk",
+    "cp_catalog_page_id"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 20000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_promo_sk__promotion_p_promo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_promo_sk"
+   ],
+   "probe_projection": [
+    "ws_promo_sk",
+    "ws_sold_date_sk",
+    "ws_quantity",
+    "ws_item_sk"
+   ],
+   "build_table": "promotion",
+   "build_keys": [
+    "p_promo_sk"
+   ],
+   "build_projection": [
+    "p_promo_sk",
+    "p_channel_tv",
+    "p_channel_email",
+    "p_channel_event"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 1000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_returns",
+   "probe_keys": [
+    "cr_returning_addr_sk"
+   ],
+   "probe_projection": [
+    "cr_returning_addr_sk",
+    "cr_order_number",
+    "cr_item_sk",
+    "cr_return_amount"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 4600000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_item_sk"
+   ],
+   "probe_projection": [
+    "sr_item_sk",
+    "sr_returned_date_sk",
+    "sr_ticket_number",
+    "sr_return_quantity"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_item_sk"
+   ],
+   "probe_projection": [
+    "sr_item_sk",
+    "sr_returned_date_sk",
+    "sr_ticket_number",
+    "sr_return_quantity"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 1,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_returns_cr_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_returns",
+   "probe_keys": [
+    "cr_item_sk"
+   ],
+   "probe_projection": [
+    "cr_item_sk",
+    "cr_order_number",
+    "cr_return_amount",
+    "cr_returned_date_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 4600000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_returns_cr_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_returns",
+   "probe_keys": [
+    "cr_item_sk"
+   ],
+   "probe_projection": [
+    "cr_item_sk",
+    "cr_order_number",
+    "cr_return_amount",
+    "cr_returned_date_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 4600000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 1,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_item_sk__item_i_item_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_item_sk"
+   ],
+   "probe_projection": [
+    "wr_item_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_returned_date_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_item_sk__item_i_item_sk__filtered",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_item_sk"
+   ],
+   "probe_projection": [
+    "wr_item_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_returned_date_sk"
+   ],
+   "build_table": "item",
+   "build_keys": [
+    "i_item_sk"
+   ],
+   "build_projection": [
+    "i_item_sk",
+    "i_item_id",
+    "i_category",
+    "i_brand_id"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 102000,
+   "source_weight": 1,
+   "filter": "i_category = 'Electronics'",
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_cdemo_sk"
+   ],
+   "probe_projection": [
+    "sr_cdemo_sk",
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "build_table": "customer_demographics",
+   "build_keys": [
+    "cd_demo_sk"
+   ],
+   "build_projection": [
+    "cd_demo_sk",
+    "cd_marital_status",
+    "cd_education_status",
+    "cd_gender"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 1920800,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_refunded_cdemo_sk__customer_demographics_cd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_refunded_cdemo_sk"
+   ],
+   "probe_projection": [
+    "wr_refunded_cdemo_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "customer_demographics",
+   "build_keys": [
+    "cd_demo_sk"
+   ],
+   "build_projection": [
+    "cd_demo_sk",
+    "cd_marital_status",
+    "cd_education_status",
+    "cd_gender"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 1920800,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_returning_cdemo_sk__customer_demographics_cd_demo_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_returning_cdemo_sk"
+   ],
+   "probe_projection": [
+    "wr_returning_cdemo_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "customer_demographics",
+   "build_keys": [
+    "cd_demo_sk"
+   ],
+   "build_projection": [
+    "cd_demo_sk",
+    "cd_marital_status",
+    "cd_education_status",
+    "cd_gender"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 1920800,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_refunded_addr_sk"
+   ],
+   "probe_projection": [
+    "wr_refunded_addr_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "customer_address",
+   "build_keys": [
+    "ca_address_sk"
+   ],
+   "build_projection": [
+    "ca_address_sk",
+    "ca_state",
+    "ca_zip",
+    "ca_city"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 500000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_returns_wr_reason_sk__reason_r_reason_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_returns",
+   "probe_keys": [
+    "wr_reason_sk"
+   ],
+   "probe_projection": [
+    "wr_reason_sk",
+    "wr_order_number",
+    "wr_return_amt",
+    "wr_item_sk"
+   ],
+   "build_table": "reason",
+   "build_keys": [
+    "r_reason_sk"
+   ],
+   "build_projection": [
+    "r_reason_sk",
+    "r_reason_desc"
+   ],
+   "probe_rows_tier_a": 2300000,
+   "build_rows_tier_a": 50,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_returns",
+   "probe_keys": [
+    "cr_call_center_sk"
+   ],
+   "probe_projection": [
+    "cr_call_center_sk",
+    "cr_order_number",
+    "cr_item_sk",
+    "cr_return_amount"
+   ],
+   "build_table": "call_center",
+   "build_keys": [
+    "cc_call_center_sk"
+   ],
+   "build_projection": [
+    "cc_call_center_sk",
+    "cc_name",
+    "cc_call_center_id",
+    "cc_manager"
+   ],
+   "probe_rows_tier_a": 4600000,
+   "build_rows_tier_a": 30,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "customer",
+   "probe_keys": [
+    "c_customer_sk"
+   ],
+   "probe_projection": [
+    "c_customer_sk",
+    "c_last_name",
+    "c_first_name",
+    "c_customer_id"
+   ],
+   "build_table": "catalog_returns",
+   "build_keys": [
+    "cr_returning_customer_sk"
+   ],
+   "build_projection": [
+    "cr_returning_customer_sk",
+    "cr_order_number",
+    "cr_item_sk",
+    "cr_return_amount"
+   ],
+   "probe_rows_tier_a": 6000000,
+   "build_rows_tier_a": 4600000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__store_returns_sr_reason_sk__reason_r_reason_sk",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_returns",
+   "probe_keys": [
+    "sr_reason_sk"
+   ],
+   "probe_projection": [
+    "sr_reason_sk",
+    "sr_returned_date_sk",
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "build_table": "reason",
+   "build_keys": [
+    "r_reason_sk"
+   ],
+   "build_projection": [
+    "r_reason_sk",
+    "r_reason_desc"
+   ],
+   "probe_rows_tier_a": 9200000,
+   "build_rows_tier_a": 50,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__title_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 81,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__title_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 81,
+   "filter": "production_year BETWEEN 2005 AND 2010",
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__title_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 77,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__title_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 77,
+   "filter": "production_year BETWEEN 2005 AND 2010",
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_keyword_id__keyword_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "keyword_id"
+   ],
+   "probe_projection": [
+    "keyword_id",
+    "movie_id"
+   ],
+   "build_table": "keyword",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "keyword"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 134170,
+   "source_weight": 75,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_keyword_id__keyword_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "keyword_id"
+   ],
+   "probe_projection": [
+    "keyword_id",
+    "movie_id"
+   ],
+   "build_table": "keyword",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "keyword"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 134170,
+   "source_weight": 75,
+   "filter": "keyword = 'character-name-in-title'",
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_company_id__company_name_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "company_id"
+   ],
+   "probe_projection": [
+    "company_id",
+    "movie_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "company_name",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "country_code",
+    "name"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 234997,
+   "source_weight": 74,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_company_id__company_name_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "company_id"
+   ],
+   "probe_projection": [
+    "company_id",
+    "movie_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "company_name",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "country_code",
+    "name"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 234997,
+   "source_weight": 74,
+   "filter": "country_code = '[de]'",
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__title_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 57,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__title_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 57,
+   "filter": "production_year BETWEEN 2005 AND 2010",
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__title_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 57,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__title_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "title",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 2528312,
+   "source_weight": 57,
+   "filter": "production_year BETWEEN 2005 AND 2010",
+   "band": null
+  },
+  {
+   "id": "job__cast_info_person_id__name_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "person_id"
+   ],
+   "probe_projection": [
+    "person_id",
+    "movie_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "name",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "name",
+    "gender",
+    "name_pcode_cf"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 4167491,
+   "source_weight": 54,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_info_type_id__info_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "info_type_id"
+   ],
+   "probe_projection": [
+    "info_type_id",
+    "movie_id",
+    "info",
+    "note"
+   ],
+   "build_table": "info_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "info"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 113,
+   "source_weight": 48,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_info_type_id__info_type_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "info_type_id"
+   ],
+   "probe_projection": [
+    "info_type_id",
+    "movie_id",
+    "info",
+    "note"
+   ],
+   "build_table": "info_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "info"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 113,
+   "source_weight": 48,
+   "filter": "info = 'top 250 rank'",
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__movie_companies_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "movie_companies",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 2609129,
+   "source_weight": 46,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__title_id__movie_info_idx_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "title",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "build_table": "movie_info_idx",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "probe_rows_tier_a": 2528312,
+   "build_rows_tier_a": 1380035,
+   "source_weight": 45,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_idx_info_type_id__info_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info_idx",
+   "probe_keys": [
+    "info_type_id"
+   ],
+   "probe_projection": [
+    "info_type_id",
+    "movie_id",
+    "info"
+   ],
+   "build_table": "info_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "info"
+   ],
+   "probe_rows_tier_a": 1380035,
+   "build_rows_tier_a": 113,
+   "source_weight": 45,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_idx_info_type_id__info_type_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info_idx",
+   "probe_keys": [
+    "info_type_id"
+   ],
+   "probe_projection": [
+    "info_type_id",
+    "movie_id",
+    "info"
+   ],
+   "build_table": "info_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "info"
+   ],
+   "probe_rows_tier_a": 1380035,
+   "build_rows_tier_a": 113,
+   "source_weight": 45,
+   "filter": "info = 'top 250 rank'",
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__movie_companies_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "movie_companies",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 2609129,
+   "source_weight": 42,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_company_type_id__company_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "company_type_id"
+   ],
+   "probe_projection": [
+    "company_type_id",
+    "movie_id",
+    "company_id",
+    "note"
+   ],
+   "build_table": "company_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "kind"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 4,
+   "source_weight": 41,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_company_type_id__company_type_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "company_type_id"
+   ],
+   "probe_projection": [
+    "company_type_id",
+    "movie_id",
+    "company_id",
+    "note"
+   ],
+   "build_table": "company_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "kind"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 4,
+   "source_weight": 41,
+   "filter": "kind = 'production companies'",
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__movie_keyword_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "movie_keyword",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 4523930,
+   "source_weight": 40,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__movie_keyword_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "movie_keyword",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 4523930,
+   "source_weight": 36,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__movie_companies_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "movie_companies",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 2609129,
+   "source_weight": 33,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__movie_info_idx_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "movie_info_idx",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 1380035,
+   "source_weight": 29,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__title_kind_id__kind_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "title",
+   "probe_keys": [
+    "kind_id"
+   ],
+   "probe_projection": [
+    "kind_id",
+    "id",
+    "title",
+    "production_year"
+   ],
+   "build_table": "kind_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "kind"
+   ],
+   "probe_rows_tier_a": 2528312,
+   "build_rows_tier_a": 7,
+   "source_weight": 29,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__movie_info_idx_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "movie_info_idx",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 1380035,
+   "source_weight": 27,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__movie_info_idx_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "movie_info_idx",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 1380035,
+   "source_weight": 25,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__name_id__aka_name_person_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "name",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "name",
+    "gender",
+    "name_pcode_cf"
+   ],
+   "build_table": "aka_name",
+   "build_keys": [
+    "person_id"
+   ],
+   "build_projection": [
+    "person_id",
+    "name"
+   ],
+   "probe_rows_tier_a": 4167491,
+   "build_rows_tier_a": 901343,
+   "source_weight": 24,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_person_id__aka_name_person_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "person_id"
+   ],
+   "probe_projection": [
+    "person_id",
+    "movie_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "aka_name",
+   "build_keys": [
+    "person_id"
+   ],
+   "build_projection": [
+    "person_id",
+    "name"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 901343,
+   "source_weight": 24,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_person_role_id__char_name_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "person_role_id"
+   ],
+   "probe_projection": [
+    "person_role_id",
+    "movie_id",
+    "person_id",
+    "note"
+   ],
+   "build_table": "char_name",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "name"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 3140339,
+   "source_weight": 22,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__movie_info_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "movie_info",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 14835720,
+   "source_weight": 21,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__title_id__complete_cast_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "title",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "build_table": "complete_cast",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "probe_rows_tier_a": 2528312,
+   "build_rows_tier_a": 135086,
+   "source_weight": 21,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__complete_cast_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "complete_cast",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 135086,
+   "source_weight": 21,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__complete_cast_status_id__comp_cast_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "complete_cast",
+   "probe_keys": [
+    "status_id"
+   ],
+   "probe_projection": [
+    "status_id",
+    "movie_id",
+    "subject_id"
+   ],
+   "build_table": "comp_cast_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "kind"
+   ],
+   "probe_rows_tier_a": 135086,
+   "build_rows_tier_a": 4,
+   "source_weight": 21,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_role_id__role_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "role_id"
+   ],
+   "probe_projection": [
+    "role_id",
+    "movie_id",
+    "person_id",
+    "note"
+   ],
+   "build_table": "role_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "role"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 12,
+   "source_weight": 20,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_link_link_type_id__link_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_link",
+   "probe_keys": [
+    "link_type_id"
+   ],
+   "probe_projection": [
+    "link_type_id",
+    "movie_id",
+    "linked_movie_id"
+   ],
+   "build_table": "link_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "link"
+   ],
+   "probe_rows_tier_a": 29997,
+   "build_rows_tier_a": 18,
+   "source_weight": 18,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__complete_cast_subject_id__comp_cast_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "complete_cast",
+   "probe_keys": [
+    "subject_id"
+   ],
+   "probe_projection": [
+    "subject_id",
+    "movie_id",
+    "status_id"
+   ],
+   "build_table": "comp_cast_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "kind"
+   ],
+   "probe_rows_tier_a": 135086,
+   "build_rows_tier_a": 4,
+   "source_weight": 18,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__title_id__movie_link_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "title",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "link_type_id",
+    "linked_movie_id"
+   ],
+   "probe_rows_tier_a": 2528312,
+   "build_rows_tier_a": 29997,
+   "source_weight": 15,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__movie_info_idx_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "movie_info_idx",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 1380035,
+   "source_weight": 15,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__complete_cast_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "complete_cast",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 135086,
+   "source_weight": 15,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__movie_link_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "link_type_id",
+    "linked_movie_id"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 29997,
+   "source_weight": 13,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__complete_cast_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "complete_cast",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 135086,
+   "source_weight": 12,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__complete_cast_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "complete_cast",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 135086,
+   "source_weight": 12,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__movie_link_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "link_type_id",
+    "linked_movie_id"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 29997,
+   "source_weight": 10,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_idx_movie_id__complete_cast_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info_idx",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "build_table": "complete_cast",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "probe_rows_tier_a": 1380035,
+   "build_rows_tier_a": 135086,
+   "source_weight": 9,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__title_id__movie_link_linked_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "title",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "linked_movie_id"
+   ],
+   "build_projection": [
+    "linked_movie_id",
+    "movie_id",
+    "link_type_id"
+   ],
+   "probe_rows_tier_a": 2528312,
+   "build_rows_tier_a": 29997,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__name_id__person_info_person_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "name",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "name",
+    "gender",
+    "name_pcode_cf"
+   ],
+   "build_table": "person_info",
+   "build_keys": [
+    "person_id"
+   ],
+   "build_projection": [
+    "person_id",
+    "info_type_id",
+    "note",
+    "info"
+   ],
+   "probe_rows_tier_a": 4167491,
+   "build_rows_tier_a": 2963664,
+   "source_weight": 6,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__person_info_info_type_id__info_type_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "person_info",
+   "probe_keys": [
+    "info_type_id"
+   ],
+   "probe_projection": [
+    "info_type_id",
+    "person_id",
+    "note",
+    "info"
+   ],
+   "build_table": "info_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "info"
+   ],
+   "probe_rows_tier_a": 2963664,
+   "build_rows_tier_a": 113,
+   "source_weight": 6,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__person_info_info_type_id__info_type_id__filtered",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "person_info",
+   "probe_keys": [
+    "info_type_id"
+   ],
+   "probe_projection": [
+    "info_type_id",
+    "person_id",
+    "note",
+    "info"
+   ],
+   "build_table": "info_type",
+   "build_keys": [
+    "id"
+   ],
+   "build_projection": [
+    "id",
+    "info"
+   ],
+   "probe_rows_tier_a": 2963664,
+   "build_rows_tier_a": 113,
+   "source_weight": 6,
+   "filter": "info = 'top 250 rank'",
+   "band": null
+  },
+  {
+   "id": "job__cast_info_person_id__person_info_person_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "person_id"
+   ],
+   "probe_projection": [
+    "person_id",
+    "movie_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "person_info",
+   "build_keys": [
+    "person_id"
+   ],
+   "build_projection": [
+    "person_id",
+    "info_type_id",
+    "note",
+    "info"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 2963664,
+   "source_weight": 6,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__movie_link_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "link_type_id",
+    "linked_movie_id"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 29997,
+   "source_weight": 6,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__title_id__aka_title_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "title",
+   "probe_keys": [
+    "id"
+   ],
+   "probe_projection": [
+    "id",
+    "title",
+    "production_year",
+    "kind_id"
+   ],
+   "build_table": "aka_title",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "title"
+   ],
+   "probe_rows_tier_a": 2528312,
+   "build_rows_tier_a": 361472,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_keyword_movie_id__aka_title_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_keyword",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "keyword_id"
+   ],
+   "build_table": "aka_title",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "title"
+   ],
+   "probe_rows_tier_a": 4523930,
+   "build_rows_tier_a": 361472,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_movie_id__aka_title_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id",
+    "note"
+   ],
+   "build_table": "aka_title",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "title"
+   ],
+   "probe_rows_tier_a": 14835720,
+   "build_rows_tier_a": 361472,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__aka_title_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "aka_title",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "title"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 361472,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__person_info_person_id__aka_name_person_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "person_info",
+   "probe_keys": [
+    "person_id"
+   ],
+   "probe_projection": [
+    "person_id",
+    "info_type_id",
+    "note",
+    "info"
+   ],
+   "build_table": "aka_name",
+   "build_keys": [
+    "person_id"
+   ],
+   "build_projection": [
+    "person_id",
+    "name"
+   ],
+   "probe_rows_tier_a": 2963664,
+   "build_rows_tier_a": 901343,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__cast_info_movie_id__movie_link_linked_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "cast_info",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "person_id",
+    "note",
+    "person_role_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "linked_movie_id"
+   ],
+   "build_projection": [
+    "linked_movie_id",
+    "movie_id",
+    "link_type_id"
+   ],
+   "probe_rows_tier_a": 36244344,
+   "build_rows_tier_a": 29997,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__complete_cast_movie_id__movie_link_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "complete_cast",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "status_id",
+    "subject_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "link_type_id",
+    "linked_movie_id"
+   ],
+   "probe_rows_tier_a": 135086,
+   "build_rows_tier_a": 29997,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_idx_movie_id__movie_link_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info_idx",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "movie_id"
+   ],
+   "build_projection": [
+    "movie_id",
+    "link_type_id",
+    "linked_movie_id"
+   ],
+   "probe_rows_tier_a": 1380035,
+   "build_rows_tier_a": 29997,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_info_idx_movie_id__movie_link_linked_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_info_idx",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "info",
+    "info_type_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "linked_movie_id"
+   ],
+   "build_projection": [
+    "linked_movie_id",
+    "movie_id",
+    "link_type_id"
+   ],
+   "probe_rows_tier_a": 1380035,
+   "build_rows_tier_a": 29997,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "job__movie_companies_movie_id__movie_link_linked_movie_id",
+   "dataset": "job",
+   "kind": "INNER",
+   "probe_table": "movie_companies",
+   "probe_keys": [
+    "movie_id"
+   ],
+   "probe_projection": [
+    "movie_id",
+    "company_id",
+    "note",
+    "company_type_id"
+   ],
+   "build_table": "movie_link",
+   "build_keys": [
+    "linked_movie_id"
+   ],
+   "build_projection": [
+    "linked_movie_id",
+    "movie_id",
+    "link_type_id"
+   ],
+   "probe_rows_tier_a": 2609129,
+   "build_rows_tier_a": 29997,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "coffeeshop__fact_sales_location_id__dim_locations_location_id",
+   "dataset": "coffeeshop",
+   "kind": "INNER",
+   "probe_table": "fact_sales",
+   "probe_keys": [
+    "location_id"
+   ],
+   "probe_projection": [
+    "location_id",
+    "order_date",
+    "product_name",
+    "season"
+   ],
+   "build_table": "dim_locations",
+   "build_keys": [
+    "location_id"
+   ],
+   "build_projection": [
+    "location_id",
+    "city",
+    "state",
+    "region"
+   ],
+   "probe_rows_tier_a": 500000000,
+   "build_rows_tier_a": 1000,
+   "source_weight": 14,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "coffeeshop__fact_sales_product_name__dim_products_name",
+   "dataset": "coffeeshop",
+   "kind": "INNER",
+   "probe_table": "fact_sales",
+   "probe_keys": [
+    "product_name"
+   ],
+   "probe_projection": [
+    "product_name",
+    "order_date",
+    "season",
+    "location_id"
+   ],
+   "build_table": "dim_products",
+   "build_keys": [
+    "name"
+   ],
+   "build_projection": [
+    "name",
+    "subcategory",
+    "from_date",
+    "to_date"
+   ],
+   "probe_rows_tier_a": 500000000,
+   "build_rows_tier_a": 26,
+   "source_weight": 9,
+   "filter": null,
+   "band": {
+    "probe_col": "order_date",
+    "build_lo": "from_date",
+    "build_hi": "to_date"
+   }
+  },
+  {
+   "id": "coffeeshop__fact_sales_product_id__dim_products_product_id",
+   "dataset": "coffeeshop",
+   "kind": "INNER",
+   "probe_table": "fact_sales",
+   "probe_keys": [
+    "product_id"
+   ],
+   "probe_projection": [
+    "product_id",
+    "order_date",
+    "product_name",
+    "season"
+   ],
+   "build_table": "dim_products",
+   "build_keys": [
+    "product_id"
+   ],
+   "build_projection": [
+    "product_id",
+    "subcategory",
+    "name",
+    "from_date"
+   ],
+   "probe_rows_tier_a": 500000000,
+   "build_rows_tier_a": 26,
+   "source_weight": 1,
+   "filter": null,
+   "band": {
+    "probe_col": "order_date",
+    "build_lo": "from_date",
+    "build_hi": "to_date"
+   }
+  },
+  {
+   "id": "tpcds__store_sales_ss_item_sk__store_returns_sr_item_sk__composite",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "store_sales",
+   "probe_keys": [
+    "ss_item_sk",
+    "ss_ticket_number"
+   ],
+   "probe_projection": [
+    "ss_item_sk",
+    "ss_ticket_number"
+   ],
+   "build_table": "store_returns",
+   "build_keys": [
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "build_projection": [
+    "sr_item_sk",
+    "sr_ticket_number"
+   ],
+   "probe_rows_tier_a": 92000000,
+   "build_rows_tier_a": 9200000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__catalog_sales_cs_item_sk__catalog_returns_cr_item_sk__composite",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "catalog_sales",
+   "probe_keys": [
+    "cs_item_sk",
+    "cs_order_number"
+   ],
+   "probe_projection": [
+    "cs_item_sk",
+    "cs_order_number"
+   ],
+   "build_table": "catalog_returns",
+   "build_keys": [
+    "cr_item_sk",
+    "cr_order_number"
+   ],
+   "build_projection": [
+    "cr_item_sk",
+    "cr_order_number"
+   ],
+   "probe_rows_tier_a": 46000000,
+   "build_rows_tier_a": 4600000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpcds__web_sales_ws_item_sk__web_returns_wr_item_sk__composite",
+   "dataset": "tpcds",
+   "kind": "INNER",
+   "probe_table": "web_sales",
+   "probe_keys": [
+    "ws_item_sk",
+    "ws_order_number"
+   ],
+   "probe_projection": [
+    "ws_item_sk",
+    "ws_order_number"
+   ],
+   "build_table": "web_returns",
+   "build_keys": [
+    "wr_item_sk",
+    "wr_order_number"
+   ],
+   "build_projection": [
+    "wr_item_sk",
+    "wr_order_number"
+   ],
+   "probe_rows_tier_a": 23000000,
+   "build_rows_tier_a": 2300000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "tpch__lineitem_l_partkey__partsupp_ps_partkey__composite",
+   "dataset": "tpch",
+   "kind": "INNER",
+   "probe_table": "lineitem",
+   "probe_keys": [
+    "l_partkey",
+    "l_suppkey"
+   ],
+   "probe_projection": [
+    "l_partkey",
+    "l_suppkey"
+   ],
+   "build_table": "partsupp",
+   "build_keys": [
+    "ps_partkey",
+    "ps_suppkey"
+   ],
+   "build_projection": [
+    "ps_partkey",
+    "ps_suppkey"
+   ],
+   "probe_rows_tier_a": 240000000,
+   "build_rows_tier_a": 32000000,
+   "source_weight": 8,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "stackoverflow__votes_PostId__posts_Id",
+   "dataset": "stackoverflow",
+   "kind": "INNER",
+   "probe_table": "votes",
+   "probe_keys": [
+    "PostId"
+   ],
+   "probe_projection": [
+    "PostId",
+    "VoteTypeId"
+   ],
+   "build_table": "posts",
+   "build_keys": [
+    "Id"
+   ],
+   "build_projection": [
+    "Id",
+    "OwnerUserId",
+    "Score",
+    "ViewCount",
+    "CommentCount"
+   ],
+   "probe_rows_tier_a": 238980000,
+   "build_rows_tier_a": 59820000,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "stackoverflow__comments_PostId__posts_Id",
+   "dataset": "stackoverflow",
+   "kind": "INNER",
+   "probe_table": "comments",
+   "probe_keys": [
+    "PostId"
+   ],
+   "probe_projection": [
+    "PostId",
+    "UserId",
+    "Score"
+   ],
+   "build_table": "posts",
+   "build_keys": [
+    "Id"
+   ],
+   "build_projection": [
+    "Id",
+    "OwnerUserId",
+    "Score",
+    "ViewCount",
+    "CommentCount"
+   ],
+   "probe_rows_tier_a": 90380000,
+   "build_rows_tier_a": 59820000,
+   "source_weight": 3,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "stackoverflow__posts_OwnerUserId__users_Id",
+   "dataset": "stackoverflow",
+   "kind": "INNER",
+   "probe_table": "posts",
+   "probe_keys": [
+    "OwnerUserId"
+   ],
+   "probe_projection": [
+    "Id",
+    "OwnerUserId",
+    "Score",
+    "ViewCount",
+    "CommentCount"
+   ],
+   "build_table": "users",
+   "build_keys": [
+    "Id"
+   ],
+   "build_projection": [
+    "Id",
+    "DisplayName",
+    "Reputation"
+   ],
+   "probe_rows_tier_a": 59820000,
+   "build_rows_tier_a": 22480000,
+   "source_weight": 4,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "stackoverflow__badges_UserId__users_Id",
+   "dataset": "stackoverflow",
+   "kind": "INNER",
+   "probe_table": "badges",
+   "probe_keys": [
+    "UserId"
+   ],
+   "probe_projection": [
+    "UserId",
+    "Name"
+   ],
+   "build_table": "users",
+   "build_keys": [
+    "Id"
+   ],
+   "build_projection": [
+    "Id",
+    "DisplayName",
+    "Reputation"
+   ],
+   "probe_rows_tier_a": 51290000,
+   "build_rows_tier_a": 22480000,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "stackoverflow__comments_UserId__users_Id",
+   "dataset": "stackoverflow",
+   "kind": "INNER",
+   "probe_table": "comments",
+   "probe_keys": [
+    "UserId"
+   ],
+   "probe_projection": [
+    "PostId",
+    "UserId",
+    "Score"
+   ],
+   "build_table": "users",
+   "build_keys": [
+    "Id"
+   ],
+   "build_projection": [
+    "Id",
+    "DisplayName",
+    "Reputation"
+   ],
+   "probe_rows_tier_a": 90380000,
+   "build_rows_tier_a": 22480000,
+   "source_weight": 2,
+   "filter": null,
+   "band": null
+  },
+  {
+   "id": "stackoverflow__postlinks_RelatedPostId__posts_Id",
+   "dataset": "stackoverflow",
+   "kind": "INNER",
+   "probe_table": "postlinks",
+   "probe_keys": [
+    "RelatedPostId"
+   ],
+   "probe_projection": [
+    "PostId",
+    "RelatedPostId",
+    "LinkTypeId"
+   ],
+   "build_table": "posts",
+   "build_keys": [
+    "Id"
+   ],
+   "build_projection": [
+    "Id",
+    "OwnerUserId",
+    "Score",
+    "ViewCount",
+    "CommentCount"
+   ],
+   "probe_rows_tier_a": 6550000,
+   "build_rows_tier_a": 59820000,
+   "source_weight": 1,
+   "filter": null,
+   "band": null
+  }
+ ]
+}
