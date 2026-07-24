@@ -119,8 +119,13 @@ class ExecTarget:
         return argv
 
 
-def sql(target: ExecTarget, query: str, *, timeout: float = 600.0, stdin_file: str | None = None):
-    argv = target.client_argv(query)
+def sql(target: ExecTarget, query: str, *, timeout: float = 600.0, stdin_file: str | None = None,
+        settings: dict | None = None):
+    # The client's default receive_timeout (300s) aborts long silent queries
+    # (e.g. OPTIMIZE FINAL on a big table sends no packets while merging), so
+    # widen it to the caller's subprocess timeout.
+    merged = {"receive_timeout": max(int(timeout), 300), **(settings or {})}
+    argv = target.client_argv(query, settings=merged)
     if target.ssh_host:
         remote = " ".join(shlex.quote(a) for a in argv)
         if stdin_file:
@@ -141,8 +146,8 @@ def sql(target: ExecTarget, query: str, *, timeout: float = 600.0, stdin_file: s
 
 
 def sql_ok(target: ExecTarget, query: str, *, timeout: float = 600.0, purpose: str = "",
-           stdin_file: str | None = None) -> bytes:
-    rc, out, err = sql(target, query, timeout=timeout, stdin_file=stdin_file)
+           stdin_file: str | None = None, settings: dict | None = None) -> bytes:
+    rc, out, err = sql(target, query, timeout=timeout, stdin_file=stdin_file, settings=settings)
     if rc != 0:
         raise RuntimeError(f"SQL failed ({purpose or query[:80]}): rc={rc} stderr={err.decode(errors='replace')[:2000]}")
     return out
@@ -248,7 +253,10 @@ def table_load_guard(target: ExecTarget, dataset: str, tier: str, table: str) ->
     if table in stored_fingerprints(target, db):
         print(f"  {db}.{table}: already loaded (fingerprint present), skipping")
         return True
-    sql_ok(target, f"TRUNCATE TABLE {db}.{table}", purpose=f"truncate {db}.{table}")
+    # The truncate is destructive by design (partial loads are discarded), so
+    # bypass max_table_size_to_drop - a big partial table must still be droppable.
+    sql_ok(target, f"TRUNCATE TABLE {db}.{table}", purpose=f"truncate {db}.{table}",
+           settings={"max_table_size_to_drop": 0})
     return False
 
 
