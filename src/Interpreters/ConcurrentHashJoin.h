@@ -23,17 +23,8 @@ namespace DB
  * that stores a unique set of keys. Also, `addBlockToJoin()` calls are done under mutex to guarantee
  * that every `HashJoin` instance is written only from one thread at a time.
  *
- * When matching the left table, the input blocks are also split by hash and routed to corresponding `HashJoin` instances.
- * This introduces some noticeable overhead compared to the `hash` join algorithm that doesn't have to split. Then,
- * we introduced the following optimization. On the probe stage, we want to have the same execution as for the `hash` join algorithm,
- * i.e., we want to have a single shared hash map that we will read from each thread. No splitting of blocks is required.
- * We should somehow divide this shared hash map between threads so that we can still execute the build stage concurrently.
- * The idea is to use a two-level hash map and distribute its buckets between threads. Namely, we will calculate the same hash
- * that the hash map calculates, map it to the bucket number, and then take this number modulo the number of threads. This way,
- * upon build phase completion, we will have thread #0 having a hash map with only buckets {#0, #threads_num, #threads_num*2, ...},
- * thread #1 with only buckets {#1, #threads_num+1, #threads_num*2+1, ...} and so on. To form the resulting hash map,
- * we will merge all these sub-maps in the method `onBuildPhaseFinish`. Please note that this merge could be done in constant time because,
- * for each bucket, only one `HashJoin` instance has it non-empty.
+ * When matching the left table, the input blocks are split by hash the same way and routed to the corresponding
+ * `HashJoin` instances, since only the instance a key was scattered to during the build phase holds that key.
  */
 class ConcurrentHashJoin : public IJoin
 {
@@ -125,7 +116,6 @@ private:
     bool any_take_last_row;
     std::unique_ptr<ThreadPool> pool;
     std::vector<std::shared_ptr<InternalHashJoin>> hash_joins;
-    bool build_phase_finished = false;
 
     StatsCollectingParams stats_collecting_params;
     const size_t external_join_threshold;
