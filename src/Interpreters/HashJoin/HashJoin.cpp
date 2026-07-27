@@ -97,7 +97,7 @@ static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nulla
     }
 }
 
-static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes, bool use_two_level_maps);
+static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes);
 static std::optional<HashJoin::Type> tryGetLowCardinalityMethod(const ColumnPtr & column);
 
 /// A multi-disjunct (OR) join shares a single data->type across all disjuncts. When the disjuncts
@@ -109,18 +109,16 @@ static HashJoin::Type mergeJoinMethods(HashJoin::Type lhs, HashJoin::Type rhs)
 {
     using Type = HashJoin::Type;
 
-    /// Rank within a packing family (single-level and two-level are ranked separately); 0 = not a
-    /// packed fixed-key map. Within one join all disjuncts are the same level, so two packed types
-    /// being merged always belong to the same family.
+    /// Rank within the packed fixed-key family; 0 = not a packed fixed-key map.
     auto packed_rank = [](Type type) -> int
     {
         switch (type)
         {
-            case Type::keys32: case Type::two_level_keys32:   return 1;
-            case Type::keys64: case Type::two_level_keys64:   return 2;
-            case Type::keys128: case Type::two_level_keys128: return 3;
-            case Type::keys256: case Type::two_level_keys256: return 4;
-            default:                                          return 0;
+            case Type::keys32:  return 1;
+            case Type::keys64:  return 2;
+            case Type::keys128: return 3;
+            case Type::keys256: return 4;
+            default:            return 0;
         }
     };
 
@@ -138,7 +136,6 @@ HashJoin::HashJoin(
     bool any_take_last_row_,
     size_t reserve_num_,
     const String & instance_id_,
-    bool use_two_level_maps,
     const StatsCollectingParams & stats_collecting_params_)
     : table_join(table_join_)
     , kind(table_join->kind())
@@ -197,9 +194,9 @@ HashJoin::HashJoin(
     }
 
     /// Detect a single non-nullable LowCardinality key before the keys are materialized below, so it
-    /// can use a dictionary-aware map. Restricted to a single disjunct and non-two-level maps for now.
+    /// can use a dictionary-aware map. Restricted to a single disjunct for now.
     std::optional<Type> low_cardinality_method;
-    if (table_join->oneDisjunct() && !use_two_level_maps && strictness != JoinStrictness::Asof)
+    if (table_join->oneDisjunct() && strictness != JoinStrictness::Asof)
     {
         const auto & only_clause_key_names = table_join->getOnlyClause().key_names_right;
         if (only_clause_key_names.size() == 1)
@@ -251,13 +248,13 @@ HashJoin::HashJoin(
             /// Therefore, add it back in such that it can be extracted appropriately from the full stored
             /// key_columns and key_sizes
             auto & asof_key_sizes = key_sizes.emplace_back();
-            selected_join_method = chooseMethod(key_columns, asof_key_sizes, use_two_level_maps);
+            selected_join_method = chooseMethod(key_columns, asof_key_sizes);
             asof_key_sizes.push_back(asof_size);
         }
         else
         {
             /// Choose data structure to use for JOIN.
-            auto current_join_method = chooseMethod(key_columns, key_sizes.emplace_back(), use_two_level_maps);
+            auto current_join_method = chooseMethod(key_columns, key_sizes.emplace_back());
             if (low_cardinality_method)
             {
                 current_join_method = *low_cardinality_method;
@@ -385,39 +382,6 @@ static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & ke
 
     /// Otherwise, will use set of cryptographic hashes of unambiguously serialized values.
     return Type::hashed;
-}
-
-static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes, bool use_two_level_maps)
-{
-    using Type = HashJoin::Type;
-
-    if (!use_two_level_maps)
-        return chooseMethod(key_columns, key_sizes);
-
-    // if `use_two_level_maps == true` returns two-level version of the map
-    switch (auto type = chooseMethod(key_columns, key_sizes))
-    {
-        case Type::key32:
-            return Type::two_level_key32;
-        case Type::key64:
-            return Type::two_level_key64;
-        case Type::keys32:
-            return Type::two_level_keys32;
-        case Type::keys64:
-            return Type::two_level_keys64;
-        case Type::keys128:
-            return Type::two_level_keys128;
-        case Type::keys256:
-            return Type::two_level_keys256;
-        case Type::key_string:
-            return Type::two_level_key_string;
-        case Type::key_fixed_string:
-            return Type::two_level_key_fixed_string;
-        case Type::hashed:
-            return Type::two_level_hashed;
-        default:
-            return type;
-    }
 }
 
 /// If the column is a single non-nullable LowCardinality key, return the dictionary-aware map type
@@ -1268,24 +1232,13 @@ struct CollectorNonJoined
 /// Based on:
 ///   - map offsetInternal saved in used_flags for single disjuncts
 ///   - flags in BlockWithFlags for multiple disjuncts
-///
-/// For parallel iteration over two-level hash maps, bucket_idx and num_buckets
-/// can be specified to process only buckets where (bucket % num_buckets == bucket_idx)
 class NotJoinedHash final : public NotJoinedBlocks::RightColumnsFiller
 {
 public:
     NotJoinedHash(const HashJoin & parent_, UInt64 max_block_size_, bool flag_per_row_)
-        : NotJoinedHash(parent_, max_block_size_, flag_per_row_, 0, 1)
-    {
-    }
-
-    NotJoinedHash(const HashJoin & parent_, UInt64 max_block_size_, bool flag_per_row_,
-                  size_t bucket_idx_, size_t num_buckets_)
         : parent(parent_)
         , max_block_size(max_block_size_)
         , flag_per_row(flag_per_row_)
-        , bucket_idx(bucket_idx_)
-        , num_buckets(num_buckets_)
     {
         if (parent.data == nullptr)
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot join after data has been released");
@@ -1315,22 +1268,10 @@ private:
     const HashJoin & parent;
     UInt64 max_block_size;
     bool flag_per_row;
-    size_t bucket_idx;
-    size_t num_buckets;
 
     std::any position;
     std::optional<HashJoin::NullmapList::const_iterator> nulls_position;
     std::optional<HashJoin::StoredBlocksList::const_iterator> used_position;
-
-    bool isBucketInRange(size_t bucket) const
-    {
-        return num_buckets <= 1 || (bucket % num_buckets) == bucket_idx;
-    }
-
-    bool isBlockInRange(size_t block_no) const
-    {
-        return num_buckets <= 1 || (block_no % num_buckets) == bucket_idx;
-    }
 
     template <typename Maps>
     size_t fillColumnsFromMap(const Maps & maps, MutableColumns & columns_keys_and_right)
@@ -1357,8 +1298,6 @@ private:
 
         if (flag_per_row)
         {
-            /// parent.data->columns is not partitioned by hash bucket, so distribute the stored
-            /// right blocks across streams by their globally unique block_no instead
             if (!used_position.has_value())
                 used_position = parent.data->columns.begin();
 
@@ -1367,9 +1306,6 @@ private:
             for (auto & it = *used_position; it != end && row_nums.size() < max_block_size; ++it)
             {
                 const auto & mapped_block = *it;
-                if (!isBlockInRange(mapped_block.block_no))
-                    continue;
-
                 size_t rows = mapped_block.columns.at(0)->size();
 
                 for (size_t row = 0; row < rows; ++row)
@@ -1395,60 +1331,19 @@ private:
             auto end = map.end();
             const StoredBlock * const * stored_columns = parent.data->stored_columns_index->blocksData();
 
-            /// case: two-level hash tables with parallel iteration
-            if constexpr (requires { it.getBucket(); map.NUM_BUCKETS; })
+            for (; it != end; ++it)
             {
-                auto skipToNextOwnedBucket = [&]() -> bool
+                size_t offset = map.offsetInternal(it.getPtr());
+                if (parent.isUsed(offset))
+                    continue;
+
+                const Mapped & mapped = it->getMapped();
+                CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
+
+                if (row_nums.size() >= max_block_size)
                 {
-                    while (it != end && !isBucketInRange(it.getBucket()))
-                    {
-                        /// smallest bucket > current that satisfies: bucket ≡ bucket_idx (mod num_buckets)
-                        size_t cur = it.getBucket();
-                        size_t next = cur - (cur % num_buckets) + bucket_idx;
-                        if (next <= cur)
-                            next += num_buckets;
-                        it = map.iteratorAt(next);
-                    }
-                    return it != end;
-                };
-
-                /// position at the first bucket owned by this stream
-                if (!skipToNextOwnedBucket())
-                    return row_nums.size();
-
-                while (it != end && row_nums.size() < max_block_size)
-                {
-                    size_t offset = map.offsetInternal(it.getPtr());
-                    if (!parent.isUsed(offset))
-                    {
-                        const Mapped & mapped = it->getMapped();
-                        CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
-                    }
-
                     ++it;
-
-                    /// if we crossed into a bucket not owned by this stream, skip ahead
-                    if (it != end && !isBucketInRange(it.getBucket()) && !skipToNextOwnedBucket())
-                        break;
-                }
-            }
-            else
-            {
-                /// Single-level hash tables - no bucket filtering
-                for (; it != end; ++it)
-                {
-                    size_t offset = map.offsetInternal(it.getPtr());
-                    if (parent.isUsed(offset))
-                        continue;
-
-                    const Mapped & mapped = it->getMapped();
-                    CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
-
-                    if (row_nums.size() >= max_block_size)
-                    {
-                        ++it;
-                        break;
-                    }
+                    break;
                 }
             }
         }
@@ -1461,10 +1356,6 @@ private:
 
     void fillNullsFromBlocks(MutableColumns & columns_keys_and_right, size_t & rows_added)
     {
-        /// for parallel iteration, only stream 0 handles nullmaps to avoid duplicates
-        if (bucket_idx != 0)
-            return;
-
         if (!nulls_position.has_value())
             nulls_position = parent.data->nullmaps.begin();
 
@@ -1503,13 +1394,6 @@ private:
 IBlocksStreamPtr
 HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const
 {
-    return getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size, 0, 1);
-}
-
-IBlocksStreamPtr
-HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
-                             size_t bucket_idx, size_t num_buckets) const
-{
     if (!JoinCommon::hasNonJoinedBlocks(*table_join))
         return {};
 
@@ -1540,7 +1424,7 @@ HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & resu
         }
     }
 
-    auto non_joined = std::make_unique<NotJoinedHash>(*this, max_block_size, flag_per_row, bucket_idx, num_buckets);
+    auto non_joined = std::make_unique<NotJoinedHash>(*this, max_block_size, flag_per_row);
     return std::make_unique<NotJoinedBlocks>(std::move(non_joined), result_sample_block, left_columns_count, *table_join);
 }
 
