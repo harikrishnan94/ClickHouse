@@ -90,6 +90,39 @@ selftest verdicting TIE.
 Action on refutation: stop; fix the harness (or report the pre-existing
 product defect) before any Unit 2 commit.
 
+## PREREG-004 — Unit 2 commit 1: slot-route decorrelation — 2026-07-27 — written at HEAD 91469b6b22e
+
+Expectation: deriving the scatter selector from the hash's bits 24+ for
+chained-map types (mirroring the two-level baseline's `getBucketFromHash`
+distribution; `FixedHashMap` key8/16 keep low-bit routing) — applied to
+build dispatch and probe dispatch together in one commit — leaves join
+results byte-identical (G-parity stays green) and improves BOTH
+`ConcurrentHashJoinBuildInsertMicroseconds`- and
+`ConcurrentHashJoinProbeLookupMicroseconds`-attributed time outside the 3%
+band on DRAM-resident cells at 128 slots (local orientation A/B, pre-fix
+candidate `75d431b1d74` vs post-fix candidate, cells
+`key64:probe.inner_all.S3.T96`, `str:probe.inner_all.S3.T96`,
+`key64:build.inner_all.S3.T96`), because today slot routing and in-map
+placement share low bits, clustering each slot's home cells on 1/slots of
+positions (expected cluster ≈ load×slots cells with linear probing).
+
+Invocation:
+  bash tmp/chj_amac/parity/run_parity.sh tmp/chj_amac/bins/clickhouse-baseline-a05f3ee81ff.bin tmp/chj_amac/bins/clickhouse-candidate-<postfix>.bin
+  python3 tmp/chj_amac/fleet_ab.py sweep --local --arm-a tmp/chj_amac/bins/clickhouse-candidate-75d431b1d74.bin --arm-b tmp/chj_amac/bins/clickhouse-candidate-<postfix>.bin --cells "key64:probe.inner_all.S3.T96,str:probe.inner_all.S3.T96,key64:build.inner_all.S3.T96" --calibration tmp/chj_amac/fleet/calibration_rows.json
+  (arm B = post-fix; verdict LOSS for arm A = improvement by the fix)
+
+Refutation criterion: any parity divergence; or no probe cell improves
+outside the 3% band (the mechanism story is then wrong — investigate with a
+chain-length probe before proceeding); build-side improvement is expected
+but not required for acceptance of this commit (dispatch hash cost may mask
+it — record whatever is measured).
+
+Action on refutation: parity divergence → stop and fix before anything
+else; no perf effect → keep the change only if parity-neutral AND
+harmless, downgrade the "correlation defect" claim in REPORT.md to
+refuted-lead, and investigate the chain-length hypothesis with a dedicated
+probe before Unit 2 commit 2.
+
 ## PREREG-003 — env facts for perf venues — 2026-07-27 — written at HEAD 6cdee22a455
 
 Local orientation host (never acceptance evidence): aarch64 Graviton, 96
