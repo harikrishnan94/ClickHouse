@@ -519,16 +519,17 @@ IBlocksStreamPtr ConcurrentHashJoin::getNonJoinedBlocks(
     return std::make_shared<ConcatStreams>(std::move(streams));
 }
 
-/// Chained hash maps place a key at `hash & mask` — the same low bits a plain
-/// `hash & (num_shards - 1)` route consumes. Routing by those bits leaves each
-/// slot's map with home cells only at positions congruent to the slot index
-/// modulo `num_shards`, so linear-probe runs grow roughly `num_shards` times
-/// longer than the load factor implies. Route chained types by the hash's
-/// bits 24+ instead — the same window `TwoLevelHashTable::getBucketFromHash`
-/// used when the slots shared two-level maps — which stays decorrelated from
-/// placement until a single slot's map exceeds 2^24 cells. `FixedHashMap`
-/// types (`key8`/`key16`) index cells directly by the key value and have no
-/// chains, so the low bits remain the natural route for them.
+/// Open-addressing hash maps put a key's home cell at `hash & mask` — the
+/// same low bits a plain `hash & (num_shards - 1)` route consumes. Routing by
+/// those bits leaves each slot's map with home cells only at positions
+/// congruent to the slot index modulo `num_shards`, so linear-probe runs grow
+/// roughly `num_shards` times longer than the load factor implies. Route the
+/// open-addressing types by the hash's bits 24+ instead — the same window
+/// `TwoLevelHashTable::getBucketFromHash` used when the slots shared
+/// two-level maps — which stays decorrelated from placement until a single
+/// slot's map exceeds 2^24 cells. `FixedHashMap` types (`key8`/`key16`)
+/// index cells directly by the key value and have no collision chains, so
+/// the low bits remain the natural route for them.
 static constexpr bool routeByHighBits(HashJoin::Type type)
 {
     return type != HashJoin::Type::key8 && type != HashJoin::Type::key16;
