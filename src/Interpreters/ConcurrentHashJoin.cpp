@@ -218,6 +218,15 @@ ConcurrentHashJoin::ConcurrentHashJoin(
                 });
         }
         pool->wait();
+
+        /// Share one `StoredColumnsIndex` across all slots so that `RowRef::block_no` is
+        /// globally unique: any slot's probe can then resolve refs into any slot's stored
+        /// blocks at emit time (the routed probe emits every slot's matches through one
+        /// `AddedColumns`). Registration stays safe under the concurrent build because
+        /// `StoredColumnsIndex::add` is mutex-protected.
+        auto shared_index = hash_joins[0]->data->getJoinedData()->stored_columns_index;
+        for (size_t i = 1; i < slots; ++i)
+            hash_joins[i]->data->getJoinedData()->stored_columns_index = shared_index;
     }
     catch (...)
     {
@@ -330,6 +339,9 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
     return true;
 }
 
+static IColumn::Selector
+selectDispatchBlock(const HashJoin & join, size_t num_shards, const Strings & key_columns_names, const Block & from_block);
+
 class ConcatStreams final : public IBlocksStream
 {
 public:
@@ -363,55 +375,52 @@ private:
     Deque children;
 };
 
-class ConcurrentHashJoinResult : public IJoinResult
+/// The lazy result of the routed probe. The routed lookup itself is deferred to the first
+/// `next()` call, keeping `joinBlock` as cheap as before (it only derives the route words);
+/// after that this is a thin timing shim around the inner `HashJoinResult`. A
+/// `max_joined_block_rows` remainder (`next_block`) is passed through to the caller -
+/// `JoiningTransform` re-feeds it through `joinBlock`, which re-derives its routes.
+class RoutedJoinResult : public IJoinResult
 {
-    const std::vector<std::shared_ptr<ConcurrentHashJoin::InternalHashJoin>> & hash_joins;
-    ScatteredBlocks dispatched_blocks;
-    size_t next_block = 0;
-    JoinResultPtr current_result;
+    std::vector<const HashJoin *> slot_joins;
+    ScatteredBlock block;
+    /// Owns the route words for the lifetime of the lookup; null when there is a single slot.
+    std::optional<IColumn::Selector> slot_ids;
+    /// Kept alive until destruction even after the last block: the `next_block` pointer
+    /// returned to the caller points into it.
+    JoinResultPtr inner;
+
 public:
-    explicit ConcurrentHashJoinResult(
+    RoutedJoinResult(
         const std::vector<std::shared_ptr<ConcurrentHashJoin::InternalHashJoin>> & hash_joins_,
-        ScatteredBlocks && dispatched_blocks_)
-        : hash_joins(hash_joins_)
-        , dispatched_blocks(std::move(dispatched_blocks_))
-    {}
+        ScatteredBlock && block_,
+        std::optional<IColumn::Selector> && slot_ids_)
+        : block(std::move(block_))
+        , slot_ids(std::move(slot_ids_))
+    {
+        slot_joins.reserve(hash_joins_.size());
+        for (const auto & hash_join : hash_joins_)
+            slot_joins.push_back(hash_join->data.get());
+    }
 
     JoinResultBlock next() override
     {
-        /// Accumulates the whole lazy probe cost (the lookup below plus the gather/emit that runs
-        /// inside `current_result->next()`) into the probe total, on top of the dispatch cost
-        /// `joinBlock` already charged before this result was created.
+        /// Accumulates the whole lazy probe cost (the routed lookup below plus the gather/emit
+        /// that runs inside `inner->next()`) into the probe total, on top of the route
+        /// derivation `joinBlock` already charged before this result was created.
         ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
-        if (!current_result)
+        if (!inner)
         {
-            /// Skip empty dispatched blocks to avoid running the full join machinery for nothing,
-            /// keep the last block so joinScatteredBlock produces the correct output header
-            while (next_block + 1 < dispatched_blocks.size() && dispatched_blocks[next_block].rows() == 0)
-                ++next_block;
-
-            if (next_block >= dispatched_blocks.size())
-                return {Block(), nullptr, true};
-
-            /// The hash-map lookup: `joinScatteredBlock` -> `joinBlockImpl` -> `joinRightColumns`'s
-            /// per-row `findKey` plus recording cheap match row-refs. It does NOT gather any column
-            /// values yet (that is deferred to `HashJoinResult::next`).
+            /// The routed hash-map lookup: `joinRoutedBlock` -> `RoutedHashJoinMethods`'
+            /// per-row `findKey` in the row's slot map (or the AMAC find pass) plus recording
+            /// cheap match row-refs. It does NOT gather any column values yet (that is
+            /// deferred to `HashJoinResult::next`).
             ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
-            current_result = hash_joins[next_block]->data->joinScatteredBlock(std::move(dispatched_blocks[next_block]));
+            inner = HashJoin::joinRoutedBlock(slot_joins, std::move(block), slot_ids ? slot_ids->data() : nullptr);
         }
 
-        auto data = current_result->next();
-        if (data.is_last)
-        {
-            if (data.next_block)
-                dispatched_blocks[next_block] = std::move(*data.next_block);
-            else
-                ++next_block;
-            current_result.reset();
-        }
-
-        bool is_last = next_block >= dispatched_blocks.size() && data.is_last;
-        return {std::move(data.block), nullptr, is_last};
+        auto data = inner->next();
+        return {std::move(data.block), data.next_block, data.is_last};
     }
 };
 
@@ -419,15 +428,18 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
 {
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
 
-    ScatteredBlocks dispatched_blocks;
+    std::optional<IColumn::Selector> slot_ids;
     {
         ProfileEventTimeIncrement<Microseconds> probe_dispatch_watch(ProfileEvents::ConcurrentHashJoinProbeDispatchMicroseconds);
         hash_joins[0]->data->materializeColumnsFromLeftBlock(block);
-        dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_left, std::move(block));
+        /// Only the route words are computed here; the block itself is NOT scattered - the
+        /// routed probe (see `RoutedHashJoinMethods`) follows the words per row and emits in
+        /// left-row order.
+        if (slots > 1)
+            slot_ids = selectDispatchBlock(*hash_joins[0]->data, slots, table_join->getOnlyClause().key_names_left, block);
     }
-    chassert(dispatched_blocks.size() == slots);
 
-    return std::make_unique<ConcurrentHashJoinResult>(hash_joins, std::move(dispatched_blocks));
+    return std::make_unique<RoutedJoinResult>(hash_joins, ScatteredBlock{std::move(block)}, std::move(slot_ids));
 }
 
 void ConcurrentHashJoin::checkTypesOfKeys(const Block & block) const

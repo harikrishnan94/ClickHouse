@@ -23,8 +23,11 @@ namespace DB
  * that stores a unique set of keys. Also, `addBlockToJoin()` calls are done under mutex to guarantee
  * that every `HashJoin` instance is written only from one thread at a time.
  *
- * When matching the left table, the input blocks are split by hash the same way and routed to the corresponding
- * `HashJoin` instances, since only the instance a key was scattered to during the build phase holds that key.
+ * When matching the left table, probe blocks are NOT scattered: `joinBlock()` derives one route word per row (the same
+ * hash the build scatter used, since only the instance a key was scattered to during the build phase holds that key)
+ * and runs a single routed lookup pass over the original block, each row probing its slot's hash map (see
+ * `RoutedHashJoinMethods`). All slots share one `StoredColumnsIndex`, so matches from every slot emit through one
+ * result - in left-row order, which the scatter probe could not preserve.
  */
 class ConcurrentHashJoin : public IJoin
 {

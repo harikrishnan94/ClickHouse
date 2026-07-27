@@ -432,6 +432,59 @@ designed, and the loser re-runs below). F6 (custom `asmdiff.py` instead of
 the prereg-named `analyze-assembly.py`) stands as a disclosed deviation:
 the tool's symbol cache is unsafe on 4.9 GB binaries on this host.
 
+## 2026-07-27 — U3: order-preserving routed probe + AMAC probe find ring (PREREG-007) — ALL SIX GATES GREEN
+
+Implementation (agent draft, reviewed; notes `U3_DRAFT_NOTES.md`):
+`HashJoinRoutedMethods{.h,Impl.h}` + 6 routed TUs (30 instantiations),
+`AmacProbe.{h,cpp}` (64 `amacFindPass` instantiations), shared
+`StoredColumnsIndex` across slots (master pattern restored), the probe flip
+(`RoutedJoinResult`; `ConcurrentHashJoinResult` deleted;
+`joinScatteredBlock` removed), `RoutedProbeContext` through the
+additional-filter path, `createKeyGetter` hoisted,
+`ConcurrentHashJoinAmacProbeRows` + re-sited probe event descriptions
+(names frozen), 5 new gtests. Binary +1.97% (accounted: +11.3 MiB text).
+
+Gates (raw finals):
+- (a) G-parity + dual-side engagement: `PARITY OK (636 cases: 634 compared,
+  2 matched-error, 0 failed; ... force-pass: engaged 8/8+2x0 (build,probe))`
+  — `parity/gate_u3.log`.
+- (b) G-order, after an ORACLE CORRECTION (its own commit below): the U3
+  candidate's original run (`gate_u3_order.log`) passed all 9 join-output
+  checks, T1 global, and stateless 03448/03711 ×10 with engagement, but
+  failed the 8 `_squash` variants — and the TWO-LEVEL BASELINE fails the
+  IDENTICAL 8 checks with comparable counts (`gate_002b_baseline.log`),
+  though it probes whole blocks and cannot reorder within them ⇒ the
+  `_squash` per-block rule measures per-lane scan interleaving, not join
+  reordering (on the old scatter design it also caught real cross-piece
+  disorder, which is why it had power there). Correction: `_squash` checks
+  are baseline-differential, fail-closed (`--baseline-reference` required;
+  reclassified `SOURCE-ARTIFACT` only when the non-squash sibling is OK AND
+  the baseline fails the same check); `--expect-fail` power mode untouched.
+  Re-proofs (`order/SELFTEST.md` §11): U3 `ORDER OK (ok=9 fail=0
+  source_artifact=8 ...)`; the BASELINE PASSES ITS OWN GATE; the power
+  check still fails scatter binaries.
+- (c) probe A/B (preU3 = `candidate-7e64a6cf4d5` vs routedU3, raws
+  `fleet/results/u3_probe_ab.jsonl`): NO losses; wall key64 S2×T96
+  564.6→319.0 ms (−43.5%), key64 S3×T96 674.8→381.0 (−43.5%), str S2×T96
+  658.1→276.8 (**−57.9%**), str S3×T96 810.8→341.2 (**−57.9%**), key64
+  S3×T1 11558.7→11134.2 (−3.7%); `ProbeLookup` −57%..−78% with
+  `AmacProbeRows` = full probe row counts (192M/96M — 100% coverage);
+  `ProbeDispatch` also dropped ~1.6 s→0.6 s (route derivation replaced
+  scatter). LOCAL ORIENTATION; fleet acceptance in Unit 4.
+- (d) `G-DISASM-PROBE: PASS (0 unexplained)` — `disasm/U3_probe_anchors.md`:
+  56/56 prefetches `pldl1keep`, two-line prefetch on >24 B cells, bare
+  `++cell`, admit-only key pack/hash, SSA-clean; one candidate-favorable
+  divergence (inlined SIMD string compare vs out-of-line `bcmp`). All six
+  mission disasm anchors (3 build + 3 probe) now PASS.
+- (e) gtests 10/10 in default env AND `CLICKHOUSE_JOIN_AMAC=0` (re-run by
+  the orchestrator). (f) binary delta recorded above.
+
+Commit-split deviation recorded: the routed probe and the probe ring land
+as ONE product commit — they are one logical change by the requester's own
+unit reordering (the ordered emit is the AMAC probe's property), and the
+draft tree interleaves them in shared files; hunk surgery to force the
+plan's finer split would risk untested intermediate states.
+
 Unit 1 exit state: PREREG-001 and PREREG-002a/b/c all green; coverage matrix
 frozen (MATRIX.md + fleet/matrix.json); calibration frozen; fleet runbook
 written (launch deferred until Units 2-3 pass local gates); harness suite

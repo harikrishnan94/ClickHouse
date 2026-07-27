@@ -37,6 +37,9 @@ class JoinUsedFlags;
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods;
 
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+class RoutedHashJoinMethods;
+
 /** Data structure for implementation of hash JOIN.
   * It is a hash table: keys -> rows of joined ("right") table.
   *
@@ -151,8 +154,13 @@ public:
       */
     JoinResultPtr joinBlock(Block block) override;
 
-    /// Called directly from ConcurrentJoin::joinBlock
-    JoinResultPtr joinScatteredBlock(ScatteredBlock block);
+    /// The order-preserving routed probe of `ConcurrentHashJoin` (`parallel_hash`): one lookup
+    /// pass over the ORIGINAL left block, with `slot_ids` (one route word per source row, null
+    /// when there is a single slot) selecting each row's slot map. The `slot_joins` share one
+    /// `StoredColumnsIndex`, so the result emits every slot's matches through slot 0's
+    /// machinery - in left-row order. See `RoutedHashJoinMethods`.
+    static JoinResultPtr joinRoutedBlock(
+        const std::vector<const HashJoin *> & slot_joins, ScatteredBlock block, const UInt64 * slot_ids);
 
     /// Check joinGet arguments and infer the return type.
     DataTypePtr joinGetCheckAndGetReturnType(const DataTypes & data_types, const String & column_name, bool or_null) const;
@@ -483,6 +491,9 @@ private:
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
     friend class HashJoinMethods;
+
+    template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+    friend class RoutedHashJoinMethods;
 
     std::shared_ptr<TableJoin> table_join;
     JoinKind kind;

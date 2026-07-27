@@ -1,0 +1,277 @@
+#include <Interpreters/HashJoin/AmacProbe.h>
+
+#include <Common/HashTable/HashTable.h>
+#include <Common/ProfileEvents.h>
+
+namespace ProfileEvents
+{
+extern const Event ConcurrentHashJoinAmacProbeRows;
+}
+
+namespace DB
+{
+
+namespace
+{
+
+/** The AMAC find policy of the two-phase routed probe (phase A): out-of-order lookups that only
+  * fill the per-row result arrays - the matched cell's mapped value copied by value into
+  * `found_word` (0 = no match) and, for the flagged shapes only, its slot-local used-flags
+  * offset. Copying the word in the same visit that reads the cell means phase B never touches
+  * the cell again - by the time the in-order loop reaches the row, the cell line has usually
+  * left the cache and re-reading it through a recorded pointer would be a second random miss
+  * per row. Nothing is emitted here; phase B consumes the results in left-row order - the
+  * flagless word-mapped lazy shapes through the dispatch-free `word_loop`, the rest through the
+  * standard `processMatch` (see `HashJoinRoutedMethodsImpl.h`).
+  *
+  * One ring serves MANY maps - each row's route slot's. The slot's address material is resolved
+  * once at admit from the flat descriptor array and carried in the ring slot as the RESOLVED
+  * CELL POINTER, so a steady visit dereferences nothing but the cell itself and the stored
+  * probe key: the map headers, scattered across as many heap objects as there are slots, would
+  * otherwise sit on the address chain of every visit. The collision walk is a bare `++cell` -
+  * no mask, no bound check: the buffers are tail-padded (`TailPaddedHashTableGrower`) and the
+  * engagement gate verified that no chain reached a buffer's last cell, so every walk
+  * terminates at an empty cell at or before it. The key is packed ONCE at admit and read per
+  * visit: re-fetching it through `getKeyHolder` re-packs the wide fixed keys (keys128/keys256)
+  * from the column pointers on EVERY visit - measured on the `ahj` prototype as the dominant
+  * per-visit cost of the wide-key ring. Ported (as ideas) from `RoutedAmacFindPolicy` of the
+  * `ahj` prototype (`src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h`).
+  */
+template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
+struct AmacFindPolicy
+{
+    using Cell = Map::cell_type;
+    static constexpr bool store_hash = cell_stores_hash<Cell>;
+    static constexpr bool may_grow = false;
+    static constexpr bool copy_into_frame = true; /// results live in the arrays; no state survives the run
+
+    /// The slot-register walk below is `HashMapTable::find` only under the contract of the
+    /// tail-padded linear grower - the home cell is `hash & mask`, the walk `++pos` into the
+    /// pad - and stateless cells, whose zero-check and key-compare read nothing through the map
+    /// object. Every map the AMAC gate admits satisfies both.
+    static_assert(is_tail_padded_linear_grower<typename Map::grower_type>);
+    static_assert(std::is_same_v<typename Cell::State, HashTableNoState>);
+    static constexpr HashTableNoState no_state{};
+
+    /// The key exactly as the map compares it (`keyHolderGetKey` of an lvalue holder, matching
+    /// the call sites): the fixed keys by value, the string keys as a view into the probe
+    /// column - trivially copyable across the whole AMAC getter set (the serialized getter is
+    /// excluded by the gate, and the arena-backed string holder persists nothing on the find
+    /// path).
+    using KeyHolder = std::remove_reference_t<decltype(std::declval<KeyGetter &>().getKeyHolder(0uz, std::declval<Arena &>()))>;
+    using StoredKey = std::decay_t<decltype(keyHolderGetKey(std::declval<KeyHolder &>()))>;
+    static_assert(std::is_trivially_copyable_v<StoredKey>);
+
+    /** The find-ring state, one parallel array per per-row field (see `amacRun`). The resolved
+      * cell pointer replaces the {buffer, mask, position} triple. `cell == nullptr` is the
+      * inactive sentinel (value-initialization = all-inactive), freeing `row` for the 16-bit
+      * chunk-local index. The slot id stays only for `recordHit` (recovering the slot-local
+      * used-flags offset through the descriptor, once per matched row); the emit side never
+      * reads it - it re-derives the slot from `slot_ids`.
+      */
+    template <size_t ring_size>
+    struct RingBase
+    {
+        std::array<const Cell *, ring_size> cell{}; /// the cell the next visit reads; nullptr == inactive
+        std::array<UInt16, ring_size> row{}; /// chunk-local probe row
+        std::array<UInt16, ring_size> slot{};
+        alignas(64) std::array<StoredKey, ring_size> key{};
+
+        bool isActive(size_t s) const { return cell[s] != nullptr; }
+        void deactivate(size_t s) { cell[s] = nullptr; }
+        UInt32 rowAt(size_t s) const { return row[s]; }
+    };
+    template <size_t ring_size>
+    struct RingWithHash : public RingBase<ring_size>
+    {
+        std::array<size_t, ring_size> hash{};
+    };
+    /// Cells that keep a saved hash (the string keys) use it as a `keyEquals` prefilter and
+    /// would recompute it expensively per visit, so those rings carry it; the cheap-key getters
+    /// recompute it from the stored key instead.
+    template <size_t ring_size>
+    using Ring = std::conditional_t<store_hash, RingWithHash<ring_size>, RingBase<ring_size>>;
+
+    /// The pass runs in chunks of this many rows, so the ring's row index fits 16 bits; the
+    /// default probe block (65409 rows) is 8 chunks.
+    static constexpr size_t chunk_rows_max = 8192;
+
+    /// A by-value copy of a trivially copyable key getter keeps its key-column pointers plain
+    /// fields of the frame-local policy instead of two dependent loads behind a reference.
+    std::conditional_t<std::is_trivially_copyable_v<KeyGetter>, KeyGetter, KeyGetter &> key_getter;
+    /// Hash provider and zero-key checker; reads nothing through the object (the hash functor
+    /// is an empty base and the cells are stateless), so any slot's map serves.
+    const Map & map0;
+    const Map * const * slot_maps = nullptr; /// the zero-key sentinel path only
+    const SlotMapDesc * slot_descs = nullptr;
+    const UInt64 * slot_ids = nullptr; /// null at the single-slot plan
+    size_t selector_base = 0; /// the first row of a continuous-range selector
+    const UInt64 * selector_indexes = nullptr; /// the data of an explicit-indexes selector
+    const UInt8 * skip_data = nullptr; /// null on the fast path
+    Arena & pool;
+    UInt64 * found_word = nullptr;
+    UInt64 * found_offset = nullptr; /// null unless `need_flags`
+
+    ALWAYS_INLINE size_t indexAt(size_t i) const
+    {
+        if constexpr (selector_is_range)
+            return selector_base + i;
+        else
+            return selector_indexes[i];
+    }
+
+    /// The synchronous zero-key path of `start`: the cell (the map's dedicated zero-value cell,
+    /// or null) comes from the map object, and so does its slot-local used-flags offset.
+    ALWAYS_INLINE void record(size_t i, const Cell * cell, const Map & map [[maybe_unused]])
+    {
+        if (!cell)
+        {
+            found_word[i] = 0;
+            return;
+        }
+        found_word[i] = mappedWordOf(cell->getMapped());
+        if constexpr (need_flags)
+            found_offset[i] = map.offsetInternal(cell);
+    }
+
+    /// A ring hit: the cell is known non-zero, so its slot-local used-flags offset is its
+    /// buffer position + 1 - `offsetInternal` without touching the map object. Recovering the
+    /// position costs one descriptor load, on this once-per-matched-row path only (and only
+    /// for the flagged shapes).
+    ALWAYS_INLINE void recordHit(size_t i, size_t slot [[maybe_unused]], const Cell * cell)
+    {
+        found_word[i] = mappedWordOf(cell->getMapped());
+        if constexpr (need_flags)
+        {
+            const auto pos = static_cast<size_t>(cell - static_cast<const Cell *>(slot_descs[slot].buf));
+            found_offset[i] = pos + 1;
+        }
+    }
+
+    /// High-locality (L1) prefetch of the WHOLE cell, read intent (a probed cell is not
+    /// mutated). Locality 1 compiles to `pldl3keep` on AArch64 - it stages the line in L3 only,
+    /// and the visit's demand load then pays the whole L1-miss latency at use; measured on the
+    /// `ahj` keys256 anchor as the ring's dominant stall. Cells wider than 24 bytes regularly
+    /// straddle two lines (a 40-byte keys256 cell does on ~61% of positions); the second line
+    /// would stall the limb compares the same way, so prefetch the cell's last byte's line too.
+    static ALWAYS_INLINE void prefetchCell(const Cell * cell)
+    {
+        __builtin_prefetch(cell, 0, 3);
+        if constexpr (sizeof(Cell) > 24)
+            __builtin_prefetch(reinterpret_cast<const char *>(cell) + sizeof(Cell) - 1, 0, 3);
+    }
+
+    template <typename RingT>
+    ALWAYS_INLINE bool start(RingT & ring, size_t s, size_t i)
+    {
+        const size_t ind = indexAt(i);
+        if (skip_data && skip_data[ind])
+        {
+            found_word[i] = 0;
+            return false;
+        }
+        auto && key_holder = key_getter.getKeyHolder(ind, pool);
+        const auto & key = keyHolderGetKey(key_holder);
+        const size_t slot = slot_ids ? slot_ids[ind] : 0;
+        if (unlikely(map0.isZeroKey(key)))
+        {
+            /// The zero key lives in the dedicated zero-value cell - nothing to overlap.
+            const Map & map = *slot_maps[slot];
+            record(i, map.find(key), map);
+            return false;
+        }
+        const size_t hash = map0.hash(key);
+        ring.key[s] = key;
+        const SlotMapDesc & desc = slot_descs[slot];
+        const Cell * cell = static_cast<const Cell *>(desc.buf) + (hash & desc.mask);
+        ring.cell[s] = cell;
+        ring.row[s] = static_cast<UInt16>(i);
+        ring.slot[s] = static_cast<UInt16>(slot);
+        if constexpr (store_hash)
+            ring.hash[s] = hash;
+        prefetchCell(cell);
+        return true;
+    }
+
+    template <typename RingT>
+    ALWAYS_INLINE AmacStepResult step(RingT & ring, size_t s)
+    {
+        const Cell * cell = ring.cell[s];
+        if (cell->isZero(no_state))
+        {
+            found_word[ring.row[s]] = 0;
+            return AmacStepResult::Done;
+        }
+        const StoredKey & key = ring.key[s];
+        size_t hash = 0;
+        if constexpr (store_hash)
+            hash = ring.hash[s];
+        else
+            hash = map0.hash(key);
+        if (cell->keyEquals(key, hash, no_state))
+        {
+            recordHit(ring.row[s], ring.slot[s], cell);
+            return AmacStepResult::Done;
+        }
+        /// No wrap and no bound check: the buffer is tail-padded and the engagement gate
+        /// verified no chain reached its last cell, so an empty cell terminates the walk at or
+        /// before it (see `TailPaddedHashTableGrower`).
+        ++cell;
+        ring.cell[s] = cell;
+        prefetchCell(cell);
+        return AmacStepResult::Advance;
+    }
+};
+
+}
+
+template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
+void amacFindPass(
+    KeyGetter & key_getter,
+    const Map * const * slot_maps,
+    const SlotMapDesc * slot_descs,
+    const UInt64 * slot_ids,
+    size_t rows,
+    size_t range_first,
+    const UInt64 * selector_indexes,
+    const UInt8 * skip_data,
+    Arena & pool,
+    /// Written through the policy's result-array fields, which the check cannot see behind the
+    /// dependent `Policy` type.
+    UInt64 * found_word, /// NOLINT(readability-non-const-parameter)
+    UInt64 * found_offset) /// NOLINT(readability-non-const-parameter)
+{
+    static_assert(amac_probe_supported<KeyGetter, Map>);
+    chassert(need_flags == (found_offset != nullptr));
+
+    using Policy = AmacFindPolicy<KeyGetter, Map, need_flags, selector_is_range>;
+    /// The selector view and the result arrays are re-based per chunk; the row-indexed side
+    /// arrays (skip bytes, slot ids) are indexed by the source row and need no re-base.
+    for (size_t chunk_begin = 0; chunk_begin < rows; chunk_begin += Policy::chunk_rows_max)
+    {
+        const size_t chunk_rows = std::min(Policy::chunk_rows_max, rows - chunk_begin);
+        Policy policy{
+            .key_getter = key_getter,
+            .map0 = *slot_maps[0],
+            .slot_maps = slot_maps,
+            .slot_descs = slot_descs,
+            .slot_ids = slot_ids,
+            .selector_base = range_first + chunk_begin,
+            .selector_indexes = selector_indexes ? selector_indexes + chunk_begin : nullptr,
+            .skip_data = skip_data,
+            .pool = pool,
+            .found_word = found_word + chunk_begin,
+            .found_offset = found_offset ? found_offset + chunk_begin : nullptr};
+        amacRun(policy, chunk_rows);
+    }
+
+    /// Incremented ONCE per pass: per-chunk (let alone per-row) increments would put atomic
+    /// traffic next to the ring.
+    ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinAmacProbeRows, rows);
+}
+
+#define M(TYPE) AMAC_FIND_PASS_INSTANTIATIONS(, TYPE)
+APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
+#undef M
+
+}

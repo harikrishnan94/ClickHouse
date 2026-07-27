@@ -22,6 +22,7 @@ namespace ProfileEvents
 {
 extern const Event ConcurrentHashJoinAmacBuildRows;
 extern const Event ConcurrentHashJoinAmacBuildRingGrowths;
+extern const Event ConcurrentHashJoinAmacProbeRows;
 }
 
 using namespace DB;
@@ -97,23 +98,34 @@ void accumulateRows(const Block & block, JoinedRows<Key> & rows)
 }
 
 template <typename Key>
-void drainResult(IJoinResult & result, JoinedRows<Key> & rows)
+void drainResult(ConcurrentHashJoin & join, IJoinResult & result, JoinedRows<Key> & rows)
 {
     while (true)
     {
         auto r = result.next();
         accumulateRows(r.block, rows);
         if (r.is_last)
+        {
+            /// A `max_joined_block_rows` remainder is re-fed the way `JoiningTransform` does it.
+            if (r.next_block && r.next_block->rows())
+            {
+                r.next_block->filterBySelector();
+                Block next = std::move(*r.next_block).getSourceBlock();
+                auto next_result = join.joinBlock(std::move(next));
+                drainResult(join, *next_result, rows);
+            }
             return;
+        }
     }
 }
 
-std::shared_ptr<TableJoin> makeTableJoin(const Block & left_header, const Block & right_header)
+std::shared_ptr<TableJoin> makeTableJoin(
+    const Block & left_header, const Block & right_header, JoinKind kind = JoinKind::Inner, JoinStrictness strictness = JoinStrictness::All)
 {
     Settings settings;
     auto table_join = std::make_shared<TableJoin>(settings, /*tmp_volume=*/nullptr, /*tmp_data=*/nullptr);
-    table_join->setKind(JoinKind::Inner);
-    table_join->getTableJoin().strictness = JoinStrictness::All;
+    table_join->setKind(kind);
+    table_join->getTableJoin().strictness = strictness;
     table_join->addDisjunct();
     table_join->getClauses().back().addKey(
         left_header.getByPosition(0).name, right_header.getByPosition(0).name, /*null_safe_comparison=*/false);
@@ -150,7 +162,14 @@ struct BuiltJoin
 /// (`StatsCollectingParams{}`), so the per-slot maps start at their minimal size and grow while
 /// rows are in flight in the rings.
 template <typename Key>
-BuiltJoin buildJoin(const std::vector<Key> & distinct_keys, size_t duplicates, AmacMode mode, size_t build_block_rows = block_rows)
+BuiltJoin buildJoin(
+    const std::vector<Key> & distinct_keys,
+    size_t duplicates,
+    AmacMode mode,
+    size_t build_block_rows = block_rows,
+    JoinKind kind = JoinKind::Inner,
+    JoinStrictness strictness = JoinStrictness::All,
+    size_t slots = num_slots)
 {
     setAmacModeForTests(mode);
 
@@ -158,9 +177,9 @@ BuiltJoin buildJoin(const std::vector<Key> & distinct_keys, size_t duplicates, A
     const Block right_header = makeKeyBlock("rk", "build_id", std::vector<Key>{}, {});
 
     BuiltJoin result;
-    result.table_join = makeTableJoin(left_header, right_header);
+    result.table_join = makeTableJoin(left_header, right_header, kind, strictness);
     result.join = std::make_shared<ConcurrentHashJoin>(
-        result.table_join, num_slots, std::make_shared<const Block>(right_header), StatsCollectingParams{});
+        result.table_join, slots, std::make_shared<const Block>(right_header), StatsCollectingParams{});
 
     const UInt64 rows_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacBuildRows);
     const UInt64 growths_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacBuildRingGrowths);
@@ -208,7 +227,7 @@ JoinedRows<Key> probeAll(BuiltJoin & built, const std::vector<Key> & distinct_ke
         if (keys.empty() || (!force && keys.size() < block_rows))
             return;
         auto result = built.join->joinBlock(makeKeyBlock("k", "probe_id", keys, ids));
-        drainResult(*result, actual);
+        drainResult(*built.join, *result, actual);
         keys.clear();
         ids.clear();
     };
@@ -249,6 +268,58 @@ std::vector<UInt64> uintKeys(size_t count)
     for (size_t i = 0; i < count; ++i)
         keys[i] = i * 2654435761ULL + 1;
     return keys;
+}
+
+/// The output header of the join: left columns then right columns (the shape
+/// `getNonJoinedBlocks` maps right columns into by name).
+template <typename Key>
+Block makeResultHeader()
+{
+    Block header = makeKeyBlock("k", "probe_id", std::vector<Key>{}, {});
+    for (const auto & col : makeKeyBlock("rk", "build_id", std::vector<Key>{}, {}))
+        header.insert(col);
+    return header;
+}
+
+/// Drains the non-joined (RIGHT/FULL) stream into the sorted multiset of (rk, build_id).
+template <typename Key>
+std::vector<std::pair<Key, UInt64>> drainNonJoined(BuiltJoin & built)
+{
+    const Block left_header = makeKeyBlock("k", "probe_id", std::vector<Key>{}, {});
+    std::vector<std::pair<Key, UInt64>> rows;
+    auto stream = built.join->getNonJoinedBlocks(left_header, makeResultHeader<Key>(), block_rows);
+    if (!stream)
+        return rows;
+    while (true)
+    {
+        Block block = stream->next();
+        if (block.empty())
+            break;
+        const ColumnPtr rk = block.getByName("rk").column->convertToFullColumnIfReplicated();
+        const ColumnPtr build_id = block.getByName("build_id").column->convertToFullColumnIfReplicated();
+        for (size_t i = 0; i < block.rows(); ++i)
+            rows.emplace_back(columnElement<Key>(*rk, i), columnElement<UInt64>(*build_id, i));
+    }
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+/// The exact ALL-join match multiset when probing `probed_indices` (probe ids by position):
+/// the build rows of key `j` carry ids `j * duplicates .. j * duplicates + duplicates - 1`.
+template <typename Key>
+JoinedRows<Key> expectedRowsForProbe(
+    const std::vector<Key> & distinct_keys, size_t duplicates, const std::vector<size_t> & probed_indices)
+{
+    JoinedRows<Key> expected;
+    expected.reserve(probed_indices.size() * duplicates);
+    for (size_t p = 0; p < probed_indices.size(); ++p)
+    {
+        const size_t j = probed_indices[p];
+        for (size_t d = 0; d < duplicates; ++d)
+            expected.emplace_back(distinct_keys[j], p, distinct_keys[j], j * duplicates + d);
+    }
+    std::sort(expected.begin(), expected.end());
+    return expected;
 }
 
 /// Miss keys with a +2 offset cannot collide with built keys: `i * K + 2 == j * K + 1` would
@@ -373,4 +444,247 @@ TEST(ConcurrentHashJoinAmac, StringKeyBuildEngagement)
     ASSERT_EQ(ring_rows.size(), expected.size());
     ASSERT_TRUE(ring_rows == expected);
     ASSERT_TRUE(sequential_rows == expected);
+}
+
+TEST(ConcurrentHashJoinAmac, ProbeRingParityUIntKeys)
+{
+    /// The find ring vs the sequential routed loop, INNER ALL over uint keys - the flagless
+    /// word-mapped lazy shape, so the Force arm runs the dispatch-free `word_loop` phase B.
+    /// Key 0 is the zero sentinel of the numeric maps and takes the synchronous find path.
+    constexpr size_t duplicates = 2;
+    auto distinct_keys = uintKeys(300000);
+    distinct_keys[0] = 0;
+    const auto misses = uintMisses(10000, distinct_keys.size());
+    const auto expected = expectedRows(distinct_keys, duplicates);
+
+    auto ring_built = buildJoin(distinct_keys, duplicates, AmacMode::Force);
+    const UInt64 ring_probe_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+    const auto ring_rows = probeAll(ring_built, distinct_keys, misses);
+    const UInt64 ring_probe_rows = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows) - ring_probe_before;
+    EXPECT_EQ(ring_probe_rows, distinct_keys.size() + misses.size())
+        << "every probe row must be resolved by the find pass under Force";
+
+    auto sequential_built = buildJoin(distinct_keys, duplicates, AmacMode::Off);
+    const UInt64 sequential_probe_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+    const auto sequential_rows = probeAll(sequential_built, distinct_keys, misses);
+    EXPECT_EQ(eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows), sequential_probe_before)
+        << "the find pass must not engage when the hook is off";
+
+    ASSERT_EQ(ring_rows.size(), expected.size());
+    ASSERT_TRUE(ring_rows == expected);
+    ASSERT_TRUE(sequential_rows == expected);
+}
+
+TEST(ConcurrentHashJoinAmac, ProbeRingParityStringKeys)
+{
+    /// String keys pin the saved-hash ring lane (the ring carries the hash for cells that store
+    /// one) and the stored-key-as-view contract of the find policy. The empty string is a
+    /// zero-LENGTH key, not the zero sentinel, and rides the ring like any other key.
+    constexpr size_t duplicates = 2;
+    std::vector<String> distinct_keys;
+    distinct_keys.reserve(150001);
+    distinct_keys.emplace_back("");
+    for (size_t i = 0; i < 150000; ++i)
+        distinct_keys.push_back(fmt::format("key_{}_{}", i, String(i % 23, 'x')));
+
+    std::vector<String> misses;
+    misses.reserve(1000);
+    for (size_t i = 0; i < 1000; ++i)
+        misses.push_back(fmt::format("miss_{}", i));
+
+    const auto expected = expectedRows(distinct_keys, duplicates);
+
+    auto ring_built = buildJoin(distinct_keys, duplicates, AmacMode::Force);
+    const UInt64 ring_probe_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+    const auto ring_rows = probeAll(ring_built, distinct_keys, misses);
+    const UInt64 ring_probe_rows = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows) - ring_probe_before;
+    EXPECT_EQ(ring_probe_rows, distinct_keys.size() + misses.size());
+
+    auto sequential_built = buildJoin(distinct_keys, duplicates, AmacMode::Off);
+    const UInt64 sequential_probe_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+    const auto sequential_rows = probeAll(sequential_built, distinct_keys, misses);
+    EXPECT_EQ(eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows), sequential_probe_before);
+
+    ASSERT_EQ(ring_rows.size(), expected.size());
+    ASSERT_TRUE(ring_rows == expected);
+    ASSERT_TRUE(sequential_rows == expected);
+}
+
+namespace
+{
+
+/// RIGHT/FULL ALL parity between the find ring and the sequential routed loop, joined stream
+/// AND non-joined stream: the flagged shapes exercise the ring's slot-local `found_offset`
+/// recording, the per-slot used flags, and the untouched `NotJoinedHash` iteration. Probes
+/// every even-indexed key (odd ones flow into the non-joined stream) plus misses (dropped by
+/// RIGHT, emitted with default right columns by FULL).
+void runFlaggedShapeParity(JoinKind kind)
+{
+    constexpr size_t duplicates = 2;
+    const auto distinct_keys = uintKeys(200000);
+    const auto misses = uintMisses(1000, distinct_keys.size());
+
+    std::vector<UInt64> probed_keys;
+    std::vector<size_t> probed_indices;
+    for (size_t j = 0; j < distinct_keys.size(); j += 2)
+    {
+        probed_keys.push_back(distinct_keys[j]);
+        probed_indices.push_back(j);
+    }
+
+    auto expected = expectedRowsForProbe(distinct_keys, duplicates, probed_indices);
+    if (kind == JoinKind::Full)
+    {
+        /// FULL keeps the unmatched probe rows, with default right columns.
+        for (size_t m = 0; m < misses.size(); ++m)
+            expected.emplace_back(misses[m], probed_keys.size() + m, 0, 0);
+        std::sort(expected.begin(), expected.end());
+    }
+
+    std::vector<std::pair<UInt64, UInt64>> expected_non_joined;
+    for (size_t j = 1; j < distinct_keys.size(); j += 2)
+        for (size_t d = 0; d < duplicates; ++d)
+            expected_non_joined.emplace_back(distinct_keys[j], j * duplicates + d);
+    std::sort(expected_non_joined.begin(), expected_non_joined.end());
+
+    auto ring_built = buildJoin(distinct_keys, duplicates, AmacMode::Force, block_rows, kind);
+    const UInt64 ring_probe_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+    const auto ring_rows = probeAll(ring_built, probed_keys, misses);
+    const UInt64 ring_probe_rows = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows) - ring_probe_before;
+    EXPECT_EQ(ring_probe_rows, probed_keys.size() + misses.size());
+    const auto ring_non_joined = drainNonJoined<UInt64>(ring_built);
+
+    auto sequential_built = buildJoin(distinct_keys, duplicates, AmacMode::Off, block_rows, kind);
+    const auto sequential_rows = probeAll(sequential_built, probed_keys, misses);
+    const auto sequential_non_joined = drainNonJoined<UInt64>(sequential_built);
+
+    ASSERT_EQ(ring_rows.size(), expected.size());
+    ASSERT_TRUE(ring_rows == expected);
+    ASSERT_TRUE(sequential_rows == expected);
+    ASSERT_EQ(ring_non_joined.size(), expected_non_joined.size());
+    ASSERT_TRUE(ring_non_joined == expected_non_joined);
+    ASSERT_TRUE(sequential_non_joined == expected_non_joined);
+}
+
+}
+
+TEST(ConcurrentHashJoinAmac, ProbeRingRightAllNonJoinedParity)
+{
+    runFlaggedShapeParity(JoinKind::Right);
+}
+
+TEST(ConcurrentHashJoinAmac, ProbeRingFullAllNonJoinedParity)
+{
+    runFlaggedShapeParity(JoinKind::Full);
+}
+
+TEST(ConcurrentHashJoinAmac, ProbeRingRightAnySetUsedOnce)
+{
+    /// RIGHT ANY pins `setUsedOnce`: probing every key TWICE must attach each key's build rows
+    /// to the FIRST probe occurrence only - phase B consumes the find pass's results in row
+    /// order, so the winner is deterministic and identical to the sequential loop's.
+    constexpr size_t duplicates = 2;
+    const auto distinct_keys = uintKeys(100000);
+    const auto misses = uintMisses(1000, distinct_keys.size());
+
+    std::vector<UInt64> probed_keys;
+    probed_keys.reserve(distinct_keys.size() * 2);
+    for (const auto key : distinct_keys)
+    {
+        probed_keys.push_back(key);
+        probed_keys.push_back(key);
+    }
+
+    JoinedRows<UInt64> expected;
+    expected.reserve(distinct_keys.size() * duplicates);
+    for (size_t j = 0; j < distinct_keys.size(); ++j)
+        for (size_t d = 0; d < duplicates; ++d)
+            expected.emplace_back(distinct_keys[j], 2 * j, distinct_keys[j], j * duplicates + d);
+    std::sort(expected.begin(), expected.end());
+
+    auto ring_built = buildJoin(distinct_keys, duplicates, AmacMode::Force, block_rows, JoinKind::Right, JoinStrictness::Any);
+    const UInt64 ring_probe_before = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+    const auto ring_rows = probeAll(ring_built, probed_keys, misses);
+    const UInt64 ring_probe_rows = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows) - ring_probe_before;
+    EXPECT_EQ(ring_probe_rows, probed_keys.size() + misses.size());
+    const auto ring_non_joined = drainNonJoined<UInt64>(ring_built);
+
+    auto sequential_built = buildJoin(distinct_keys, duplicates, AmacMode::Off, block_rows, JoinKind::Right, JoinStrictness::Any);
+    const auto sequential_rows = probeAll(sequential_built, probed_keys, misses);
+    const auto sequential_non_joined = drainNonJoined<UInt64>(sequential_built);
+
+    ASSERT_EQ(ring_rows.size(), expected.size());
+    ASSERT_TRUE(ring_rows == expected);
+    ASSERT_TRUE(sequential_rows == expected);
+    EXPECT_TRUE(ring_non_joined.empty()) << "every build row was probed, so nothing may reach the non-joined stream";
+    EXPECT_TRUE(sequential_non_joined.empty());
+}
+
+TEST(ConcurrentHashJoinAmac, ProbeEmitsInLeftRowOrder)
+{
+    /// The order-by-construction claim of the routed probe: a multi-block probe with a
+    /// monotone tag column must come out with non-decreasing tags inside every drained result
+    /// (the scatter probe could not guarantee this). Checked for both hook arms and for the
+    /// single-slot plan (null route words).
+    constexpr size_t duplicates = 3;
+    const auto distinct_keys = uintKeys(150000);
+    const auto misses = uintMisses(distinct_keys.size(), distinct_keys.size());
+
+    for (const size_t slots : {1uz, 4uz})
+    {
+        for (const AmacMode mode : {AmacMode::Force, AmacMode::Off})
+        {
+            auto built = buildJoin(distinct_keys, duplicates, mode, block_rows, JoinKind::Inner, JoinStrictness::All, slots);
+
+            /// Interleave hits and misses so the filter compaction is exercised too.
+            std::vector<UInt64> keys;
+            std::vector<UInt64> ids;
+            UInt64 probe_id = 0;
+            size_t drained_blocks = 0;
+            auto probe_block = [&]
+            {
+                auto result = built.join->joinBlock(makeKeyBlock("k", "probe_id", keys, ids));
+                UInt64 prev = 0;
+                bool have_prev = false;
+                while (true)
+                {
+                    auto r = result->next();
+                    if (r.block.rows())
+                    {
+                        ++drained_blocks;
+                        const ColumnPtr probe_ids = r.block.getByName("probe_id").column->convertToFullColumnIfReplicated();
+                        for (size_t i = 0; i < probe_ids->size(); ++i)
+                        {
+                            const UInt64 tag = columnElement<UInt64>(*probe_ids, i);
+                            if (have_prev)
+                                ASSERT_LE(prev, tag) << "left row order must be preserved within a drained probe block";
+                            prev = tag;
+                            have_prev = true;
+                        }
+                    }
+                    if (r.is_last)
+                    {
+                        EXPECT_EQ(r.next_block, nullptr);
+                        break;
+                    }
+                }
+                keys.clear();
+                ids.clear();
+            };
+
+            for (size_t i = 0; i < distinct_keys.size(); ++i)
+            {
+                keys.push_back(distinct_keys[i]);
+                ids.push_back(probe_id++);
+                keys.push_back(misses[i]);
+                ids.push_back(probe_id++);
+                if (keys.size() >= block_rows)
+                    probe_block();
+            }
+            if (!keys.empty())
+                probe_block();
+
+            EXPECT_GT(drained_blocks, 0u);
+        }
+    }
 }

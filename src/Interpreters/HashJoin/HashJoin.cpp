@@ -40,6 +40,7 @@
 #include <Interpreters/IJoin.h>
 
 #include <Interpreters/HashJoin/HashJoinMethods.h>
+#include <Interpreters/HashJoin/HashJoinRoutedMethods.h>
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 
 #include <Processors/QueryPlan/RuntimeFilterLookup.h>
@@ -411,21 +412,6 @@ static std::optional<HashJoin::Type> tryGetLowCardinalityMethod(const ColumnPtr 
         return Type::low_cardinality_key_fixed_string;
 
     return {};
-}
-
-template <typename KeyGetter, bool is_asof_join>
-static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
-{
-    if constexpr (is_asof_join)
-    {
-        auto key_column_copy = key_columns;
-        auto key_size_copy = key_sizes;
-        key_column_copy.pop_back();
-        key_size_copy.pop_back();
-        return KeyGetter(key_column_copy, key_size_copy, nullptr);
-    }
-    else
-        return KeyGetter(key_columns, key_sizes, nullptr);
 }
 
 void HashJoin::dataMapInit(MapsVariant & map)
@@ -1058,53 +1044,60 @@ JoinResultPtr HashJoin::joinBlock(Block block)
     }
 }
 
-JoinResultPtr HashJoin::joinScatteredBlock(ScatteredBlock block)
+JoinResultPtr HashJoin::joinRoutedBlock(
+    const std::vector<const HashJoin *> & slot_joins, ScatteredBlock block, const UInt64 * slot_ids)
 {
-    if (!data)
+    chassert(!slot_joins.empty());
+    const HashJoin & join0 = *slot_joins[0];
+
+    if (!join0.data)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot join after data has been released");
 
-    chassert(kind == JoinKind::Left || kind == JoinKind::Inner || kind == JoinKind::Right || kind == JoinKind::Full);
-    for (const auto & onexpr : table_join->getClauses())
+    chassert(
+        join0.kind == JoinKind::Left || join0.kind == JoinKind::Inner || join0.kind == JoinKind::Right
+        || join0.kind == JoinKind::Full);
+    for (const auto & onexpr : join0.table_join->getClauses())
     {
         auto cond_column_name = onexpr.condColumnNames();
         JoinCommon::checkTypesOfKeys(
             block.getSourceBlock(),
             onexpr.key_names_left,
             cond_column_name.first,
-            right_sample_block,
+            join0.right_sample_block,
             onexpr.key_names_right,
             cond_column_name.second);
     }
 
-    std::vector<const std::decay_t<decltype(data->maps[0])> *> maps_vector;
-    maps_vector.reserve(table_join->getClauses().size());
+    /// One entry: the routed methods pull the per-slot maps themselves; this vector only drives
+    /// the kind/strictness/maps-shape dispatch, which is uniform across the slots (the type is
+    /// chosen from the shared right sample block, and the All -> RightAny promotion is
+    /// synchronized by `ConcurrentHashJoin::onBuildPhaseFinish`).
+    std::vector<const std::decay_t<decltype(join0.data->maps[0])> *> maps_vector;
+    maps_vector.push_back(&join0.data->maps.at(0));
 
-    for (size_t i = 0; i < table_join->getClauses().size(); ++i)
-        maps_vector.push_back(&data->maps[i]);
-
-    const bool prefer_use_maps_all = preferUseMapsAll();
+    const bool prefer_use_maps_all = join0.preferUseMapsAll();
     JoinResultPtr res;
     [[maybe_unused]] const bool joined = joinDispatch(
-        kind,
-        strictness,
+        join0.kind,
+        join0.strictness,
         maps_vector,
         prefer_use_maps_all,
         [&](auto kind_, auto strictness_, auto & maps_vector_)
         {
             if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAll *>>)
             {
-                res = HashJoinMethods<kind_, strictness_, MapsAll>::joinBlockImpl(
-                    *this, std::move(block), sample_block_with_columns_to_add, maps_vector_);
+                res = RoutedHashJoinMethods<kind_, strictness_, MapsAll>::joinBlockImpl(
+                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids);
             }
             else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsOne *>>)
             {
-                res = HashJoinMethods<kind_, strictness_, MapsOne>::joinBlockImpl(
-                    *this, std::move(block), sample_block_with_columns_to_add, maps_vector_);
+                res = RoutedHashJoinMethods<kind_, strictness_, MapsOne>::joinBlockImpl(
+                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids);
             }
             else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAsof *>>)
             {
-                res = HashJoinMethods<kind_, strictness_, MapsAsof>::joinBlockImpl(
-                    *this, std::move(block), sample_block_with_columns_to_add, maps_vector_);
+                res = RoutedHashJoinMethods<kind_, strictness_, MapsAsof>::joinBlockImpl(
+                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids);
             }
             else
             {

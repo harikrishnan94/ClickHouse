@@ -131,6 +131,7 @@ struct ResumableHashMap : public Base
     /// The cell buffer base, for policies that cache it in a field instead of re-resolving it
     /// through the map per visit. Invalidated by `cursorGrow`.
     Cell * cursorCells() { return this->buf; }
+    const Cell * cursorCells() const { return this->buf; }
 
     bool cursorCellIsEmpty(const Cell * cell) const { return cell->isZero(*this); }
 

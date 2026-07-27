@@ -1,0 +1,580 @@
+#pragma once
+
+#include <Interpreters/HashJoin/AmacMode.h>
+#include <Interpreters/HashJoin/AmacProbe.h>
+#include <Interpreters/HashJoin/HashJoinMethodsImpl.h>
+#include <Interpreters/HashJoin/HashJoinRoutedMethods.h>
+
+namespace DB
+{
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
+    const std::vector<const HashJoin *> & slot_joins,
+    ScatteredBlock block,
+    const Block & block_with_columns_to_add,
+    const UInt64 * slot_ids)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+
+    chassert(!slot_joins.empty());
+    const HashJoin & join = *slot_joins[0];
+
+    std::vector<JoinOnKeyColumns> join_on_keys;
+    const auto & onexprs = join.table_join->getClauses();
+    chassert(onexprs.size() == 1, "parallel_hash supports a single join clause");
+    for (const auto & onexpr : onexprs)
+        join_on_keys.emplace_back(
+            block, onexpr.key_names_left, onexpr.condColumnNames().first, join.key_sizes[0],
+            HashJoin::isLowCardinalityType(join.data->type));
+
+    /// Slot 0 is the representative for everything the emit machinery reads through the join:
+    /// the saved-block sample, the limits, and - crucially - the `StoredColumnsIndex`, which is
+    /// SHARED across the slots, so the one `AddedColumns` below resolves every slot's stored
+    /// blocks at emit time.
+    AddedColumns<!join_features.is_any_join> added_columns(
+        block,
+        block_with_columns_to_add,
+        join.savedBlockSample(),
+        join,
+        std::move(join_on_keys),
+        join.table_join->getMixedJoinExpression(),
+        join.additional_filter_required_rhs_pos,
+        join_features.is_asof_join,
+        /*is_join_get=*/false);
+
+    bool has_required_right_keys = (join.required_right_keys.columns() != 0);
+    added_columns.need_filter = join_features.need_filter || has_required_right_keys;
+    added_columns.max_joined_block_rows = join.max_joined_block_rows;
+    if (!added_columns.max_joined_block_rows)
+        added_columns.max_joined_block_rows = std::numeric_limits<size_t>::max();
+    else
+        added_columns.reserve(join_features.need_replication);
+
+    size_t processed_rows = switchJoinRightColumns(slot_joins, added_columns, block.getSelector(), slot_ids);
+    /// Do not hold memory for join_on_keys anymore
+    added_columns.join_on_keys.clear();
+
+    std::optional<ScatteredBlock> next_scattered_block;
+    if (0 < processed_rows && processed_rows < block.rows())
+    {
+        auto [raw_block, raw_selector] = std::move(block).detachData();
+        auto split_selector = raw_selector.split(processed_rows);
+        block = ScatteredBlock(raw_block, std::move(split_selector.first));
+        next_scattered_block = ScatteredBlock(std::move(raw_block), std::move(split_selector.second));
+    }
+
+    auto join_result = std::make_unique<HashJoinResult>(
+        std::move(added_columns.lazy_output),
+        std::move(added_columns.columns),
+        std::move(added_columns.offsets_to_replicate),
+        std::move(added_columns.filter),
+        std::move(added_columns.matched_rows),
+        std::move(block),
+        HashJoinResult::Properties{
+            *join.table_join,
+            join.required_right_keys,
+            join.required_right_keys_sources,
+            join.max_joined_block_rows,
+            join.max_joined_block_bytes,
+            join.data->allocated_size / std::max<size_t>(1, join.data->rows_to_join),
+            join_features.need_filter,
+            /*is_join_get=*/false,
+            join.joined_block_split_single_row,
+            join.enable_lazy_columns_replication,
+            join.enable_lazy_columns_indexing});
+
+    if (next_scattered_block)
+        join_result->setNextBlock(std::move(next_scattered_block.value()));
+    return join_result;
+}
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <typename AddedColumns>
+size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightColumns(
+    const std::vector<const HashJoin *> & slot_joins,
+    AddedColumns & added_columns,
+    const ScatteredBlock::Selector & selector,
+    const UInt64 * slot_ids)
+{
+    constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
+    const HashJoin & join0 = *slot_joins[0];
+    const size_t num_slots = slot_joins.size();
+
+    /// The map type is uniform across the slots: it is chosen from the shared right sample
+    /// block, `ConcurrentHashJoin` never runs the post-build fixed-map conversion, and the
+    /// All -> RightAny promotion is synchronized before the per-slot `onBuildPhaseFinish`.
+    switch (join0.data->type)
+    {
+#define M(TYPE) \
+    case HashJoin::Type::TYPE: { \
+        using MapTypeVal = const typename std::remove_reference_t<decltype(MapsTemplate::TYPE)>::element_type; \
+        using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, MapTypeVal>::Type; \
+        std::vector<const MapTypeVal *> maps_by_slot(num_slots); \
+        std::vector<JoinStuff::JoinUsedFlags *> flags_by_slot(num_slots); \
+        for (size_t s = 0; s < num_slots; ++s) \
+        { \
+            maps_by_slot[s] = std::get<MapsTemplate>(slot_joins[s]->data->maps.at(0)).TYPE.get(); \
+            flags_by_slot[s] = slot_joins[s]->used_flags.get(); \
+        } \
+        chassert(added_columns.join_on_keys.size() == 1); \
+        const auto & join_on_key = added_columns.join_on_keys[0]; \
+        return joinRightColumnsRouted<KeyGetter, MapTypeVal>( \
+            slot_joins, \
+            createKeyGetter<KeyGetter, is_asof_join>(join_on_key.key_columns, join_on_key.key_sizes, join0.data->key_range), \
+            maps_by_slot, \
+            flags_by_slot, \
+            added_columns, \
+            selector, \
+            slot_ids); \
+    }
+        APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+    }
+}
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <typename KeyGetter, typename Map, typename AddedColumns>
+size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRouted(
+    const std::vector<const HashJoin *> & slot_joins,
+    KeyGetter && key_getter,
+    const std::vector<const Map *> & maps_by_slot,
+    const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
+    AddedColumns & added_columns,
+    const ScatteredBlock::Selector & selector,
+    const UInt64 * slot_ids)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+
+    if constexpr (join_features.is_maps_all)
+    {
+        if (added_columns.additional_filter_expression)
+        {
+            /// The mixed ON-condition path: the shared filter machinery of `HashJoinMethods`
+            /// with the per-row map/flags selection routed by slot. Single clause, so per-row
+            /// (block-keyed) flags are needed only for the flagged RIGHT/FULL shapes.
+            const bool mark_per_row_used = join_features.right || join_features.full;
+            size_t total_map_bytes = 0;
+            std::vector<const void *> maps_untyped(maps_by_slot.size());
+            for (size_t s = 0; s < maps_by_slot.size(); ++s)
+            {
+                maps_untyped[s] = maps_by_slot[s];
+                total_map_bytes += maps_by_slot[s]->getBufferSizeInBytes();
+            }
+            const RoutedProbeContext routed_ctx{
+                .slot_ids = slot_ids,
+                .maps_by_slot = maps_untyped.data(),
+                .flags_by_slot = flags_by_slot.data(),
+                .total_map_bytes = total_map_bytes};
+            std::vector<KeyGetter> key_getter_vector;
+            key_getter_vector.push_back(std::forward<KeyGetter>(key_getter));
+            const std::vector<const Map *> mapv{maps_by_slot[0]};
+            return HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::template joinRightColumnsWithAdditionalFilter<KeyGetter, Map>(
+                std::move(key_getter_vector),
+                mapv,
+                added_columns,
+                *flags_by_slot[0],
+                selector,
+                added_columns.need_filter,
+                mark_per_row_used,
+                &routed_ctx);
+        }
+    }
+
+    if (added_columns.additional_filter_expression)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Additional filter expression is not supported for this JOIN");
+
+    if (selector.isContinuousRange())
+        return joinRightColumns<KeyGetter, Map>(
+            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getRange(), slot_ids);
+    else
+        return joinRightColumns<KeyGetter, Map>(
+            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getIndexes(), slot_ids);
+}
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <typename KeyGetter, typename Map, typename AddedColumnsType, typename Selector>
+size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
+    const std::vector<const HashJoin *> & slot_joins [[maybe_unused]],
+    KeyGetter & key_getter,
+    const std::vector<const Map *> & maps_by_slot,
+    const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
+    AddedColumnsType & added_columns,
+    const Selector & selector,
+    const UInt64 * slot_ids)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    /// Single join clause (`parallel_hash` supports no disjuncts), so right-row used flags are
+    /// per-offset, never per-row.
+    constexpr bool flag_per_row = false;
+
+    const size_t rows = ScatteredBlock::Selector::size(selector);
+    const auto & join_keys = added_columns.join_on_keys.at(0);
+
+    /// The skip pointer is a local so that it can stay in a register across the calls in
+    /// the loop body (see `JoinOnKeyColumns::buildRowSkipData`).
+    const UInt8 * skip_data = nullptr;
+    IColumn::Filter skip_buffer;
+    const bool fast_path = !join_keys.null_map && join_keys.join_mask_column.getKind() == JoinCommon::JoinMask::Kind::AllTrue;
+    if (!fast_path)
+    {
+        if constexpr (std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Indexes>)
+            skip_data = join_keys.buildRowSkipData(skip_buffer, selector);
+        else
+            skip_data = join_keys.buildRowSkipData(skip_buffer, selector.first, rows);
+    }
+
+    if constexpr (!flag_per_row && (STRICTNESS == JoinStrictness::All || (STRICTNESS == JoinStrictness::Semi && KIND == JoinKind::Right)))
+        added_columns.lazy_output.output_by_row_list = true;
+
+    Arena pool;
+
+    if constexpr (join_features.need_replication)
+        added_columns.offsets_to_replicate = IColumn::Offsets(rows);
+
+    size_t total_map_bytes = 0;
+    for (const Map * map : maps_by_slot)
+        total_map_bytes += map->getBufferSizeInBytes();
+
+    /// Snapshots of the per-slot arrays: the loop bodies below make opaque calls
+    /// (`appendFromBlock`), after which the compiler must conservatively reload anything
+    /// reachable through a captured vector.
+    const Map * const * maps_data = maps_by_slot.data();
+    JoinStuff::JoinUsedFlags * const * flags_data = flags_by_slot.data();
+
+    const size_t num_slots = maps_by_slot.size();
+    using MapNonConst = std::remove_const_t<Map>;
+
+    /// AMAC find-ring engagement (see `AmacProbe.h`): the process hook, the per-join opt-in
+    /// (only `ConcurrentHashJoin` sets it), and - under `Auto` - the size thresholds over the
+    /// AGGREGATE map bytes; `Force` bypasses the thresholds so tests and A/B harnesses can pin
+    /// the path.
+    bool use_amac = false;
+    std::vector<SlotMapDesc> slot_descs;
+    if constexpr (amac_probe_supported<KeyGetter, Map>)
+    {
+        const AmacMode amac_mode = joinAmacMode();
+        use_amac = amac_mode != AmacMode::Off && slot_joins[0]->amacEnabled()
+            && (amac_mode == AmacMode::Force
+                || (total_map_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows));
+        if (use_amac)
+        {
+            /// Slot descriptors plus the wrap-free guard of the ring's bare `++cell` walk: a
+            /// build where some collision chain reached a buffer's last (pad) cell -
+            /// astronomically rare at load factor 0.5, but adversarially constructible - keeps
+            /// the wrap-aware plain loop. The guard is correctness, not a threshold, so it
+            /// applies under `Force` too.
+            slot_descs.resize(num_slots);
+            bool chain_may_wrap = false;
+            for (size_t s = 0; s < num_slots; ++s)
+            {
+                const MapNonConst & map = *maps_by_slot[s];
+                slot_descs[s] = {map.cursorCells(), map.cursorMask()};
+                chain_may_wrap |= !map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1);
+            }
+            use_amac = !chain_may_wrap;
+        }
+    }
+
+    /// Look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC pass,
+    /// gated on the AGGREGATE map bytes across the slots: each row misses in its own slot's
+    /// map, and the set of maps one block touches is the whole fleet of them, so a per-slot
+    /// size check would under-gate the routed loop.
+    constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
+    bool use_prefetch = false;
+    if constexpr (can_prefetch)
+        use_prefetch = !use_amac && added_columns.enable_prefetch && total_map_bytes > getMinBytesForPrefetchInJoin();
+
+    auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
+        [&](size_t k) __attribute__((always_inline))
+        {
+            if constexpr (can_prefetch)
+            {
+                const size_t ind = selectorIndexAt(selector, k);
+                maps_data[slot_ids ? slot_ids[ind] : 0]->prefetch(key_getter.getKeyHolder(ind, pool));
+            }
+        });
+
+    /// The in-order find/emit loop. With `precomputed` the lookup is replaced by the AMAC find
+    /// pass's per-row result (0 = miss; skipped rows were recorded as misses there, so the skip
+    /// check compiles out); without it this is the sequential routed lookup. Everything
+    /// downstream of the lookup is shared and standard.
+    auto loop = [&]<bool need_filter, bool with_skip, bool precomputed>(
+        const UInt64 * found_words [[maybe_unused]], const UInt64 * found_offsets [[maybe_unused]])
+    {
+        if constexpr (need_filter)
+        {
+            added_columns.filter = IColumn::Filter(rows, 0);
+            added_columns.matched_rows.reserve(rows);
+        }
+
+        IColumn::Offset current_offset = 0;
+        for (size_t i = 0; i < rows; ++i)
+        {
+            if constexpr (can_prefetch && !precomputed)
+                prefetcher.prefetchAt(i);
+
+            const size_t ind = selectorIndexAt(selector, i);
+
+            bool right_row_found = false;
+            KnownRowsHolder<flag_per_row> dummy_known_rows;
+
+            if constexpr (precomputed)
+            {
+                using Mapped = std::remove_reference_t<decltype(std::declval<typename KeyGetter::FindResult &>().getMapped())>;
+                /// The find pass recorded the mapped value by-value from the map's mapped type;
+                /// this side rebuilds it from the FindResult's - they must be the same type, or
+                /// a word would be reinterpreted as a pointer. The guard keeps the by-word
+                /// rebuild out of the shapes the find pass cannot serve (ASOF), whose loop is
+                /// only ever invoked without `precomputed`.
+                static_assert(std::is_same_v<std::remove_const_t<Mapped>, typename std::remove_const_t<Map>::mapped_type>);
+                if constexpr (amac_mapped_fits_word<std::remove_const_t<Mapped>>)
+                {
+                    if (const UInt64 word = found_words[i])
+                    {
+                        right_row_found = true;
+                        size_t offset = 0;
+                        if constexpr (join_features.need_flags)
+                            offset = found_offsets[i];
+                        auto mapped_value = mappedFromWord<std::remove_const_t<Mapped>>(word);
+                        typename KeyGetter::FindResult find_result(&mapped_value, true, offset);
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                            find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
+                    }
+                }
+            }
+            else
+            {
+                bool skip_row = false;
+                if constexpr (with_skip)
+                    skip_row = skip_data && skip_data[ind];
+
+                if (!skip_row)
+                {
+                    const size_t slot = slot_ids ? slot_ids[ind] : 0;
+                    auto find_result = key_getter.findKey(*maps_data[slot], ind, pool);
+                    if (find_result.isFound())
+                    {
+                        right_row_found = true;
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                            find_result, added_columns, *flags_data[slot], i, ind, current_offset, dummy_known_rows);
+                    }
+                }
+            }
+
+            if (!right_row_found)
+            {
+                if constexpr (join_features.is_anti_join && join_features.left)
+                    setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
+                addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+            }
+
+            if constexpr (join_features.need_replication)
+                added_columns.offsets_to_replicate[i] = current_offset;
+        }
+    };
+
+    /// Whether phase B can degenerate to the dispatch-free `word_loop` below: the recorded word
+    /// must be the mapped value itself, the emit must be the lazy ref-word append, and the
+    /// shape must consume no per-row state beyond the filter, the appended words and the
+    /// replication offsets. The flagged shapes (RIGHT/FULL used flags, incl. `setUsedOnce` -
+    /// every shape with first-match-only semantics is flagged or ANY) and ASOF keep the full
+    /// loop above.
+    constexpr bool degenerate_phase_b = AddedColumnsType::isLazy()
+        && amac_mapped_fits_word<typename MapNonConst::mapped_type> && !join_features.need_flags && !join_features.is_asof_join
+        && !join_features.is_any_join;
+
+    /// The degenerate phase B of the two-phase AMAC probe. On the shapes gated above,
+    /// `processMatch` reduces to: mark the row matched (filter + `matched_rows`), append the
+    /// recorded word (ALL: the list word, advancing the replication offset by its row count;
+    /// RightAny/Semi: its first ref) or the default on an added miss - so this pass consumes
+    /// `found_word` directly instead of rebuilding a `FindResult` and dispatching
+    /// `processMatch` per row, whose outlined `appendFromBlock` call forces the loop-carried
+    /// state to spill. Every row appends at most one entry, so the cursors write into pre-sized
+    /// arrays with no per-append capacity check. Row order, filter, offsets and `row_count`
+    /// are exactly the full loop's.
+    [[maybe_unused]] auto word_loop = [&]<bool need_filter, bool with_refs>(const UInt64 * words [[maybe_unused]])
+    {
+        if constexpr (degenerate_phase_b)
+        {
+            using Mapped = MapNonConst::mapped_type;
+
+            if constexpr (need_filter)
+            {
+                added_columns.filter = IColumn::Filter(rows, 0);
+                added_columns.matched_rows.resize(rows);
+            }
+
+            [[maybe_unused]] UInt8 * filter_data = nullptr;
+            [[maybe_unused]] IColumn::Offset * matched_cur = nullptr;
+            if constexpr (need_filter)
+            {
+                filter_data = added_columns.filter.data();
+                matched_cur = added_columns.matched_rows.data();
+            }
+            [[maybe_unused]] UInt64 * ref_cur = nullptr;
+            if constexpr (with_refs)
+            {
+                auto & row_refs = added_columns.lazy_output.row_refs;
+                const size_t refs_begin = row_refs.size();
+                row_refs.resize(refs_begin + rows);
+                ref_cur = row_refs.data() + refs_begin;
+            }
+            [[maybe_unused]] IColumn::Offset * offsets = nullptr;
+            if constexpr (join_features.need_replication)
+                offsets = added_columns.offsets_to_replicate.data();
+
+            [[maybe_unused]] IColumn::Offset current_offset = 0;
+            [[maybe_unused]] UInt64 appended_row_count = 0;
+            /// A local copy: the loop bound would otherwise reload through the closure per
+            /// iteration - the filter's byte stores may alias anything the closure points at.
+            const size_t rows_local = rows;
+            for (size_t i = 0; i < rows_local; ++i)
+            {
+                const UInt64 word = words[i];
+                if (word)
+                {
+                    /// A flagless anti match only leaves its row unmatched in the filter.
+                    if constexpr (!join_features.is_anti_join)
+                    {
+                        if constexpr (need_filter)
+                        {
+                            filter_data[i] = 1;
+                            *matched_cur++ = i;
+                        }
+                        if constexpr (join_features.is_all_join)
+                        {
+                            const UInt32 match_rows = refWordRows(word);
+                            current_offset += match_rows;
+                            if constexpr (with_refs)
+                            {
+                                *ref_cur++ = word;
+                                appended_row_count += match_rows;
+                            }
+                        }
+                        else if constexpr (with_refs)
+                        {
+                            *ref_cur++ = firstRefWord(mappedFromWord<Mapped>(word));
+                            ++appended_row_count;
+                        }
+                    }
+                }
+                else
+                {
+                    if constexpr (join_features.is_anti_join && join_features.left && need_filter)
+                    {
+                        filter_data[i] = 1;
+                        *matched_cur++ = i;
+                    }
+                    if constexpr (join_features.add_missing)
+                    {
+                        if constexpr (with_refs)
+                        {
+                            *ref_cur++ = 0;
+                            ++appended_row_count;
+                        }
+                        if constexpr (join_features.need_replication)
+                            ++current_offset;
+                    }
+                }
+                if constexpr (join_features.need_replication)
+                    offsets[i] = current_offset;
+            }
+
+            if constexpr (need_filter)
+                added_columns.matched_rows.resize(matched_cur - added_columns.matched_rows.data());
+            if constexpr (with_refs)
+            {
+                auto & row_refs = added_columns.lazy_output.row_refs;
+                row_refs.resize(ref_cur - row_refs.data());
+                added_columns.lazy_output.row_count += appended_row_count;
+            }
+        }
+    };
+
+    bool amac_ran = false;
+    if constexpr (amac_probe_supported<KeyGetter, Map>)
+    {
+        if (use_amac)
+        {
+            /// Phase A: the AMAC find pass. Every row gets a result - `start` records skipped
+            /// and zero-key rows synchronously, `step` records hits and misses - so the arrays
+            /// need no pre-fill and phase B needs no skip logic. The offsets are recorded (and
+            /// sized) only for the flagged shapes - they have no other consumer.
+            PaddedPODArray<UInt64> found_word(rows);
+            PaddedPODArray<UInt64> found_offset;
+            UInt64 * found_offset_data = nullptr;
+            if constexpr (join_features.need_flags)
+            {
+                found_offset.resize(rows);
+                found_offset_data = found_offset.data();
+            }
+
+            constexpr bool selector_is_range = !std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Indexes>;
+            size_t range_first = 0;
+            const UInt64 * sel_indexes = nullptr;
+            if constexpr (selector_is_range)
+                range_first = selector.first;
+            else
+                sel_indexes = selector.getData().data();
+
+            amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range>(
+                key_getter,
+                maps_data,
+                slot_descs.data(),
+                slot_ids,
+                rows,
+                range_first,
+                sel_indexes,
+                skip_data,
+                pool,
+                found_word.data(),
+                found_offset_data);
+
+            if constexpr (degenerate_phase_b)
+            {
+                auto word_dispatch = [&]<bool need_filter>()
+                {
+                    if (added_columns.has_columns_to_add)
+                        word_loop.template operator()<need_filter, true>(found_word.data());
+                    else
+                        word_loop.template operator()<need_filter, false>(found_word.data());
+                };
+                if (added_columns.need_filter)
+                    word_dispatch.template operator()<true>();
+                else
+                    word_dispatch.template operator()<false>();
+            }
+            else
+            {
+                if (added_columns.need_filter)
+                    loop.template operator()<true, false, true>(found_word.data(), found_offset_data);
+                else
+                    loop.template operator()<false, false, true>(found_word.data(), found_offset_data);
+            }
+            amac_ran = true;
+        }
+    }
+
+    if (!amac_ran)
+    {
+        if (added_columns.need_filter)
+        {
+            if (fast_path)
+                loop.template operator()<true, false, false>(nullptr, nullptr);
+            else
+                loop.template operator()<true, true, false>(nullptr, nullptr);
+        }
+        else
+        {
+            if (fast_path)
+                loop.template operator()<false, false, false>(nullptr, nullptr);
+            else
+                loop.template operator()<false, true, false>(nullptr, nullptr);
+        }
+    }
+
+    added_columns.applyLazyDefaults();
+    return 0;
+}
+}

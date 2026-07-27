@@ -13,9 +13,31 @@
 namespace DB
 {
 
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+class RoutedHashJoinMethods;
+
 /// Prefetching doesn't make sense for small hash tables, because they fit in caches entirely.
 /// Returns the threshold (in bytes) above which prefetching is enabled in JOIN.
 size_t getMinBytesForPrefetchInJoin();
+
+/// Runtime context of the routed (order-preserving) `parallel_hash` probe: selects each probe
+/// row's hash map and used-flags structure by the row's route slot. Null on the plain
+/// single-map probe paths, which keeps the shared code (`joinRightColumnsWithAdditionalFilter`)
+/// serving both designs without new instantiations. The maps are stored untyped because the
+/// context is built before the map-type dispatch; the typed consumer casts them back to the map
+/// type they were stored as (a round trip).
+struct RoutedProbeContext
+{
+    /// One route word per source-block row; null = every row probes slot 0.
+    const UInt64 * slot_ids = nullptr;
+    const void * const * maps_by_slot = nullptr;
+    /// The per-slot used flags; offsets stay slot-local, so RIGHT/FULL non-joined streaming
+    /// keeps its per-slot semantics.
+    JoinStuff::JoinUsedFlags * const * flags_by_slot = nullptr;
+    /// Aggregate hash-map buffer bytes across the slots: the software-prefetch gate of a routed
+    /// probe considers the whole set of maps a block will touch, not a single slot's.
+    size_t total_map_bytes = 0;
+};
 
 /// The one mapped-value write of a build row, shared by the sequential `Inserter` and the AMAC
 /// build ring so the two paths produce bit-identical cells. `inserted` is the emplace outcome
@@ -121,9 +143,6 @@ public:
         bool is_join_get = false);
 
 private:
-    template <typename KeyGetter, bool is_asof_join>
-    static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range = {});
-
     template <typename KeyGetter, typename HashMap, typename Selector>
     static void insertFromBlockImplTypeCase(
         HashJoin & join,
@@ -196,6 +215,9 @@ private:
         const Selector & selector);
 
     /// First to collect all matched rows refs by join keys, then filter out rows which are not true in additional filter expression.
+    /// `routed` (nullable) makes the per-row map and used-flags selection follow the row's route
+    /// slot - the routed `parallel_hash` probe path; `mapv`/`used_flags` then only serve as the
+    /// per-clause defaults for the null case.
     template <typename KeyGetter, typename Map, typename AddedColumns>
     static size_t joinRightColumnsWithAdditionalFilter(
         std::vector<KeyGetter> && key_getter_vector,
@@ -204,7 +226,11 @@ private:
         JoinStuff::JoinUsedFlags & used_flags [[maybe_unused]],
         const ScatteredBlock::Selector & selector,
         bool need_filter [[maybe_unused]],
-        bool flag_per_row [[maybe_unused]]);
+        bool flag_per_row [[maybe_unused]],
+        const RoutedProbeContext * routed = nullptr);
+
+    template <JoinKind, JoinStrictness, typename>
+    friend class RoutedHashJoinMethods;
 
     /// Cut first num_rows rows from block in place and returns block with remaining rows
     static Block sliceBlock(Block & block, size_t num_rows);

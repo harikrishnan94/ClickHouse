@@ -223,33 +223,6 @@ JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
-template <typename KeyGetter, bool is_asof_join>
-KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range)
-{
-    KeyGetter getter = [&]()
-    {
-        if constexpr (is_asof_join)
-        {
-            auto key_column_copy = key_columns;
-            auto key_size_copy = key_sizes;
-            key_column_copy.pop_back();
-            key_size_copy.pop_back();
-            return KeyGetter(key_column_copy, key_size_copy, nullptr);
-        }
-        else
-            return KeyGetter(key_columns, key_sizes, nullptr);
-    }();
-
-    if constexpr (ColumnsHashing::IsHashMethodInRange<KeyGetter>::value)
-    {
-        getter.min_key = static_cast<decltype(getter.min_key)>(key_range.min_key);
-        getter.range_size = static_cast<decltype(getter.range_size)>(key_range.size);
-    }
-
-    return getter;
-}
-
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename HashMap, typename Selector>
 void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCase(
     HashJoin & join,
@@ -962,10 +935,30 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
     JoinStuff::JoinUsedFlags & used_flags [[maybe_unused]],
     const ScatteredBlock::Selector & selector,
     bool need_filter [[maybe_unused]],
-    bool flag_per_row [[maybe_unused]])
+    bool flag_per_row [[maybe_unused]],
+    const RoutedProbeContext * routed)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     size_t left_block_rows = selector.size();
+
+    /// On the routed `parallel_hash` path each row's map and used flags are its route slot's;
+    /// otherwise the per-clause map and the caller's flags serve every row.
+    auto slot_of = [&](size_t ind) __attribute__((always_inline))
+    {
+        return routed->slot_ids ? routed->slot_ids[ind] : 0;
+    };
+    auto map_for_row = [&](size_t ind, size_t join_clause_idx) __attribute__((always_inline)) -> const Map &
+    {
+        if (routed)
+            return *static_cast<const Map *>(routed->maps_by_slot[slot_of(ind)]);
+        return *mapv[join_clause_idx];
+    };
+    auto flags_for_row = [&](size_t ind) __attribute__((always_inline)) -> JoinStuff::JoinUsedFlags &
+    {
+        if (routed)
+            return *routed->flags_by_slot[slot_of(ind)];
+        return used_flags;
+    };
     if (need_filter)
     {
         added_columns.filter = IColumn::Filter(left_block_rows, 0);
@@ -1008,20 +1001,29 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
         pool = std::make_unique<Arena>();
         IColumn::Offset current_added_rows = 0;
 
-        /// Software prefetch for multi-map variant. Only prefetch the first map.
+        /// Software prefetch for multi-map variant. Only prefetch the first map
+        /// (on the routed path: the row's slot map, gated on the aggregate map bytes).
         chassert(!mapv.empty());
         constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
 
         bool use_prefetch = false;
         if constexpr (can_prefetch)
-            use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
+        {
+            if (routed)
+                use_prefetch = added_columns.enable_prefetch && routed->total_map_bytes > getMinBytesForPrefetchInJoin();
+            else
+                use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
+        }
 
         const size_t selector_size = selector.size();
         auto prefetcher = makeJoinPrefetcher(use_prefetch, selector_size,
             [&](size_t k) __attribute__((always_inline))
             {
                 if constexpr (can_prefetch)
-                    mapv[0]->prefetch(key_getter_vector[0].getKeyHolder(selector[k], *pool));
+                {
+                    const size_t ind = selector[k];
+                    map_for_row(ind, 0).prefetch(key_getter_vector[0].getKeyHolder(ind, *pool));
+                }
             });
 
         for (size_t row_idx = 0; row_idx < selector_size; ++row_idx)
@@ -1040,7 +1042,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
 
                 bool row_acceptable = !join_keys.isRowFiltered(ind);
                 auto find_result
-                    = row_acceptable ? key_getter_vector[join_clause_idx].findKey(*(mapv[join_clause_idx]), ind, *pool) : FindResult();
+                    = row_acceptable ? key_getter_vector[join_clause_idx].findKey(map_for_row(ind, join_clause_idx), ind, *pool) : FindResult();
 
                 if (find_result.isFound())
                 {
@@ -1085,6 +1087,9 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
         for (size_t i = 0, n = row_replicate_offset.size(); i < n; ++i)
         {
             bool any_matched = false;
+            /// Row `i` was probed against its route slot's map, so its matches' flags live in
+            /// that slot's structure.
+            JoinStuff::JoinUsedFlags & row_used_flags = flags_for_row(selector[i]);
             /// right/full join or multiple disjuncts, we need to mark used flags for each row.
             if (flag_per_row)
             {
@@ -1101,7 +1106,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
                                 if (!any_matched)
                                 {
                                     // For inner join, we need mark each right row'flag, because we only use each right row once.
-                                    auto used_once = used_flags.template setUsedOnce<join_features.need_flags, true>(
+                                    auto used_once = row_used_flags.template setUsedOnce<join_features.need_flags, true>(
                                         refWordBlockNo(selected_ref), refWordRowNo(selected_ref), 0);
                                     if (used_once)
                                     {
@@ -1113,7 +1118,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
                             }
                             else
                             {
-                                auto used_once = used_flags.template setUsedOnce<join_features.need_flags, true>(
+                                auto used_once = row_used_flags.template setUsedOnce<join_features.need_flags, true>(
                                     refWordBlockNo(selected_ref), refWordRowNo(selected_ref), 0);
                                 if (used_once)
                                 {
@@ -1127,14 +1132,14 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
                         {
                             any_matched = true;
                             if constexpr (join_features.right && join_features.need_flags)
-                                used_flags.template setUsed<true, true>(refWordBlockNo(selected_ref), refWordRowNo(selected_ref), 0);
+                                row_used_flags.template setUsed<true, true>(refWordBlockNo(selected_ref), refWordRowNo(selected_ref), 0);
                         }
                         else
                         {
                             any_matched = true;
                             total_added_rows += 1;
                             added_columns.appendFromBlock(selected_ref, join_features.add_missing);
-                            used_flags.template setUsed<join_features.need_flags, true>(refWordBlockNo(selected_ref), refWordRowNo(selected_ref), 0);
+                            row_used_flags.template setUsed<join_features.need_flags, true>(refWordBlockNo(selected_ref), refWordRowNo(selected_ref), 0);
                         }
                     }
 
@@ -1194,7 +1199,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
                 else
                 {
                     if (!flag_per_row)
-                        used_flags.template setUsed<join_features.need_flags, false>(find_results[find_result_index]);
+                        row_used_flags.template setUsed<join_features.need_flags, false>(find_results[find_result_index]);
                     if (need_filter)
                         setUsed<true>(added_columns.filter, i, added_columns.matched_rows);
                     if constexpr (join_features.add_missing)

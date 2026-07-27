@@ -255,4 +255,36 @@ struct KeyGetterForType
     using Mapped = std::conditional_t<std::is_const_v<Data>, const Mapped_t, Mapped_t>;
     using Type = typename KeyGetterForTypeImpl<type, Value, Mapped>::Type;
 };
+
+/// Create the key getter of a join build/probe loop over the given key columns. For ASOF the
+/// trailing key column is the inequality column and is excluded from the hash key. The range
+/// getters (`HashMethodOneNumberInRange`) additionally carry the map's key range.
+/// Shared by `HashJoinMethods` and `RoutedHashJoinMethods`.
+template <typename KeyGetter, bool is_asof_join>
+KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range = {})
+{
+    KeyGetter getter = [&]()
+    {
+        if constexpr (is_asof_join)
+        {
+            auto key_column_copy = key_columns;
+            auto key_size_copy = key_sizes;
+            key_column_copy.pop_back();
+            key_size_copy.pop_back();
+            return KeyGetter(key_column_copy, key_size_copy, nullptr);
+        }
+        else
+        {
+            return KeyGetter(key_columns, key_sizes, nullptr);
+        }
+    }();
+
+    if constexpr (ColumnsHashing::IsHashMethodInRange<KeyGetter>::value)
+    {
+        getter.min_key = static_cast<decltype(getter.min_key)>(key_range.min_key);
+        getter.range_size = static_cast<decltype(getter.range_size)>(key_range.size);
+    }
+
+    return getter;
+}
 }
