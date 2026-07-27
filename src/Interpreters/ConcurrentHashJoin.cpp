@@ -208,6 +208,10 @@ ConcurrentHashJoin::ConcurrentHashJoin(
                         fmt::format("concurrent{}", i));
                     inner_hash_join->data->setMaxJoinedBlockRows(table_join->maxJoinedBlockRows());
                     inner_hash_join->data->setMaxJoinedBlockBytes(table_join->maxJoinedBlockBytes());
+                    /// Opt the per-slot maps into the AMAC build-insert ring (see `AmacRing.h`):
+                    /// only `parallel_hash` does this, because its per-slot builds are exactly
+                    /// the large, insert-bound case the ring targets.
+                    inner_hash_join->data->setAmacEnabled(true);
                     inner_hash_join->local_total_bytes = inner_hash_join->data->getTotalByteCount();
                     global_total_bytes.fetch_add(inner_hash_join->local_total_bytes, std::memory_order_relaxed);
                     hash_joins[i] = std::move(inner_hash_join);

@@ -463,6 +463,13 @@ public:
     bool enableLazyColumnsReplication() const { return enable_lazy_columns_replication; }
     bool enableSoftwarePrefetch() const { return enable_prefetch; }
 
+    /// Whether the AMAC build-insert ring (see `AmacRing.h`) may engage for this join's maps.
+    /// Flipped only by `ConcurrentHashJoin` for its per-slot instances - the large, insert-bound
+    /// builds the ring targets; plain `hash`, `StorageJoin` and grace hash keep the sequential
+    /// insert loop.
+    void setAmacEnabled(bool value) { amac_enabled = value; }
+    bool amacEnabled() const { return amac_enabled; }
+
     void setEnableLazyColumnsIndexing(bool value) override { enable_lazy_columns_indexing = value; }
 
     static bool isUsedByAnotherAlgorithm(const TableJoin & table_join);
@@ -522,6 +529,7 @@ private:
     bool enable_lazy_columns_replication = false;
     bool enable_lazy_columns_indexing = false;
     bool enable_prefetch = true;
+    bool amac_enabled = false;
 
     /// When tracked memory consumption is more than a threshold, we will shrink to fit stored blocks.
     bool shrink_blocks = false;

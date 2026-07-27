@@ -2,14 +2,25 @@
 
 #include <Columns/IColumn.h>
 #include <Common/HashTable/Prefetching.h>
+#include <Common/PODArray.h>
+#include <Common/ProfileEvents.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/AmacBuild.h>
+#include <Interpreters/HashJoin/AmacMode.h>
+#include <Interpreters/HashJoin/AmacRing.h>
 #include <Interpreters/HashJoin/HashJoinMethods.h>
 #include <Interpreters/HashJoin/HashJoinResult.h>
 #include <Interpreters/JoinUtils.h>
 
 #include <algorithm>
 #include <type_traits>
+
+namespace ProfileEvents
+{
+extern const Event ConcurrentHashJoinAmacBuildRows;
+extern const Event ConcurrentHashJoinAmacBuildRingGrowths;
+}
 
 namespace DB
 {
@@ -266,6 +277,79 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     is_inserted = !mapped_one || is_asof_join;
 
     const size_t rows = ScatteredBlock::Selector::size(selector);
+
+    /// The AMAC insert ring replaces the sequential loop when the build is expected to be
+    /// insert-bound: only `ConcurrentHashJoin` opts its per-slot maps in (`amacEnabled`), and
+    /// under the `Auto` mode the map must already be past the prefetch size threshold with a
+    /// section long enough to amortize the ring's prime/drain. `Force` (the process-level
+    /// `CLICKHOUSE_JOIN_AMAC` diagnostic hook) bypasses the size thresholds so that tests and
+    /// A/B harnesses can pin the path.
+    if constexpr (!is_asof_join && amac_join_supported<KeyGetter, HashMap>)
+    {
+        const AmacMode amac_mode = joinAmacMode();
+        const bool engage_ring = amac_mode != AmacMode::Off && join.amacEnabled()
+            && (amac_mode == AmacMode::Force
+                || (map.getBufferSizeInBytes() > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows))
+            && rows < amac_inactive_row;
+        if (engage_ring)
+        {
+            /// One merged skip byte per section position: rows the sequential loop's per-row
+            /// checks would pass over - null keys (which still mark the block as referenced for
+            /// RIGHT and FULL joins, hence `saw_null_row`) and rows filtered by the ON-section
+            /// mask. Merging them here keeps the ring's `start` at a single byte test.
+            PaddedPODArray<UInt8> skip_bytes;
+            size_t skipped_rows = 0;
+            bool saw_null_row = false;
+            if (null_map || join_mask.getKind() != JoinCommon::JoinMask::Kind::AllTrue)
+            {
+                skip_bytes.resize(rows);
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    const size_t ind = selectorIndexAt(selector, i);
+                    chassert(!null_map || ind < null_map->size());
+                    const bool is_null = null_map && (*null_map)[ind];
+                    saw_null_row |= is_null;
+                    const bool skip = is_null || join_mask.isRowFiltered(ind);
+                    skip_bytes[i] = skip;
+                    skipped_rows += skip;
+                }
+            }
+
+            constexpr bool selector_is_range = !std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Indexes>;
+            size_t range_first = 0;
+            const UInt64 * selector_indexes = nullptr;
+            if constexpr (selector_is_range)
+                range_first = selector.first;
+            else
+                selector_indexes = selector.getData().data();
+
+            const auto result = amacBuildInsert<KeyGetter, HashMap, selector_is_range>(
+                map,
+                key_getter,
+                rows,
+                range_first,
+                selector_indexes,
+                skip_bytes.empty() ? nullptr : skip_bytes.data(),
+                stored_block_no,
+                join.anyTakeLastRow(),
+                pool);
+
+            /// The exact accumulation of the sequential loop: null rows and any-referenced rows
+            /// promote `is_inserted` for `RowRef` maps; duplicates clear `all_values_unique`
+            /// for `RowRefList` maps.
+            if constexpr (mapped_one)
+                is_inserted = is_inserted || saw_null_row || result.any_inserted;
+            else
+                all_values_unique = all_values_unique && result.all_unique;
+
+            /// Incremented ONCE per section: per-row increments inside the ring would put
+            /// atomic traffic into the steady loop.
+            ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinAmacBuildRows, rows - skipped_rows);
+            if (result.growths)
+                ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinAmacBuildRingGrowths, result.growths);
+            return;
+        }
+    }
 
     /// Software prefetch during the build phase.
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, HashMap>;

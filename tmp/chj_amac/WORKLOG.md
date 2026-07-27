@@ -353,6 +353,54 @@ humanize's one accepted finding (comment terminology: open-addressing, not
 one-word edit is ceremony; compilation covered by the cursor-layer build of
 the same TU.
 
+## 2026-07-27 — U2.3: AMAC build-insert ring (PREREG-006) — all gates green
+
+Implementation (agent draft, reviewed; notes in `U23_DRAFT_NOTES.md`):
+`AmacRing.h` (driver), `AmacMode.h/.cpp` (env hook `CLICKHOUSE_JOIN_AMAC`),
+`AmacBuild.h/.cpp` (policy + 32 explicit instantiations), 4 gtests,
+engagement in `insertFromBlockImplTypeCase`, per-slot `setAmacEnabled` from
+`ConcurrentHashJoin` only, events `ConcurrentHashJoinAmacBuildRows` /
+`...AmacBuildRingGrowths`. REAL BUG FOUND IN THE `ahj` REFERENCE during the
+port: its drain re-seeds into "first free slots"; a same-sweep growth after
+a failed refill then lets the sweep tail step an emptied slot (deterministic
+segfault, string keys, T96). Fixed with a slot-preserving re-seed; the
+regression gtest has teeth (rc=134 against the ported logic). Sorted re-seed
+preserves first-wins `RowRef` semantics.
+
+Gate results (invocations + raw finals):
+- (a) G-parity + required engagement (after staging the contract per side —
+  the initial run failed because detection demanded the Unit-3 probe counter;
+  both the parity harness and `fleet_ab.py`'s `detect_amac` had the same
+  all-or-nothing defect, both fixed, re-proofs in `parity/SELFTEST.md` §10):
+  `PARITY OK (636 cases: 634 compared, 2 matched-error, 0 failed; 10
+  families, 23 kind-strictness combos, force-pass: engaged 8/8+2x0 (build))`
+  — all 8 cursor-capable families engaged with `AmacBuildRows` == build row
+  count exactly; `lcstr`/`mixed` at exact zero (exclusions load-bearing);
+  baseline-as-candidate under `--require-engagement` fails with a named
+  gate failure (negative proof).
+- (b) gtests: `[  PASSED  ] 4 tests.` under default env AND
+  `CLICKHOUSE_JOIN_AMAC=0` (re-run by the orchestrator:
+  `build/reldeb/gtest_amac_verify{,_off}.log`).
+- (c) build A/B (candidate-60b8d1684a1 vs uncommitted ring snapshot, raws
+  `fleet/results/amacbuild_ab2.jsonl`): S2×T96 disengage proof
+  (`AmacBuildRows`=0, predicate off on cache-resident); key64 S4×T1 engaged
+  95.94M/96M, `BuildInsert` 5637→4948 ms (−12.2%), wall win; str S5×T96
+  engaged 190.9M/192M, `BuildInsert` 74102→59137 ms (−20.2%), wall win.
+  PARTIAL REFUTATION recorded: key64 S4×T96 engages (91.8M rows) with
+  `BuildInsert` flat (20203→20213 ms) — the pre-registered refutation
+  clause fired; per its action the codegen checklist ran first (= gate (d),
+  clean), leaving contention as the recorded mechanism (consistent with the
+  `ahj` record's contention-bound insert at high thread counts). The ring
+  loses nowhere; final disposition at fleet scale in Unit 4.
+- (d) G-disasm-build: `G-DISASM-BUILD: PASS (0 unexplained)` —
+  `disasm/U23_build_anchors.md`: all 3 anchors match the `ahj` reference
+  semantically (write-intent `pstl1keep` on every ring prefetch both
+  binaries, fused claim, identical tail-pad advance, inlined refill,
+  frame-copy SSA held); differences classified justified (drain redesign =
+  the bug fix above; reference-only locator machinery; register allocation);
+  two candidate-FAVORING deltas (inlined `memequalWide` vs out-of-line
+  `bcmp`; fewer spill reloads).
+
 Unit 1 exit state: PREREG-001 and PREREG-002a/b/c all green; coverage matrix
 frozen (MATRIX.md + fleet/matrix.json); calibration frozen; fleet runbook
 written (launch deferred until Units 2-3 pass local gates); harness suite
