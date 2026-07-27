@@ -245,6 +245,114 @@ texts: workflow journal (wf_3dc931f5-0d9).
   `fleet/results/noise_band_002c.jsonl` 3dd917202db9...09f8b4a3c;
   `fleet/results/noise_band_002c_rev1.jsonl` 1acb6a2cccef...da1a299e.
 
+## 2026-07-27 — U2.1: slot-route decorrelation (PREREG-004) — landed + confirmed
+
+Commit `844ee1a82dd` (`routeByHighBits`: chained types route by
+`(hash >> 24) & (num_shards - 1)`, `key8`/`key16` keep low bits; single
+`hashToSelector` caller covers build + probe dispatch). Gates: G-build clean
+(`build_routefix.log`); G-parity green (raw: `PARITY OK (636 cases: 634
+compared, 2 matched-error, 0 failed; ...)` — `parity/gate_routefix.log`);
+clang-tidy 0 new findings (2 pre-existing at :111/:340 untouched);
+clang-format's macro-block reformat suggestion rejected as unrelated
+reformatting. Post-fix snapshot `bins/clickhouse-candidate-844ee1a82dd.bin`
+sha256 `43ef2b74533e8dbd9ab33dd3370c6da8c1e0b7315773a6a32b15687822090cf2`.
+
+PREREG-004 orientation A/B (local, arm A = pre-fix `75d431b1d74`, arm B =
+post-fix `844ee1a82dd`, 10 runs/arm ABAB; raw JSONL
+`fleet/results/routefix_ab.jsonl`, log `fleet/routefix_ab_run1.log`):
+- `key64:probe.inner_all.S3.T96`: wall 908.5 → 687.7 ms (**−24.3%**);
+  thread-summed `BuildInsert` 7837 → 4854 ms (−38%), `ProbeLookup`
+  31191 → 13346 ms (−57%), `ProbeDispatch` flat (1560 → 1592 ms).
+- `str:probe.inner_all.S3.T96`: wall 1527.8 → 813.6 ms (**−46.8%**);
+  `BuildInsert` 6476 → 2555 ms (−61%), `ProbeLookup` 89148 → 30887 ms
+  (−65%), `ProbeDispatch` flat.
+- `key64:build.inner_all.S3.T96`: formally INVALID by the duration floor
+  (arm A median 135.7 ms < 200 ms) — the floor caught the mis-shaped
+  build-side cell as designed; raw medians moved 135.4 → 88.5 ms in the
+  same direction (orientation only, no verdict claimed). Consequence for
+  Unit 4: S3×T96 build cells will also trip the floor (not just S2×T96);
+  MATRIX caveat 6 applies and dispositions will record it.
+Verdict per PREREG-004: expectation CONFIRMED — the win is outside the 3%
+band on both probe cells and attributed to exactly the two claimed phase
+events with dispatch flat. These are LOCAL ORIENTATION numbers; acceptance
+comes from the Unit-4 fleet vs the baseline.
+
+## 2026-07-27 — U2.2: resumable cursor layer + tail-padded grower (PREREG-005) — in progress
+
+Code complete: new `src/Interpreters/HashJoin/ResumableHashMap.h`
+(`TailPaddedHashTableGrower` ported from
+`ahj:src/Interpreters/PartitionedHashJoin/PartitionedJoinMaps.h`,
+`ResumableHashMap` from `ahj:...AmacRing.h`, `cell_stores_hash`,
+`WithJoinCursor` rebind trait — grower ONLY; `ahj`'s
+`ZeroingHashTableAllocator` deliberately not ported, recorded as a lead);
+`HashJoin.h` rebinds the 8 open-addressing members; `HashJoinMethods.h`
+extracts `applyBuildRowToMapped` shared by `Inserter::insertOne`/`insertAll`.
+
+Gates so far: G-build PASS twice (`build_cursorlayer.log` full-ripple
+rebuild, `build_cursorlayer2.log` after the tidy fix; 0 FAILED both).
+clang-tidy on `HashJoin.cpp` (covers all three headers): one NEW finding
+(missing braces, `HashJoinMethods.h:36`) FIXED; one finding at :80 is in
+untouched `insertAsof` code — pre-existing, recorded; `HashJoin.h` clean.
+
+PROCESS ERROR (recorded): the first cursor-layer parity run
+(`gate_cursorlayer.log`, printed `PARITY OK`) is VOID — I relinked
+`build/reldeb/programs/clickhouse` mid-run for the tidy brace fix, mutating
+the binary the gate was running against (it went unnoticed only because the
+force pass never starts a server when counters are absent). Lesson adopted:
+gates on uncommitted code run against an immutable temp snapshot
+(`bins/uncommitted-<tag>.tmp.bin`, gitignored), never against the live build
+path. Parity re-running against `bins/uncommitted-cursorlayer.tmp.bin`
+(sha256 2d9a0113a38205b1...).
+
+U2.2 gates: G-parity GREEN on the immutable snapshot (raw: `PARITY OK (636
+cases: 634 compared, 2 matched-error, 0 failed; ...)` —
+`parity/gate_cursorlayer2.log`). Before/after codegen diff
+(`asmdiff/asmdiff.py`, `llvm-nm`/`llvm-objdump` ranges; before =
+`candidate-844ee1a82dd`, after = `uncommitted-cursorlayer.tmp.bin`):
+- INSERT key64/RowRefList (`insertFromBlockImplTypeCase`): 590 → 598 insns;
+  delta = `and` −1, `cmp` +3, `csinc` +2, `ldr` +4, `cbz`/`b.eq` +1 each,
+  `mov`/`ldrb` −1 each; STORES 55 → 55.
+- PROBE key64/RowRefList (`joinRightColumns`): 747 → 749 insns; delta =
+  `and` −2, `cmp` +2, `csinc` +2, `ldr` +3, `mov`/`ldrb`/`lsl` −1 each;
+  STORES 69 → 69.
+Exactly the pre-registered walk-advance pattern change (`csinc` is the
+`pos == buf_size ? 0 : pos` idiom) plus grower field loads; no new stores ⇒
+no spill regression. Remaining PREREG-005 invocation: the `hash` A/B
+(waiting on free fleet ports).
+
+PREREG-005 `hash` A/B (final U2.2 invocation; raws
+`fleet/results/cursorlayer_hash_ab.jsonl` sha256 9e9906f2828837da...):
+- `key64:...S3.T1.hash`: +0.63%, TIE (spreads ≤1.4% — the one locally
+  precise `hash` cell) — IN-BAND.
+- `str:...S3.T96.hash`: −6.99% TIE (band 12.3%);
+  `k256:...S3.T96.hash`: +15.13% TIE (band 14.3%);
+  `key64:...S3.T96.hash`: −24.83% "WIN" (band 15.5%).
+- Prediction mismatch (expected all-TIE) INVESTIGATED, not rationalized —
+  interpretation rule pre-stated in the session working-state file BEFORE
+  the check ran: a same-binary A/A on the two suspicious cells
+  (`fleet/results/hash_t96_aa.jsonl` sha256 f7599f89579448...) shows
+  key64×T96 `hash` swinging **−14.12% on identical binaries** (spreads
+  12-17.5%) — the T96 `hash` shapes are jitter-bound on this host (likely
+  the single-threaded build phase's scheduling sensitivity; parallel_hash
+  shapes on the same host held 0.6-1.3%). The A/B's WIN is therefore noise.
+- Verdict: PREREG-005's refutation criterion (a `hash` cell LOSING outside
+  band) is NOT triggered; T1 is tight and in-band; T96 `hash` is locally
+  unresolvable and the requester's in-band condition is settled by the
+  fleet G-hash-inband gate (12 cells, quiet dedicated shards) in Unit 4.
+  Recorded as the PREREG-005 orientation outcome — not weakened, deferred
+  to the stronger venue that was always the acceptance venue.
+
+Hygiene pass for the harness commit landed as `3be337d9d24` (band-units and
+matrix-plan divergence fixed with re-proofs; see the commit message and
+`SELFTEST.md`). Its G-parity re-run with the changed harness is folded into
+the next parity invocation below.
+
+Hygiene note (`863bca802a5`): reduce report for the route fix = 0 findings;
+humanize's one accepted finding (comment terminology: open-addressing, not
+"chained") applied directly by the orchestrator — a fixer subagent for a
+one-word edit is ceremony; compilation covered by the cursor-layer build of
+the same TU.
+
 Unit 1 exit state: PREREG-001 and PREREG-002a/b/c all green; coverage matrix
 frozen (MATRIX.md + fleet/matrix.json); calibration frozen; fleet runbook
 written (launch deferred until Units 2-3 pass local gates); harness suite

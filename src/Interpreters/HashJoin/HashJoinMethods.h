@@ -17,6 +17,36 @@ namespace DB
 /// Returns the threshold (in bytes) above which prefetching is enabled in JOIN.
 size_t getMinBytesForPrefetchInJoin();
 
+/// The one mapped-value write of a build row, shared by the sequential `Inserter` and the AMAC
+/// build ring so the two paths produce bit-identical cells. `inserted` is the emplace outcome
+/// for this row's key; the return value is the caller's "row is referenced by the map" signal
+/// (`RowRef` maps overwrite on `any_take_last_row`, `RowRefList` maps append every duplicate).
+template <typename Mapped>
+ALWAYS_INLINE bool applyBuildRowToMapped(Mapped & mapped, bool inserted, UInt32 stored_block_no, size_t i, Arena & pool, bool any_take_last_row)
+{
+    if constexpr (std::is_same_v<Mapped, RowRef>)
+    {
+        if (inserted || any_take_last_row)
+            new (&mapped) Mapped(stored_block_no, i);
+        return inserted || any_take_last_row;
+    }
+    else
+    {
+        static_assert(std::is_same_v<Mapped, RowRefList>);
+        if (inserted)
+        {
+            new (&mapped) Mapped(stored_block_no, i);
+        }
+        else
+        {
+            /// A single ref is stored inline in the value of the hash table; the first duplicate
+            /// switches the value to a pointer to an arena-allocated list of refs.
+            mapped.insert(RowRef(stored_block_no, i).encode(), pool);
+        }
+        return inserted;
+    }
+}
+
 /// Inserting an element into a hash table of the form `key -> reference to a row`, which will then be used by JOIN.
 template <typename HashMap, typename KeyGetter>
 struct Inserter
@@ -25,26 +55,14 @@ struct Inserter
     insertOne(const HashJoin & join, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool)
     {
         auto emplace_result = key_getter.emplaceKey(map, i, pool);
-
-        if (emplace_result.isInserted() || join.anyTakeLastRow())
-            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, i);
-        return emplace_result.isInserted() || join.anyTakeLastRow();
+        return applyBuildRowToMapped(emplace_result.getMapped(), emplace_result.isInserted(), stored_block_no, i, pool, join.anyTakeLastRow());
     }
 
     static ALWAYS_INLINE bool
     insertAll(const HashJoin &, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool)
     {
         auto emplace_result = key_getter.emplaceKey(map, i, pool);
-
-        if (emplace_result.isInserted())
-            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, i);
-        else
-        {
-            /// A single ref is stored inline in the value of the hash table; the first duplicate
-            /// switches the value to a pointer to an arena-allocated list of refs.
-            emplace_result.getMapped().insert(RowRef(stored_block_no, i).encode(), pool);
-        }
-        return emplace_result.isInserted();
+        return applyBuildRowToMapped(emplace_result.getMapped(), emplace_result.isInserted(), stored_block_no, i, pool, /*any_take_last_row=*/false);
     }
 
     static ALWAYS_INLINE bool insertAsof(
