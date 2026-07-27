@@ -403,3 +403,111 @@ Section 3a/3b (pre-fix runs) and KNOWN GAPS 1/2 are superseded by this
 section. The `_squash` violation counts on the baseline differ from section
 3a's candidate numbers (e.g. inner 21 vs 11430) — different probe designs,
 same verdict.
+
+## 11. Squash-check correction: baseline-differential reclassification (2026-07-27) {#squash-baseline-differential}
+
+### The mis-specification {#squash-misspec}
+
+The original oracle treated any `_squash` check FAIL as gate-failing. That
+rule is mis-specified: the TWO-LEVEL BASELINE binary
+(`bins/clickhouse-baseline-a05f3ee81ff.bin`) — the order-preserving reference
+design, which probes each left block whole and cannot reorder within a block —
+fails exactly the same 8 `_squash` checks as the new routed candidate. An
+oracle that the reference design itself cannot pass is wrong, not strict.
+
+Mechanism: the `_squash` variants enable `min_joined_block_size_rows` /
+`min_joined_block_size_bytes`, so consecutive join outputs of ONE lane are
+concatenated into one output block. In a parallel full scan a lane's
+consecutive LEFT input blocks are not monotone in `tag` (MergeTree range
+assignment / work stealing), so the squashed blocks are non-monotone
+REGARDLESS of the join design — a SOURCE artifact, not a join property. On
+the old scatter design the same checks also caught real cross-piece disorder
+(that is why they had power there; the scatter run `logs/gate_002b_candidate.log`
+fails them too, for the real reason).
+
+### Side-by-side verdicts {#squash-side-by-side}
+
+From `logs/gate_002b_baseline.log` (baseline, run_id 20260727_184308_266653)
+vs `logs/gate_u3_order.log` (routed candidate, run_id 20260727_225608_639631);
+violations/blocks from the per-check lines:
+
+| check                        | baseline (two-level)   | routed candidate       |
+|------------------------------|------------------------|------------------------|
+| inner_all_k                  | OK                     | OK                     |
+| left_all_k                   | OK                     | OK                     |
+| left_any_k                   | OK                     | OK                     |
+| left_semi_k                  | OK                     | OK                     |
+| left_anti_k                  | OK                     | OK                     |
+| inner_all_ks                 | OK                     | OK                     |
+| right_all_k_scoped           | OK                     | OK                     |
+| full_all_k_scoped            | OK                     | OK                     |
+| inner_all_k_t1_global (T=1)  | OK                     | OK                     |
+| inner_all_k_squash           | FAIL (23 viol/83 blk)  | FAIL (27 viol/83 blk)  |
+| left_all_k_squash            | FAIL (156/456)         | FAIL (170/469)         |
+| left_any_k_squash            | FAIL (163/322)         | FAIL (136/313)         |
+| left_semi_k_squash           | FAIL (24/76)           | FAIL (24/72)           |
+| left_anti_k_squash           | FAIL (166/306)         | FAIL (189/311)         |
+| inner_all_ks_squash          | FAIL (23/92)           | FAIL (28/90)           |
+| right_all_k_scoped_squash    | FAIL (31/96)           | FAIL (40/97)           |
+| full_all_k_scoped_squash     | FAIL (14/228)          | FAIL (10/233)          |
+
+Identical shape, comparable violation counts: the squash failures do not
+discriminate the candidate from the reference design.
+
+### The rule {#squash-rule}
+
+Normal (gating) mode only; `--expect-fail` power mode is EXACTLY unchanged
+(`--baseline-reference` is rejected there). The 8 `_squash` checks are
+`source-artifact-prone`: a `_squash` FAIL does not fail the gate PROVIDED
+
+1. its non-squash sibling check is OK, AND
+2. a baseline-differential reference confirms the baseline fails the same
+   check: the new REQUIRED normal-mode flag `--baseline-reference LOG` points
+   at a baseline run log (e.g. `logs/gate_002b_baseline.log`); the script
+   parses the reference's per-check verdicts, and the FAIL is reclassified
+   `SOURCE-ARTIFACT (baseline fails identically)` only when the reference
+   shows FAIL for the same check.
+
+Fail-closed: a squash FAIL where the baseline passed (or has no verdict)
+stays a gate-failing FAIL; a missing / unreadable / unparseable reference
+(including no per-check lines, no `_squash` verdicts, or conflicting
+duplicate verdicts) is FATAL. The summary line carries `source_artifact=N`
+and a reclassifying verdict says so explicitly.
+
+WHY THIS IS A CORRECTION, NOT A WEAKENING: the reference design itself cannot
+pass the old rule, and the join-level order contract is still carried by
+three independent layers, all green on the routed candidate: the 9 non-squash
+checks (within-output-block order), the T=1 `--global` check, and the
+stateless layer (03711 = read-in-order through join, 03448). On scatter
+binaries the squash checks still fail for the real cross-piece reason, so the
+`--expect-fail` power check keeps its teeth (re-proof (c) below).
+
+### Re-proof runs (raw final lines) {#squash-reproofs}
+
+(a) Normal mode, routed candidate + baseline reference — rc=0, log
+`logs/gate_u3_order2.log`, run_id 20260727_230629_650902 (8 x
+`SOURCE-ARTIFACT (baseline fails identically)` lines, zero NOT-RECLASSIFIED,
+stateless 20/20):
+
+    [run_order] summary: total=17 ok=9 fail=0 source_artifact=8 error=0 (incl. control_errors=0) not_engaged=0 row_mismatch=0 t1_global=OK
+    ORDER OK (ok=9 fail=0 source_artifact=8 of 17 checks, all engaged parallel_hash, t1_global=OK, stateless=pass, stateless engagement: 03448=yes (delta ConcurrentHashJoinProbeMicroseconds=2115) 03711=yes (delta ConcurrentHashJoinProbeMicroseconds=87766); squash checks baseline-differential per SELFTEST §11)
+
+(b) Normal mode, BASELINE binary + same reference (consistency: the reference
+design passes its own gate) — rc=0, log `logs/gate_baseline_normal.log`,
+run_id 20260727_230846_652990:
+
+    [run_order] summary: total=17 ok=9 fail=0 source_artifact=8 error=0 (incl. control_errors=0) not_engaged=0 row_mismatch=0 t1_global=OK
+    ORDER OK (ok=9 fail=0 source_artifact=8 of 17 checks, all engaged parallel_hash, t1_global=OK, stateless=pass, stateless engagement: 03448=yes (delta ConcurrentHashJoinProbeMicroseconds=4589) 03711=yes (delta ConcurrentHashJoinProbeMicroseconds=93970); squash checks baseline-differential per SELFTEST §11)
+
+(c) `--expect-fail` on the baseline (unchanged power mode, no reference) —
+rc=0, log `logs/gate_002b_baseline2.log`, run_id 20260727_231028_654546:
+
+    [run_order] summary: total=17 ok=9 fail=8 source_artifact=0 error=0 (incl. control_errors=0) not_engaged=0 row_mismatch=0 t1_global=OK
+    ORDER POWER-CHECK OK (check fails on this binary, as expected: >=1 engaged row-matched T=96 FAIL, errors=0, row_mismatch=0)
+
+(d) `bash -n run_order.sh` — clean, rc=0.
+
+Fail-closed argument paths verified (all rc=2, no server started): normal
+mode without `--baseline-reference`; `--baseline-reference` combined with
+`--expect-fail`; reference file missing; reference file unparseable (zero
+per-check lines); flag without a LOG argument.

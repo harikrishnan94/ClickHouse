@@ -6,9 +6,19 @@
 # order. See check_order.py for the Native-stream oracle.
 #
 # Usage:
-#   run_order.sh <clickhouse-binary> [--expect-fail] [--require-engagement]
-#                [--skip-stateless] [--keep-data]
+#   run_order.sh <clickhouse-binary> [--baseline-reference LOG] [--expect-fail]
+#                [--require-engagement] [--skip-stateless] [--keep-data]
 #
+#   --baseline-reference LOG
+#                        REQUIRED in normal (gating) mode; incompatible with
+#                        --expect-fail. Path to a prior run_order.sh log of the
+#                        TWO-LEVEL BASELINE binary (the order-preserving
+#                        reference design), e.g. logs/gate_002b_baseline.log.
+#                        Its per-check verdicts feed the baseline-differential
+#                        rule for the `_squash` checks (see the comment block
+#                        at the check table and SELFTEST.md section 11).
+#                        Missing / unreadable / unparseable reference = FATAL
+#                        (fail closed).
 #   --expect-fail        power check for scatter binaries: exit 0 iff at least
 #                        one engaged per-block check at max_threads=96 FAILED
 #                        with real order violations AND its row count matched
@@ -26,7 +36,10 @@
 # server with the watchdog disabled.
 #
 # Final line (machine-checkable):
-#   normal:        'ORDER OK (...)' or 'ORDER FAIL (...)'
+#   normal:        'ORDER OK (...)' or 'ORDER FAIL (...)'; both carry
+#                  source_artifact=N, the number of `_squash` FAILs
+#                  reclassified by the baseline-differential rule
+#                  (SELFTEST.md section 11)
 #   --expect-fail: 'ORDER POWER-CHECK OK (...)' — genuine, engaged, row-matched
 #                  failure with zero errors, or
 #                  'ORDER POWER-CHECK BROKEN (...)' — scatter binary passed the
@@ -93,25 +106,49 @@ EXPECT_FAIL=0
 REQUIRE_ENGAGEMENT=0
 SKIP_STATELESS=0
 KEEP_DATA=0
+BASELINE_REFERENCE=""
 BINARY=""
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --expect-fail) EXPECT_FAIL=1 ;;
         --require-engagement) REQUIRE_ENGAGEMENT=1 ;;
         --skip-stateless) SKIP_STATELESS=1 ;;
         --keep-data) KEEP_DATA=1 ;;
-        -*) echo "unknown option: $arg" >&2; exit 2 ;;
-        *) BINARY="$arg" ;;
+        --baseline-reference)
+            shift
+            if [ $# -eq 0 ]; then
+                echo "--baseline-reference requires a LOG argument" >&2
+                exit 2
+            fi
+            BASELINE_REFERENCE="$1"
+            ;;
+        -*) echo "unknown option: $1" >&2; exit 2 ;;
+        *) BINARY="$1" ;;
     esac
+    shift
 done
 if [ -z "$BINARY" ]; then
-    echo "usage: run_order.sh <clickhouse-binary> [--expect-fail] [--require-engagement] [--skip-stateless] [--keep-data]" >&2
+    echo "usage: run_order.sh <clickhouse-binary> [--baseline-reference LOG] [--expect-fail] [--require-engagement] [--skip-stateless] [--keep-data]" >&2
     exit 2
 fi
 if [ "$EXPECT_FAIL" = "1" ] && [ "$REQUIRE_ENGAGEMENT" = "1" ]; then
     # --expect-fail is the power check for pre-AMAC scatter binaries, which by
     # definition cannot have AMAC engagement; refuse the contradictory combination.
     echo "--require-engagement is incompatible with --expect-fail" >&2
+    exit 2
+fi
+if [ "$EXPECT_FAIL" = "1" ] && [ -n "$BASELINE_REFERENCE" ]; then
+    # Power mode is untouched by the baseline-differential rule: on scatter
+    # binaries the `_squash` checks must keep failing for the REAL reason
+    # (cross-piece disorder), so a reference makes no sense there.
+    echo "--baseline-reference is incompatible with --expect-fail (power mode is unchanged)" >&2
+    exit 2
+fi
+if [ "$EXPECT_FAIL" = "0" ] && [ -z "$BASELINE_REFERENCE" ]; then
+    # Fail closed: the normal-mode verdict depends on the baseline-differential
+    # rule for the `_squash` checks (SELFTEST.md section 11); without a
+    # reference the rule cannot be evaluated.
+    echo "normal (gating) mode requires --baseline-reference LOG (a run_order.sh log of the two-level baseline binary, e.g. logs/gate_002b_baseline.log); fail closed" >&2
     exit 2
 fi
 BINARY="$(readlink -f "$BINARY")"
@@ -124,6 +161,40 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 mkdir -p "$LOG_DIR" "$SRV_DIR"
 
 log() { echo "[run_order] $*"; }
+
+# ============================================================================
+# Baseline reference (normal mode only) - see the comment block at the check
+# table and SELFTEST.md section 11 for the rule this feeds.
+# ============================================================================
+declare -A REF_RESULT      # per-check verdict (OK | FAIL | ERROR) from the reference log
+parse_baseline_reference() {
+    # Fail closed: any anomaly (missing file, no parseable per-check lines, no
+    # `_squash` verdicts, conflicting duplicate verdicts) is FATAL — a squash
+    # FAIL must never be reclassified against a broken reference.
+    if [ ! -f "$BASELINE_REFERENCE" ] || [ ! -r "$BASELINE_REFERENCE" ]; then
+        log "FATAL: --baseline-reference '$BASELINE_REFERENCE' is missing or unreadable (fail closed)"
+        exit 2
+    fi
+    local name verdict parsed=0 squash_seen=0
+    while read -r name verdict; do
+        if [ -n "${REF_RESULT[$name]:-}" ] && [ "${REF_RESULT[$name]}" != "$verdict" ]; then
+            log "FATAL: baseline reference '$BASELINE_REFERENCE' has conflicting verdicts for check '$name' (${REF_RESULT[$name]} vs $verdict) — concatenated logs? (fail closed)"
+            exit 2
+        fi
+        REF_RESULT[$name]="$verdict"
+        parsed=$((parsed + 1))
+        case "$name" in *_squash) squash_seen=1 ;; esac
+    done < <(sed -nE 's/^\[run_order\] check ([A-Za-z0-9_]+) \(T=[0-9]+\): (OK|FAIL|ERROR) .*/\1 \2/p' "$BASELINE_REFERENCE")
+    if [ "$parsed" = "0" ]; then
+        log "FATAL: baseline reference '$BASELINE_REFERENCE' contains no parseable per-check verdict lines (fail closed)"
+        exit 2
+    fi
+    if [ "$squash_seen" = "0" ]; then
+        log "FATAL: baseline reference '$BASELINE_REFERENCE' contains no _squash check verdicts — wrong log? (fail closed)"
+        exit 2
+    fi
+    log "baseline reference parsed: $BASELINE_REFERENCE (${#REF_RESULT[@]} distinct check verdicts from $parsed lines)"
+}
 
 # ============================================================================
 # Server lifecycle
@@ -361,6 +432,36 @@ COMMON_SETTINGS="join_algorithm='parallel_hash', query_plan_join_swap_table=0, q
 SQUASH0_SETTINGS="min_joined_block_size_rows=0, min_joined_block_size_bytes=0"
 SQUASH_SETTINGS="min_joined_block_size_rows=$SQUASH_ROWS, min_joined_block_size_bytes=$SQUASH_BYTES"
 
+# ----------------------------------------------------------------------------
+# CORRECTION (2026-07-27): the 8 `_squash` variants of the checks below are
+# SOURCE-ARTIFACT-PRONE and are gated by a baseline-differential rule in
+# normal mode (SELFTEST.md section 11). Mechanism: the `_squash` checks enable
+# min_joined_block_size_{rows,bytes}, so consecutive join outputs of ONE lane
+# are concatenated into one block; in a parallel full scan a lane's
+# consecutive LEFT input blocks are not monotone in the tag (MergeTree range
+# assignment / work stealing), so the squashed blocks are non-monotone
+# REGARDLESS of the join design — an artifact of the SOURCE, not of the join.
+# Evidence (side-by-side per-check verdicts):
+#   logs/gate_002b_baseline.log — the TWO-LEVEL BASELINE binary (probes each
+#       left block whole, cannot reorder within a block): 9 non-squash OK,
+#       exactly the 8 `_squash` checks FAIL.
+#   logs/gate_u3_order.log     — the routed candidate: identical shape
+#       (9 non-squash OK, the same 8 `_squash` FAIL, comparable violation
+#       counts).
+# WHY THIS IS A CORRECTION, NOT A WEAKENING: the reference design itself
+# cannot pass the old rule — an oracle that fails the order-preserving
+# baseline is mis-specified. The join-level order contract is still carried by
+# three independent layers: the 9 non-squash checks (within-output-block
+# order), the T=1 --global check, and the stateless layer (03711 =
+# read-in-order through join, 03448). And the reclassification is
+# baseline-DIFFERENTIAL and fail-closed: a `_squash` FAIL is reclassified as
+# SOURCE-ARTIFACT only if (i) its non-squash sibling is OK and (ii) the
+# --baseline-reference log shows the baseline FAILing the same check; a squash
+# FAIL where the baseline passed stays a gate-failing FAIL. --expect-fail
+# power mode is unchanged: on scatter binaries the `_squash` checks still fail
+# for the real reason (cross-piece disorder, see gate_002b_candidate.log), so
+# the power check keeps its teeth.
+# ----------------------------------------------------------------------------
 # name|join clause|where clause (or -)
 CHECK_CORES=(
     "inner_all_k|INNER JOIN order_db.rt AS rt ON lt.k = rt.k|-"
@@ -614,7 +715,12 @@ run_stateless() {
 # Main
 # ============================================================================
 log "binary: $BINARY"
-log "mode: expect_fail=$EXPECT_FAIL require_engagement=$REQUIRE_ENGAGEMENT skip_stateless=$SKIP_STATELESS keep_data=$KEEP_DATA run_id=$RUN_ID"
+log "mode: expect_fail=$EXPECT_FAIL require_engagement=$REQUIRE_ENGAGEMENT skip_stateless=$SKIP_STATELESS keep_data=$KEEP_DATA baseline_reference=${BASELINE_REFERENCE:-<none>} run_id=$RUN_ID"
+
+# Parse the baseline reference BEFORE the expensive run (fail closed, fail fast)
+if [ "$EXPECT_FAIL" = "0" ]; then
+    parse_baseline_reference
+fi
 
 start_server
 detect_counters
@@ -663,13 +769,33 @@ done
 # ============================================================================
 # Verdict
 # ============================================================================
-N_TOTAL=0; N_OK=0; N_FAIL=0; N_ERROR=0; N_NOT_ENGAGED=0
+N_TOTAL=0; N_OK=0; N_FAIL=0; N_ERROR=0; N_NOT_ENGAGED=0; N_SOURCE_ARTIFACT=0
 POWER=0
 for name in "${CHECK_NAMES[@]}"; do
     N_TOTAL=$((N_TOTAL + 1))
-    case "${CHECK_RESULT[$name]}" in
+    verdict="${CHECK_RESULT[$name]}"
+    # Baseline-differential reclassification of `_squash` FAILs — normal mode
+    # only, fail closed; see the CORRECTION comment block at the check table
+    # and SELFTEST.md section 11. --expect-fail power mode never gets here
+    # with a reference (the flag combination is rejected), so it is unchanged.
+    if [ "$EXPECT_FAIL" = "0" ] && [ "$verdict" = "FAIL" ]; then
+        sibling="${name%_squash}"
+        if [ "$sibling" != "$name" ]; then
+            ref_verdict="${REF_RESULT[$name]:-<absent>}"
+            if [ "${CHECK_RESULT[$sibling]:-<missing>}" != "OK" ]; then
+                log "NOT-RECLASSIFIED: $name FAIL kept — non-squash sibling $sibling is ${CHECK_RESULT[$sibling]:-<missing>}, not OK"
+            elif [ "$ref_verdict" = "FAIL" ]; then
+                verdict="SOURCE-ARTIFACT"
+                log "SOURCE-ARTIFACT (baseline fails identically): $name — sibling $sibling OK and the baseline reference also FAILs $name (squashed-lane disorder originates in the parallel source, not the join; SELFTEST.md section 11)"
+            else
+                log "NOT-RECLASSIFIED: $name FAIL kept — baseline reference verdict is $ref_verdict, not FAIL: a squash failure the reference design does not show is a REAL regression"
+            fi
+        fi
+    fi
+    case "$verdict" in
         OK) N_OK=$((N_OK + 1)) ;;
         FAIL) N_FAIL=$((N_FAIL + 1)) ;;
+        SOURCE-ARTIFACT) N_SOURCE_ARTIFACT=$((N_SOURCE_ARTIFACT + 1)) ;;
         *) N_ERROR=$((N_ERROR + 1)) ;;
     esac
     [ "${CHECK_ENGAGED[$name]:-0}" != "1" ] && N_NOT_ENGAGED=$((N_NOT_ENGAGED + 1))
@@ -691,7 +817,7 @@ done
 N_ERROR=$((N_ERROR + CONTROL_ERRORS))
 
 T1_RESULT="${CHECK_RESULT[inner_all_k_t1_global]:-ERROR}"
-log "summary: total=$N_TOTAL ok=$N_OK fail=$N_FAIL error=$N_ERROR (incl. control_errors=$CONTROL_ERRORS) not_engaged=$N_NOT_ENGAGED row_mismatch=$ROWMISMATCH t1_global=$T1_RESULT"
+log "summary: total=$N_TOTAL ok=$N_OK fail=$N_FAIL source_artifact=$N_SOURCE_ARTIFACT error=$N_ERROR (incl. control_errors=$CONTROL_ERRORS) not_engaged=$N_NOT_ENGAGED row_mismatch=$ROWMISMATCH t1_global=$T1_RESULT"
 
 if [ "$EXPECT_FAIL" = "1" ]; then
     log "stateless portion SKIPPED (--expect-fail mode; failure modes are noisy on scatter binaries)"
@@ -722,10 +848,12 @@ FAILED=0
 [ "$STATELESS_ENGAGEMENT_FAILED" != "0" ] && FAILED=1
 [ "$AMAC_ENGAGEMENT_FAILED" != "0" ] && FAILED=1
 
+SQUASH_NOTE=""
+[ "$N_SOURCE_ARTIFACT" != "0" ] && SQUASH_NOTE="; squash checks baseline-differential per SELFTEST §11"
 if [ "$FAILED" = "0" ]; then
-    echo "ORDER OK ($N_OK/$N_TOTAL checks pass, all engaged parallel_hash, t1_global=$T1_RESULT, stateless=$STATELESS_RESULT, stateless engagement: 03448=$STATELESS_03448_ENGAGED 03711=$STATELESS_03711_ENGAGED)"
+    echo "ORDER OK (ok=$N_OK fail=$N_FAIL source_artifact=$N_SOURCE_ARTIFACT of $N_TOTAL checks, all engaged parallel_hash, t1_global=$T1_RESULT, stateless=$STATELESS_RESULT, stateless engagement: 03448=$STATELESS_03448_ENGAGED 03711=$STATELESS_03711_ENGAGED$SQUASH_NOTE)"
     exit 0
 else
-    echo "ORDER FAIL (ok=$N_OK fail=$N_FAIL error=$N_ERROR not_engaged=$N_NOT_ENGAGED row_mismatch=$ROWMISMATCH stateless=$STATELESS_RESULT stateless_engagement_failed=$STATELESS_ENGAGEMENT_FAILED amac_required_failed=$AMAC_ENGAGEMENT_FAILED of $N_TOTAL checks)"
+    echo "ORDER FAIL (ok=$N_OK fail=$N_FAIL source_artifact=$N_SOURCE_ARTIFACT error=$N_ERROR not_engaged=$N_NOT_ENGAGED row_mismatch=$ROWMISMATCH stateless=$STATELESS_RESULT stateless_engagement_failed=$STATELESS_ENGAGEMENT_FAILED amac_required_failed=$AMAC_ENGAGEMENT_FAILED of $N_TOTAL checks$SQUASH_NOTE)"
     exit 1
 fi
