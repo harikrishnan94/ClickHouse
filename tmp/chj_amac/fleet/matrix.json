@@ -1,0 +1,7515 @@
+{
+ "generated_at": "2026-07-27T17:25:21Z",
+ "generator": "tmp/chj_amac/fleet/matrix_gen.py",
+ "notes": "Universe = base cells only (no modifiers). Modifier and .hash cells are auxiliary measured evidence, not universe members; see module docstring. Dispositions live in fleet/dispositions.json (cell -> {disposition, evidence, from, rule}); allowed dispositions: MEASURED, INFERRED, PARITY-ONLY, EXCLUDED-INVALID, NOT-CLAIMED.",
+ "universe": {
+  "axes": {
+   "sides": [
+    "build",
+    "probe"
+   ],
+   "families": [
+    "key32",
+    "key64",
+    "str",
+    "strzero",
+    "fixstr",
+    "k128",
+    "k256",
+    "null64",
+    "lcstr",
+    "mixed"
+   ],
+   "groups": [
+    "inner_all",
+    "left_all",
+    "rf_all",
+    "any",
+    "semi_anti",
+    "asof"
+   ],
+   "sizes": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5"
+   ],
+   "threads": [
+    1,
+    48,
+    96
+   ]
+  },
+  "count": 1800,
+  "cells": [
+   {
+    "cell": "key32:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:build.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key32:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "key64:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "str:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "strzero:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "fixstr:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k128:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "k256:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "null64:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "lcstr:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.inner_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.left_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.rf_all.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.any.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.semi_anti.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S1.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S1.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S1.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S2.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S2.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S2.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S3.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S3.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S3.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S4.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S4.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S4.T96",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S5.T1",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S5.T48",
+    "disposition": "UNDISPOSITIONED"
+   },
+   {
+    "cell": "mixed:probe.asof.S5.T96",
+    "disposition": "UNDISPOSITIONED"
+   }
+  ]
+ },
+ "measured_plan": {
+  "count": 94,
+  "blocks": [
+   {
+    "name": "probe_grid",
+    "rationale": "Primary claim surface: probe-side AMAC lookup on the DRAM-resident S3 map across every key family and the full thread axis.",
+    "cells": [
+     "key32:probe.inner_all.S3.T1",
+     "key32:probe.inner_all.S3.T48",
+     "key32:probe.inner_all.S3.T96",
+     "key64:probe.inner_all.S3.T1",
+     "key64:probe.inner_all.S3.T48",
+     "key64:probe.inner_all.S3.T96",
+     "str:probe.inner_all.S3.T1",
+     "str:probe.inner_all.S3.T48",
+     "str:probe.inner_all.S3.T96",
+     "strzero:probe.inner_all.S3.T1",
+     "strzero:probe.inner_all.S3.T48",
+     "strzero:probe.inner_all.S3.T96",
+     "fixstr:probe.inner_all.S3.T1",
+     "fixstr:probe.inner_all.S3.T48",
+     "fixstr:probe.inner_all.S3.T96",
+     "k128:probe.inner_all.S3.T1",
+     "k128:probe.inner_all.S3.T48",
+     "k128:probe.inner_all.S3.T96",
+     "k256:probe.inner_all.S3.T1",
+     "k256:probe.inner_all.S3.T48",
+     "k256:probe.inner_all.S3.T96",
+     "null64:probe.inner_all.S3.T1",
+     "null64:probe.inner_all.S3.T48",
+     "null64:probe.inner_all.S3.T96",
+     "lcstr:probe.inner_all.S3.T1",
+     "lcstr:probe.inner_all.S3.T48",
+     "lcstr:probe.inner_all.S3.T96"
+    ]
+   },
+   {
+    "name": "size_ladder",
+    "rationale": "Map-residency ladder (L2 -> L3 -> DRAM): AMAC's win must grow with map size; S1 bounds the small-map regression risk.",
+    "cells": [
+     "key64:probe.inner_all.S1.T96",
+     "key64:probe.inner_all.S2.T96",
+     "key64:probe.inner_all.S4.T96",
+     "key64:probe.inner_all.S5.T96",
+     "str:probe.inner_all.S1.T96",
+     "str:probe.inner_all.S5.T96"
+    ]
+   },
+   {
+    "name": "thread_ladder",
+    "rationale": "Thread scaling off the S3 anchor: key64 becomes a full 5-size x 3-thread grid; mixed (composite numeric+string key) gets its thread axis here.",
+    "cells": [
+     "key64:probe.inner_all.S1.T1",
+     "key64:probe.inner_all.S1.T48",
+     "key64:probe.inner_all.S2.T1",
+     "key64:probe.inner_all.S2.T48",
+     "key64:probe.inner_all.S4.T1",
+     "key64:probe.inner_all.S4.T48",
+     "key64:probe.inner_all.S5.T1",
+     "key64:probe.inner_all.S5.T48",
+     "mixed:probe.inner_all.S3.T1",
+     "mixed:probe.inner_all.S3.T48",
+     "mixed:probe.inner_all.S3.T96",
+     "str:probe.inner_all.S5.T48"
+    ]
+   },
+   {
+    "name": "kind_strictness",
+    "rationale": "The routed probe must not regress non-INNER kinds/strictnesses (LEFT/FULL/ANY/SEMI/ASOF instantiations) at the size where AMAC engages.",
+    "cells": [
+     "key64:probe.left_all.S3.T48",
+     "key64:probe.left_all.S3.T96",
+     "str:probe.left_all.S3.T48",
+     "str:probe.left_all.S3.T96",
+     "key64:probe.rf_all.S3.T48",
+     "key64:probe.rf_all.S3.T96",
+     "str:probe.rf_all.S3.T48",
+     "str:probe.rf_all.S3.T96",
+     "key64:probe.any.S3.T48",
+     "key64:probe.any.S3.T96",
+     "str:probe.any.S3.T48",
+     "str:probe.any.S3.T96",
+     "key64:probe.semi_anti.S3.T48",
+     "key64:probe.semi_anti.S3.T96",
+     "str:probe.semi_anti.S3.T48",
+     "str:probe.semi_anti.S3.T96",
+     "key64:probe.asof.S3.T48",
+     "key64:probe.asof.S3.T96",
+     "str:probe.asof.S3.T48",
+     "str:probe.asof.S3.T96",
+     "key64:probe.left_all.S3.T1",
+     "key64:probe.rf_all.S3.T1",
+     "key64:probe.any.S3.T1",
+     "key64:probe.semi_anti.S3.T1"
+    ]
+   },
+   {
+    "name": "build",
+    "rationale": "Build-insert ring claim: build-heavy cells (small probe) across key kinds and sizes; S1/S5 bound the ladder, T48 checks mid-parallelism.",
+    "cells": [
+     "key64:build.inner_all.S2.T96",
+     "key64:build.inner_all.S4.T96",
+     "str:build.inner_all.S2.T96",
+     "str:build.inner_all.S4.T96",
+     "k256:build.inner_all.S2.T96",
+     "k256:build.inner_all.S4.T96",
+     "fixstr:build.inner_all.S2.T96",
+     "fixstr:build.inner_all.S4.T96",
+     "key64:build.inner_all.S3.T48",
+     "str:build.inner_all.S3.T48",
+     "key64:build.inner_all.S1.T96",
+     "key64:build.inner_all.S5.T96",
+     "null64:build.inner_all.S3.T96",
+     "lcstr:build.inner_all.S3.T96"
+    ]
+   },
+   {
+    "name": "dup_heavy",
+    "rationale": "Duplicate chains (16x) stress collision-chain walking in the AMAC ring and RowRef list handling on both build and probe.",
+    "cells": [
+     "key64:probe.inner_all.S3.T96.dup16",
+     "key64:build.inner_all.S3.T96.dup16",
+     "str:probe.inner_all.S3.T96.dup16",
+     "str:build.inner_all.S3.T96.dup16"
+    ]
+   },
+   {
+    "name": "hit_rate",
+    "rationale": "h=0.5/0.05: misses terminate lookups early and shift the ring's prefetch-to-work ratio; must not regress miss-heavy probes.",
+    "cells": [
+     "key64:probe.inner_all.S3.T96.h50",
+     "key64:probe.inner_all.S3.T96.h05",
+     "str:probe.inner_all.S3.T96.h50",
+     "str:probe.inner_all.S3.T96.h05"
+    ]
+   },
+   {
+    "name": "join_use_nulls",
+    "rationale": "join_use_nulls=1 changes output column wrapping, not the lookup; one sentinel cell proves in-band.",
+    "cells": [
+     "null64:probe.inner_all.S3.T96.jun"
+    ]
+   },
+   {
+    "name": "stats_on",
+    "rationale": "collect_hash_table_stats_during_joins=1 alters initial map sizing (fewer growths); both sides sampled once.",
+    "cells": [
+     "key64:probe.inner_all.S3.T96.statson",
+     "key64:build.inner_all.S3.T96.statson"
+    ]
+   }
+  ],
+  "cells": [
+   "key32:probe.inner_all.S3.T1",
+   "key32:probe.inner_all.S3.T48",
+   "key32:probe.inner_all.S3.T96",
+   "key64:probe.inner_all.S3.T1",
+   "key64:probe.inner_all.S3.T48",
+   "key64:probe.inner_all.S3.T96",
+   "str:probe.inner_all.S3.T1",
+   "str:probe.inner_all.S3.T48",
+   "str:probe.inner_all.S3.T96",
+   "strzero:probe.inner_all.S3.T1",
+   "strzero:probe.inner_all.S3.T48",
+   "strzero:probe.inner_all.S3.T96",
+   "fixstr:probe.inner_all.S3.T1",
+   "fixstr:probe.inner_all.S3.T48",
+   "fixstr:probe.inner_all.S3.T96",
+   "k128:probe.inner_all.S3.T1",
+   "k128:probe.inner_all.S3.T48",
+   "k128:probe.inner_all.S3.T96",
+   "k256:probe.inner_all.S3.T1",
+   "k256:probe.inner_all.S3.T48",
+   "k256:probe.inner_all.S3.T96",
+   "null64:probe.inner_all.S3.T1",
+   "null64:probe.inner_all.S3.T48",
+   "null64:probe.inner_all.S3.T96",
+   "lcstr:probe.inner_all.S3.T1",
+   "lcstr:probe.inner_all.S3.T48",
+   "lcstr:probe.inner_all.S3.T96",
+   "key64:probe.inner_all.S1.T96",
+   "key64:probe.inner_all.S2.T96",
+   "key64:probe.inner_all.S4.T96",
+   "key64:probe.inner_all.S5.T96",
+   "str:probe.inner_all.S1.T96",
+   "str:probe.inner_all.S5.T96",
+   "key64:probe.inner_all.S1.T1",
+   "key64:probe.inner_all.S1.T48",
+   "key64:probe.inner_all.S2.T1",
+   "key64:probe.inner_all.S2.T48",
+   "key64:probe.inner_all.S4.T1",
+   "key64:probe.inner_all.S4.T48",
+   "key64:probe.inner_all.S5.T1",
+   "key64:probe.inner_all.S5.T48",
+   "mixed:probe.inner_all.S3.T1",
+   "mixed:probe.inner_all.S3.T48",
+   "mixed:probe.inner_all.S3.T96",
+   "str:probe.inner_all.S5.T48",
+   "key64:probe.left_all.S3.T48",
+   "key64:probe.left_all.S3.T96",
+   "str:probe.left_all.S3.T48",
+   "str:probe.left_all.S3.T96",
+   "key64:probe.rf_all.S3.T48",
+   "key64:probe.rf_all.S3.T96",
+   "str:probe.rf_all.S3.T48",
+   "str:probe.rf_all.S3.T96",
+   "key64:probe.any.S3.T48",
+   "key64:probe.any.S3.T96",
+   "str:probe.any.S3.T48",
+   "str:probe.any.S3.T96",
+   "key64:probe.semi_anti.S3.T48",
+   "key64:probe.semi_anti.S3.T96",
+   "str:probe.semi_anti.S3.T48",
+   "str:probe.semi_anti.S3.T96",
+   "key64:probe.asof.S3.T48",
+   "key64:probe.asof.S3.T96",
+   "str:probe.asof.S3.T48",
+   "str:probe.asof.S3.T96",
+   "key64:probe.left_all.S3.T1",
+   "key64:probe.rf_all.S3.T1",
+   "key64:probe.any.S3.T1",
+   "key64:probe.semi_anti.S3.T1",
+   "key64:build.inner_all.S2.T96",
+   "key64:build.inner_all.S4.T96",
+   "str:build.inner_all.S2.T96",
+   "str:build.inner_all.S4.T96",
+   "k256:build.inner_all.S2.T96",
+   "k256:build.inner_all.S4.T96",
+   "fixstr:build.inner_all.S2.T96",
+   "fixstr:build.inner_all.S4.T96",
+   "key64:build.inner_all.S3.T48",
+   "str:build.inner_all.S3.T48",
+   "key64:build.inner_all.S1.T96",
+   "key64:build.inner_all.S5.T96",
+   "null64:build.inner_all.S3.T96",
+   "lcstr:build.inner_all.S3.T96",
+   "key64:probe.inner_all.S3.T96.dup16",
+   "key64:build.inner_all.S3.T96.dup16",
+   "str:probe.inner_all.S3.T96.dup16",
+   "str:build.inner_all.S3.T96.dup16",
+   "key64:probe.inner_all.S3.T96.h50",
+   "key64:probe.inner_all.S3.T96.h05",
+   "str:probe.inner_all.S3.T96.h50",
+   "str:probe.inner_all.S3.T96.h05",
+   "null64:probe.inner_all.S3.T96.jun",
+   "key64:probe.inner_all.S3.T96.statson",
+   "key64:build.inner_all.S3.T96.statson"
+  ]
+ },
+ "hash_inband": {
+  "rationale": "G-hash-inband gate: the tail-padded grower rebind also changes join_algorithm='hash'; these 12 A/B cells (hash on BOTH arms) must all verdict in-band (TIE).",
+  "count": 12,
+  "cells": [
+   "key64:probe.inner_all.S2.T1.hash",
+   "key64:probe.inner_all.S2.T96.hash",
+   "key64:probe.inner_all.S4.T1.hash",
+   "key64:probe.inner_all.S4.T96.hash",
+   "str:probe.inner_all.S2.T1.hash",
+   "str:probe.inner_all.S2.T96.hash",
+   "str:probe.inner_all.S4.T1.hash",
+   "str:probe.inner_all.S4.T96.hash",
+   "k256:probe.inner_all.S2.T1.hash",
+   "k256:probe.inner_all.S2.T96.hash",
+   "k256:probe.inner_all.S4.T1.hash",
+   "k256:probe.inner_all.S4.T96.hash"
+  ]
+ }
+}

@@ -1,0 +1,922 @@
+{
+  "key32": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 1048576,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 16777216,
+      "deviation_vs_target": -0.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 24000000,
+      "dup": 1,
+      "expected_map_bytes": 1073741824,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 96000000,
+      "dup": 1,
+      "expected_map_bytes": 4294967296,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 384000000,
+      "dup": 1,
+      "expected_map_bytes": 17179869184,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "key64": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 1048576,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 16777216,
+      "deviation_vs_target": -0.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 24000000,
+      "dup": 1,
+      "expected_map_bytes": 1073741824,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 96000000,
+      "dup": 1,
+      "expected_map_bytes": 4294967296,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S5": {
+      "build_rows": 384000000,
+      "dup": 1,
+      "expected_map_bytes": 17179869184,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "null64": {
+    "S1": {
+      "build_rows": 27000,
+      "dup": 1,
+      "expected_map_bytes": 1048576,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 290000,
+      "dup": 1,
+      "expected_map_bytes": 16777216,
+      "deviation_vs_target": -0.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 26700000,
+      "dup": 1,
+      "expected_map_bytes": 1073741824,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 107000000,
+      "dup": 1,
+      "expected_map_bytes": 4294967296,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 427000000,
+      "dup": 1,
+      "expected_map_bytes": 17179869184,
+      "deviation_vs_target": 0.0,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "str": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 2149580,
+      "deviation_vs_target": 1.05,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 33816576,
+      "deviation_vs_target": 0.0078,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 12000000,
+      "dup": 1,
+      "expected_map_bytes": 1095216660,
+      "deviation_vs_target": 0.02,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 48000000,
+      "dup": 1,
+      "expected_map_bytes": 4359391805,
+      "deviation_vs_target": 0.015,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S5": {
+      "build_rows": 192000000,
+      "dup": 1,
+      "expected_map_bytes": 17437567220,
+      "deviation_vs_target": 0.015,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "strzero": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 2128609,
+      "deviation_vs_target": 1.03,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 33816576,
+      "deviation_vs_target": 0.0078,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 12000000,
+      "dup": 1,
+      "expected_map_bytes": 1095216660,
+      "deviation_vs_target": 0.02,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 48000000,
+      "dup": 1,
+      "expected_map_bytes": 4359391805,
+      "deviation_vs_target": 0.015,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 192000000,
+      "dup": 1,
+      "expected_map_bytes": 17437567220,
+      "deviation_vs_target": 0.015,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "fixstr": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 1572864,
+      "deviation_vs_target": 0.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 25165824,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 12000000,
+      "dup": 1,
+      "expected_map_bytes": 805306368,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 48000000,
+      "dup": 1,
+      "expected_map_bytes": 3221225472,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 192000000,
+      "dup": 1,
+      "expected_map_bytes": 12884901888,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "k128": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 1572864,
+      "deviation_vs_target": 0.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 25165824,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 12000000,
+      "dup": 1,
+      "expected_map_bytes": 805306368,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 48000000,
+      "dup": 1,
+      "expected_map_bytes": 3221225472,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 192000000,
+      "dup": 1,
+      "expected_map_bytes": 12884901888,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "k256": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 2621440,
+      "deviation_vs_target": 1.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 41943040,
+      "deviation_vs_target": 0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 12000000,
+      "dup": 1,
+      "expected_map_bytes": 1342177280,
+      "deviation_vs_target": 0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 48000000,
+      "dup": 1,
+      "expected_map_bytes": 5368709120,
+      "deviation_vs_target": 0.25,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 192000000,
+      "dup": 1,
+      "expected_map_bytes": 21474836480,
+      "deviation_vs_target": 0.25,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "mixed": {
+    "S1": {
+      "build_rows": 24000,
+      "dup": 1,
+      "expected_map_bytes": 1572864,
+      "deviation_vs_target": 0.5,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 260000,
+      "dup": 1,
+      "expected_map_bytes": 25165824,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 12000000,
+      "dup": 1,
+      "expected_map_bytes": 805306368,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 48000000,
+      "dup": 1,
+      "expected_map_bytes": 3221225472,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "model"
+    },
+    "S5": {
+      "build_rows": 192000000,
+      "dup": 1,
+      "expected_map_bytes": 12884901888,
+      "deviation_vs_target": -0.25,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "lcstr": {
+    "S1": {
+      "build_rows": 100000,
+      "dup": 1,
+      "expected_map_bytes": 14711521,
+      "deviation_vs_target": 13.03,
+      "in_tolerance": false,
+      "source": "measured"
+    },
+    "S2": {
+      "build_rows": 500000,
+      "dup": 1,
+      "expected_map_bytes": 34865152,
+      "deviation_vs_target": 0.0391,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S3": {
+      "build_rows": 21000000,
+      "dup": 1,
+      "expected_map_bytes": 1068824002,
+      "deviation_vs_target": -0.0046,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S4": {
+      "build_rows": 85000000,
+      "dup": 1,
+      "expected_map_bytes": 4305704714,
+      "deviation_vs_target": 0.0025,
+      "in_tolerance": true,
+      "source": "measured"
+    },
+    "S5": {
+      "build_rows": 340000000,
+      "dup": 1,
+      "expected_map_bytes": 17194037120,
+      "deviation_vs_target": 0.0008,
+      "in_tolerance": true,
+      "source": "analytic-extrapolation"
+    }
+  },
+  "meta": {
+    "method": "Aggregate hash-map bytes = HashJoin::getTotalByteCount of the single data-carrying slot after ConcurrentHashJoin's build-finish merge (parsed from the per-shard 'Join data is built' trace lines of binary a05f3ee81ff), cross-checked against query_log.memory_usage. With a count()-only probe no right-table columns are stored, so this equals map buffers + join pool. Structure on this binary: build scatters over 32 slots (max_threads=32), then merges into ONE two-level map (256 buckets, min 256 cells/bucket, max load factor 0.5, grower steps x4 per resize up to 64Ki cells/bucket and x2 above). Cell sizes (measured): 16 B (key32/key64/null64), 24 B (k128/mixed/fixstr; FixedString(16) packs into keys128), 32 B (str/strzero/lcstr; string keys are NOT arena-copied), 40 B (k256). Targets interpreted as binary units (1 MiB / 32 MiB / 1 GiB / 4 GiB / 16 GiB). build_rows sit mid-plateau of the bucket resize staircase for robustness.",
+    "binary": "clickhouse-baseline-a05f3ee81ff.bin",
+    "binary_sha256": "0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4",
+    "server_version": "26.8.1.1 (GIT_HASH a05f3ee81ff8411759637fa367aad62e72726e71)",
+    "probe_settings": "join_algorithm='parallel_hash', max_threads=32, collect_hash_table_stats_during_joins=0, max_bytes_before_external_join=0, max_bytes_ratio_before_external_join=0, parallel_hash_join_threshold=1",
+    "generators": {
+      "key32": "toUInt32(number) AS k",
+      "key64": "number AS k",
+      "str": "concat(lpad(hex(number), 16, '0'), lpad(toString(number % 100000000), 8, '0')) AS k",
+      "strzero": "concat(unhex('00'), lpad(hex(number), 16, '0'), lpad(toString(number % 10000000), 7, '0')) AS k",
+      "fixstr": "toFixedString(lpad(hex(number), 16, '0'), 16) AS k",
+      "k128": "number AS k1, bitXor(number, 12345) AS k2",
+      "k256": "number AS k1, number + 1 AS k2, number + 2 AS k3, number + 3 AS k4",
+      "null64": "if(number % 10 = 0, NULL, number) AS k",
+      "lcstr": "toLowCardinality(concat('s', lpad(toString(number % 100000), 6, '0'))) AS k",
+      "mixed": "toUInt32(number) AS k1, concat(lpad(hex(number), 16, '0'), lpad(toString(number % 100000000), 8, '0')) AS k2"
+    },
+    "tolerance": 0.3,
+    "measured_points": [
+      {
+        "family": "key64",
+        "build_rows": 24576,
+        "map_bytes": 1048576,
+        "peak_memory": 35565064,
+        "table_bytes": 196736,
+        "build_us": 1112
+      },
+      {
+        "family": "key64",
+        "build_rows": 786432,
+        "map_bytes": 67108864,
+        "peak_memory": 78332072,
+        "table_bytes": 6293120,
+        "build_us": 43755
+      },
+      {
+        "family": "key32",
+        "build_rows": 786432,
+        "map_bytes": 67108864,
+        "peak_memory": 75379864,
+        "table_bytes": 3153920,
+        "build_us": 39683
+      },
+      {
+        "family": "str",
+        "build_rows": 480000,
+        "map_bytes": 34078720,
+        "peak_memory": 132050192,
+        "table_bytes": 15362040,
+        "build_us": 33564
+      },
+      {
+        "family": "str",
+        "build_rows": 2000000,
+        "map_bytes": 136314880,
+        "peak_memory": 347580345,
+        "table_bytes": 64007905,
+        "build_us": 198205
+      },
+      {
+        "family": "strzero",
+        "build_rows": 480000,
+        "map_bytes": 34078720,
+        "peak_memory": 132059504,
+        "table_bytes": 19660800,
+        "build_us": 31345
+      },
+      {
+        "family": "fixstr",
+        "build_rows": 480000,
+        "map_bytes": 25165824,
+        "peak_memory": 96921120,
+        "table_bytes": 7864384,
+        "build_us": 29227
+      },
+      {
+        "family": "fixstr",
+        "build_rows": 2000000,
+        "map_bytes": 100663296,
+        "peak_memory": 249630569,
+        "table_bytes": 32506104,
+        "build_us": 184743
+      },
+      {
+        "family": "k128",
+        "build_rows": 400000,
+        "map_bytes": 25165824,
+        "peak_memory": 70400080,
+        "table_bytes": 6412160,
+        "build_us": 22299
+      },
+      {
+        "family": "k256",
+        "build_rows": 400000,
+        "map_bytes": 41943040,
+        "peak_memory": 124271688,
+        "table_bytes": 12834688,
+        "build_us": 28031
+      },
+      {
+        "family": "null64",
+        "build_rows": 900000,
+        "map_bytes": 67108864,
+        "peak_memory": 109969164,
+        "table_bytes": 8119296,
+        "build_us": 28332
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 100000,
+        "map_bytes": 14711521,
+        "peak_memory": 87086026,
+        "table_bytes": 6291456,
+        "build_us": 4739
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 2400000,
+        "map_bytes": 130673541,
+        "peak_memory": 362676958,
+        "table_bytes": 121241600,
+        "build_us": 105313
+      },
+      {
+        "family": "mixed",
+        "build_rows": 400000,
+        "map_bytes": 25165824,
+        "peak_memory": 109504848,
+        "table_bytes": 14407417,
+        "build_us": 64425
+      },
+      {
+        "family": "key64",
+        "build_rows": 260000,
+        "map_bytes": 16777216,
+        "peak_memory": 46267616,
+        "table_bytes": 2080512,
+        "build_us": 9677
+      },
+      {
+        "family": "key32",
+        "build_rows": 260000,
+        "map_bytes": 16777216,
+        "peak_memory": 45118872,
+        "table_bytes": 1048576,
+        "build_us": 9885
+      },
+      {
+        "family": "null64",
+        "build_rows": 290000,
+        "map_bytes": 16777216,
+        "peak_memory": 56836290,
+        "table_bytes": 2615552,
+        "build_us": 8357
+      },
+      {
+        "family": "str",
+        "build_rows": 24000,
+        "map_bytes": 2149580,
+        "peak_memory": 69175184,
+        "table_bytes": 768255,
+        "build_us": 1926
+      },
+      {
+        "family": "str",
+        "build_rows": 260000,
+        "map_bytes": 33816576,
+        "peak_memory": 105290584,
+        "table_bytes": 8321020,
+        "build_us": 20083
+      },
+      {
+        "family": "strzero",
+        "build_rows": 260000,
+        "map_bytes": 33816576,
+        "peak_memory": 109470200,
+        "table_bytes": 10485760,
+        "build_us": 20573
+      },
+      {
+        "family": "fixstr",
+        "build_rows": 260000,
+        "map_bytes": 25165824,
+        "peak_memory": 77815220,
+        "table_bytes": 4194336,
+        "build_us": 20625
+      },
+      {
+        "family": "k128",
+        "build_rows": 260000,
+        "map_bytes": 25165824,
+        "peak_memory": 69416256,
+        "table_bytes": 4177664,
+        "build_us": 20971
+      },
+      {
+        "family": "k256",
+        "build_rows": 260000,
+        "map_bytes": 41943040,
+        "peak_memory": 120284784,
+        "table_bytes": 8371968,
+        "build_us": 31591
+      },
+      {
+        "family": "mixed",
+        "build_rows": 260000,
+        "map_bytes": 25165824,
+        "peak_memory": 90469948,
+        "table_bytes": 9369596,
+        "build_us": 39590
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 32000,
+        "map_bytes": 5725224,
+        "peak_memory": 70034407,
+        "table_bytes": 1114112,
+        "build_us": 2163
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 1000000,
+        "map_bytes": 59171143,
+        "peak_memory": 206945016,
+        "table_bytes": 50266112,
+        "build_us": 40803
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 4800000,
+        "map_bytes": 250798407,
+        "peak_memory": 342811192,
+        "table_bytes": 240320512,
+        "build_us": 216172
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 500000,
+        "map_bytes": 34865152,
+        "peak_memory": 142290398,
+        "table_bytes": 26214400,
+        "build_us": 21194
+      },
+      {
+        "family": "str",
+        "build_rows": 4200000,
+        "map_bytes": 541065216,
+        "peak_memory": 741897016,
+        "table_bytes": 134416575,
+        "build_us": 883025
+      },
+      {
+        "family": "strzero",
+        "build_rows": 4200000,
+        "map_bytes": 541065216,
+        "peak_memory": 755844536,
+        "table_bytes": 168427520,
+        "build_us": 610778
+      },
+      {
+        "family": "k256",
+        "build_rows": 4200000,
+        "map_bytes": 671088640,
+        "peak_memory": 788067360,
+        "table_bytes": 134664832,
+        "build_us": 722547
+      },
+      {
+        "family": "key64",
+        "build_rows": 16000000,
+        "map_bytes": 536870912,
+        "peak_memory": 563283520,
+        "table_bytes": 128031360,
+        "build_us": 691223
+      },
+      {
+        "family": "key32",
+        "build_rows": 16000000,
+        "map_bytes": 536870912,
+        "peak_memory": 539671736,
+        "table_bytes": 64225280,
+        "build_us": 637710
+      },
+      {
+        "family": "null64",
+        "build_rows": 17800000,
+        "map_bytes": 536870912,
+        "peak_memory": 801882618,
+        "table_bytes": 160277120,
+        "build_us": 770574
+      },
+      {
+        "family": "k128",
+        "build_rows": 16000000,
+        "map_bytes": 805306368,
+        "peak_memory": 1015879688,
+        "table_bytes": 256481920,
+        "build_us": 1965193
+      },
+      {
+        "family": "mixed",
+        "build_rows": 16000000,
+        "map_bytes": 805306368,
+        "peak_memory": 1001315344,
+        "table_bytes": 576287755,
+        "build_us": 4657395
+      },
+      {
+        "family": "fixstr",
+        "build_rows": 16000000,
+        "map_bytes": 805306368,
+        "peak_memory": 1025248472,
+        "table_bytes": 256903080,
+        "build_us": 1877562
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 21000000,
+        "map_bytes": 1068824002,
+        "peak_memory": 621008550,
+        "table_bytes": 1052057600,
+        "build_us": 1049752
+      },
+      {
+        "family": "key64",
+        "build_rows": 24000,
+        "map_bytes": 1048576,
+        "peak_memory": 35565960,
+        "table_bytes": 192128,
+        "build_us": 1061
+      },
+      {
+        "family": "key32",
+        "build_rows": 24000,
+        "map_bytes": 1048576,
+        "peak_memory": 35568960,
+        "table_bytes": 131072,
+        "build_us": 1155
+      },
+      {
+        "family": "null64",
+        "build_rows": 27000,
+        "map_bytes": 1048576,
+        "peak_memory": 35571298,
+        "table_bytes": 248896,
+        "build_us": 1331
+      },
+      {
+        "family": "k128",
+        "build_rows": 24000,
+        "map_bytes": 1572864,
+        "peak_memory": 52401304,
+        "table_bytes": 454272,
+        "build_us": 1891
+      },
+      {
+        "family": "k256",
+        "build_rows": 24000,
+        "map_bytes": 2621440,
+        "peak_memory": 86070712,
+        "table_bytes": 978560,
+        "build_us": 1707
+      },
+      {
+        "family": "mixed",
+        "build_rows": 24000,
+        "map_bytes": 1572864,
+        "peak_memory": 56880015,
+        "table_bytes": 899327,
+        "build_us": 3653
+      },
+      {
+        "family": "fixstr",
+        "build_rows": 24000,
+        "map_bytes": 1572864,
+        "peak_memory": 52370416,
+        "table_bytes": 524296,
+        "build_us": 1658
+      },
+      {
+        "family": "strzero",
+        "build_rows": 24000,
+        "map_bytes": 2128609,
+        "peak_memory": 69183600,
+        "table_bytes": 1310720,
+        "build_us": 1650
+      },
+      {
+        "family": "str",
+        "build_rows": 12000000,
+        "map_bytes": 1095216660,
+        "peak_memory": 1814484896,
+        "table_bytes": 384046920,
+        "build_us": 2794182
+      },
+      {
+        "family": "strzero",
+        "build_rows": 12000000,
+        "map_bytes": 1095216660,
+        "peak_memory": 1821049896,
+        "table_bytes": 481034240,
+        "build_us": 1785821
+      },
+      {
+        "family": "k128",
+        "build_rows": 12000000,
+        "map_bytes": 805306368,
+        "peak_memory": 977397584,
+        "table_bytes": 192230400,
+        "build_us": 1208168
+      },
+      {
+        "family": "k256",
+        "build_rows": 12000000,
+        "map_bytes": 1342177280,
+        "peak_memory": 1554422168,
+        "table_bytes": 384644096,
+        "build_us": 2022623
+      },
+      {
+        "family": "mixed",
+        "build_rows": 12000000,
+        "map_bytes": 805306368,
+        "peak_memory": 978650832,
+        "table_bytes": 432150344,
+        "build_us": 3268072
+      },
+      {
+        "family": "fixstr",
+        "build_rows": 12000000,
+        "map_bytes": 805306368,
+        "peak_memory": 1012613800,
+        "table_bytes": 192415168,
+        "build_us": 1377944
+      },
+      {
+        "family": "key64",
+        "build_rows": 24000000,
+        "map_bytes": 1073741824,
+        "peak_memory": 1141503680,
+        "table_bytes": 192046976,
+        "build_us": 1261276
+      },
+      {
+        "family": "key32",
+        "build_rows": 24000000,
+        "map_bytes": 1073741824,
+        "peak_memory": 1141504444,
+        "table_bytes": 96206848,
+        "build_us": 1316327
+      },
+      {
+        "family": "null64",
+        "build_rows": 26700000,
+        "map_bytes": 1073741824,
+        "peak_memory": 1418758042,
+        "table_bytes": 240407424,
+        "build_us": 1614319
+      },
+      {
+        "family": "key64",
+        "build_rows": 96000000,
+        "map_bytes": 4294967296,
+        "peak_memory": 4400623840,
+        "table_bytes": 768187904,
+        "build_us": 10036547
+      },
+      {
+        "family": "str",
+        "build_rows": 48000000,
+        "map_bytes": 4359391805,
+        "peak_memory": 7076201544,
+        "table_bytes": 1536187170,
+        "build_us": 8800877
+      },
+      {
+        "family": "lcstr",
+        "build_rows": 85000000,
+        "map_bytes": 4305704714,
+        "peak_memory": 2188956634,
+        "table_bytes": 4259577856,
+        "build_us": 4398983
+      }
+    ],
+    "caveats": [
+      "Achievable aggregate map sizes are quantized to the bucket-resize staircase (x4 steps below 64Ki cells/bucket, x2 above); a target between plateaus cannot be hit for fixed-width keys with dup=1.",
+      "S1 (1 MiB) is reachable only for key32/key64/null64 (floor = 256 buckets x 256 cells). Floors: 1.5 MiB for 24 B cells (+50%), ~2 MiB for 32 B string cells (+~105%), 2.5 MiB for k256 (+150%), ~14 MiB for lcstr at its 100k-distinct minimum (+1300%). Their S1 entries are the closest achievable point, OUT of tolerance.",
+      "S2 (32 MiB) is out of tolerance for key32/key64/null64: only 16 MiB (-50%) or 64 MiB (+100%) exist; the ladder uses 16 MiB.",
+      "fixstr/k128/mixed sit at -25% and k256 at +25% for S2..S5 (nearest plateaus); within tolerance but systematically offset.",
+      "lcstr bytes are the join-reported counter, which includes per-block LowCardinality dictionary copies referenced from stored blocks and shared with the source table; incremental process memory is roughly half (e.g. peak 592 MiB vs 1019 MiB reported at S3). Model: bytes ~= 9.2 MiB + 50.4 B/row (linear fit residual <1% over 0.5M..85M rows). SHAKY family: which counter matters depends on what the benchmark measures.",
+      "lcstr build_rows are total rows (distinct keys fixed at 100k by the family definition); rows beyond 100k append to RowRefList batches, dup field stays 1 (no extra multiplier).",
+      "S5 is analytic extrapolation: one grower step (x2) beyond the largest empirically observed bucket size (2^20 cells); the x2-step regime was observed at 2^17..2^20, so risk is low. No S5 point was run.",
+      "str/strzero carry a small smooth extra of ~1.0-1.8 B/row on top of cell plateaus (included in expected_map_bytes for measured points; S5 uses the S4 rate, uncertainty <2% of total).",
+      "During the build phase all 32 per-slot two-level skeletons are transiently allocated (~32 MiB floor for 16 B cells, up to ~78 MiB for 40 B cells) and freed after the merge; query peak memory can therefore never be below ~34 MiB regardless of D.",
+      "Peak query memory exceeds map bytes by insert/scatter transients (e.g. str S4: peak 6.6 GiB vs map 4.06 GiB); size external-memory/limit settings from peak, not map bytes.",
+      "Calibration holds for count()-style probes where no right-table columns are output; selecting right columns adds stored-block bytes on top.",
+      "This binary predates the two-level-machinery removal at branch HEAD (commits 69bf5c26c9f/0d06aaf2933); binaries built at HEAD have a different (pure per-slot scatter) layout and need recalibration."
+    ]
+  }
+}
