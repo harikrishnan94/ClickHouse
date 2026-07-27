@@ -493,7 +493,7 @@ private:
     /// Number of this flags equals to hashtable buffer size (plus one for zero value).
     /// Changes in hash table broke correspondence,
     /// so we must guarantee constantness of hash table during HashJoin lifetime (using method setLock)
-    mutable std::shared_ptr<JoinStuff::JoinUsedFlags> used_flags;
+    mutable std::unique_ptr<JoinStuff::JoinUsedFlags> used_flags;
     RightTableDataPtr data;
 
     std::vector<Sizes> key_sizes;

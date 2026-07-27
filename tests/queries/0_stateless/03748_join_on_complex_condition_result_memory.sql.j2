@@ -31,7 +31,7 @@ LEFT JOIN t2
 ON t1.id = t2.id AND (t1.attr != t2.attr)
 SETTINGS join_algorithm = '{{ join_algorithm }}';
 
--- more rows to use two-level map
+-- a right side with many distinct keys, so the memory check also covers a large hash map
 WITH t1 AS (
     SELECT number % 2 AS id, sipHash64(number, 1) % 2 as attr FROM numbers(10_000)
 ),

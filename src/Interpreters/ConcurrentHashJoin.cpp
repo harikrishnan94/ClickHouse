@@ -501,8 +501,6 @@ IBlocksStreamPtr ConcurrentHashJoin::getNonJoinedBlocks(
         return hash_joins[0]->data->getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size);
     }
 
-    /// Each slot has its own HashJoin; distribute the slots across streams
-    /// so stream stream_idx scans slots where (slot % num_streams == stream_idx)
     std::vector<IBlocksStreamPtr> streams;
     for (size_t i = stream_idx; i < slots; i += num_streams)
     {

@@ -1,6 +1,6 @@
 -- RIGHT/FULL joins with a residual ON condition emit their unmatched right rows through the parallel
--- non-joined path; check that parallel_hash matches plain hash. UInt32 keys use two-level maps
--- (bucket-partitioned emission); UInt16 keys use single-level maps (slot-partitioned emission).
+-- non-joined path; check that parallel_hash matches plain hash. Unmatched right rows are emitted
+-- per slot (slot-partitioned emission), for both the UInt32 and the UInt16 key variants.
 
 DROP TABLE IF EXISTS t1;
 DROP TABLE IF EXISTS t2;

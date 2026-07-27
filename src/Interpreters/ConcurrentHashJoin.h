@@ -108,8 +108,6 @@ public:
         size_t local_total_bytes = 0;
     };
 
-    friend class NotJoinedHash;
-
 private:
     std::shared_ptr<TableJoin> table_join;
     size_t slots;
