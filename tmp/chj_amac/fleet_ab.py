@@ -84,6 +84,14 @@ AMAC_ENGAGEMENT_EVENTS = (
     "ConcurrentHashJoinAmacBuildRingGrowths",
     "ConcurrentHashJoinAmacProbeRows",
 )
+# Per-side gating counters (the build ring lands in Unit 2 before the probe
+# ring in Unit 3): a side counts as present only when ALL of its gating
+# counters exist in system.events. RingGrowths may be legitimately zero and
+# is informational: it never gates a side.
+AMAC_ASSERT_SIDES = {
+    "build": ("ConcurrentHashJoinAmacBuildRows",),
+    "probe": ("ConcurrentHashJoinAmacProbeRows",),
+}
 AMAC_ENV_VAR = "CLICKHOUSE_JOIN_AMAC"  # values: 0/off, 1/auto, force; read by the server process at start
 # ---------------------------------------------------------------------------
 
@@ -643,7 +651,7 @@ class LocalServer:
         self.http_port = http_port
         self.proc: subprocess.Popen | None = None
         self.proc_exe_sha256 = ""
-        self.amac_available: bool | None = None
+        self.amac_available: frozenset | None = None
 
     def _write_configs(self) -> pathlib.Path:
         self.srv_dir.mkdir(parents=True, exist_ok=True)
@@ -781,7 +789,7 @@ class RemoteServer:
         self.http_port = http_port
         self.pid: int | None = None
         self.proc_exe_sha256 = ""
-        self.amac_available: bool | None = None
+        self.amac_available: frozenset | None = None
 
     def _ssh_base(self):
         # Vendored from join_memory_bench.py ssh_base.
@@ -1002,7 +1010,7 @@ def _events_from_row(r: dict) -> dict:
     return {name: int(pe.get(name, 0)) for name in SHARED_EVENTS}
 
 
-def _engagement_from_row(r: dict, available) -> dict | None:
+def _engagement_from_row(r: dict, available: frozenset | None) -> dict | None:
     """Record the counters the binary actually has (per detect_amac); absent
     ones stay out of the dict so a reader can distinguish "not implemented
     yet" from "implemented and zero"."""
@@ -1667,6 +1675,7 @@ def selftest_command(args) -> int:
         mismatches = [
             name for name, ours, primary in (
                 ("AMAC_ENGAGEMENT_EVENTS", AMAC_ENGAGEMENT_EVENTS, tuple(parity_gen.AMAC_ENGAGEMENT_EVENTS)),
+                ("AMAC_ASSERT_SIDES", AMAC_ASSERT_SIDES, parity_gen.AMAC_ASSERT_SIDES),
                 ("AMAC_ENV_VAR", AMAC_ENV_VAR, parity_gen.AMAC_ENV_VAR),
                 ("SHARED_EVENTS", SHARED_EVENTS, tuple(parity_gen.SHARED_PROFILE_EVENTS)),
             ) if ours != primary
@@ -1697,19 +1706,35 @@ def selftest_command(args) -> int:
             if missing:
                 print(f"check-events: MISSING (fail-closed): {missing}")
                 all_ok = False
-            amac = srv.amac_available
-            if amac:
-                print(f"check-events: AMAC engagement counters PRESENT: {list(AMAC_ENGAGEMENT_EVENTS)}")
-            else:
-                print("SKIPPED: AMAC engagement counters absent in system.events "
-                      f"({list(AMAC_ENGAGEMENT_EVENTS)}); expected until Unit 2 lands")
-            if args.require_amac and not amac:
-                print("check-events: FAIL (--require-amac set but counters absent)")
-                all_ok = False
+            # AMAC lands per SIDE (build ring before probe ring), so presence
+            # is reported per counter -- a build-only binary must never be
+            # summarized as all-PRESENT (nor as absent).
+            amac = srv.amac_available or frozenset()
+            for name in AMAC_ENGAGEMENT_EVENTS:
+                print(f"check-events: AMAC counter {name}: {'PRESENT' if name in amac else 'ABSENT'}")
+            sides_present = [s for s, gating in AMAC_ASSERT_SIDES.items()
+                             if all(e in amac for e in gating)]
+            if args.require_amac is not None:
+                requested = [s for s in args.require_amac.split(",") if s]
+                unknown = sorted(set(requested) - set(AMAC_ASSERT_SIDES))
+                if unknown:
+                    raise SystemExit(f"--require-amac: unknown side(s) {unknown}; "
+                                     f"known sides: {list(AMAC_ASSERT_SIDES)}")
+                for side in requested:
+                    if side not in sides_present:
+                        missing = [e for e in AMAC_ASSERT_SIDES[side] if e not in amac]
+                        print(f"check-events: FAIL (--require-amac: side '{side}' counters absent: {missing})")
+                        all_ok = False
             if args.forbid_amac and amac:
-                print("check-events: FAIL (--forbid-amac set but counters present)")
+                print(f"check-events: FAIL (--forbid-amac set but counters present: {sorted(amac)})")
                 all_ok = False
-            events_summary = f"events={len(found)}/{len(SHARED_EVENTS)} amac={'present' if amac else 'absent'}"
+            if sides_present:
+                amac_summary = ",".join(sides_present)
+            elif amac:
+                amac_summary = "partial"  # some counter present, no complete side
+            else:
+                amac_summary = "absent"
+            events_summary = f"events={len(found)}/{len(SHARED_EVENTS)} amac={amac_summary}"
         finally:
             srv.stop()
 
@@ -1815,10 +1840,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_self.add_argument("--local", action="store_true")
     p_self.add_argument("--bin", type=abs_path, help="binary to self-test against (resolved to absolute)")
     p_self.add_argument("--check-events", action="store_true")
-    p_self.add_argument("--require-amac", action="store_true",
-                        help="fail-closed if the AMAC counters are absent")
+    p_self.add_argument("--require-amac", nargs="?", const="build,probe", default=None, metavar="SIDES",
+                        help="fail-closed unless every listed side's gating AMAC counters are present"
+                             " (comma list of: build, probe; bare flag = all sides)")
     p_self.add_argument("--forbid-amac", action="store_true",
-                        help="fail-closed if the AMAC counters are present")
+                        help="fail-closed if ANY AMAC counter is present")
     p_self.add_argument("--verdict-selftest", action="store_true",
                         help="deliberate A != B pair must verdict non-TIE")
     p_self.set_defaults(handler=selftest_command)

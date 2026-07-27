@@ -389,7 +389,7 @@ Unit-2 BUILD ring (`ConcurrentHashJoinAmacBuildRows` present,
 `...AmacProbeRows` not yet landed) was SKIPPED, and `--require-engagement`
 miscounted the skip as a divergence (evidence: `gate_amacbuild.log`).
 
-Fix (parity_gen.py / parity_driver.py / run_parity.sh only):
+Fix in the parity harness (parity_gen.py / parity_driver.py / run_parity.sh):
 per-side contract (`AMAC_ASSERT_BUILD_EVENTS` / `AMAC_ASSERT_PROBE_EVENTS`,
 RingGrowths stays report-only) + `AMAC_EXPECTED_ENGAGE_FAMILIES` (8) /
 `AMAC_EXCLUDED_FAMILIES` (lcstr, mixed); run_parity.sh detects each side
@@ -398,10 +398,16 @@ absence of ALL sides under `--require-engagement` is a GATE FAILURE (own
 line), never a divergence; engage asserts per family (expected > 0,
 excluded == 0 — load-bearing exclusions) on the family's PRIMARY shape
 (pinned: key8 is FixedHashMap and never cursor-engages, so family key32
-must not select it). Backward-compat names kept; fleet_ab.py cross-checks
-`AMAC_ENGAGEMENT_EVENTS`/`AMAC_ENV_VAR`/`SHARED_PROFILE_EVENTS` only —
-unchanged, so no fleet_ab.py edit needed; order/run_order.sh carries its
-own bash copy of the (unchanged) counter names — checked, no edit needed.
+must not select it). Backward-compat union alias kept at the time (removed
+in a later hygiene pass: nothing consumed it). fleet_ab.py's contract
+cross-check names (`AMAC_ENGAGEMENT_EVENTS`/`AMAC_ENV_VAR`/
+`SHARED_PROFILE_EVENTS`) are unchanged, so the cross-check itself needed no
+edit — but fleet_ab.py's own staged-detection half of the defect IS fixed by
+the same commit (a 19-line edit): `detect_amac` now returns the
+present-counter subset instead of all-or-nothing `True`/`False`, and
+`_engagement_from_row` records only the counters the binary has — exercised
+in (d). order/run_order.sh carries its own bash copy of the (unchanged)
+counter names — checked, no edit needed.
 
 (a) Exact failed gate re-run, baseline a05f3ee81ff vs uncommitted-amacbuild
 (build side only), `--require-engagement` (raw `gate_amacbuild2.log`):

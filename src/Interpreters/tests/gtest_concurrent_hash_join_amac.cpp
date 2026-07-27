@@ -45,7 +45,7 @@ UInt64 eventValue(ProfileEvents::Event event)
 template <typename Key>
 using JoinedRows = std::vector<std::tuple<Key, UInt64, Key, UInt64>>;
 
-Block uintKeyBlock(const String & key_name, const String & id_name, const std::vector<UInt64> & keys, const std::vector<UInt64> & ids)
+Block makeKeyBlock(const String & key_name, const String & id_name, const std::vector<UInt64> & keys, const std::vector<UInt64> & ids)
 {
     auto key_column = ColumnUInt64::create();
     auto id_column = ColumnUInt64::create();
@@ -57,7 +57,7 @@ Block uintKeyBlock(const String & key_name, const String & id_name, const std::v
     return block;
 }
 
-Block stringKeyBlock(const String & key_name, const String & id_name, const std::vector<String> & keys, const std::vector<UInt64> & ids)
+Block makeKeyBlock(const String & key_name, const String & id_name, const std::vector<String> & keys, const std::vector<UInt64> & ids)
 {
     auto key_column = ColumnString::create();
     for (const auto & key : keys)
@@ -68,16 +68,6 @@ Block stringKeyBlock(const String & key_name, const String & id_name, const std:
     block.insert({std::move(key_column), std::make_shared<DataTypeString>(), key_name});
     block.insert({std::move(id_column), std::make_shared<DataTypeUInt64>(), id_name});
     return block;
-}
-
-Block makeKeyBlock(const String & key_name, const String & id_name, const std::vector<UInt64> & keys, const std::vector<UInt64> & ids)
-{
-    return uintKeyBlock(key_name, id_name, keys, ids);
-}
-
-Block makeKeyBlock(const String & key_name, const String & id_name, const std::vector<String> & keys, const std::vector<UInt64> & ids)
-{
-    return stringKeyBlock(key_name, id_name, keys, ids);
 }
 
 template <typename Key>
@@ -155,7 +145,7 @@ struct BuiltJoin
 };
 
 /// Builds a `ConcurrentHashJoin` over the given build keys (`duplicates` adjacent copies each),
-/// fed in `block_rows`-sized blocks through the real `IJoin` build interface, with the AMAC
+/// fed in `build_block_rows`-sized blocks through the real `IJoin` build interface, with the AMAC
 /// engagement counters snapshotted around the build. No statistics hint is passed
 /// (`StatsCollectingParams{}`), so the per-slot maps start at their minimal size and grow while
 /// rows are in flight in the rings.

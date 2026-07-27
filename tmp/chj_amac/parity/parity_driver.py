@@ -466,7 +466,7 @@ def cmd_engage(args):
     cases = load_cases(args.cases, args.limit)
     client_argv = shlex.split(args.client)
     sides = [s for s in args.assert_sides.split(",") if s]
-    known_sides = dict(parity_gen.AMAC_ASSERT_SIDES)
+    known_sides = parity_gen.AMAC_ASSERT_SIDES
     bad = [s for s in sides if s not in known_sides]
     if not sides or bad:
         print(f"FATAL: --assert-sides must be a comma list of {sorted(known_sides)}, "

@@ -19,7 +19,7 @@ namespace
   * Ported (as ideas) from `AmacBuildInsertPolicy` of the `ahj` prototype
   * (`src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp`).
   */
-template <typename KeyGetter, typename Map, bool selector_is_range, typename PosT = size_t>
+template <typename KeyGetter, typename Map, bool selector_is_range, typename PosT>
 struct AmacBuildInsertPolicy
 {
     using Cell = Map::cell_type;

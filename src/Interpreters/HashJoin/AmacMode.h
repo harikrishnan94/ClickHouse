@@ -4,7 +4,7 @@ namespace DB
 {
 
 /** Process-level engagement mode of the AMAC build-insert ring (see `AmacRing.h`).
-  * By the requester's decision this is a diagnostic hook, NOT a user-facing setting: the ring is
+  * Deliberately a diagnostic hook, NOT a user-facing setting: the ring is
   * meant to be an implementation detail of `parallel_hash` with the `Auto` predicate as the only
   * long-term policy, and the hook exists so that A/B harnesses and tests can pin either path
   * without a server restart carrying user-visible surface.

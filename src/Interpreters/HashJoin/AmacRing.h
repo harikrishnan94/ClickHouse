@@ -16,7 +16,7 @@ namespace DB
   * a power-of-two ring of in-flight rows where every visit performs exactly ONE memory-dependent
   * step and software-prefetches the address its next visit will dereference, so data-dependent
   * cache misses (the home cell, each collision step) overlap instead of serializing.
-  * Ported (as ideas) from the partitioned hash join prototype (branch `ahj`,
+  * Ported (as ideas) from the partitioned hash join prototype (branch `ahj` of this fork,
   * `src/Interpreters/PartitionedHashJoin/AmacRing.h`), adapted from that design's leaf/partition
   * wording to the `parallel_hash` per-slot maps.
   *

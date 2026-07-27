@@ -57,6 +57,9 @@ import sys
 # (Unit 3), so a candidate binary may carry either side's counters, both, or
 # none. Every consumer must auto-detect availability PER SIDE and print a
 # loud SKIPPED line only when NO side is present.
+# fleet_ab.py cross-checks AMAC_ENGAGEMENT_EVENTS / AMAC_ENV_VAR /
+# SHARED_PROFILE_EVENTS / AMAC_ASSERT_SIDES against this module; keep those
+# names stable.
 # ---------------------------------------------------------------------------
 AMAC_ENV_VAR = "CLICKHOUSE_JOIN_AMAC"  # values: 0/off, 1/auto, force; read by the server process at start
 AMAC_ENGAGEMENT_EVENTS = (
@@ -70,10 +73,6 @@ AMAC_ENGAGEMENT_EVENTS = (
 AMAC_ASSERT_BUILD_EVENTS = ("ConcurrentHashJoinAmacBuildRows",)
 AMAC_ASSERT_PROBE_EVENTS = ("ConcurrentHashJoinAmacProbeRows",)
 AMAC_ASSERT_SIDES = {"build": AMAC_ASSERT_BUILD_EVENTS, "probe": AMAC_ASSERT_PROBE_EVENTS}
-# Backward-compat alias (union of both sides). fleet_ab.py cross-checks
-# AMAC_ENGAGEMENT_EVENTS / AMAC_ENV_VAR / SHARED_PROFILE_EVENTS against this
-# module; keep those names stable.
-AMAC_ASSERT_POSITIVE_EVENTS = AMAC_ASSERT_BUILD_EVENTS + AMAC_ASSERT_PROBE_EVENTS
 # Families whose join-map getters are cursor-capable: under force, EVERY
 # asserted event of EVERY present side must be > 0 for these.
 AMAC_EXPECTED_ENGAGE_FAMILIES = (
@@ -463,8 +462,6 @@ def main():
         print(f"AMAC_ENV_VAR={AMAC_ENV_VAR}")
         for e in AMAC_ENGAGEMENT_EVENTS:
             print(f"AMAC_EVENT={e}")
-        for e in AMAC_ASSERT_POSITIVE_EVENTS:
-            print(f"AMAC_ASSERT_EVENT={e}")  # backward-compat: union of both sides
         for e in AMAC_ASSERT_BUILD_EVENTS:
             print(f"AMAC_ASSERT_BUILD_EVENT={e}")
         for e in AMAC_ASSERT_PROBE_EVENTS:

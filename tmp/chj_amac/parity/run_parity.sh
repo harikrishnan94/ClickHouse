@@ -35,7 +35,7 @@
 #              M matched-error, E failed; see parity/logs/[, identical-binaries])
 # force-pass 'engaged X/XT+Yx0 (sides)': X of XT expected families engaged,
 # Y excluded families at zero, for the asserted side(s). OK requires X==XT
-# and Y==2 (all excluded at zero). Exit code 0 only on OK. Engagement
+# and Y==YT (all excluded families at zero). Exit code 0 only on OK. Engagement
 # failures under force count as divergences (a divergence file is written
 # per failing family).
 #
@@ -359,7 +359,9 @@ EOF
     FORCE_PASS="engaged $ENG_X/$ENG_XT+${ENG_Y}x0 ($SIDES_PRESENT)"
     echo "AMAC-FORCE PASS: $FORCE_PASS (expected engaged: $ENG_X/$ENG_XT, excluded at zero: $ENG_Y/$ENG_YT)"
     if [ "$ENG_X" -ne "$ENG_XT" ] || [ "$ENG_Y" -ne "$ENG_YT" ]; then
-        # per-family divergence files were written by the engage driver
+        # per-family divergence files were written by the engage driver for
+        # families present in the subset; a contract family missing from the
+        # subset (amac-force-family-missing) is explained in engage.log only
         N_DIVERGENCES=$((N_DIVERGENCES + ENG_XT - ENG_X + ENG_YT - ENG_Y))
     fi
 else
