@@ -199,6 +199,58 @@ perf win while engaged → run the codegen checklist from the `ahj` lessons
 predicate; wall loss on small cells → tighten the auto predicate and re-run;
 disassembly divergence → fix codegen, never reinterpret the anchor.
 
+## PREREG-007 — Unit 3: order-preserving routed probe + AMAC probe find ring — 2026-07-27 — written at HEAD 8d9bf852d51
+
+Expectation: after the routed probe (per-row slot derivation over the
+original left block, shared `StoredColumnsIndex`, per-slot flags with
+slot-local offsets, in-order emit) and the AMAC probe find ring (out-of-
+order find into per-row `found_word` scratch + dispatch-free `word_loop` /
+precomputed-loop emit, `ConcurrentHashJoinAmacProbeRows` event) land:
+(a) G-parity green with the force pass asserting BOTH sides —
+`force-pass: engaged 8/8+2x0 (build,probe)`;
+(b) G-order green BY CONSTRUCTION on the flipped candidate:
+`run_order.sh` prints `ORDER OK` (all 17 checks incl. genuine RIGHT/FULL
+per-block monotone at `max_threads=96`, T=1 global), stateless 03448 and
+03711 pass 10/10 (they fail 10/10 on today's scatter candidate — the flip
+must convert them), and the baseline power check still fails per-block
+(oracle keeps teeth);
+(c) probe orientation A/B (arm A = `candidate-7e64a6cf4d5`, arm B =
+post-Unit-3 snapshot) on {key64,str}:probe.inner_all.{S2,S3}.T96 and
+key64:probe.inner_all.S3.T1: NO cell loses outside the 3% band, with any
+win carried by `ConcurrentHashJoinProbeLookupMicroseconds`; the ordered
+probe without the ring may cost — the ring must close it (the `ahj` lead:
+the ring won at every depth once the stored-key/prefetch fixes were in);
+(d) G-disasm-probe: the find-ring steady loops match the `ahj` reference on
+3 anchors (key64, keys256, key_string × RowRefList) — read-intent
+`pldl1keep` prefetch plus the second cache line for cells wider than 24
+bytes, resolved-`Cell*` slots, no per-visit policy reloads;
+(e) new probe gtests (flagged shapes RIGHT/FULL, `setUsedOnce`, ring-vs-Off
+parity) green in both hook arms;
+(f) compile-time and binary-size delta of the new TUs measured and reported.
+
+Invocation:
+  bash tmp/chj_amac/parity/run_parity.sh <baseline.bin> <post-U3 snapshot> --require-engagement
+  bash tmp/chj_amac/order/run_order.sh <post-U3 snapshot>
+  (cd tests && CLICKHOUSE_PORT_TCP=19310 CLICKHOUSE_PORT_HTTP=18310 ./clickhouse-test --test-runs 10 03448_analyzer_array_join_alias_in_join_using_bug 03711_read_in_order_through_join)
+  bash tmp/chj_amac/order/run_order.sh bins/clickhouse-baseline-a05f3ee81ff.bin --expect-fail
+  python3 tmp/chj_amac/fleet_ab.py sweep --local --arm-a bins/clickhouse-candidate-7e64a6cf4d5.bin --arm-b <post-U3 snapshot> --cells "key64:probe.inner_all.S2.T96,key64:probe.inner_all.S3.T96,str:probe.inner_all.S2.T96,str:probe.inner_all.S3.T96,key64:probe.inner_all.S3.T1" --calibration tmp/chj_amac/fleet/calibration_rows.json
+  <disasm agent over the 3 probe anchors vs bins/clickhouse-ahj-cf465cfbe23.bin>
+  build/reldeb/src/unit_tests_dbms --gtest_filter='*Amac*' (both env arms)
+
+Refutation criterion: any parity divergence or wrong-side engagement; any
+order check red on the flipped candidate or any of the 20 stateless runs
+failing; the baseline power check passing (oracle broken); any probe A/B
+cell losing outside the band vs `candidate-7e64a6cf4d5`; unexplained disasm
+divergence; binary growth beyond ~2% unaccounted.
+
+Action on refutation: order red → the flip commit does not land until
+fixed; a probe loss vs pre-Unit-3 → the `ahj` codegen checklist (stored
+keys packed once, buf/mask at admit, prefetch localities, refill inlining)
+BEFORE any predicate change, and if the loss stands the ring/routed probe
+does not ship for that family (excluded-measured-loss, force-engage
+discriminator in Unit 4); disasm divergence → fix codegen, never
+reinterpret the anchor.
+
 ## PREREG-003 — env facts for perf venues — 2026-07-27 — written at HEAD 6cdee22a455
 
 Local orientation host (never acceptance evidence): aarch64 Graviton, 96
