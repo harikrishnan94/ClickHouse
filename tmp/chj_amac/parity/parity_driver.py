@@ -19,12 +19,16 @@ Modes:
            explicit --acknowledge-matched-errors N), and at least
            --min-compared-pct (default 90%) of cases must produce real
            comparisons; violations are emitted in 'gate_failures'.
-  engage   --cases F --client "..." --logdir L
-           AMAC force-pass: per-family subset with log_comment tagging;
-           asserts the AMAC engagement counters (contract constants imported
-           from parity_gen) are > 0 in system.query_log. Only called when
-           run_parity.sh detected the counters in the candidate binary.
-           Prints 'ENGAGE {json}' as its last line.
+  engage   --cases F --client "..." --logdir L --assert-sides build,probe
+           AMAC force-pass: per-family subset with log_comment tagging.
+           AMAC lands in stages, so only the PRESENT sides (--assert-sides,
+           detected by run_parity.sh per side in the candidate binary) are
+           asserted via system.query_log: families in
+           AMAC_EXPECTED_ENGAGE_FAMILIES must have every asserted event > 0,
+           families in AMAC_EXCLUDED_FAMILIES must have them all == 0
+           (load-bearing exclusions). Prints 'ENGAGE {json}' as its last line
+           with engaged_expected/expected_total, excluded_zero/excluded_total,
+           sides.
   audit    --cases F --client "..." --label ARM
            Informational: per-family subset, reports the seven shared
            ConcurrentHashJoin* ProfileEvents from system.query_log (did
@@ -385,6 +389,22 @@ def cmd_compare(args):
 # ---------------------------------------------------------------------------
 
 def family_subset(cases):
+    """One case per family. The shape is pinned to the family's PRIMARY
+    shape — the first shape emitted for the family in generation order
+    (parity_gen.make_shapes declares the canonical shape first: key32 before
+    key8, key64u before key64i/key64u_dup16, mixed_us before mixed_sn, ...).
+    This pinning is load-bearing for the AMAC force pass: a family's
+    secondary shapes may use join-map types with no cursor support — key8 is
+    FixedHashMap and can NEVER engage AMAC, yet family key32 is in
+    AMAC_EXPECTED_ENGAGE_FAMILIES, so an unpinned selection could pick key8
+    and fail the gate spuriously. (fixstr is fine either way: FixedString(16)
+    may resolve to the keys128 method, which is cursor-capable.)
+    Within the primary shape, prefer (INNER, ALL, std), then (LEFT, ALL);
+    ties broken by id — fully deterministic."""
+    primary_shape = {}
+    for c in cases:
+        primary_shape.setdefault(c["family"], c["shape"])
+
     def rank(c):
         return (
             0 if (c["kind"], c["strictness"], c["variant"]) == ("INNER", "ALL", "std") else
@@ -394,6 +414,8 @@ def family_subset(cases):
     by_family = {}
     for c in cases:
         f = c["family"]
+        if c["shape"] != primary_shape[f]:
+            continue
         if f not in by_family or rank(c) < rank(by_family[f]):
             by_family[f] = c
     return [by_family[f] for f in sorted(by_family)]
@@ -443,35 +465,71 @@ def run_subset_tagged(cases, client_argv, prefix):
 def cmd_engage(args):
     cases = load_cases(args.cases, args.limit)
     client_argv = shlex.split(args.client)
+    sides = [s for s in args.assert_sides.split(",") if s]
+    known_sides = dict(parity_gen.AMAC_ASSERT_SIDES)
+    bad = [s for s in sides if s not in known_sides]
+    if not sides or bad:
+        print(f"FATAL: --assert-sides must be a comma list of {sorted(known_sides)}, "
+              f"got {args.assert_sides!r}", file=sys.stderr)
+        return 2
+    assert_events = [e for s in sides for e in known_sides[s]]
+    expected = parity_gen.AMAC_EXPECTED_ENGAGE_FAMILIES
+    excluded = parity_gen.AMAC_EXCLUDED_FAMILIES
     subset = run_subset_tagged(cases, client_argv, "parity_amac")
-    assert_events = list(parity_gen.AMAC_ASSERT_POSITIVE_EVENTS)
     all_events = list(parity_gen.AMAC_ENGAGEMENT_EVENTS) + list(parity_gen.SHARED_PROFILE_EVENTS)
-    engaged, failures, report = 0, [], {}
+    engaged_expected, excluded_zero = 0, 0
+    failures, report = {}, {}  # failures: family -> (status, detail)
     for family, (case, lc, err) in sorted(subset.items()):
         if err is not None:
-            failures.append(family)
             report[family] = {"error": err}
+            failures[family] = ("amac-force-family-error", err)
             continue
         vals, qerr = query_log_events(client_argv, lc, all_events)
         if vals is None:
-            failures.append(family)
             report[family] = {"error": f"query_log lookup failed: {qerr}"}
+            failures[family] = ("amac-force-family-error", f"query_log lookup failed: {qerr}")
             continue
         ev = dict(zip(all_events, vals))
         report[family] = ev
-        if all(ev[e] > 0 for e in assert_events):
-            engaged += 1
+        detail = json.dumps(ev, sort_keys=True, indent=1)
+        if family in expected:
+            if all(ev[e] > 0 for e in assert_events):
+                engaged_expected += 1
+            else:
+                failures[family] = ("amac-force-not-engaged",
+                                    f"expected family: asserted events of present sides {sides} "
+                                    f"({assert_events}) not all > 0 under "
+                                    f"{parity_gen.AMAC_ENV_VAR}=force:\n{detail}")
+        elif family in excluded:
+            if all(ev[e] == 0 for e in assert_events):
+                excluded_zero += 1
+            else:
+                failures[family] = ("amac-excluded-family-engaged",
+                                    f"excluded family (getter has no AMAC cursor path) but asserted "
+                                    f"events of present sides {sides} ({assert_events}) are not all 0 "
+                                    f"under {parity_gen.AMAC_ENV_VAR}=force — the exclusion is "
+                                    f"load-bearing:\n{detail}")
         else:
-            failures.append(family)
-    for family in failures:
-        case = subset[family][0]
-        detail = json.dumps(report[family], sort_keys=True, indent=1)
-        write_divergence(args.logdir, case, "amac-force-not-engaged",
-                         f"asserted events {assert_events} not all > 0 under "
-                         f"{parity_gen.AMAC_ENV_VAR}=force:\n{detail}",
-                         "candidate(force)", "candidate(force)", args.client, args.client)
-    print("ENGAGE " + json.dumps({"engaged": engaged, "total": len(subset),
-                                  "failures": sorted(failures), "report": report}, sort_keys=True))
+            # Fail-close: a family the contract does not classify means the
+            # contract and the matrix drifted apart.
+            failures[family] = ("amac-family-not-in-contract",
+                                f"family {family!r} is in neither AMAC_EXPECTED_ENGAGE_FAMILIES "
+                                f"nor AMAC_EXCLUDED_FAMILIES:\n{detail}")
+    # Fail-close: contract families missing from the subset (e.g. --limit runs)
+    # can never be counted engaged / at-zero; surface them explicitly.
+    for family in list(expected) + list(excluded):
+        if family not in subset:
+            report[family] = {"error": "family absent from case subset"}
+            failures[family] = ("amac-force-family-missing", "family absent from case subset")
+    for family, (status, detail) in failures.items():
+        if family in subset:
+            write_divergence(args.logdir, subset[family][0], status, detail,
+                             "candidate(force)", "candidate(force)", args.client, args.client)
+    print("ENGAGE " + json.dumps({
+        "engaged_expected": engaged_expected, "expected_total": len(expected),
+        "excluded_zero": excluded_zero, "excluded_total": len(excluded),
+        "sides": sides, "asserted_events": assert_events,
+        "failures": sorted(failures), "report": report}, sort_keys=True))
     return 0
 
 
@@ -530,6 +588,9 @@ def main():
     pe.add_argument("--cases", required=True)
     pe.add_argument("--client", required=True)
     pe.add_argument("--logdir", required=True)
+    pe.add_argument("--assert-sides", required=True,
+                    help="comma list of AMAC sides present in the candidate binary "
+                         "(subset of build,probe); only their events are asserted")
     pe.add_argument("--limit", type=int, default=None)
     pe.set_defaults(func=cmd_engage)
 

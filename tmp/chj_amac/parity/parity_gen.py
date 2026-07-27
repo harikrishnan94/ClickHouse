@@ -52,9 +52,11 @@ import json
 import sys
 
 # ---------------------------------------------------------------------------
-# FUTURE (Units 2-3) contract — the ONE constants block. Update here only.
-# These counters / the env var do NOT exist in any binary yet; every consumer
-# must auto-detect availability and print a loud SKIPPED line when absent.
+# Units 2-3 contract — the ONE constants block. Update here only.
+# AMAC lands in STAGES: the BUILD ring (Unit 2) ships before the PROBE ring
+# (Unit 3), so a candidate binary may carry either side's counters, both, or
+# none. Every consumer must auto-detect availability PER SIDE and print a
+# loud SKIPPED line only when NO side is present.
 # ---------------------------------------------------------------------------
 AMAC_ENV_VAR = "CLICKHOUSE_JOIN_AMAC"  # values: 0/off, 1/auto, force; read by the server process at start
 AMAC_ENGAGEMENT_EVENTS = (
@@ -62,12 +64,25 @@ AMAC_ENGAGEMENT_EVENTS = (
     "ConcurrentHashJoinAmacBuildRingGrowths",
     "ConcurrentHashJoinAmacProbeRows",
 )
-# Events asserted > 0 under CLICKHOUSE_JOIN_AMAC=force (RingGrowths may be
-# legitimately zero, so it is reported but not asserted):
-AMAC_ASSERT_POSITIVE_EVENTS = (
-    "ConcurrentHashJoinAmacBuildRows",
-    "ConcurrentHashJoinAmacProbeRows",
+# Per-side assertions under CLICKHOUSE_JOIN_AMAC=force. A side is asserted
+# only when ALL of its events exist in the candidate binary (staged landing).
+# RingGrowths may be legitimately zero, so it is reported but never asserted.
+AMAC_ASSERT_BUILD_EVENTS = ("ConcurrentHashJoinAmacBuildRows",)
+AMAC_ASSERT_PROBE_EVENTS = ("ConcurrentHashJoinAmacProbeRows",)
+AMAC_ASSERT_SIDES = {"build": AMAC_ASSERT_BUILD_EVENTS, "probe": AMAC_ASSERT_PROBE_EVENTS}
+# Backward-compat alias (union of both sides). fleet_ab.py cross-checks
+# AMAC_ENGAGEMENT_EVENTS / AMAC_ENV_VAR / SHARED_PROFILE_EVENTS against this
+# module; keep those names stable.
+AMAC_ASSERT_POSITIVE_EVENTS = AMAC_ASSERT_BUILD_EVENTS + AMAC_ASSERT_PROBE_EVENTS
+# Families whose join-map getters are cursor-capable: under force, EVERY
+# asserted event of EVERY present side must be > 0 for these.
+AMAC_EXPECTED_ENGAGE_FAMILIES = (
+    "key32", "key64", "string", "fixstr", "keys128", "keys256", "null64", "nullstr",
 )
+# Families whose getters are excluded from AMAC (lcstr: LowCardinality;
+# mixed: hashed/serialized). Under force their asserted events must be == 0 —
+# the exclusions are load-bearing, an engaged excluded family is a FAILURE.
+AMAC_EXCLUDED_FAMILIES = ("lcstr", "mixed")
 # The seven ProfileEvents shared by both arms (informational engagement audit):
 SHARED_PROFILE_EVENTS = (
     "ConcurrentHashJoinBuildMicroseconds",
@@ -449,7 +464,15 @@ def main():
         for e in AMAC_ENGAGEMENT_EVENTS:
             print(f"AMAC_EVENT={e}")
         for e in AMAC_ASSERT_POSITIVE_EVENTS:
-            print(f"AMAC_ASSERT_EVENT={e}")
+            print(f"AMAC_ASSERT_EVENT={e}")  # backward-compat: union of both sides
+        for e in AMAC_ASSERT_BUILD_EVENTS:
+            print(f"AMAC_ASSERT_BUILD_EVENT={e}")
+        for e in AMAC_ASSERT_PROBE_EVENTS:
+            print(f"AMAC_ASSERT_PROBE_EVENT={e}")
+        for f in AMAC_EXPECTED_ENGAGE_FAMILIES:
+            print(f"AMAC_EXPECTED_FAMILY={f}")
+        for f in AMAC_EXCLUDED_FAMILIES:
+            print(f"AMAC_EXCLUDED_FAMILY={f}")
         for e in SHARED_PROFILE_EVENTS:
             print(f"SHARED_EVENT={e}")
         return 0

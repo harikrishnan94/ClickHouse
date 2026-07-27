@@ -380,3 +380,68 @@ is green (raw log `scratch/postfix_final_clean.log`):
 
 Scratch run-dir copies (`scratch/divtest` etc.) were removed after the
 self-tests; all raw logs listed above are kept.
+
+## 10. Staged per-side force-pass detection (2026-07-27, contract-staging fix)
+
+Defect: force-pass detection required ALL of `AMAC_ASSERT_POSITIVE_EVENTS`
+(build+probe) in the candidate binary, so a candidate carrying only the
+Unit-2 BUILD ring (`ConcurrentHashJoinAmacBuildRows` present,
+`...AmacProbeRows` not yet landed) was SKIPPED, and `--require-engagement`
+miscounted the skip as a divergence (evidence: `gate_amacbuild.log`).
+
+Fix (parity_gen.py / parity_driver.py / run_parity.sh only):
+per-side contract (`AMAC_ASSERT_BUILD_EVENTS` / `AMAC_ASSERT_PROBE_EVENTS`,
+RingGrowths stays report-only) + `AMAC_EXPECTED_ENGAGE_FAMILIES` (8) /
+`AMAC_EXCLUDED_FAMILIES` (lcstr, mixed); run_parity.sh detects each side
+independently and force-asserts every present side (`engage --assert-sides`);
+absence of ALL sides under `--require-engagement` is a GATE FAILURE (own
+line), never a divergence; engage asserts per family (expected > 0,
+excluded == 0 — load-bearing exclusions) on the family's PRIMARY shape
+(pinned: key8 is FixedHashMap and never cursor-engages, so family key32
+must not select it). Backward-compat names kept; fleet_ab.py cross-checks
+`AMAC_ENGAGEMENT_EVENTS`/`AMAC_ENV_VAR`/`SHARED_PROFILE_EVENTS` only —
+unchanged, so no fleet_ab.py edit needed; order/run_order.sh carries its
+own bash copy of the (unchanged) counter names — checked, no edit needed.
+
+(a) Exact failed gate re-run, baseline a05f3ee81ff vs uncommitted-amacbuild
+(build side only), `--require-engagement` (raw `gate_amacbuild2.log`):
+
+    side 'build': asserted counter(s) present in candidate binary: ConcurrentHashJoinAmacBuildRows
+    side 'probe': asserted counter 'ConcurrentHashJoinAmacProbeRows' not found in candidate binary
+    AMAC side(s) present: build; restarting candidate with CLICKHOUSE_JOIN_AMAC=force
+    AMAC-FORCE PASS: engaged 8/8+2x0 (build) (expected engaged: 8/8, excluded at zero: 2/2)
+    PARITY OK (636 cases: 634 compared, 2 matched-error, 0 failed; 10 families, 23 kind-strictness combos, force-pass: engaged 8/8+2x0 (build))
+    EXIT=0
+
+Per-family counters under force (from `logs/engage.log`): BuildRows equals
+the build-table row count for every expected family (fixstr 20000, key32
+24000, key64 30000, keys128 30000, keys256 20000, null64 21600 = 24000
+minus 10% NULL keys, nullstr 18000, string 20000; RingGrowths 12 each);
+lcstr and mixed are 0/0/0 — exclusions verified load-bearing.
+
+(b) Baseline as both arms, `--allow-identical`, WITHOUT
+`--require-engagement` (raw `gate_selftest_skip.log`) — skip path intact:
+
+    side 'build': asserted counter 'ConcurrentHashJoinAmacBuildRows' not found in candidate binary
+    side 'probe': asserted counter 'ConcurrentHashJoinAmacProbeRows' not found in candidate binary
+    AMAC-FORCE PASS: SKIPPED (no AMAC side counters present in candidate binary)
+    PARITY OK (636 cases: 634 compared, 2 matched-error, 0 failed; 10 families, 23 kind-strictness combos, force-pass: SKIPPED, identical-binaries)
+    EXIT=0
+
+(c) `--require-engagement` with the BASELINE as candidate (raw
+`gate_selftest_absence.log`) — negative proof retains teeth, and the
+failure is a GATE FAILURE, not a divergence:
+
+    AMAC-FORCE PASS: SKIPPED (no AMAC side counters present in candidate binary)
+    GATE FAILURE: --require-engagement given but the candidate binary has NO AMAC side counters (build: ConcurrentHashJoinAmacBuildRows; probe: ConcurrentHashJoinAmacProbeRows)
+    PARITY FAIL (0 divergences, 1 gate failure(s); 636 cases: 634 compared, 2 matched-error, 0 failed; see parity/logs/, identical-binaries)
+    EXIT=1
+
+(d) `fleet_ab.py selftest --check-events --local --bin <baseline>` (raw
+`fleet_selftest_after.log`) — contract cross-check still passes:
+
+    contract-check: constants match parity/parity_gen.py (primary copy)
+    check-events: 7/7 shared events present in system.events
+    SKIPPED: AMAC engagement counters absent in system.events (['ConcurrentHashJoinAmacBuildRows', 'ConcurrentHashJoinAmacBuildRingGrowths', 'ConcurrentHashJoinAmacProbeRows']); expected until Unit 2 lands
+    FLEET_AB SELFTEST RESULT: events=7/7 amac=absent not-run -> PASS
+    EXIT=0

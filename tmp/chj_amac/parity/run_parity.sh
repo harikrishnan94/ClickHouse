@@ -16,19 +16,28 @@
 #      for EVERY divergence (does not stop at the first).
 #   4. Informational audit: per-family, did parallel_hash actually engage
 #      (shared ConcurrentHashJoin* ProfileEvents) on each arm.
-#   5. AMAC force pass: if the (future, Units 2-3) engagement counters are
-#      present in the candidate binary, restarts the candidate with
-#      CLICKHOUSE_JOIN_AMAC=force and asserts the counters via
-#      system.query_log; otherwise prints a loud SKIPPED line.
-#      --require-engagement turns absence into failure.
+#   5. AMAC force pass: AMAC lands in stages (build ring in Unit 2, probe
+#      ring in Unit 3), so each side's asserted counters are detected
+#      INDEPENDENTLY in the candidate binary. If at least one side is
+#      present, restarts the candidate with CLICKHOUSE_JOIN_AMAC=force and
+#      asserts (via system.query_log, present sides only): every
+#      AMAC_EXPECTED_ENGAGE_FAMILIES family engages (> 0) and every
+#      AMAC_EXCLUDED_FAMILIES family stays at zero. Only if NO side is
+#      present: a loud SKIPPED line; --require-engagement then turns the
+#      skip into a GATE FAILURE (own line naming the absent counters),
+#      never a divergence.
 #
 # Final line (machine-checkable):
 #   PARITY OK (N cases: C compared, M matched-error, E failed; F families,
-#              K kind-strictness combos, force-pass: engaged X/Y|SKIPPED[, identical-binaries])
+#              K kind-strictness combos,
+#              force-pass: engaged X/XT+Yx0 (sides)|SKIPPED[, identical-binaries])
 #   PARITY FAIL (D divergences, G gate failure(s); N cases: C compared,
 #              M matched-error, E failed; see parity/logs/[, identical-binaries])
-# Exit code 0 only on OK. Engagement failures under force count as
-# divergences (a divergence file is written per failing family).
+# force-pass 'engaged X/XT+Yx0 (sides)': X of XT expected families engaged,
+# Y excluded families at zero, for the asserted side(s). OK requires X==XT
+# and Y==2 (all excluded at zero). Exit code 0 only on OK. Engagement
+# failures under force count as divergences (a divergence file is written
+# per failing family).
 #
 # Cases where BOTH arms raise the IDENTICAL genuine server exception
 # (signature: Code preserved verbatim, host:port clause removed, only
@@ -301,27 +310,42 @@ done
 # --- phase 4: AMAC force pass (auto-detected; Units 2-3 contract) ------------
 
 echo "== phase 4: AMAC force pass =="
-AMAC_ENV_VAR=$(python3 "$SCRIPT_DIR/parity_gen.py" --print-contract | sed -n 's/^AMAC_ENV_VAR=//p')
-# Detection requires only the ASSERTED counters; informational ones (e.g.
-# RingGrowths) may be absent without disabling the force pass.
-AMAC_ASSERT_EVENTS=$(python3 "$SCRIPT_DIR/parity_gen.py" --print-contract | sed -n 's/^AMAC_ASSERT_EVENT=//p')
-COUNTERS_PRESENT=1
-for EV in $AMAC_ASSERT_EVENTS; do
-    if ! LC_ALL=C grep -a -m1 -q -F "$EV" "$CAND_BIN"; then
-        COUNTERS_PRESENT=0
-        echo "asserted counter '$EV' not found in candidate binary"
-        break
+CONTRACT=$(python3 "$SCRIPT_DIR/parity_gen.py" --print-contract)
+AMAC_ENV_VAR=$(sed -n 's/^AMAC_ENV_VAR=//p' <<<"$CONTRACT")
+# AMAC lands per SIDE (build ring before probe ring): detect each side's
+# asserted counters independently and force-assert every side that is
+# present. Informational counters (e.g. RingGrowths) never gate detection.
+AMAC_BUILD_EVENTS=$(sed -n 's/^AMAC_ASSERT_BUILD_EVENT=//p' <<<"$CONTRACT")
+AMAC_PROBE_EVENTS=$(sed -n 's/^AMAC_ASSERT_PROBE_EVENT=//p' <<<"$CONTRACT")
+
+side_present() { # $1 = side name, $2 = its asserted events; ALL must be in the candidate binary
+    local side=$1 events=$2 ev
+    if [ -z "$events" ]; then
+        echo "FATAL: contract lists no asserted events for side '$side'" >&2
+        exit 2
     fi
-done
+    for ev in $events; do
+        if ! LC_ALL=C grep -a -m1 -q -F "$ev" "$CAND_BIN"; then
+            echo "side '$side': asserted counter '$ev' not found in candidate binary"
+            return 1
+        fi
+    done
+    echo "side '$side': asserted counter(s) present in candidate binary:" $events
+    return 0
+}
+
+SIDES_PRESENT=""
+side_present build "$AMAC_BUILD_EVENTS" && SIDES_PRESENT="build"
+side_present probe "$AMAC_PROBE_EVENTS" && SIDES_PRESENT="${SIDES_PRESENT:+$SIDES_PRESENT,}probe"
 
 FORCE_PASS="SKIPPED"
-if [ "$COUNTERS_PRESENT" -eq 1 ]; then
-    echo "AMAC asserted counters present in candidate binary; restarting candidate with $AMAC_ENV_VAR=force"
+if [ -n "$SIDES_PRESENT" ]; then
+    echo "AMAC side(s) present: $SIDES_PRESENT; restarting candidate with $AMAC_ENV_VAR=force"
     stop_server "$SRV_CAND" || exit 3
     start_server "$SRV_CAND" "$CAND_BIN" "$CAND_TCP" "$CAND_HTTP" "$AMAC_ENV_VAR=force" || exit 1
     verify_exe "$SRV_CAND" "$CAND_SHA" || exit 1
     python3 "$SCRIPT_DIR/parity_driver.py" engage --cases "$CASES" --client "$CAND_CLIENT" \
-        --logdir "$LOGDIR" "${LIMIT_ARGS[@]}" > "$LOGDIR/engage.log" 2>&1
+        --logdir "$LOGDIR" --assert-sides "$SIDES_PRESENT" "${LIMIT_ARGS[@]}" > "$LOGDIR/engage.log" 2>&1
     ENG=$(grep '^ENGAGE ' "$LOGDIR/engage.log" | tail -1 | sed 's/^ENGAGE //')
     if [ -z "$ENG" ]; then
         echo "FATAL: engage phase produced no summary; see $LOGDIR/engage.log" >&2
@@ -329,25 +353,32 @@ if [ "$COUNTERS_PRESENT" -eq 1 ]; then
         echo "PARITY FAIL (engage phase failed, see parity/logs/)"
         exit 1
     fi
-    read -r ENG_X ENG_Y <<EOF
-$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['engaged'], d['total'])" "$ENG")
+    read -r ENG_X ENG_XT ENG_Y ENG_YT <<EOF
+$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['engaged_expected'], d['expected_total'], d['excluded_zero'], d['excluded_total'])" "$ENG")
 EOF
-    FORCE_PASS="engaged $ENG_X/$ENG_Y"
-    echo "AMAC-FORCE PASS: $FORCE_PASS"
-    if [ "$ENG_X" -ne "$ENG_Y" ]; then
+    FORCE_PASS="engaged $ENG_X/$ENG_XT+${ENG_Y}x0 ($SIDES_PRESENT)"
+    echo "AMAC-FORCE PASS: $FORCE_PASS (expected engaged: $ENG_X/$ENG_XT, excluded at zero: $ENG_Y/$ENG_YT)"
+    if [ "$ENG_X" -ne "$ENG_XT" ] || [ "$ENG_Y" -ne "$ENG_YT" ]; then
         # per-family divergence files were written by the engage driver
-        N_DIVERGENCES=$((N_DIVERGENCES + ENG_Y - ENG_X))
+        N_DIVERGENCES=$((N_DIVERGENCES + ENG_XT - ENG_X + ENG_YT - ENG_Y))
     fi
 else
-    echo "AMAC-FORCE PASS: SKIPPED (counters absent)"
+    echo "AMAC-FORCE PASS: SKIPPED (no AMAC side counters present in candidate binary)"
     if [ "$REQUIRE_ENGAGEMENT" -eq 1 ]; then
+        # Absence of every side under --require-engagement is a GATE FAILURE
+        # (the gate cannot do its job), NOT a divergence (the arms did not
+        # disagree on anything).
+        echo "GATE FAILURE: --require-engagement given but the candidate binary has NO AMAC side" \
+             "counters (build: $AMAC_BUILD_EVENTS; probe: $AMAC_PROBE_EVENTS)"
         {
-            echo "CASE engagement-required"
-            echo "STATUS: amac-counters-absent"
-            echo "--require-engagement was given but the candidate binary lacks the"
-            echo "asserted AMAC engagement counters: $AMAC_ASSERT_EVENTS"
-        } > "$LOGDIR/engagement-required.divergence.txt"
-        N_DIVERGENCES=$((N_DIVERGENCES + 1))
+            echo "GATE-FAILURE engagement-required"
+            echo "STATUS: amac-counters-absent-all-sides"
+            echo "--require-engagement was given but the candidate binary lacks the asserted"
+            echo "AMAC engagement counters of every side:"
+            echo "  build: $AMAC_BUILD_EVENTS"
+            echo "  probe: $AMAC_PROBE_EVENTS"
+        } > "$LOGDIR/engagement-required.gate-failure.txt"
+        N_GATE_FAILURES=$((N_GATE_FAILURES + 1))
     fi
 fi
 

@@ -608,15 +608,17 @@ def parse_kv_list(items) -> dict:
     return out
 
 
-def detect_amac(server) -> bool:
-    """True iff every AMAC engagement counter exists in system.events; works
-    on either transport (needs only server.sql_json)."""
+def detect_amac(server) -> frozenset:
+    """The subset of AMAC engagement counters present in system.events. AMAC
+    lands in stages (build ring in Unit 2, probe ring in Unit 3), so
+    detection is per counter — requiring the full contract would blind the
+    recording for every stage before the last one (the gate_amacbuild
+    incident). Works on either transport (needs only server.sql_json)."""
     names = ", ".join(f"'{n}'" for n in AMAC_ENGAGEMENT_EVENTS)
     rows = server.sql_json(
         f"SELECT name FROM system.events WHERE name IN ({names}) "
         "SETTINGS system_events_show_zero_values = 1 FORMAT JSONEachRow")
-    found = {r["name"] for r in rows}
-    return all(n in found for n in AMAC_ENGAGEMENT_EVENTS)
+    return frozenset(r["name"] for r in rows)
 
 
 class LocalServer:
@@ -1000,11 +1002,14 @@ def _events_from_row(r: dict) -> dict:
     return {name: int(pe.get(name, 0)) for name in SHARED_EVENTS}
 
 
-def _engagement_from_row(r: dict, available: bool) -> dict | None:
+def _engagement_from_row(r: dict, available) -> dict | None:
+    """Record the counters the binary actually has (per detect_amac); absent
+    ones stay out of the dict so a reader can distinguish "not implemented
+    yet" from "implemented and zero"."""
     if not available:
         return None
     pe = r.get("ProfileEvents") or {}
-    return {name: int(pe.get(name, 0)) for name in AMAC_ENGAGEMENT_EVENTS}
+    return {name: int(pe.get(name, 0)) for name in AMAC_ENGAGEMENT_EVENTS if name in available}
 
 
 def run_cell(cell: Cell, cell_index: int, arms: list[Arm], servers: list, shape: CellShape,
