@@ -54,7 +54,7 @@ def histogram(binary, addr, size):
     total = 0
     for line in out.splitlines():
         line = line.strip()
-        m = re.match(r"^([a-z][a-z0-9.]*)\s", line)
+        m = re.match(r"^([a-z][a-z0-9.]*)(?:\s|$)", line)
         if m and not line.endswith(":"):
             ops[m.group(1)] += 1
             total += 1
@@ -64,12 +64,15 @@ def histogram(binary, addr, size):
 def classify(ops):
     loads = sum(v for k, v in ops.items() if k.startswith(("ldr", "ldp", "ldu")))
     stores = sum(v for k, v in ops.items() if k.startswith(("str", "stp", "stu")))
-    branches = sum(v for k, v in ops.items() if k.startswith(("b.", "b", "cbz", "cbnz", "tbz", "tbnz", "bl", "ret", "br")))
+    branches = sum(v for k, v in ops.items()
+                   if k.startswith("b.") or k in ("b", "bl", "blr", "br", "ret", "cbz", "cbnz", "tbz", "tbnz"))
     prefetch = sum(v for k, v in ops.items() if k.startswith("prfm"))
     return loads, stores, branches, prefetch
 
 
 def main():
+    if len(sys.argv) != 3:
+        sys.exit("usage: asmdiff.py <before> <after>")
     before, after = sys.argv[1], sys.argv[2]
     for label, pat in (("INSERT key64/RowRefList", INSERT_PAT), ("PROBE key64/RowRefList", PROBE_PAT)):
         rows = {}

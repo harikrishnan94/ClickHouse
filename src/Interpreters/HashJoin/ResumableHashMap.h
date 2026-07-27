@@ -10,8 +10,9 @@
 namespace DB
 {
 
-/** The grower of the `parallel_hash` slot maps: `HashTableGrowerWithPrecalculation` plus a fixed
-  * tail pad of always-present cells past the power-of-two region. The home cell and the
+/** The grower of the rebound join hash maps (shared by `hash` and `parallel_hash`; only the
+  * `parallel_hash` AMAC rings drive the cursor API layered on top): `HashTableGrowerWithPrecalculation`
+  * plus a fixed tail pad of always-present cells past the power-of-two region. The home cell and the
   * load/growth rules are exactly the standard ones (the pad does not count as capacity), but a
   * collision chain reaching the end of the power-of-two region continues into the pad instead of
   * wrapping; the walk wraps only at the END OF THE PAD — reachable only through a chain longer
@@ -39,8 +40,7 @@ class alignas(DB::CH_CACHE_LINE_SIZE) TailPaddedHashTableGrower
     }
 
 public:
-    /// A chain longer than this spills past the pad and wraps (never legitimately: the
-    /// probability of a 64-cell chain at load 0.5 is negligible). 64 cells cost 1-3 KB per map.
+    /// Chain length past which the walk wraps (see the class comment); 64 cells cost 1-3 KB per map.
     static constexpr size_t tail_pad = 64;
 
     static constexpr auto initial_count = 1ULL << initial_size_degree;
@@ -87,6 +87,8 @@ public:
         recalculate();
     }
 
+    /// Not a round-trip identity on a padded grower (fed its own `bufSize`, 2^d + pad, it yields
+    /// degree d + 1); unreachable for the join maps today.
     void setBufSize(size_t buf_size_)
     {
         size_degree = static_cast<UInt8>(log2(buf_size_ - 1) + 1);
@@ -120,7 +122,7 @@ struct ResumableHashMap : public Base
     size_t cursorNext(size_t place) const { return this->grower.next(place); }
 
     /// The home mask of the grower's power-of-two region. With a tail-padded grower this is
-    /// NOT `getBufferSizeInCells() - 1`; the flat slot descriptors must carry this one.
+    /// NOT `getBufferSizeInCells() - 1`; callers that cache per-map geometry must carry this one.
     size_t cursorMask() const { return this->grower.mask(); }
 
     Cell * cursorCell(size_t place) { return &this->buf[place]; }

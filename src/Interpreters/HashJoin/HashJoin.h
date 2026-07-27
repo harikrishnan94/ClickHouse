@@ -265,19 +265,21 @@ public:
     {
         /// NOLINTBEGIN(bugprone-macro-parentheses)
         using MappedType = Mapped;
-        /// The open-addressing single-key and fixed-keys maps carry the resumable-cursor API
-        /// (`WithJoinCursor`: same cells and hash, tail-padded grower) so the `parallel_hash`
-        /// AMAC rings can drive them; `hash` uses them through the unchanged public interface.
+        /// The eight maps `key32`..`keys256` are rebound through `WithJoinCursor` (same cells
+        /// and hash, tail-padded grower) so the `parallel_hash` AMAC rings can drive their
+        /// cursor API; `hash` uses them through the unchanged public interface. The remaining
+        /// open-addressing maps (`hashed`, the low-cardinality strings) are not ring targets
+        /// and stay standard.
         std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
         std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
-        std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>   key32;
-        std::shared_ptr<typename WithJoinCursor<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>::Type>   key64;
-        std::shared_ptr<typename WithJoinCursor<HashMapWithSavedHash<std::string_view, Mapped>>::Type>      key_string;
-        std::shared_ptr<typename WithJoinCursor<HashMapWithSavedHash<std::string_view, Mapped>>::Type>      key_fixed_string;
-        std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>   keys32;
-        std::shared_ptr<typename WithJoinCursor<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>::Type>   keys64;
-        std::shared_ptr<typename WithJoinCursor<HashMap<UInt128, Mapped, UInt128HashCRC32>>::Type>   keys128;
-        std::shared_ptr<typename WithJoinCursor<HashMap<UInt256, Mapped, UInt256HashCRC32>>::Type>   keys256;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>      key32;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>::Type>      key64;
+        std::shared_ptr<typename WithJoinCursor<HashMapWithSavedHash<std::string_view, Mapped>>::Type>  key_string;
+        std::shared_ptr<typename WithJoinCursor<HashMapWithSavedHash<std::string_view, Mapped>>::Type>  key_fixed_string;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>      keys32;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>::Type>      keys64;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt128, Mapped, UInt128HashCRC32>>::Type>      keys128;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt256, Mapped, UInt256HashCRC32>>::Type>      keys256;
         std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>>         hashed;
         std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_string;
         std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_fixed_string;
