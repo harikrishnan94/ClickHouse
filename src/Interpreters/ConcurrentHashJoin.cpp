@@ -519,13 +519,36 @@ IBlocksStreamPtr ConcurrentHashJoin::getNonJoinedBlocks(
     return std::make_shared<ConcatStreams>(std::move(streams));
 }
 
-static IColumn::Selector hashToSelector(const BlockHashes & hashes, size_t num_shards)
+/// Chained hash maps place a key at `hash & mask` — the same low bits a plain
+/// `hash & (num_shards - 1)` route consumes. Routing by those bits leaves each
+/// slot's map with home cells only at positions congruent to the slot index
+/// modulo `num_shards`, so linear-probe runs grow roughly `num_shards` times
+/// longer than the load factor implies. Route chained types by the hash's
+/// bits 24+ instead — the same window `TwoLevelHashTable::getBucketFromHash`
+/// used when the slots shared two-level maps — which stays decorrelated from
+/// placement until a single slot's map exceeds 2^24 cells. `FixedHashMap`
+/// types (`key8`/`key16`) index cells directly by the key value and have no
+/// chains, so the low bits remain the natural route for them.
+static constexpr bool routeByHighBits(HashJoin::Type type)
+{
+    return type != HashJoin::Type::key8 && type != HashJoin::Type::key16;
+}
+
+static IColumn::Selector hashToSelector(const BlockHashes & hashes, size_t num_shards, bool route_by_high_bits)
 {
     chassert(isPowerOf2(num_shards));
     const size_t num_rows = hashes.size();
     IColumn::Selector selector(num_rows);
-    for (size_t i = 0; i < num_rows; ++i)
-        selector[i] = hashes[i] & (num_shards - 1);
+    if (route_by_high_bits)
+    {
+        for (size_t i = 0; i < num_rows; ++i)
+            selector[i] = (hashes[i] >> 24) & (num_shards - 1);
+    }
+    else
+    {
+        for (size_t i = 0; i < num_rows; ++i)
+            selector[i] = hashes[i] & (num_shards - 1);
+    }
     return selector;
 }
 
@@ -605,7 +628,7 @@ static IColumn::Selector selectDispatchBlock(const HashJoin & join, size_t num_s
             case HashJoin::Type::TYPE:                                                                                                        \
         hash = calculateHashes<typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
                     *maps.TYPE, key_columns, shape.key_sizes);                                                                                \
-        return hashToSelector(hash, num_shards);
+        return hashToSelector(hash, num_shards, routeByHighBits(HashJoin::Type::TYPE));
 
             APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
