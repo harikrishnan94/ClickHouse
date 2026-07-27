@@ -258,3 +258,18 @@ cores (`uname -m` verified by exploration agent; lscpu digest to be recorded
 at first fleet_ab --local run). Acceptance venue: 8× m8g.24xlarge ARM fleet,
 ap-south-2, launched in Unit 4; host list + per-shard `uname -m`/`lscpu`
 digests will be appended here at launch, per mission requirement.
+
+APPENDIX (launched 2026-07-27, per requester authorization): 8×
+m8g.24xlarge, ap-south-2c, security group `sg-0426a4e0a113e0985`, ephemeral
+keypair `fleet/ssh/id_ed25519` (cloud-init injected). Shards (index /
+instance id / private ip): 0 i-0fe67352e5989edf7 172.31.31.21;
+1 i-034fe227c0c563e19 172.31.29.85; 2 i-0aacde025557ca905 172.31.18.3;
+3 i-0e97d0836ce2798f2 172.31.20.240; 4 i-09c676297620ec10a 172.31.18.14;
+5 i-075f553f3fadcad69 172.31.30.126; 6 i-0cc94834290c24619 172.31.16.216;
+7 i-00dc41ff4d2cf8008 172.31.25.54. All `uname -m` = aarch64, CPU
+`Neoverse-V2` (full lscpu per shard in `fleet/smoke_shard*.log`). Deployed
+arms (sha256 verified on every shard against `bins/MANIFEST.tsv`):
+baseline `/home/ubuntu/chj/clickhouse-base` = `0d32ef1c96e6d378aa20d3ab...`
+(`a05f3ee81ff`); candidate `/home/ubuntu/chj/clickhouse-cand` =
+`dc8b1f17e5a7fcce614c8d26...` (`5b276c5fb88`). Teardown owed at campaign
+end: `fleet/teardown.sh` (instances + SG), accounting into REPORT.md.

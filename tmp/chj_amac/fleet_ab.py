@@ -838,17 +838,34 @@ class RemoteServer:
         env_exports = " ".join(
             f"{k}={shlex.quote(v)}" for k, v in {"CLICKHOUSE_WATCHDOG_ENABLE": "0", **self.arm.server_env}.items()
         )
-        # Fire-and-forget launch capturing $! (see join_memory_bench.py
-        # start_server for why the ssh call must not wait on the child).
+        # Double-fork launch: `bash -c 'cmd &'` leaves the server as the ssh
+        # shell's direct child when setsid does not fork (the background
+        # child is not a group leader), and the shell then blocks in wait()
+        # holding the ssh session open forever (observed on the first fleet
+        # smoke). Backgrounding inside a subshell reparents the server to
+        # init so the ssh call returns immediately; the pid comes from the
+        # server's own status file instead of `$!`.
         script = (
-            f"cd {shlex.quote(d)} && nohup setsid env {env_exports} "
+            f"cd {shlex.quote(d)} && rm -f {shlex.quote(d + '/data/status')} && (setsid env {env_exports} "
             f"{shlex.quote(self.arm.binary_path)} server -C {shlex.quote(d + '/config.xml')} "
-            f"</dev/null >{shlex.quote(d + '/stdout.log')} 2>&1 & echo $!"
+            f"</dev/null >{shlex.quote(d + '/stdout.log')} 2>&1 &) && echo launched"
         )
         rc, stdout, err = self.run_ssh(script, timeout=30)
-        if rc != 0 or not stdout.strip().isdigit():
+        if rc != 0 or stdout.strip() != b"launched":
             raise RuntimeError(f"remote server launch failed (rc={rc}): {err}")
-        self.pid = int(stdout.strip())
+        status_path = shlex.quote(d + "/data/status")
+        pid_deadline = time.monotonic() + 60
+        self.pid = None
+        while time.monotonic() < pid_deadline:
+            rc, stdout, _ = self.run_ssh(
+                f"grep -oE '[0-9]+' {status_path} 2>/dev/null | head -1", timeout=15)
+            if rc == 0 and stdout.strip().isdigit():
+                self.pid = int(stdout.strip())
+                break
+            time.sleep(1.0)
+        if self.pid is None:
+            rc, tail, _ = self.run_ssh(f"tail -5 {shlex.quote(d + '/stdout.log')}", timeout=15)
+            raise RuntimeError(f"remote server wrote no status file (arm {self.arm.name}); stdout tail: {tail!r}")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             rc, _, _ = self.sql("SELECT 1 FORMAT Null", timeout=15)
