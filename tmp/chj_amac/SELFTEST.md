@@ -486,3 +486,112 @@ Section 8 re-run (real T1 nominal, fresh file) and section 4 gate re-check:
   changes (`RemoteServer.binary_sha` before resume, PID-only stop, wipe on
   both transports, hard-error wipe) are code-reviewed but must be exercised
   by the first fleet smoke, as already listed in KNOWN GAPS.
+
+## Hygiene-fix re-proofs (2026-07-27, fixer for commit 91469b6b22e)
+
+Fixes applied per hygiene/91469b6.{humanize,reduce}.md: band file stores
+FRACTIONS (per-shape, derived from noise_band_002c_rev1.jsonl; all three
+shapes' same-binary rel_spread 0.0123/0.0127/0.0125 < floor -> 0.03) with a
+fail-closed >0.5 unit guard in `load_band_file`; `matrix_gen.py` re-encodes
+MATRIX.md's 9 blocks verbatim (new `.anti` cell modifier carries block 4's
+LEFT ANTI instantiation; validated on the baseline binary: `ANTI LEFT JOIN`
+closed form = probe_rows - hits, right columns projectable); missing
+`fleet/matrix.json` is now a hard error and deploy.sh ships
+`fleet/{matrix.json,band_local.json}` to `<remote_dir>/fleet/`;
+`check_matrix.py` imports fleet_ab row semantics; `lpt_assignment` /
+`_server_config_text` / `_server_users_text` / `detect_amac` single-sourced
+inside fleet_ab; parity_driver's post-FLUSH sleep removed (flush proven
+synchronous: 5/5 tagged rows visible immediately).
+
+### (a) matrix_gen + MATRIX.md cross-check
+
+    $ python3 fleet/matrix_gen.py
+    MATRIX_GEN RESULT: universe=1800 measured=94 hash_inband=12 -> OK
+
+Mechanical cross-check (independent transcription of MATRIX.md's table rows,
+set-compared against matrix.json's blocks):
+
+    block 1..9: emitted == MATRIX.md, set-equal=True for all 9
+    total emitted=94  MD-union=94  emitted-cells-not-mapping-to-any-MD-block=0  MD-cells-missing=0
+    MD blocks pairwise disjoint: True
+    strzero MEASURED cells (must be none; PARITY-ONLY): none
+    per-block counts: 27/6/12/24/14/4/4/1/2 (required 27/6/12/24/14/4/4/1/2)
+    MATRIX_MD_CROSSCHECK: PASS
+
+### (b) check_matrix on empty dispositions (run from fleet/)
+
+    disposition counts: MEASURED=0 INFERRED=0 PARITY-ONLY=0 EXCLUDED-INVALID=0 NOT-CLAIMED=0 UNDISPOSITIONED=1800
+    1800 undispositioned
+    rc=1  (gate red until dispositioned — correct)
+
+### (c) report with the fraction band file + unit-guard proof
+
+    $ python3 fleet_ab.py report --results fleet/results/noise_band_002c_rev1.jsonl --band-file fleet/band_local.json
+    (all 6 cells: verdict=TIE ... band=3.0%)
+    FLEET_AB REPORT RESULT: cells=6 win=0 tie=6 loss=0 invalid=0 insufficient=0 uncalibrated=0
+    rc=0
+    $ python3 fleet_ab.py report --results ... --band-file tmp/doctored_band.json   # values 3.0
+    ERROR: band file tmp/doctored_band.json: key64:probe.inner_all = 3.0; band file value looks like a percentage; store fractions
+    rc=1
+
+### (d) selftest --check-events (now includes the contract cross-check)
+
+    contract-check: constants match parity/parity_gen.py (primary copy)
+    check-events: 7/7 shared events present in system.events
+    FLEET_AB SELFTEST RESULT: events=7/7 amac=absent not-run -> PASS
+    rc=0
+
+### (e) tiny A/A cell end-to-end
+
+    $ python3 fleet_ab.py sweep --aa --local --arm-a bins/clickhouse-baseline-a05f3ee81ff.bin \
+        --cells key64:probe.inner_all.S1.T4 --runs 5 --warmups 2 \
+        --calibration fleet/calibration_rows.json --results fleet/results/aa_hygiene_t4.jsonl
+    A/A key64:probe.inner_all.S1.T4: TIE (diff -0.16%, band 3.9%)
+    FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=fleet/results/aa_hygiene_t4.jsonl -> PASS
+    FLEET_AB AA RESULT: cells=1 tie=1 nontie=0 -> PASS
+
+### (f) bash -n on every touched shell script
+
+    bash -n fleet/deploy.sh: OK
+    bash -n fleet/launch.sh: OK
+    bash -n order/run_order.sh: OK
+    bash -n order/broken_run_order.sh: OK
+
+### Additional evidence
+
+- Missing frozen plan fails closed (matrix.json moved aside, then restored):
+
+      ERROR: .../fleet/matrix.json missing (frozen plan; fail-closed). Ship fleet/matrix.json next to the driver or pass --cells/--cells-file; regenerate only deliberately via fleet/matrix_gen.py.
+      rc=1
+
+- `.anti` end-to-end on the baseline binary: closed forms exact at three
+  scales (S1.T1 h100: 0 rows; S1.T1 h05: 1,900,000 rows; S3.T4 h100:
+  0 rows); tiny zero-output cells trip the 200 ms duration floor and are
+  fail-closed INVALID as designed (13.6/169.8/172.1 ms medians). At a
+  measurable scale, 10-run protocol:
+
+      A/A key64:probe.semi_anti.S3.T4.anti: TIE (diff +0.02%, band 3.1%)
+      FLEET_AB AA RESULT: cells=1 tie=1 nontie=0 -> PASS
+
+  (A 5-run attempt at the same shape verdicted LOSS at diff +5.38% vs band
+  3.7% — same-binary jitter on an unbanded ad-hoc shape, the PREREG-002c
+  lesson; the 10-run protocol resolves it.) NOTE for Unit 4: block 4's ANTI
+  cells emit zero rows at hit=1.0; if an S2xT96 anti cell runs under the
+  duration floor on the fleet, it will fail closed and needs
+  re-dispositioning or a probe-rows raise, per MATRIX.md caveat 6.
+
+- Verdict power intact after the refactors:
+
+      verdict-selftest: A(T4) vs B(T2) -> LOSS (diff +90.59%, band 3.1%)
+      FLEET_AB SELFTEST RESULT: not-run verdict=LOSS -> PASS
+
+- Plan re-proof regenerated through the extracted `lpt_assignment` (the new
+  94+12 plan):
+
+      FLEET_AB PLAN RESULT: cells=106 shards=8 load_balance=1.008 -> OK
+
+- `parity_gen.py` edit is comment-only: regenerated cases byte-identical to
+  the committed `parity/cases.jsonl` (636 cases, `diff -q` clean).
+- CALIBRATION.md's cited method scripts exist on disk with matching names
+  (`calibration/calibrate.py`, `calibration/make_json.py`); no doc fix
+  needed — they only need to be added to the commit.

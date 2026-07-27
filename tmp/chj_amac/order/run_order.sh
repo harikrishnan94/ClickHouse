@@ -135,9 +135,9 @@ client() {
 }
 
 stop_server() {
-    # Kill strictly by OUR recorded PID; verify identity via /proc/<pid>/exe
-    # inode-independent hash comparison is done once at startup; here we only
-    # require that the cmdline still references our config path (PID-reuse guard).
+    # Kill strictly by our recorded PID. Binary identity (/proc/<pid>/exe
+    # hash) was verified once at startup; here we only require that the
+    # cmdline still references our config path (PID-reuse guard).
     if [ -n "$SERVER_PID" ] && [ -d "/proc/$SERVER_PID" ]; then
         if tr '\0' ' ' < "/proc/$SERVER_PID/cmdline" 2>/dev/null | grep -qF "$SRV_DIR/config.xml"; then
             kill "$SERVER_PID" 2>/dev/null

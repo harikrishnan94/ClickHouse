@@ -74,8 +74,7 @@ aws ec2 run-instances --profile "$PROFILE" --region "$REGION" \
     > "$HERE/launch_receipt.json"
 
 # 5. Wait for running + write hosts.tsv.
-IDS=$(python3 -c "import json;print(' '.join(i['InstanceId'] for r in json.load(open('$HERE/launch_receipt.json'))['Instances'] for i in [r]))" 2>/dev/null ||
-      python3 -c "import json;d=json.load(open('$HERE/launch_receipt.json'));print(' '.join(i['InstanceId'] for i in d['Instances']))")
+IDS=$(python3 -c "import json;d=json.load(open('$HERE/launch_receipt.json'));print(' '.join(i['InstanceId'] for i in d['Instances']))")
 aws ec2 wait instance-running --profile "$PROFILE" --region "$REGION" --instance-ids $IDS
 aws ec2 describe-instances --profile "$PROFILE" --region "$REGION" --instance-ids $IDS \
     --query 'Reservations[].Instances[].[InstanceId,PrivateIpAddress,Placement.AvailabilityZone]' \

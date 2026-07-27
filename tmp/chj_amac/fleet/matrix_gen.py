@@ -12,10 +12,12 @@ evidence (they support INFERRED dispositions of base cells / gate the grower
 change) and are listed under measured_plan / hash_inband. check_matrix on
 empty dispositions therefore prints '1800 undispositioned'.
 
-Block counts follow the approved plan (mission-amac-zany-hammock.md, item 8):
-probe grid 27; size ladder 6; thread ladder 12; kind/strictness 24; build 14;
-dup-heavy 4; hit-rate 4; join_use_nulls 1; stats-on 2 -- total 94 distinct
-cells (assert-checked). Hash in-band: {key64,str,k256} x {S2,S4} x T{1,96}.
+The 9 blocks transcribe MATRIX.md's "Measured subset" table, which is the
+authoritative freeze -- on any conflict MATRIX.md wins and THIS file gets
+fixed (MATRIX.md's own rule). Block counts 27/6/12/24/14/4/4/1/2 = 94
+distinct cells, assert-checked per block and in total. Block 4 lists the
+semi_anti group twice (LEFT SEMI and LEFT ANTI); the ANTI instantiation is
+the `.anti` cell modifier. Hash in-band: {key64,str,k256} x {S2,S4} x T{1,96}.
 """
 
 from __future__ import annotations
@@ -35,114 +37,109 @@ def _cell(family, side, group, size, threads, **mods) -> str:
     return fleet_ab.Cell(family, side, group, size, threads, **mods).cell_id
 
 
+# Expected cell count per MATRIX.md block, in table order.
+MATRIX_MD_BLOCK_COUNTS = (27, 6, 12, 24, 14, 4, 4, 1, 2)
+
+
 def measured_blocks() -> list[dict]:
+    # Every block below is a 1:1 transcription of a MATRIX.md table row;
+    # rationale strings are that row's rationale column.
     blocks = []
 
-    # 1. probe grid (27): 9 of the 10 families (all but mixed, which the
-    # thread ladder carries) x S3 x all threads, probe side, inner_all.
+    # 1. Probe core grid (27): 9 families (no strzero: PARITY-ONLY by
+    # disposition) x {S2,S3,S5} x T96, probe side, inner_all.
     cells = [
-        _cell(f, "probe", "inner_all", "S3", t)
-        for f in ("key32", "key64", "str", "strzero", "fixstr", "k128", "k256", "null64", "lcstr")
-        for t in (1, 48, 96)
+        _cell(f, "probe", "inner_all", s, 96)
+        for f in ("key32", "key64", "str", "fixstr", "k128", "k256", "null64", "lcstr", "mixed")
+        for s in ("S2", "S3", "S5")
     ]
     blocks.append({
-        "name": "probe_grid",
-        "rationale": "Primary claim surface: probe-side AMAC lookup on the DRAM-resident S3 map "
-                     "across every key family and the full thread axis.",
+        "name": "probe_core_grid",
+        "rationale": "family x map-residency are the first-order AMAC axes; T96 is the headline",
         "cells": cells,
     })
 
-    # 2. size ladder (6): completes key64 to the full 5-size ladder at T96 and
-    # anchors str at the extremes (S3 rungs come from the probe grid).
-    cells = [_cell("key64", "probe", "inner_all", s, 96) for s in ("S1", "S2", "S4", "S5")]
-    cells += [_cell("str", "probe", "inner_all", s, 96) for s in ("S1", "S5")]
+    # 2. Size-ladder completion (6).
+    cells = [_cell(f, "probe", "inner_all", s, 96)
+             for f in ("key64", "str", "k256") for s in ("S1", "S4")]
     blocks.append({
         "name": "size_ladder",
-        "rationale": "Map-residency ladder (L2 -> L3 -> DRAM): AMAC's win must grow with map "
-                     "size; S1 bounds the small-map regression risk.",
+        "rationale": "full 5-point ladder on 3 sentinel families locates the engagement knee",
         "cells": cells,
     })
 
-    # 3. thread ladder (12): key64 off-S3 sizes at T1/T48 (completing the
-    # 5x3 key64 grid) plus the mixed family's full thread axis.
-    cells = [_cell("key64", "probe", "inner_all", s, t)
-             for s in ("S1", "S2", "S4", "S5") for t in (1, 48)]
-    cells += [_cell("mixed", "probe", "inner_all", "S3", t) for t in (1, 48, 96)]
-    cells += [_cell("str", "probe", "inner_all", "S5", 48)]
+    # 3. Thread ladder (12).
+    cells = [_cell(f, "probe", "inner_all", s, t)
+             for f in ("key64", "str", "k256") for s in ("S2", "S4") for t in (1, 48)]
     blocks.append({
         "name": "thread_ladder",
-        "rationale": "Thread scaling off the S3 anchor: key64 becomes a full 5-size x 3-thread "
-                     "grid; mixed (composite numeric+string key) gets its thread axis here.",
+        "rationale": "ring + ordered-probe costs scale with lanes; T1 isolates single-slot",
         "cells": cells,
     })
 
-    # 4. kind/strictness (24): every non-inner group on the two anchor
-    # families at S3; T1 sanity on the numeric family.
+    # 4. Kind/strictness (24): six instantiation rows -- the semi_anti group
+    # appears twice, as LEFT SEMI (plain) and LEFT ANTI (.anti modifier).
+    # MATRIX.md labels the rf_all point RIGHT ALL and the any point INNER ANY;
+    # fleet_ab instantiates rf_all as FULL JOIN (superset of RIGHT) and any as
+    # ANY LEFT JOIN -- the documented decisions at fleet_ab.GROUP_JOIN_CLAUSE.
+    variants = (("left_all", False), ("rf_all", False), ("any", False),
+                ("semi_anti", False), ("semi_anti", True), ("asof", False))
     cells = [
-        _cell(f, "probe", g, "S3", t)
-        for g in ("left_all", "rf_all", "any", "semi_anti", "asof")
+        _cell(f, "probe", g, s, 96, anti=anti)
+        for g, anti in variants
         for f in ("key64", "str")
-        for t in (48, 96)
+        for s in ("S2", "S4")
     ]
-    cells += [_cell("key64", "probe", g, "S3", 1)
-              for g in ("left_all", "rf_all", "any", "semi_anti")]
     blocks.append({
         "name": "kind_strictness",
-        "rationale": "The routed probe must not regress non-INNER kinds/strictnesses (LEFT/FULL/"
-                     "ANY/SEMI/ASOF instantiations) at the size where AMAC engages.",
+        "rationale": "one measured point per instantiation group per sentinel family per "
+                     "residency class",
         "cells": cells,
     })
 
-    # 5. build (14): build-side cells for the build-insert ring claim.
+    # 5. Build side (14).
     cells = [_cell(f, "build", "inner_all", s, 96)
-             for f in ("key64", "str", "k256", "fixstr") for s in ("S2", "S4")]
-    cells += [_cell(f, "build", "inner_all", "S3", 48) for f in ("key64", "str")]
-    cells += [_cell("key64", "build", "inner_all", s, 96) for s in ("S1", "S5")]
-    cells += [_cell(f, "build", "inner_all", "S3", 96) for f in ("null64", "lcstr")]
+             for f in ("key64", "str", "k256", "mixed") for s in ("S2", "S3", "S5")]
+    cells += [_cell("key64", "build", "inner_all", "S3", t) for t in (1, 48)]
     blocks.append({
         "name": "build",
-        "rationale": "Build-insert ring claim: build-heavy cells (small probe) across key kinds "
-                     "and sizes; S1/S5 bound the ladder, T48 checks mid-parallelism.",
+        "rationale": "build events must not regress; kind is second-order on build (shared "
+                     "insert path)",
         "cells": cells,
     })
 
-    # 6. dup-heavy (4): 16x duplicated build keys -- chain-following stress
-    # for ring disassembly (both sides).
-    cells = [_cell(f, side, "inner_all", "S3", 96, dup16=True)
-             for f in ("key64", "str") for side in ("probe", "build")]
+    # 6. Duplicate-heavy build (4): dup=16, build side, {inner_all,left_all}.
+    cells = [_cell(f, "build", g, "S3", 96, dup16=True)
+             for f in ("key64", "str") for g in ("inner_all", "left_all")]
     blocks.append({
         "name": "dup_heavy",
-        "rationale": "Duplicate chains (16x) stress collision-chain walking in the AMAC ring "
-                     "and RowRef list handling on both build and probe.",
+        "rationale": "duplicate chains change ring occupancy and `RowRefList` appends",
         "cells": cells,
     })
 
-    # 7. hit-rate (4): miss-dominated probes change the lookup's branch mix.
+    # 7. Hit-rate (4): h in {0.5, 0.05}.
     cells = [_cell(f, "probe", "inner_all", "S3", 96, hit_pct=p)
              for f in ("key64", "str") for p in (50, 5)]
     blocks.append({
         "name": "hit_rate",
-        "rationale": "h=0.5/0.05: misses terminate lookups early and shift the ring's "
-                     "prefetch-to-work ratio; must not regress miss-heavy probes.",
+        "rationale": "miss-dominated probes stress the ring differently",
         "cells": cells,
     })
 
-    # 8. join_use_nulls (1): output-nullability flag on the nullable family.
+    # 8. join_use_nulls=1 (1).
     blocks.append({
         "name": "join_use_nulls",
-        "rationale": "join_use_nulls=1 changes output column wrapping, not the lookup; one "
-                     "sentinel cell proves in-band.",
-        "cells": [_cell("null64", "probe", "inner_all", "S3", 96, jun=True)],
+        "rationale": "nullable output path interacts with ordered gather",
+        "cells": [_cell("key64", "probe", "left_all", "S3", 96, jun=True)],
     })
 
-    # 9. stats-on (2): the runtime-stats collector interacts with build sizing.
+    # 9. Stats-on sensitivity (2).
     blocks.append({
         "name": "stats_on",
-        "rationale": "collect_hash_table_stats_during_joins=1 alters initial map sizing "
-                     "(fewer growths); both sides sampled once.",
+        "rationale": "protocol-sensitivity check for the stats-off measurement decision",
         "cells": [
-            _cell("key64", "probe", "inner_all", "S3", 96, statson=True),
             _cell("key64", "build", "inner_all", "S3", 96, statson=True),
+            _cell("key64", "probe", "inner_all", "S3", 96, statson=True),
         ],
     })
 
@@ -150,8 +147,12 @@ def measured_blocks() -> list[dict]:
 
 
 def measured_cell_ids() -> list[str]:
+    blocks = measured_blocks()
+    for block, want in zip(blocks, MATRIX_MD_BLOCK_COUNTS):
+        assert len(block["cells"]) == want, \
+            f"block {block['name']}: {len(block['cells'])} cells, MATRIX.md says {want}"
     ids: list[str] = []
-    for block in measured_blocks():
+    for block in blocks:
         ids.extend(block["cells"])
     unique = list(dict.fromkeys(ids))
     assert len(ids) == len(unique), "measured blocks overlap; the 94-cell count would be wrong"

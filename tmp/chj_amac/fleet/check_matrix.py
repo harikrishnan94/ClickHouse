@@ -10,8 +10,8 @@ Rules:
 - A universe cell counts as undispositioned when it has no entry in the
   dispositions file OR its entry fails validation:
     * MEASURED requires, for that exact cell id in the results (rows of the
-      LAST attempt nonce per (cell, arm, host) win, matching fleet_ab
-      dedup_last_attempt):
+      LAST attempt nonce per (cell, arm, host) win, via fleet_ab
+      dedup_last_attempt -- imported, so gate and driver cannot drift):
         (a) both arm roles A and B present, each with >= MIN_RUNS (5) VALID
             runs;
         (b) the two arms ran DIFFERENT binaries (binary_sha256 must differ),
@@ -45,37 +45,21 @@ import json
 import pathlib
 import sys
 
-MIN_RUNS = 5
-DISPOSITIONS = ("MEASURED", "INFERRED", "PARITY-ONLY", "EXCLUDED-INVALID", "NOT-CLAIMED")
 FLEET_DIR = pathlib.Path(__file__).resolve().parent
+
+# Row semantics (freshest-attempt dedup, run-count floor, fail-closed results
+# loading) are fleet_ab's; import them so the coverage gate can never drift
+# from the driver it audits (same pattern as matrix_gen.py).
+sys.path.insert(0, str(FLEET_DIR.parent))
+import fleet_ab  # noqa: E402
+
+MIN_RUNS = fleet_ab.MIN_VERDICT_RUNS
+DISPOSITIONS = ("MEASURED", "INFERRED", "PARITY-ONLY", "EXCLUDED-INVALID", "NOT-CLAIMED")
 
 
 def load_results_rows(spec: str | None) -> list[dict]:
-    rows: list[dict] = []
-    if not spec:
-        return rows
-    for part in spec.split(","):
-        path = pathlib.Path(part.strip())
-        if not path.exists():
-            sys.exit(f"ERROR: results file missing: {path} (fail-closed; fix --results)")
-        for line in path.read_text().splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
-
-
-def dedup_last_attempt(rows: list[dict]) -> list[dict]:
-    """Keep only rows of the LAST attempt nonce per (cell, arm_role, host) --
-    same semantics as fleet_ab.dedup_last_attempt, so stale tail rows from a
-    longer earlier attempt can never pool in."""
-    last_nonce: dict[tuple, object] = {}
-    for r in rows:
-        last_nonce[(r["cell"], r.get("arm_role"), r.get("host"))] = r.get("nonce")
-    keyed: dict[tuple, dict] = {}
-    for r in rows:
-        if last_nonce[(r["cell"], r.get("arm_role"), r.get("host"))] == r.get("nonce"):
-            keyed[(r["cell"], r.get("arm_role"), r.get("run"), r.get("host"))] = r
-    return list(keyed.values())
+    # Only the optional-spec arm (no --results given) is local.
+    return fleet_ab.load_result_rows(spec) if spec else []
 
 
 def nominal_threads(cell: str) -> int | None:
@@ -90,7 +74,7 @@ def collect_arm_stats(rows: list[dict]) -> dict[str, dict[str, dict]]:
     """cell -> arm_role -> {runs, shas, fps, bad_threads} over VALID rows of
     the freshest attempt."""
     stats: dict[str, dict[str, dict]] = {}
-    for r in dedup_last_attempt(rows):
+    for r in fleet_ab.dedup_last_attempt(rows):
         if not r.get("valid"):
             continue
         role = r.get("arm_role") or r.get("arm")

@@ -3,13 +3,15 @@
 order-preserving-probe mission (Unit 1 harness).
 
 An ARM is {name, binary_path, server_env, settings_overlay}. A CELL is
-  family:side.group.size.T<threads>[.dup16][.h50|.h05][.jun][.statson][.hash]
+  family:side.group.size.T<threads>[.anti][.dup16][.h50|.h05][.jun][.statson][.hash]
 with family in {key32,key64,str,strzero,fixstr,k128,k256,null64,lcstr,mixed},
 side in {build,probe}, group in {inner_all,left_all,rf_all,any,semi_anti,asof},
 size in {S1..S5} (aggregate map bytes 1MB/32MB/1GB/4GB/16GB; DEFAULT row
 counts are UNCALIBRATED until a --calibration file exists), threads in
-{1,48,96}. The trailing `.hash` modifier marks an algo_override='hash' cell
-(grower-change in-band gate; both arms run join_algorithm='hash').
+{1,48,96}. `.anti` (semi_anti group only) instantiates ANTI LEFT JOIN instead
+of SEMI LEFT JOIN -- MATRIX.md block 4 measures both. The trailing `.hash`
+modifier marks an algo_override='hash' cell (grower-change in-band gate; both
+arms run join_algorithm='hash').
 
 Per cell: Memory-engine build/probe tables are filled identically on both
 arms' servers; 4 untimed warmups per arm; N timed runs (default 10) strict
@@ -67,11 +69,16 @@ SHARED_EVENTS = (
 )
 
 # ---------------------------------------------------------------------------
-# FUTURE (Units 2-3) contract -- ONE block, update here when the counters and
-# the diagnostic hook land. They exist in NO binary yet: every assertion that
-# depends on them AUTO-DETECTS availability via system.events and prints a
-# loud SKIPPED line when absent; --require-engagement upgrades absence to
-# failure once Unit 2 lands.
+# FUTURE (Units 2-3) contract. The PRIMARY copy lives in parity/parity_gen.py
+# (which also serves it to shell via --print-contract); this is fleet_ab's
+# standalone copy because deploy.sh ships this file alone to shards, and
+# order/run_order.sh carries a third (bash cannot import). On any contract
+# change update all three: grep CLICKHOUSE_JOIN_AMAC under tmp/chj_amac.
+# `selftest` cross-checks this copy against parity_gen when the parity
+# harness is present on the host. The counters exist in NO binary yet: every
+# assertion that depends on them AUTO-DETECTS availability via system.events
+# and prints a loud SKIPPED line when absent; --require-engagement upgrades
+# absence to failure once Unit 2 lands.
 AMAC_ENGAGEMENT_EVENTS = (
     "ConcurrentHashJoinAmacBuildRows",
     "ConcurrentHashJoinAmacBuildRingGrowths",
@@ -130,8 +137,9 @@ SIZE_BYTES = {"S1": 1 << 20, "S2": 32 << 20, "S3": 1 << 30, "S4": 4 << 30, "S5":
 # Instantiation of the group axis (documented decisions):
 #   rf_all    -> FULL JOIN (superset of RIGHT: exercises right-side emission
 #                and unmatched-right accounting in one query)
-#   any       -> ANY LEFT JOIN; semi_anti -> SEMI LEFT JOIN (ANTI is covered
-#                by the parity harness, not by a perf cell)
+#   any       -> ANY LEFT JOIN
+#   semi_anti -> SEMI LEFT JOIN; a cell with the .anti modifier instantiates
+#                ANTI LEFT JOIN instead (MATRIX.md block 4 measures both)
 #   asof      -> ASOF JOIN (inner) on key equality + l.ts >= r.ts
 GROUP_JOIN_CLAUSE = {
     "inner_all": "INNER JOIN",
@@ -150,6 +158,7 @@ class Cell:
     group: str
     size: str
     threads: int
+    anti: bool = False          # semi_anti only: ANTI LEFT JOIN instead of SEMI LEFT JOIN
     dup16: bool = False
     hit_pct: int = 100          # 100 | 50 (.h50) | 5 (.h05)
     jun: bool = False           # join_use_nulls = 1
@@ -159,6 +168,8 @@ class Cell:
     @property
     def cell_id(self) -> str:
         s = f"{self.family}:{self.side}.{self.group}.{self.size}.T{self.threads}"
+        if self.anti:
+            s += ".anti"
         if self.dup16:
             s += ".dup16"
         if self.hit_pct == 50:
@@ -176,9 +187,9 @@ class Cell:
     def axes(self) -> dict:
         return {
             "family": self.family, "side": self.side, "group": self.group,
-            "size": self.size, "threads": self.threads, "dup16": self.dup16,
-            "hit_pct": self.hit_pct, "jun": self.jun, "statson": self.statson,
-            "algo": self.algo,
+            "size": self.size, "threads": self.threads, "anti": self.anti,
+            "dup16": self.dup16, "hit_pct": self.hit_pct, "jun": self.jun,
+            "statson": self.statson, "algo": self.algo,
         }
 
     @property
@@ -204,9 +215,11 @@ def parse_cell(cell_id: str) -> Cell:
     if not tpart.startswith("T") or not tpart[1:].isdigit():
         raise ValueError(f"cell {cell_id!r}: bad thread part {tpart!r}")
     threads = int(tpart[1:])
-    kw = dict(dup16=False, hit_pct=100, jun=False, statson=False, algo="parallel_hash")
+    kw = dict(anti=False, dup16=False, hit_pct=100, jun=False, statson=False, algo="parallel_hash")
     for mod in parts[4:]:
-        if mod == "dup16":
+        if mod == "anti":
+            kw["anti"] = True
+        elif mod == "dup16":
             kw["dup16"] = True
         elif mod == "h50":
             kw["hit_pct"] = 50
@@ -221,6 +234,8 @@ def parse_cell(cell_id: str) -> Cell:
         else:
             raise ValueError(f"cell {cell_id!r}: unknown modifier {mod!r}")
     cell = Cell(head, side, group, size, threads, **kw)
+    if cell.anti and cell.group != "semi_anti":
+        raise ValueError(f"cell {cell_id!r}: .anti is a semi_anti-group variant only")
     if cell.dup16 and cell.group not in ("inner_all", "left_all"):
         # ANY/SEMI/ASOF pick one of several duplicate matches; which one is
         # implementation-defined, so the cross-arm checksum would not be a
@@ -369,6 +384,19 @@ def load_calibration(path: str | None) -> dict:
     return json.loads(pathlib.Path(path).read_text())
 
 
+def load_band_file(path: str) -> dict:
+    """Band files store FRACTIONS (0.03 = 3%), keyed by cell id or shape_key.
+    Fail-closed unit guard: a value like 3.0 would be a 300% band, silently
+    turning every verdict into TIE and neutering the A/B gate."""
+    band = json.loads(pathlib.Path(path).read_text())
+    for key, value in band.items():
+        if float(value) > 0.5:
+            raise SystemExit(
+                f"ERROR: band file {path}: {key} = {value}; "
+                "band file value looks like a percentage; store fractions")
+    return band
+
+
 def resolve_shape(cell: Cell, calibration: dict) -> CellShape:
     fam = FAMILY_SPECS[cell.family]
     cal = calibration.get(cell.family, {}).get(cell.size)
@@ -412,8 +440,8 @@ def expected_output_rows(cell: Cell, unique: int, dup: int, probe_rows: int, hit
         return hits * dup + (probe_rows - hits) + (unique - probed_unique) * dup
     if cell.group == "any":  # ANY LEFT: exactly one output row per probe row
         return probe_rows
-    if cell.group == "semi_anti":  # SEMI LEFT: matched probe rows only
-        return hits
+    if cell.group == "semi_anti":  # SEMI LEFT: matched probe rows; ANTI LEFT: unmatched
+        return (probe_rows - hits) if cell.anti else hits
     if cell.group == "asof":  # inner ASOF, probe ts >= every build ts: one match per hit row
         return hits
     raise ValueError(f"no closed form for group {cell.group}")
@@ -531,9 +559,10 @@ def join_query_sql(cell: Cell, settings: dict, log_comment: str) -> str:
         on += " AND l.ts >= r.ts"
     parts = [_format_setting(k, v) for k, v in settings.items()]
     parts.append(f"log_comment = '{log_comment}'")
+    clause = "ANTI LEFT JOIN" if cell.anti else GROUP_JOIN_CLAUSE[cell.group]
     return (
         f"SELECT count() AS row_count, {checksum_expr(cell)} AS checksum "
-        f"FROM {PROBE_TABLE} AS l {GROUP_JOIN_CLAUSE[cell.group]} {BUILD_TABLE} AS r ON {on} "
+        f"FROM {PROBE_TABLE} AS l {clause} {BUILD_TABLE} AS r ON {on} "
         f"SETTINGS {', '.join(parts)} FORMAT JSONEachRow"
     )
 
@@ -579,6 +608,17 @@ def parse_kv_list(items) -> dict:
     return out
 
 
+def detect_amac(server) -> bool:
+    """True iff every AMAC engagement counter exists in system.events; works
+    on either transport (needs only server.sql_json)."""
+    names = ", ".join(f"'{n}'" for n in AMAC_ENGAGEMENT_EVENTS)
+    rows = server.sql_json(
+        f"SELECT name FROM system.events WHERE name IN ({names}) "
+        "SETTINGS system_events_show_zero_values = 1 FORMAT JSONEachRow")
+    found = {r["name"] for r in rows}
+    return all(n in found for n in AMAC_ENGAGEMENT_EVENTS)
+
+
 class LocalServer:
     """One arm's server on this host. Started from INSIDE its scratch dir
     (preprocessed_configs land in the server CWD), fully managed within one
@@ -605,50 +645,9 @@ class LocalServer:
 
     def _write_configs(self) -> pathlib.Path:
         self.srv_dir.mkdir(parents=True, exist_ok=True)
-        data = self.srv_dir / "data"
         config = self.srv_dir / "config.xml"
-        # Minimal config: explicit query_log (engagement/timing extraction
-        # depends on it), NO keeper/zookeeper section, loopback only, assigned
-        # non-default ports. Only configured ports are opened.
-        config.write_text(f"""<clickhouse>
-    <logger>
-        <level>warning</level>
-        <log>{self.srv_dir}/server.log</log>
-        <errorlog>{self.srv_dir}/server.err.log</errorlog>
-    </logger>
-    <listen_host>127.0.0.1</listen_host>
-    <tcp_port>{self.tcp_port}</tcp_port>
-    <http_port>{self.http_port}</http_port>
-    <path>{data}/</path>
-    <tmp_path>{data}/tmp/</tmp_path>
-    <user_files_path>{data}/user_files/</user_files_path>
-    <mlock_executable>false</mlock_executable>
-    <query_log>
-        <database>system</database>
-        <table>query_log</table>
-        <flush_interval_milliseconds>1000</flush_interval_milliseconds>
-    </query_log>
-    <user_directories>
-        <users_xml>
-            <path>users.xml</path>
-        </users_xml>
-    </user_directories>
-</clickhouse>
-""")
-        (self.srv_dir / "users.xml").write_text("""<clickhouse>
-    <profiles><default/></profiles>
-    <users>
-        <default>
-            <password></password>
-            <networks><ip>127.0.0.1</ip></networks>
-            <profile>default</profile>
-            <quota>default</quota>
-            <access_management>1</access_management>
-        </default>
-    </users>
-    <quotas><default/></quotas>
-</clickhouse>
-""")
+        config.write_text(_server_config_text(str(self.srv_dir), self.tcp_port, self.http_port))
+        (self.srv_dir / "users.xml").write_text(_server_users_text())
         return config
 
     def wipe_data(self) -> None:
@@ -685,7 +684,7 @@ class LocalServer:
             rc, _, _ = self.sql("SELECT 1 FORMAT Null", timeout=10)
             if rc == 0:
                 self._verify_exe()
-                self.amac_available = self._detect_amac()
+                self.amac_available = detect_amac(self)
                 return
             time.sleep(0.5)
         raise RuntimeError(f"server (arm {self.arm.name}) not ready within {timeout}s; tail: {self._log_tail()}")
@@ -727,15 +726,6 @@ class LocalServer:
                     f"binary {self.arm.binary_path} sha {expected[:16]} (arm {self.arm.name})"
                 )
         self.arm.binary_sha256 = expected
-
-    def _detect_amac(self) -> bool:
-        names = ", ".join(f"'{n}'" for n in AMAC_ENGAGEMENT_EVENTS)
-        rows = self.sql_json(
-            f"SELECT name FROM system.events WHERE name IN ({names}) "
-            "SETTINGS system_events_show_zero_values = 1 FORMAT JSONEachRow"
-        )
-        found = {r["name"] for r in rows}
-        return all(n in found for n in AMAC_ENGAGEMENT_EVENTS)
 
     def sql(self, sql: str, timeout: float | None = 120):
         argv = [self.arm.binary_path, "client", "--host", "127.0.0.1",
@@ -825,8 +815,8 @@ class RemoteServer:
 
     def start(self, timeout: float = 120.0) -> None:
         d = self.remote_dir
-        config_text = _remote_config_text(d, self.tcp_port, self.http_port)
-        users_text = _remote_users_text()
+        config_text = _server_config_text(d, self.tcp_port, self.http_port)
+        users_text = _server_users_text()
         rc, _, err = self.run_ssh(
             f"mkdir -p {shlex.quote(d)} && cat > {shlex.quote(d + '/config.xml')}",
             input_bytes=config_text.encode())
@@ -854,7 +844,7 @@ class RemoteServer:
             rc, _, _ = self.sql("SELECT 1 FORMAT Null", timeout=15)
             if rc == 0:
                 self.proc_exe_sha256 = self._remote_exe_sha()
-                self.amac_available = self._detect_amac()
+                self.amac_available = detect_amac(self)
                 return
             time.sleep(1.0)
         raise RuntimeError(f"remote server (arm {self.arm.name}) not ready within {timeout}s")
@@ -874,14 +864,6 @@ class RemoteServer:
                 f"/proc/{self.pid}/exe sha {sha[:16]} != deployed binary sha "
                 f"{self.arm.binary_sha256[:16]} (arm {self.arm.name})")
         return sha
-
-    def _detect_amac(self) -> bool:
-        names = ", ".join(f"'{n}'" for n in AMAC_ENGAGEMENT_EVENTS)
-        rows = self.sql_json(
-            f"SELECT name FROM system.events WHERE name IN ({names}) "
-            "SETTINGS system_events_show_zero_values = 1 FORMAT JSONEachRow")
-        found = {r["name"] for r in rows}
-        return all(n in found for n in AMAC_ENGAGEMENT_EVENTS)
 
     def sql(self, sql: str, timeout: float | None = 650):
         # Vendored from join_memory_bench.py run_remote_sql.
@@ -912,7 +894,11 @@ class RemoteServer:
                                f"SIGTERM+SIGKILL: {err}")
 
 
-def _remote_config_text(d: str, tcp_port: int, http_port: int) -> str:
+def _server_config_text(d: str, tcp_port: int, http_port: int) -> str:
+    # One config for BOTH transports (the module docstring's shared-interface
+    # claim). Minimal: explicit query_log (engagement/timing extraction
+    # depends on it), NO keeper/zookeeper section, loopback only, assigned
+    # non-default ports. Only configured ports are opened.
     return f"""<clickhouse>
     <logger>
         <level>warning</level>
@@ -940,7 +926,7 @@ def _remote_config_text(d: str, tcp_port: int, http_port: int) -> str:
 """
 
 
-def _remote_users_text() -> str:
+def _server_users_text() -> str:
     return """<clickhouse>
     <profiles><default/></profiles>
     <users>
@@ -1372,13 +1358,31 @@ def load_cells_file(path: str) -> list[str]:
 
 
 def default_plan_cells() -> list[str]:
+    # The frozen plan is DATA, not code: regenerating it on the fly would
+    # silently substitute the current generator's plan for the registered one
+    # (MATRIX.md freeze), and a deployed shard has no generator at all.
     matrix_path = FLEET_DIR / "matrix.json"
-    if matrix_path.exists():
-        return load_cells_file(str(matrix_path))
-    # Lazy import to avoid a module-level cycle (matrix_gen imports fleet_ab).
-    sys.path.insert(0, str(FLEET_DIR))
-    import matrix_gen  # noqa: PLC0415
-    return matrix_gen.measured_cell_ids() + matrix_gen.hash_inband_cell_ids()
+    if not matrix_path.exists():
+        raise SystemExit(
+            f"ERROR: {matrix_path} missing (frozen plan; fail-closed). Ship fleet/matrix.json "
+            "next to the driver or pass --cells/--cells-file; regenerate only deliberately "
+            "via fleet/matrix_gen.py.")
+    return load_cells_file(str(matrix_path))
+
+
+def lpt_assignment(cells: list[Cell], shards: int, calibration: dict) -> tuple[dict, list]:
+    """Deterministic LPT: heaviest cell first onto the least-loaded shard
+    (vendored from join_memory_bench.py build_plan). Single-sourced on
+    purpose: `plan` (the published shard map) and `sweep --shard` (what a
+    shard actually runs) must partition identically. Returns
+    (cell_id -> shard, per-shard loads)."""
+    loads = [0.0] * shards
+    assignment: dict[str, int] = {}
+    for cell in sorted(cells, key=lambda c: (-cell_cost_estimate(c, calibration), c.cell_id)):
+        shard = loads.index(min(loads))
+        assignment[cell.cell_id] = shard
+        loads[shard] += cell_cost_estimate(cell, calibration)
+    return assignment, loads
 
 
 def plan_command(args) -> int:
@@ -1391,14 +1395,7 @@ def plan_command(args) -> int:
     if shards > len(cells):
         raise SystemExit(f"plan: --shards {shards} > {len(cells)} cells; refusing -- some shards "
                          f"would be empty and load_balance meaningless (review finding 9)")
-    # Deterministic LPT: heaviest cell first onto the least-loaded shard
-    # (vendored from join_memory_bench.py build_plan).
-    loads = [0.0] * shards
-    assignment = {}
-    for cell in sorted(cells, key=lambda c: (-cell_cost_estimate(c, calibration), c.cell_id)):
-        shard = loads.index(min(loads))
-        assignment[cell.cell_id] = shard
-        loads[shard] += cell_cost_estimate(cell, calibration)
+    assignment, loads = lpt_assignment(cells, shards, calibration)
     plan = [
         {"cell": c.cell_id, "shard": assignment[c.cell_id],
          "est_cost": cell_cost_estimate(c, calibration)}
@@ -1479,12 +1476,7 @@ def sweep_cells_from_args(args) -> list[Cell]:
                              f"(empty shards; review finding 9)")
         calibration = load_calibration(args.calibration)
         cells = [parse_cell(c) for c in ids]
-        loads = [0.0] * args.shards
-        assignment = {}
-        for cell in sorted(cells, key=lambda c: (-cell_cost_estimate(c, calibration), c.cell_id)):
-            shard = loads.index(min(loads))
-            assignment[cell.cell_id] = shard
-            loads[shard] += cell_cost_estimate(cell, calibration)
+        assignment, _ = lpt_assignment(cells, args.shards, calibration)
         return [c for c in cells if assignment[c.cell_id] == args.shard]
     return [parse_cell(c) for c in ids]
 
@@ -1601,7 +1593,7 @@ def report_command(args) -> int:
     if not rows:
         print(f"FLEET_AB REPORT RESULT: cells=0 win=0 tie=0 loss=0 invalid=0 (no rows in {args.results})")
         return 1
-    band_file = json.loads(pathlib.Path(args.band_file).read_text()) if args.band_file else None
+    band_file = load_band_file(args.band_file) if args.band_file else None
     verdicts = cell_verdicts(rows, band_file, min_runs=args.min_runs)
     counts = {"WIN": 0, "TIE": 0, "LOSS": 0, "INVALID": 0, "INSUFFICIENT": 0}
     uncal = 0
@@ -1659,6 +1651,28 @@ def selftest_command(args) -> int:
     all_ok = True
     events_summary = "not-run"
     verdict_summary = "not-run"
+
+    # Units 2-3 contract consistency: parity/parity_gen.py holds the PRIMARY
+    # copy of the constants block; this file's copy must match it wherever the
+    # parity harness is present (deployed shards carry fleet_ab.py alone).
+    parity_dir = BASE_DIR / "parity"
+    if (parity_dir / "parity_gen.py").exists():
+        sys.path.insert(0, str(parity_dir))
+        import parity_gen  # noqa: PLC0415
+        mismatches = [
+            name for name, ours, primary in (
+                ("AMAC_ENGAGEMENT_EVENTS", AMAC_ENGAGEMENT_EVENTS, tuple(parity_gen.AMAC_ENGAGEMENT_EVENTS)),
+                ("AMAC_ENV_VAR", AMAC_ENV_VAR, parity_gen.AMAC_ENV_VAR),
+                ("SHARED_EVENTS", SHARED_EVENTS, tuple(parity_gen.SHARED_PROFILE_EVENTS)),
+            ) if ours != primary
+        ]
+        if mismatches:
+            print(f"contract-check: FAIL -- diverges from parity/parity_gen.py (primary) in: {mismatches}")
+            all_ok = False
+        else:
+            print("contract-check: constants match parity/parity_gen.py (primary copy)")
+    else:
+        print("contract-check: SKIPPED (parity/parity_gen.py not present on this host)")
 
     if args.check_events:
         arm = Arm("selftest", "A", args.bin, {}, {})
@@ -1784,7 +1798,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_report = sub.add_parser("report", help="per-cell verdicts + phase attribution from results JSONL")
     p_report.add_argument("--results", required=True, help="results file(s), comma-separated to merge")
-    p_report.add_argument("--band-file", help="JSON {cell_id or family:side.group: band fraction}")
+    p_report.add_argument("--band-file",
+                          help="JSON {cell_id or family:side.group: band FRACTION, e.g. 0.03 = 3%%};"
+                               " values > 0.5 are rejected as mistaken percentages")
     p_report.add_argument("--no-phases", action="store_true", help="suppress the per-phase table")
     p_report.add_argument("--min-runs", type=int, default=MIN_VERDICT_RUNS,
                           help=f"valid runs/arm below this -> INSUFFICIENT (default {MIN_VERDICT_RUNS})")

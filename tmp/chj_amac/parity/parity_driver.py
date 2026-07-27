@@ -433,8 +433,10 @@ def run_subset_tagged(cases, client_argv, prefix):
         lc = f"{prefix}_{c['id']}"
         rc, _, err = run_client(client_argv, query=tagged_chk_query(c, lc))
         out[c["family"]] = (c, lc, None if rc == 0 else err[-1000:])
+    # SYSTEM FLUSH LOGS is synchronous for query_log on this binary (verified
+    # 2026-07-27 on baseline a05f3ee: 5/5 tagged rows visible immediately
+    # after the flush returns); no settling sleep needed.
     run_client(client_argv, query="SYSTEM FLUSH LOGS")
-    time.sleep(2)  # query_log flush_interval_milliseconds=1000 safety margin
     return out
 
 

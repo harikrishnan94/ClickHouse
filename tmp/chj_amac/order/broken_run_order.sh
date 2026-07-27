@@ -1,37 +1,15 @@
 #!/usr/bin/env bash
-# run_order.sh - G-order harness for the AMAC + order-preserving probe mission.
-#
-# Proves (or, on scatter binaries, disproves) that the probe of parallel_hash
-# emits, within every output block, left-input rows in non-decreasing input
-# order. See check_order.py for the Native-stream oracle.
-#
-# Usage:
-#   run_order.sh <clickhouse-binary> [--expect-fail] [--require-engagement]
-#                [--skip-stateless] [--keep-data]
-#
-#   --expect-fail        power check for scatter binaries: exit 0 iff at least
-#                        one engaged per-block check at max_threads=96 FAILED
-#                        with real order violations AND its row count matched
-#                        the hash-join control AND the run had zero errors
-#                        (check errors, control errors, row mismatches).
-#                        Stateless tests skipped.
-#   --require-engagement turn absence/silence of the FUTURE AMAC counters into
-#                        a failure (Units 3+). Default: loud SKIPPED line.
-#   --skip-stateless     skip the clickhouse-test portion in normal mode.
-#   --keep-data          reuse an existing order_db instead of rebuilding it.
-#
-# Server lifecycle pattern (start -> poll SELECT 1 -> use -> kill by PID) is
-# adapted from /mnt/data/jbmt_results/jbmt-sweep-20260724/join_memory_bench.py
-# (start_server / ensure_server_stopped), simplified for a local single-PID
-# server with the watchdog disabled.
-#
-# Final line (machine-checkable):
-#   normal:        'ORDER OK (...)' or 'ORDER FAIL (...)'
-#   --expect-fail: 'ORDER POWER-CHECK OK (...)' — genuine, engaged, row-matched
-#                  failure with zero errors, or
-#                  'ORDER POWER-CHECK BROKEN (...)' — scatter binary passed the
-#                  check (oracle too weak) OR the run was invalid (errors /
-#                  row mismatches / failing checks not engaged or not matched)
+# broken_run_order.sh - DELIBERATELY BROKEN copy of run_order.sh. NOT the real
+# harness: this is the selftest fixture for order/SELFTEST.md "Re-proof (c)",
+# proving run_order.sh's fail-closed machinery can actually catch a broken
+# run. Two TEST-ONLY breaks (grep 'TEST-ONLY BREAK'):
+#   1. run_control_count: the inner_all_k control counts a bogus table
+#      (order_db.rt_bogus), so the row-count cross-check must trip;
+#   2. chj_probe_counter: the engagement counter is pinned to 0, so the
+#      engagement gate must trip.
+# Never use this for a real gate run; drive it only from the SELFTEST
+# re-proof. Everything else is a copy of run_order.sh as of commit
+# 91469b6b22e and is NOT kept in sync with it.
 
 set -u
 

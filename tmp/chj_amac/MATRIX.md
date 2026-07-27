@@ -51,7 +51,7 @@ undispositioned)
 | 8 | join_use_nulls=1: key64 × S3 × T96 × left_all | 1 | nullable output path interacts with ordered gather |
 | 9 | Stats-on sensitivity: key64 × S3 × T96 × {build,probe} with `collect_hash_table_stats_during_joins=1` | 2 | protocol-sensitivity check for the stats-off measurement decision |
 
-Blocks 1-4 and 7-9 are probe-side; block 5-6 build-side. Every other
+Blocks 1-4 and 7-9 are probe-side; blocks 5-6 build-side. Every other
 universe cell is INFERRED from its block representative, PARITY-ONLY,
 EXCLUDED-INVALID, or NOT-CLAIMED — assigned per cell in
 `fleet/dispositions.json` during Unit 4 and checked by

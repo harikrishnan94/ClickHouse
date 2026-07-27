@@ -1,8 +1,5 @@
 {
- "k256:probe.inner_all.S2.T96": 3.0,
- "key64:probe.inner_all.S2.T1": 3.0,
- "key64:probe.inner_all.S2.T96": 3.0,
- "key64:probe.inner_all.S3.T96": 3.0,
- "str:probe.inner_all.S2.T96": 3.0,
- "str:probe.inner_all.S3.T96": 3.0
+ "k256:probe.inner_all": 0.03,
+ "key64:probe.inner_all": 0.03,
+ "str:probe.inner_all": 0.03
 }

@@ -222,6 +222,12 @@ class Shape:
 
 
 def make_shapes():
+    # Family names here map to the fleet vocabulary (fleet_ab.py FAMILIES /
+    # MATRIX.md) as: string<->str, keys128<->k128, keys256<->k256; fleet's
+    # strzero has NO family here -- its parity evidence is the shapes tagged
+    # 'zero-bytes' (string, nullstr, mixed_*), which is what MATRIX.md's
+    # "PARITY-ONLY ... all strzero cells" disposition points at. nullstr has
+    # no fleet counterpart (parity-only coverage); other names coincide.
     S = []
     # -- key32: UInt32, plus the UInt8 low-cardinality variant to hit key8 --
     S.append(Shape("key32", "key32", [("k", "UInt32")],
