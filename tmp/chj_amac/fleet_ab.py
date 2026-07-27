@@ -911,11 +911,22 @@ class RemoteServer:
         if self.pid is None:
             return
         pid, self.pid = self.pid, None
-        rc, _, err = self.run_ssh(
-            f"kill {pid} 2>/dev/null; sleep 2; "
-            f"if kill -0 {pid} 2>/dev/null; then kill -9 {pid}; fi; "
-            f"! kill -0 {pid} 2>/dev/null",
-            timeout=timeout)
+        # A `kill -0` probe right after SIGKILL races the kernel's teardown of
+        # a 100-thread server holding multi-GB Memory tables (seconds), and a
+        # zombie still answers `kill -0` — both produced spurious
+        # "still alive" failures on the first fleet sweep. Poll for death for
+        # up to ~30 s (SIGTERM first, SIGKILL after 5 s) and count state Z as
+        # dead (init reaps it momentarily).
+        script = (
+            f"pid={pid}; kill \"$pid\" 2>/dev/null; "
+            "for i in $(seq 1 30); do "
+            "  state=$(awk '{print $3}' \"/proc/$pid/stat\" 2>/dev/null); "
+            "  if [ -z \"$state\" ] || [ \"$state\" = Z ]; then exit 0; fi; "
+            "  if [ \"$i\" -eq 5 ]; then kill -9 \"$pid\" 2>/dev/null; fi; "
+            "  sleep 1; "
+            "done; exit 1"
+        )
+        rc, _, err = self.run_ssh(script, timeout=timeout + 20)
         if rc != 0:
             raise RuntimeError(f"remote server pid {pid} (arm {self.arm.name}) still alive after "
                                f"SIGTERM+SIGKILL: {err}")

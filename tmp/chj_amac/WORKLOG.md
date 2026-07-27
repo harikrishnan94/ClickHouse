@@ -442,7 +442,7 @@ Implementation (agent draft, reviewed; notes `U3_DRAFT_NOTES.md`):
 `joinScatteredBlock` removed), `RoutedProbeContext` through the
 additional-filter path, `createKeyGetter` hoisted,
 `ConcurrentHashJoinAmacProbeRows` + re-sited probe event descriptions
-(names frozen), 5 new gtests. Binary +1.97% (accounted: +11.3 MiB text).
+(names frozen), 6 new gtests. Binary +1.97% (accounted: +11.3 MiB text).
 
 Gates (raw finals):
 - (a) G-parity + dual-side engagement: `PARITY OK (636 cases: 634 compared,

@@ -22,15 +22,14 @@ size_t getMinBytesForPrefetchInJoin();
 
 /// Runtime context of the routed (order-preserving) `parallel_hash` probe: selects each probe
 /// row's hash map and used-flags structure by the row's route slot. Null on the plain
-/// single-map probe paths, which keeps the shared code (`joinRightColumnsWithAdditionalFilter`)
-/// serving both designs without new instantiations. The maps are stored untyped because the
-/// context is built before the map-type dispatch; the typed consumer casts them back to the map
-/// type they were stored as (a round trip).
+/// single-map probe paths, which keeps the shared code (`joinRightColumnsWithAdditionalFilter`,
+/// already templated on the map type) serving both designs without new instantiations.
+template <typename Map>
 struct RoutedProbeContext
 {
     /// One route word per source-block row; null = every row probes slot 0.
     const UInt64 * slot_ids = nullptr;
-    const void * const * maps_by_slot = nullptr;
+    const Map * const * maps_by_slot = nullptr;
     /// The per-slot used flags; offsets stay slot-local, so RIGHT/FULL non-joined streaming
     /// keeps its per-slot semantics.
     JoinStuff::JoinUsedFlags * const * flags_by_slot = nullptr;
@@ -227,7 +226,7 @@ private:
         const ScatteredBlock::Selector & selector,
         bool need_filter [[maybe_unused]],
         bool flag_per_row [[maybe_unused]],
-        const RoutedProbeContext * routed = nullptr);
+        const RoutedProbeContext<Map> * routed = nullptr);
 
     template <JoinKind, JoinStrictness, typename>
     friend class RoutedHashJoinMethods;

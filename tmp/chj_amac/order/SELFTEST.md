@@ -415,15 +415,10 @@ design, which probes each left block whole and cannot reorder within a block —
 fails exactly the same 8 `_squash` checks as the new routed candidate. An
 oracle that the reference design itself cannot pass is wrong, not strict.
 
-Mechanism: the `_squash` variants enable `min_joined_block_size_rows` /
-`min_joined_block_size_bytes`, so consecutive join outputs of ONE lane are
-concatenated into one output block. In a parallel full scan a lane's
-consecutive LEFT input blocks are not monotone in `tag` (MergeTree range
-assignment / work stealing), so the squashed blocks are non-monotone
-REGARDLESS of the join design — a SOURCE artifact, not a join property. On
-the old scatter design the same checks also caught real cross-piece disorder
-(that is why they had power there; the scatter run `logs/gate_002b_candidate.log`
-fails them too, for the real reason).
+Mechanism, in one line: squashing concatenates one lane's consecutive join
+outputs, and a parallel scan's lane inputs are not tag-monotone, so `_squash`
+disorder is an artifact of the SOURCE, not of the join design — argued in
+full in the CORRECTION block in `run_order.sh`, which owns this prose.
 
 ### Side-by-side verdicts {#squash-side-by-side}
 
@@ -474,13 +469,14 @@ stays a gate-failing FAIL; a missing / unreadable / unparseable reference
 duplicate verdicts) is FATAL. The summary line carries `source_artifact=N`
 and a reclassifying verdict says so explicitly.
 
-WHY THIS IS A CORRECTION, NOT A WEAKENING: the reference design itself cannot
-pass the old rule, and the join-level order contract is still carried by
-three independent layers, all green on the routed candidate: the 9 non-squash
-checks (within-output-block order), the T=1 `--global` check, and the
-stateless layer (03711 = read-in-order through join, 03448). On scatter
-binaries the squash checks still fail for the real cross-piece reason, so the
-`--expect-fail` power check keeps its teeth (re-proof (c) below).
+WHY THIS IS A CORRECTION, NOT A WEAKENING: argued in full in the CORRECTION
+block in `run_order.sh`; in one line — the reference design itself cannot
+pass the old rule, and the order contract keeps three independent layers, all
+green on the routed candidate (re-proof (a)). The `--expect-fail` power check
+keeps its teeth: its scatter evidence is the pre-correction run
+`logs/gate_002b_candidate.log`, which still applies because power mode is
+code-unchanged (re-proof (c) below re-runs the baseline power check and
+reproduces its pre-correction verdict).
 
 ### Re-proof runs (raw final lines) {#squash-reproofs}
 
@@ -499,8 +495,10 @@ run_id 20260727_230846_652990:
     [run_order] summary: total=17 ok=9 fail=0 source_artifact=8 error=0 (incl. control_errors=0) not_engaged=0 row_mismatch=0 t1_global=OK
     ORDER OK (ok=9 fail=0 source_artifact=8 of 17 checks, all engaged parallel_hash, t1_global=OK, stateless=pass, stateless engagement: 03448=yes (delta ConcurrentHashJoinProbeMicroseconds=4589) 03711=yes (delta ConcurrentHashJoinProbeMicroseconds=93970); squash checks baseline-differential per SELFTEST §11)
 
-(c) `--expect-fail` on the baseline (unchanged power mode, no reference) —
-rc=0, log `logs/gate_002b_baseline2.log`, run_id 20260727_231028_654546:
+(c) `--expect-fail` on the baseline (power mode unchanged: this re-run
+reproduces the pre-correction `logs/gate_002b_baseline.log` verdict; no
+reference) — rc=0, log `logs/gate_002b_baseline2.log`, run_id
+20260727_231028_654546:
 
     [run_order] summary: total=17 ok=9 fail=8 source_artifact=0 error=0 (incl. control_errors=0) not_engaged=0 row_mismatch=0 t1_global=OK
     ORDER POWER-CHECK OK (check fails on this binary, as expected: >=1 engaged row-matched T=96 FAIL, errors=0, row_mismatch=0)

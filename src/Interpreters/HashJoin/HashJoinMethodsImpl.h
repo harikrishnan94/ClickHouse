@@ -936,7 +936,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
     const ScatteredBlock::Selector & selector,
     bool need_filter [[maybe_unused]],
     bool flag_per_row [[maybe_unused]],
-    const RoutedProbeContext * routed)
+    const RoutedProbeContext<Map> * routed)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     size_t left_block_rows = selector.size();
@@ -950,7 +950,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
     auto map_for_row = [&](size_t ind, size_t join_clause_idx) __attribute__((always_inline)) -> const Map &
     {
         if (routed)
-            return *static_cast<const Map *>(routed->maps_by_slot[slot_of(ind)]);
+            return *routed->maps_by_slot[slot_of(ind)];
         return *mapv[join_clause_idx];
     };
     auto flags_for_row = [&](size_t ind) __attribute__((always_inline)) -> JoinStuff::JoinUsedFlags &

@@ -155,15 +155,11 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
             /// (block-keyed) flags are needed only for the flagged RIGHT/FULL shapes.
             const bool mark_per_row_used = join_features.right || join_features.full;
             size_t total_map_bytes = 0;
-            std::vector<const void *> maps_untyped(maps_by_slot.size());
-            for (size_t s = 0; s < maps_by_slot.size(); ++s)
-            {
-                maps_untyped[s] = maps_by_slot[s];
-                total_map_bytes += maps_by_slot[s]->getBufferSizeInBytes();
-            }
-            const RoutedProbeContext routed_ctx{
+            for (const Map * map : maps_by_slot)
+                total_map_bytes += map->getBufferSizeInBytes();
+            const RoutedProbeContext<Map> routed_ctx{
                 .slot_ids = slot_ids,
-                .maps_by_slot = maps_untyped.data(),
+                .maps_by_slot = maps_by_slot.data(),
                 .flags_by_slot = flags_by_slot.data(),
                 .total_map_bytes = total_map_bytes};
             std::vector<KeyGetter> key_getter_vector;

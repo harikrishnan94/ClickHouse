@@ -16,11 +16,9 @@ namespace
 
 /** The AMAC find policy of the two-phase routed probe (phase A): out-of-order lookups that only
   * fill the per-row result arrays - the matched cell's mapped value copied by value into
-  * `found_word` (0 = no match) and, for the flagged shapes only, its slot-local used-flags
-  * offset. Copying the word in the same visit that reads the cell means phase B never touches
-  * the cell again - by the time the in-order loop reaches the row, the cell line has usually
-  * left the cache and re-reading it through a recorded pointer would be a second random miss
-  * per row. Nothing is emitted here; phase B consumes the results in left-row order - the
+  * `found_word` (0 = no match; see `amac_mapped_fits_word` in `AmacProbe.h` for why the copy,
+  * not a pointer, is recorded) and, for the flagged shapes only, its slot-local used-flags
+  * offset. Nothing is emitted here; phase B consumes the results in left-row order - the
   * flagless word-mapped lazy shapes through the dispatch-free `word_loop`, the rest through the
   * standard `processMatch` (see `HashJoinRoutedMethodsImpl.h`).
   *

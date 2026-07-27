@@ -19,7 +19,7 @@ Modified:
 - src/Interpreters/HashJoin/KeyGetter.h     (hoisted free `createKeyGetter<KeyGetter, is_asof_join>` incl. key_range; also replaced a dead file-local copy in HashJoin.cpp)
 - src/Interpreters/HashJoin/ResumableHashMap.h (const overload of `cursorCells`)
 - src/Common/ProfileEvents.cpp              (new ConcurrentHashJoinAmacProbeRows with the frozen description; 3 probe event descriptions re-sited, names frozen)
-- src/Interpreters/tests/gtest_concurrent_hash_join_amac.cpp (5 new tests; helpers parametrized by kind/strictness/slots; drain handles next_block re-feed)
+- src/Interpreters/tests/gtest_concurrent_hash_join_amac.cpp (6 new tests; helpers parametrized by kind/strictness/slots; drain handles next_block re-feed)
 
 ## Design-point notes / deviations argued
 - Shared index (step 1): master pattern restored after pool->wait(); StoredColumnsIndex::add is

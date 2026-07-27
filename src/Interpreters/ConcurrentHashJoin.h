@@ -117,6 +117,10 @@ private:
     bool any_take_last_row;
     std::unique_ptr<ThreadPool> pool;
     std::vector<std::shared_ptr<InternalHashJoin>> hash_joins;
+    /// Raw per-slot `HashJoin` pointers for the routed probe, filled once at the end of the
+    /// constructor. `RoutedJoinResult` holds a reference to this vector; it stays valid because
+    /// the slots are only torn down in the destructor, when no probe result may be alive.
+    std::vector<const HashJoin *> slot_joins;
 
     StatsCollectingParams stats_collecting_params;
     const size_t external_join_threshold;

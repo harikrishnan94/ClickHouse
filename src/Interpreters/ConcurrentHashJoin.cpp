@@ -227,6 +227,10 @@ ConcurrentHashJoin::ConcurrentHashJoin(
         auto shared_index = hash_joins[0]->data->getJoinedData()->stored_columns_index;
         for (size_t i = 1; i < slots; ++i)
             hash_joins[i]->data->getJoinedData()->stored_columns_index = shared_index;
+
+        slot_joins.reserve(slots);
+        for (const auto & hash_join : hash_joins)
+            slot_joins.push_back(hash_join->data.get());
     }
     catch (...)
     {
@@ -382,7 +386,8 @@ private:
 /// `JoiningTransform` re-feeds it through `joinBlock`, which re-derives its routes.
 class RoutedJoinResult : public IJoinResult
 {
-    std::vector<const HashJoin *> slot_joins;
+    /// `ConcurrentHashJoin::slot_joins`, stable for the lifetime of the join.
+    const std::vector<const HashJoin *> & slot_joins;
     ScatteredBlock block;
     /// Owns the route words for the lifetime of the lookup; null when there is a single slot.
     std::optional<IColumn::Selector> slot_ids;
@@ -392,15 +397,13 @@ class RoutedJoinResult : public IJoinResult
 
 public:
     RoutedJoinResult(
-        const std::vector<std::shared_ptr<ConcurrentHashJoin::InternalHashJoin>> & hash_joins_,
+        const std::vector<const HashJoin *> & slot_joins_,
         ScatteredBlock && block_,
         std::optional<IColumn::Selector> && slot_ids_)
-        : block(std::move(block_))
+        : slot_joins(slot_joins_)
+        , block(std::move(block_))
         , slot_ids(std::move(slot_ids_))
     {
-        slot_joins.reserve(hash_joins_.size());
-        for (const auto & hash_join : hash_joins_)
-            slot_joins.push_back(hash_join->data.get());
     }
 
     JoinResultBlock next() override
@@ -439,7 +442,7 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
             slot_ids = selectDispatchBlock(*hash_joins[0]->data, slots, table_join->getOnlyClause().key_names_left, block);
     }
 
-    return std::make_unique<RoutedJoinResult>(hash_joins, ScatteredBlock{std::move(block)}, std::move(slot_ids));
+    return std::make_unique<RoutedJoinResult>(slot_joins, ScatteredBlock{std::move(block)}, std::move(slot_ids));
 }
 
 void ConcurrentHashJoin::checkTypesOfKeys(const Block & block) const
