@@ -39,32 +39,54 @@ that cannot be resolved by `git -C /mnt/ch/ClickHouse submodule update --init`.
 Action on refutation: stop and diagnose before any Unit 2 work; a baseline
 binary from any other source is NOT acceptable.
 
-## PREREG-002 — Unit 1 harness gates (declared up front) — 2026-07-27 — written at HEAD 6cdee22a455
+## PREREG-002a — Unit 1 harness gate G-parity (declared up front) — 2026-07-27 — written at HEAD 6cdee22a455
 
-Expectation:
-(a) G-parity harness: on the pre-change candidate (HEAD 6cdee22a455) vs
-baseline, the full query matrix (~600-900 queries; 10 key families incl.
+Expectation: on the pre-change candidate (HEAD 6cdee22a455) vs baseline, the
+full query matrix (~600-900 queries; 10 key families incl.
 embedded/terminating-zero and empty strings; kinds INNER/LEFT/RIGHT/FULL ×
 valid strictnesses incl. RightAny and non-equi-ON MapsAll variants;
 join_use_nulls × {0,1}; dup-heavy builds; threads {4,32}) prints `PARITY OK`
 — ORDER BY-normalized results are byte-identical between arms (the probe
 scatter reorders rows but not multisets).
-(b) G-order harness power check: the per-block tag-monotonicity check at
-max_threads=96 FAILS against BOTH the baseline binary and the pre-Unit-3
-candidate (both scatter probes); if it passes on either, the oracle is too
-weak and must be strengthened before it may gate anything.
-(c) Noise band: same-binary A/A on 6 representative cells verdicts TIE on
-every cell; the per-shape band is frozen as max(3%, observed same-binary
-spread) before any perf claim; a deliberate A≠B selftest must produce a
-non-TIE verdict.
+
 Invocation:
   bash tmp/chj_amac/parity/run_parity.sh tmp/chj_amac/bins/clickhouse-baseline-a05f3ee81ff.bin tmp/chj_amac/bins/clickhouse-candidate-6cdee22a455.bin
+
+Refutation criterion: any parity divergence on the UNCHANGED candidate — that
+would mean the harness or the scatter design is broken (investigate before
+proceeding).
+
+Action on refutation: stop; fix the harness (or report the pre-existing
+product defect) before any Unit 2 commit.
+
+## PREREG-002b — Unit 1 harness gate G-order power check (declared up front) — 2026-07-27 — written at HEAD 6cdee22a455
+
+Expectation: the per-block tag-monotonicity check at max_threads=96 FAILS
+against BOTH the baseline binary and the pre-Unit-3 candidate (both scatter
+probes).
+
+Invocation:
   bash tmp/chj_amac/order/run_order.sh <bin>            # power check: run on both arms
+
+Refutation criterion: the order check passing on either scatter binary.
+
+Action on refutation: stop — the oracle is too weak and must be strengthened
+before it may gate anything; fix the harness (or report the pre-existing
+product defect) before any Unit 2 commit.
+
+## PREREG-002c — Unit 1 harness gate noise band (declared up front) — 2026-07-27 — written at HEAD 6cdee22a455
+
+Expectation: same-binary A/A on 6 representative cells verdicts TIE on every
+cell; the per-shape band is frozen as max(3%, observed same-binary spread)
+before any perf claim; a deliberate A≠B selftest must produce a non-TIE
+verdict.
+
+Invocation:
   python3 tmp/chj_amac/fleet_ab.py sweep --local --aa   # noise band mode
-Refutation criterion: (a) any parity divergence on the UNCHANGED candidate —
-that would mean the harness or the scatter design is broken (investigate
-before proceeding); (b) order check passing on a scatter binary; (c) any A/A
-cell outside its band, or the deliberate A≠B selftest verdicting TIE.
+
+Refutation criterion: any A/A cell outside its band, or the deliberate A≠B
+selftest verdicting TIE.
+
 Action on refutation: stop; fix the harness (or report the pre-existing
 product defect) before any Unit 2 commit.
 

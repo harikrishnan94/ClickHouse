@@ -12,7 +12,7 @@ path + sha256. Secrets redacted as [REDACTED].
 
 ---
 
-## 2026-07-27 — Session start, planning phase (recorded for the audit trail)
+## 2026-07-27 — Session start, planning phase
 
 Goal: produce the approved implementation plan.
 
@@ -58,6 +58,6 @@ HEAD `6cdee22a4554e3935e26165837dedb2b3eb2362a`;
 `concurrent-hash-join-profile-events` = `a05f3ee81ff8411759637fa367aad62e72726e71`;
 `ahj` = `cf465cfbe23a14f982d1bc36510f3e311ce6379f`.
 
-Deviation (recorded): the per-commit hygiene loop's G-build/G-parity re-run
+Deviation: the per-commit hygiene loop's G-build/G-parity re-run
 does not apply to this commit — no source changed and the parity harness does
 not exist yet (it is U1.5's deliverable). Hygiene report subagents still run.
