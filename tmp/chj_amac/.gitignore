@@ -1,0 +1,11 @@
+# Binaries, keys, and server state are never committed; text evidence is
+# force-added (repo-root /tmp/ is gitignored).
+bins/*.bin
+fleet/ssh/
+fleet/results/
+tests_srv/
+parity/srv_*/
+parity/logs/
+order/srv_*/
+order/data_*/
+*.log
