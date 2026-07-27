@@ -383,9 +383,18 @@ Gate results (invocations + raw finals):
   `build/reldeb/gtest_amac_verify{,_off}.log`).
 - (c) build A/B (candidate-60b8d1684a1 vs uncommitted ring snapshot, raws
   `fleet/results/amacbuild_ab2.jsonl`): S2×T96 disengage proof
-  (`AmacBuildRows`=0, predicate off on cache-resident); key64 S4×T1 engaged
-  95.94M/96M, `BuildInsert` 5637→4948 ms (−12.2%), wall win; str S5×T96
-  engaged 190.9M/192M, `BuildInsert` 74102→59137 ms (−20.2%), wall win.
+  (`AmacBuildRows`=0, predicate off on cache-resident; the cell itself is
+  floor-unverdictable per MATRIX caveat 6, pre-authorized); key64 S4×T1
+  engaged 95.94M/96M, `BuildInsert` 5637→4948 ms (−12.2%, trimmed spreads
+  1.0-1.6% — the load-bearing claim) with wall a TIE under the band rule
+  (−7.75% vs a 9.2% pstdev band; corrected per verification finding F2 —
+  an earlier draft of this entry said "wall win"); str S5×T96 engaged
+  190.9M/192M, `BuildInsert` 74102→59137 ms (−20.2%; per-arm spreads
+  14-18% on this host, so the magnitude is directional only and settles on
+  the fleet — verification finding F5). The str cell ran at S5 instead of
+  the pre-registered S4 because the ring arm fell under the 200 ms duration
+  floor at S4 (MATRIX caveat 6's substitution protocol; verification
+  finding F3 asked for this narration).
   PARTIAL REFUTATION recorded: key64 S4×T96 engages (91.8M rows) with
   `BuildInsert` flat (20203→20213 ms) — the pre-registered refutation
   clause fired; per its action the codegen checklist ran first (= gate (d),
@@ -400,6 +409,28 @@ Gate results (invocations + raw finals):
   the bug fix above; reference-only locator machinery; register allocation);
   two candidate-FAVORING deltas (inlined `memequalWide` vs out-of-line
   `bcmp`; fewer spill reloads).
+
+## 2026-07-27 — Unit 2 independent verification: SHIP
+
+Fresh verifier agent (refute mandate, all seven checks command+raw-output;
+full report `VERIFICATION_U2.md`): **U2 VERIFICATION: SHIP**. Highlights:
+prereg ordering genuine; gtests re-run green both env arms; negative proof
+re-proven live (rc=1 gate failure on baseline-as-candidate); the drain-bug
+regression gtest's teeth verified; all perf medians recomputed to the
+decimal from the raw JSONL with engagement confirmed in raw rows; the
+disasm anchor independently confirmed on the COMMITTED binary (10/10
+`pstl1keep`, 0 `pldl3keep`); 7/7 evidence hashes match. Its one material
+gap — Unit 2 gates ran on uncommitted snapshots — it closed itself with a
+fresh green parity+engagement run against the committed `7e64a6cf4d5`
+snapshot (`PARITY OK ... engaged 8/8+2x0 (build)`). Non-blocking findings
+landed here: F2 wall-win wording corrected, F3 narration added, F4 noted
+(the U2.2 absolute insn counts are pre-hygiene-`asmdiff` numbers; the delta
+set and flat store counts reproduce), N3 lockfile added to `run_parity.sh`
+(two gate runs collided at 21:29 — the verifier's re-run and the
+`feb429d2250` hygiene re-check; the pid-mismatch guard failed CLOSED as
+designed, and the loser re-runs below). F6 (custom `asmdiff.py` instead of
+the prereg-named `analyze-assembly.py`) stands as a disclosed deviation:
+the tool's symbol cache is unsafe on 4.9 GB binaries on this host.
 
 Unit 1 exit state: PREREG-001 and PREREG-002a/b/c all green; coverage matrix
 frozen (MATRIX.md + fleet/matrix.json); calibration frozen; fleet runbook

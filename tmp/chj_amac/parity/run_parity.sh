@@ -180,12 +180,32 @@ cleanup() {
     DRIVER_PIDS=()
     stop_server "$SRV_BASE" || rc=1
     stop_server "$SRV_CAND" || rc=1
+    [ -n "${GATE_LOCK_HELD:-}" ] && rm -rf "$GATE_LOCK"
     if [ "$rc" -ne 0 ]; then
         echo "FATAL: cleanup refused to stop a foreign pid (fail-close); pid file(s) kept" >&2
         exit 3
     fi
 }
 trap cleanup EXIT
+
+# One gate run at a time: the servers, scratch dirs, and ports are shared, so
+# a second concurrent invocation would race the first (observed 2026-07-27:
+# a verification re-run and a hygiene re-check collided; the pid-mismatch
+# guard failed closed, but the loser burned a full run).
+GATE_LOCK=$SCRIPT_DIR/.gate.lock
+if ! mkdir "$GATE_LOCK" 2>/dev/null; then
+    holder=$(cat "$GATE_LOCK/pid" 2>/dev/null || echo unknown)
+    if [ "$holder" != unknown ] && ! kill -0 "$holder" 2>/dev/null; then
+        echo "stale gate lock (pid $holder is gone); taking it over"
+        echo $$ > "$GATE_LOCK/pid"
+    else
+        echo "FATAL: another parity gate run is active (pid $holder); retry when it finishes" >&2
+        exit 4
+    fi
+else
+    echo $$ > "$GATE_LOCK/pid"
+fi
+GATE_LOCK_HELD=1
 
 # --- phase 0: generate matrix, clean state ----------------------------------
 
