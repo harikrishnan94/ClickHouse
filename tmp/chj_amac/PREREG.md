@@ -123,6 +123,39 @@ harmless, downgrade the "correlation defect" claim in REPORT.md to
 refuted-lead, and investigate the chain-length hypothesis with a dedicated
 probe before Unit 2 commit 2.
 
+## PREREG-005 — Unit 2 commit 2: resumable cursor layer + tail-padded grower — 2026-07-27 — written at HEAD 844ee1a82dd
+
+Expectation: rebinding the 8 chained join-map members (`key32`, `key64`,
+`key_string`, `key_fixed_string`, `keys32`, `keys64`, `keys128`, `keys256`)
+to `ResumableHashMap<HashMapTable<..., TailPaddedHashTableGrower<>, ...>>`
+(grower rebind ONLY — the allocator stays `HashTableAllocator`; `ahj`'s
+`ZeroingHashTableAllocator` is a separate recorded lead) and extracting
+`applyBuildRowToMapped` shared by `Inserter` leaves both algorithms
+result-identical (G-parity green) and `hash` performance in-band: the only
+sequential-path codegen change is the walk advance (`next()` becomes
+increment + compare-to-bufSize instead of increment + mask), and the local
+orientation A/B of `join_algorithm='hash'` cells {key64,str,k256} × S3 ×
+T{1,96} between the pre-change candidate (`844ee1a82dd`) and the post-change
+build must verdict TIE on every cell (3% band).
+
+Invocation:
+  ninja -C build/reldeb clickhouse > build/reldeb/build_cursorlayer.log 2>&1
+  bash tmp/chj_amac/parity/run_parity.sh tmp/chj_amac/bins/clickhouse-baseline-a05f3ee81ff.bin <post-change build>
+  python3 tmp/chj_amac/fleet_ab.py sweep --local --arm-a bins/clickhouse-candidate-844ee1a82dd.bin --arm-b <post-change snapshot> --cells "key64:probe.inner_all.S3.T96.hash,str:probe.inner_all.S3.T96.hash,k256:probe.inner_all.S3.T96.hash,key64:probe.inner_all.S3.T1.hash" --calibration tmp/chj_amac/fleet/calibration_rows.json
+  python3 .claude/tools/analyze-assembly.py --before bins/clickhouse-candidate-844ee1a82dd.bin --after <post-change snapshot> "<joinRightColumns/insertFromBlockImplTypeCase anchor symbols>"
+
+Refutation criterion: any parity divergence; any `hash` cell losing outside
+the 3% band; the assembly diff of the sequential insert/probe loops showing
+changes beyond the walk-advance pattern and grower field layout (e.g. new
+spills, extra loads in the per-row body).
+
+Action on refutation: parity divergence or out-of-band `hash` loss → stop,
+revert the grower rebind to the standard grower (mask-carried cursor
+fallback documented in the plan), and surface the tradeoff to the requester
+(their decision 4 traded `hash` neutrality for disassembly fidelity on the
+explicit condition the in-band gate holds); unexplained assembly changes →
+investigate before any ring work builds on the layer.
+
 ## PREREG-003 — env facts for perf venues — 2026-07-27 — written at HEAD 6cdee22a455
 
 Local orientation host (never acceptance evidence): aarch64 Graviton, 96
