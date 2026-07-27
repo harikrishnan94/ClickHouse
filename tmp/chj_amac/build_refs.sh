@@ -3,7 +3,8 @@
 #   1. baseline: branch concurrent-hash-join-profile-events (a05f3ee81ff)
 #   2. disasm reference: branch ahj (cf465cfbe23)
 # Each: hardlinked worktree -> cmake (candidate's flags) -> ninja (log in the
-# build dir) -> snapshot binary + sha256 into tmp/chj_amac/bins/MANIFEST.tsv.
+# build dir) -> snapshot binary + sha256 into tmp/chj_amac/bins/MANIFEST.tsv
+# (append-only; the last row for a given name describes the snapshot on disk).
 set -u
 
 MAIN_REPO=/mnt/ch/ClickHouse
@@ -28,6 +29,12 @@ build_one() {
     if [ ! -d "$worktree" ]
     then
         bash "$SETUP" "$MAIN_REPO" "$worktree" "$branch" || return 1
+    elif [ ! -f "$worktree/contrib/llvm-project/llvm/CMakeLists.txt" ]
+    then
+        printf "FAILED: %s exists but has no submodule trees (partial setup).\n" "$worktree" >&2
+        printf "Clean up with: git -C %s worktree remove --force %s && git -C %s worktree prune\n" \
+            "$MAIN_REPO" "$worktree" "$MAIN_REPO" >&2
+        return 1
     fi
 
     local head
@@ -60,6 +67,7 @@ build_one() {
     printf "BUILT %s: %s sha256=%s\n" "$tag" "$snap" "$sha"
 }
 
+mkdir -p "$BINS"
 if [ ! -f "$BINS/MANIFEST.tsv" ]
 then
     printf "name\tsha256\tbytes\tsource_commit\tbuild_log\tbuilt_at\n" > "$BINS/MANIFEST.tsv"

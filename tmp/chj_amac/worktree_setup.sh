@@ -52,11 +52,17 @@ then
     exit "$modules_copy_status"
 fi
 
+# Register submodules in the worktree config while rewriting module configs.
+# These operations touch disjoint files: `submodule init` writes the worktree
+# config, while the sed pass fixes copied submodule `config` and
+# `config.worktree` files under the hardlinked modules dir.
 git -C "$WORKTREE_PATH" submodule init &
 init_pid=$!
 
 # Fix the worktree pointer inside each submodule's config and config.worktree
-# files in one tree walk.
+# files in one tree walk. Most modules use `config`; a few use the
+# worktreeConfig extension and store the actual core.worktree in
+# `config.worktree` instead.
 find "$GIT_DIR/worktrees/$WORKTREE_ENTRY/modules" \
     \( -name config -o -name config.worktree \) -exec \
     sed -i "s|worktree = .*/contrib/|worktree = $WORKTREE_PATH/contrib/|" {} +
@@ -182,7 +188,8 @@ submodule_checkout_status=$?
 if [ "$submodule_checkout_status" -ne 0 ]
 then
     printf "ERROR: a submodule could not be checked out at the commit the superproject records.\n" >&2
-    printf "Fetch it in the main repo, then re-run: git -C %s submodule update --init\n" "$MAIN_REPO" >&2
+    printf "Fix: git -C %s submodule update --init (fetches the missing commit),\n" "$MAIN_REPO" >&2
+    printf "then remove %s and re-run this script.\n" "$WORKTREE_PATH" >&2
     exit "$submodule_checkout_status"
 fi
 

@@ -61,3 +61,45 @@ HEAD `6cdee22a4554e3935e26165837dedb2b3eb2362a`;
 Deviation: the per-commit hygiene loop's G-build/G-parity re-run
 does not apply to this commit — no source changed and the parity harness does
 not exist yet (it is U1.5's deliverable). Hygiene report subagents still run.
+
+Interpretation recorded: hygiene-pass commits themselves are terminal — the
+loop does not recurse onto them (their content is exactly the reports plus the
+accepted fixes). Tooling, docs, test, and code commits all get the loop.
+
+## 2026-07-27 — U1.2: reference builds (baseline + `ahj`)
+
+Goal: build the two comparison-arm binaries per PREREG-001.
+
+Done:
+- Commits `7708ef69e8e` (hygiene pass for b159a96) and `d2a759e684f`
+  (`worktree_setup.sh` + `build_refs.sh`).
+- Baseline worktree `/mnt/ch/ClickHouse-concurrent-hash-join-profile-events`
+  @ `a05f3ee81ff` (hardlinked submodules, create-worktree skill recipe);
+  full RelWithDebInfo clang-22 build.
+- Baseline binary snapshotted:
+  `bins/clickhouse-baseline-a05f3ee81ff.bin`
+  sha256 `0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4`
+  (MANIFEST.tsv row; identity of record).
+- G-build (baseline): PASS — subagent analysis of
+  `build_baseline-a05f3ee81ff.log`: 0 errors, 0 warnings, single configure,
+  Clang 22.1.8 aarch64 RelWithDebInfo, link OK (15,942 compile edges — full
+  clean build).
+- `ahj` worktree `/mnt/ch/ClickHouse-ahj` @ `cf465cfbe23` ready; build
+  running (log `build_ahj-cf465cfbe23.log`).
+
+Hygiene reports for `d2a759e684f`: reduce = essentially clean (restore two
+rationale comments dropped from the skill transcription); humanize = 4
+actionable (missing `mkdir -p` for `bins/`, partial-worktree resume gap,
+garbled recovery message, manifest last-row-wins ambiguity) + 2 commit-message
+nits (unfixable — amending is banned). Fixer deliberately DELAYED until
+`build_refs.sh` finishes executing: bash reads scripts incrementally, and
+editing a mid-run script corrupts its parse.
+
+- `ahj` reference binary snapshotted: `bins/clickhouse-ahj-cf465cfbe23.bin`
+  sha256 `c8260c682b78ea7cd9beb789b9d517d7c4d810ea73f131b6e31fc482dbf36f6e`
+  (MANIFEST.tsv row). G-build (`ahj`): PASS — subagent analysis of
+  `build_ahj-cf465cfbe23.log`: 0 errors, 0 warnings, full 16,673-edge build,
+  clean configure, link OK. PREREG-001 is satisfied for both reference arms.
+- Disk note: /mnt/ch at 83G free after both build trees; worktree object
+  dirs are reclaimable once G-disasm no longer needs in-tree artifacts (the
+  snapshot binaries in `bins/` carry the debug info).
