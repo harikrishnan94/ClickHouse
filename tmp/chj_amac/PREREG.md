@@ -156,6 +156,49 @@ fallback documented in the plan), and surface the tradeoff to the requester
 explicit condition the in-band gate holds); unexplained assembly changes →
 investigate before any ring work builds on the layer.
 
+## PREREG-006 — Unit 2 commit 3: AMAC build-insert ring — 2026-07-27 — written at HEAD 60b8d1684a1
+
+Expectation: the AMAC build-insert ring (32-slot SOA ring driver `amacRun` +
+`AmacBuildInsertPolicy`, ported as ideas from `ahj`), engaged under
+`parallel_hash` only (process hook `CLICKHOUSE_JOIN_AMAC` ∈ {0/off, 1/auto
+default, force}; auto predicate: cursor-capable map type AND map buffer
+bytes > `getMinBytesForPrefetchInJoin()` AND section rows ≥ 256), (a) keeps
+G-parity green with the force pass asserting
+`ConcurrentHashJoinAmacBuildRows` > 0 in exactly the 8 cursor-capable
+families (lcstr and mixed are excluded getters and must stay at 0); (b) new
+gtests (growth-resume mid-ring, duplicate-heavy ring-vs-sequential parity,
+string-key persist-once) are green on the candidate and the negative proof
+holds (baseline binary lacks the counters; hook=0 cannot engage); (c) the
+local orientation A/B (candidate-60b8d1684a1 vs post-ring snapshot) on
+{key64,str}:build.inner_all.S4.T96 improves
+`ConcurrentHashJoinBuildInsertMicroseconds` outside the 3% band with wall
+not regressing outside band, and S1/S2 build cells stay in-band with the
+auto predicate disengaging (counters 0) — per the `ahj` lead of a 1.09-1.12x
+warm-insert win on DRAM-resident maps; (d) G-disasm-build: the ring steady
+loop's instruction semantics match the `ahj` reference binary on the 3 build
+anchors (key64/RowRefList, keys256, key_string) — write-intent `pstl1keep`
+prefetch, fused claim, no policy-field reloads in the steady loop.
+
+Invocation:
+  ninja -C build/reldeb clickhouse > build/reldeb/build_amacbuild.log 2>&1
+  bash tmp/chj_amac/parity/run_parity.sh bins/clickhouse-baseline-a05f3ee81ff.bin <post-ring snapshot>   # force pass now REQUIRED green
+  <gtest binary> --gtest_filter='*ConcurrentHashJoinAmac*'
+  python3 tmp/chj_amac/fleet_ab.py sweep --local --arm-a bins/clickhouse-candidate-60b8d1684a1.bin --arm-b <post-ring snapshot> --cells "key64:build.inner_all.S4.T96,str:build.inner_all.S4.T96,key64:build.inner_all.S2.T96,key64:build.inner_all.S4.T1" --calibration tmp/chj_amac/fleet/calibration_rows.json
+  python3 .claude/tools/analyze-assembly.py <post-ring snapshot> "<amacRun build instantiation>" (+ same on bins/clickhouse-ahj-cf465cfbe23.bin; normalized comparison)
+
+Refutation criterion: any parity divergence or force-pass family engaging
+that must not (or failing to engage that must); any gtest failure; S4 build
+cells showing NO `BuildInsert` improvement outside the band while engaged,
+or ANY cell (incl. S1/S2) losing wall outside the band; steady-loop
+disassembly showing policy reloads, spills, or a missing/wrong-locality
+prefetch vs the `ahj` anchors.
+
+Action on refutation: parity/gtest red → stop and fix before commit; no
+perf win while engaged → run the codegen checklist from the `ahj` lessons
+(refill inlining, frame-copy SSA, prefetch encodings) BEFORE touching the
+predicate; wall loss on small cells → tighten the auto predicate and re-run;
+disassembly divergence → fix codegen, never reinterpret the anchor.
+
 ## PREREG-003 — env facts for perf venues — 2026-07-27 — written at HEAD 6cdee22a455
 
 Local orientation host (never acceptance evidence): aarch64 Graviton, 96
