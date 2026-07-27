@@ -16,6 +16,7 @@
 #include <Parsers/IAST_fwd.h>
 #include <Storages/SelectQueryInfo.h>
 #include <Common/CurrentThread.h>
+#include <Common/ElapsedTimeProfileEventIncrement.h>
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 #include <Common/ThreadPool.h>
@@ -60,6 +61,13 @@ using namespace DB;
 namespace ProfileEvents
 {
 extern const Event HashJoinPreallocatedElementsInHashTables;
+extern const Event ConcurrentHashJoinBuildMicroseconds;
+extern const Event ConcurrentHashJoinBuildDispatchMicroseconds;
+extern const Event ConcurrentHashJoinBuildInsertMicroseconds;
+extern const Event ConcurrentHashJoinBuildMergeMicroseconds;
+extern const Event ConcurrentHashJoinProbeMicroseconds;
+extern const Event ConcurrentHashJoinProbeDispatchMicroseconds;
+extern const Event ConcurrentHashJoinProbeLookupMicroseconds;
 }
 
 namespace CurrentMetrics
@@ -289,11 +297,17 @@ ConcurrentHashJoin::~ConcurrentHashJoin()
 
 bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_limits)
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
+
     /// We materialize columns here to avoid materializing them multiple times on different threads
     /// (inside different `hash_join`-s) because the block will be shared.
     Block right_block = hash_joins[0]->data->materializeColumnsFromRightBlock(right_block_);
 
-    auto dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_right, std::move(right_block));
+    ScatteredBlocks dispatched_blocks;
+    {
+        ProfileEventTimeIncrement<Microseconds> dispatch_watch(ProfileEvents::ConcurrentHashJoinBuildDispatchMicroseconds);
+        dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_right, std::move(right_block));
+    }
     size_t blocks_left = 0;
     for (const auto & block : dispatched_blocks)
     {
@@ -306,48 +320,51 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
     size_t post_join_total_rows = 0;
     size_t post_join_total_bytes = 0;
 
-    while (blocks_left > 0)
     {
-        bool made_progress = false;
-
-        /// insert blocks into corresponding HashJoin instances
-        for (size_t i = 0; i < dispatched_blocks.size(); ++i)
+        ProfileEventTimeIncrement<Microseconds> insert_watch(ProfileEvents::ConcurrentHashJoinBuildInsertMicroseconds);
+        while (blocks_left > 0)
         {
-            auto & hash_join = hash_joins[i];
-            auto & dispatched_block = dispatched_blocks[i];
+            bool made_progress = false;
 
-            if (dispatched_block.rows())
+            /// insert blocks into corresponding HashJoin instances
+            for (size_t i = 0; i < dispatched_blocks.size(); ++i)
             {
-                /// if current hash_join is already processed by another thread, skip it and try later
-                std::unique_lock<std::mutex> lock(hash_join->mutex, std::try_to_lock);
-                if (!lock.owns_lock())
-                    continue;
+                auto & hash_join = hash_joins[i];
+                auto & dispatched_block = dispatched_blocks[i];
 
-                made_progress = true;
-
-                if (!hash_join->space_was_preallocated && hash_join->data->twoLevelMapIsUsed())
+                if (dispatched_block.rows())
                 {
-                    reserveSpaceInHashMaps(*hash_join->data, i, stats_collecting_params, slots, external_join_threshold);
-                    hash_join->space_was_preallocated = true;
+                    /// if current hash_join is already processed by another thread, skip it and try later
+                    std::unique_lock<std::mutex> lock(hash_join->mutex, std::try_to_lock);
+                    if (!lock.owns_lock())
+                        continue;
+
+                    made_progress = true;
+
+                    if (!hash_join->space_was_preallocated && hash_join->data->twoLevelMapIsUsed())
+                    {
+                        reserveSpaceInHashMaps(*hash_join->data, i, stats_collecting_params, slots, external_join_threshold);
+                        hash_join->space_was_preallocated = true;
+                    }
+
+                    auto [block, selector] = std::move(dispatched_block).detachData();
+                    bool limit_exceeded = !hash_join->data->addBlockToJoin(block, std::move(selector), check_limits);
+
+                    std::tie(post_join_total_rows, post_join_total_bytes) = updateTotalRowsAndBytesUnlocked(hash_join);
+
+                    dispatched_block = {};
+                    blocks_left--;
+
+                    if (limit_exceeded)
+                        return false;
                 }
-
-                auto [block, selector] = std::move(dispatched_block).detachData();
-                bool limit_exceeded = !hash_join->data->addBlockToJoin(block, std::move(selector), check_limits);
-
-                std::tie(post_join_total_rows, post_join_total_bytes) = updateTotalRowsAndBytesUnlocked(hash_join);
-
-                dispatched_block = {};
-                blocks_left--;
-
-                if (limit_exceeded)
-                    return false;
             }
-        }
 
-        /// If no slot was available in this pass, yield to avoid burning CPU while waiting
-        /// for other threads to finish inserting into their respective hash join slots
-        if (!made_progress)
-            std::this_thread::yield();
+            /// If no slot was available in this pass, yield to avoid burning CPU while waiting
+            /// for other threads to finish inserting into their respective hash join slots
+            if (!made_progress)
+                std::this_thread::yield();
+        }
     }
 
     if (check_limits && table_join->sizeLimits().hasLimits())
@@ -404,6 +421,10 @@ public:
 
     JoinResultBlock next() override
     {
+        /// Accumulates the whole lazy probe cost (the lookup below plus the gather/emit that runs
+        /// inside `current_result->next()`) into the probe total, on top of the dispatch cost
+        /// `joinBlock` already charged before this result was created.
+        ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
         if (!current_result)
         {
             /// Skip empty dispatched blocks to avoid running the full join machinery for nothing,
@@ -414,6 +435,10 @@ public:
             if (next_block >= dispatched_blocks.size())
                 return {Block(), nullptr, true};
 
+            /// The hash-map lookup: `joinScatteredBlock` -> `joinBlockImpl` -> `joinRightColumns`'s
+            /// per-row `findKey` plus recording cheap match row-refs. It does NOT gather any column
+            /// values yet (that is deferred to `HashJoinResult::next`).
+            ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
             current_result = hash_joins[next_block]->data->joinScatteredBlock(std::move(dispatched_blocks[next_block]));
         }
 
@@ -434,13 +459,17 @@ public:
 
 JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
 {
-    ScatteredBlocks dispatched_blocks;
+    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
 
-    hash_joins[0]->data->materializeColumnsFromLeftBlock(block);
-    if (hash_joins[0]->data->twoLevelMapIsUsed())
-        dispatched_blocks.emplace_back(std::move(block));
-    else
-        dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_left, std::move(block));
+    ScatteredBlocks dispatched_blocks;
+    {
+        ProfileEventTimeIncrement<Microseconds> probe_dispatch_watch(ProfileEvents::ConcurrentHashJoinProbeDispatchMicroseconds);
+        hash_joins[0]->data->materializeColumnsFromLeftBlock(block);
+        if (hash_joins[0]->data->twoLevelMapIsUsed())
+            dispatched_blocks.emplace_back(std::move(block));
+        else
+            dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_left, std::move(block));
+    }
 
     chassert(dispatched_blocks.size() == (hash_joins[0]->data->twoLevelMapIsUsed() ? 1 : slots));
 
@@ -775,6 +804,11 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
+    ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
+    /// The whole function is bucket-merge/consolidation work (a no-op when the two-level map
+    /// isn't used), so it is charged wholesale as the "merge" build sub-phase.
+    ProfileEventTimeIncrement<Microseconds> merge_watch(ProfileEvents::ConcurrentHashJoinBuildMergeMicroseconds);
+
     if (hash_joins[0]->data->twoLevelMapIsUsed())
     {
         // At this point, the build phase is finished. We need to build a shared common hash map to be used in the probe phase.
