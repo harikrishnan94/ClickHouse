@@ -211,3 +211,42 @@ orientation and labeled as such.
 - Refutation: any parity diff -> pointer-lifetime or boundary bug;
   any bare-anchor delta -> the axis leaked into the hot loop; fix
   before proceeding, never weaken.
+
+## 007 — U5: fleet acceptance campaign
+
+- Arms: A = `clickhouse-baseline-a05f3ee81ff.bin`
+  (`0d32ef1c96e6...`), B = `clickhouse-candidate-final-d1c77571b39
+  .bin` (`6495b05ab061...`); identity by sha256 + `/proc/<pid>/exe`
+  on every shard.
+- Universe: the frozen MATRIX.md — 83 gate cells (8 probe blocks +
+  `key64:probe.mixed_on.S3.T96` + `{key64,str}:probe.inner_all
+  .S1p5.T96`) and 14 build guard cells. Harness extension for
+  `mixed_on` (ANY LEFT + `l.ts >= r.ts`, closed form = probe rows)
+  and `S1p5` (96000 rows ~ 4 MB aggregate ~ 2x the L2 engagement
+  threshold) smoke-validated locally (3/3 valid runs/arm, zero
+  INVALID: `u5_newcells_smoke.jsonl`).
+- Protocol per cell (unchanged from the prior campaign): fresh
+  servers, identical fills, 4 warmups + 10 timed strict-ABAB
+  (leading arm alternates by cell index), closed-form rowcount +
+  cross-arm checksum + path assertions, stats collection off on
+  timed queries, duration floors (>=200 ms, >=2M probe rows/thread)
+  fail-closed.
+- Verdict: per-cell median thread-summed
+  `ConcurrentHashJoinProbeMicroseconds`, B <= A x (1 + band); band =
+  per-cell A/A calibration (max(3%, spread)) run on the fleet before
+  the sweep. Guard cells: wall + `Build*` events in-band. Boundary
+  cells additionally run under `CLICKHOUSE_JOIN_AMAC=force` and `=0`
+  arms (aux JSONLs). Ablation: ring-off (`=0`) on the top claimed-win
+  cells must regress >= win - band. Force-engage: one NOT-CLAIMED S1
+  cell with counters > 0.
+- Red cells: <= 5 pre-registered fix cycles, levers in order —
+  (1) fused ring->emit for word-mapped lazy shapes (skip the
+  `found_word` round trip), (2) ASOF-specific engagement threshold,
+  (3) per-row closure-snapshot hoist (disasm_u3b finding). A cell
+  still red after the cycles is reported red - never silently
+  accepted, never re-thresholded.
+- Verification: an independent agent recomputes every verdict from
+  the raw JSONLs with its own script, audits PREREG ordering,
+  re-runs 3 random cells, and checks the teardown accounting.
+- Teardown: `teardown.sh` + accounting (instance-hours, cells run)
+  recorded in REPORT.md before the mission closes.

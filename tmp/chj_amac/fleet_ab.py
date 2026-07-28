@@ -136,11 +136,11 @@ LOCAL_SRV_DIRS = {"A": FLEET_DIR / "srv_a", "B": FLEET_DIR / "srv_b"}
 
 FAMILIES = ("key32", "key64", "str", "strzero", "fixstr", "k128", "k256", "null64", "lcstr", "mixed")
 SIDES = ("build", "probe")
-GROUPS = ("inner_all", "left_all", "rf_all", "any", "semi_anti", "asof")
-SIZES = ("S1", "S2", "S3", "S4", "S5")
+GROUPS = ("inner_all", "left_all", "rf_all", "any", "semi_anti", "asof", "mixed_on")
+SIZES = ("S1", "S1p5", "S2", "S3", "S4", "S5")
 THREADS = (1, 48, 96)
 
-SIZE_BYTES = {"S1": 1 << 20, "S2": 32 << 20, "S3": 1 << 30, "S4": 4 << 30, "S5": 16 << 30}
+SIZE_BYTES = {"S1": 1 << 20, "S1p5": 4 << 20, "S2": 32 << 20, "S3": 1 << 30, "S4": 4 << 30, "S5": 16 << 30}
 
 # Instantiation of the group axis (documented decisions):
 #   rf_all    -> FULL JOIN (superset of RIGHT: exercises right-side emission
@@ -156,6 +156,7 @@ GROUP_JOIN_CLAUSE = {
     "any": "ANY LEFT JOIN",
     "semi_anti": "SEMI LEFT JOIN",
     "asof": "ASOF JOIN",
+    "mixed_on": "ANY LEFT JOIN",  # + a non-equi ON conjunct: the mixed-ON (additional filter) path
 }
 
 
@@ -452,6 +453,8 @@ def expected_output_rows(cell: Cell, unique: int, dup: int, probe_rows: int, hit
         return (probe_rows - hits) if cell.anti else hits
     if cell.group == "asof":  # inner ASOF, probe ts >= every build ts: one match per hit row
         return hits
+    if cell.group == "mixed_on":  # ANY LEFT through the additional-filter path: one row per probe row
+        return probe_rows
     raise ValueError(f"no closed form for group {cell.group}")
 
 
@@ -563,7 +566,7 @@ def checksum_expr(cell: Cell) -> str:
 def join_query_sql(cell: Cell, settings: dict, log_comment: str) -> str:
     fam = FAMILY_SPECS[cell.family]
     on = " AND ".join(f"l.{c} = r.{c}" for c in fam.key_columns)
-    if cell.group == "asof":
+    if cell.group in ("asof", "mixed_on"):
         on += " AND l.ts >= r.ts"
     parts = [_format_setting(k, v) for k, v in settings.items()]
     parts.append(f"log_comment = '{log_comment}'")
