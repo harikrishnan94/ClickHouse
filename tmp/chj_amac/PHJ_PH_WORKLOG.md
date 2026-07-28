@@ -619,3 +619,166 @@ distinct and its settings fingerprint differing (so the confound is real, as rep
 31-changed-verdict table transcription (5 rows spot-checked); G2's teeth (106 vs 94, all 12
 extras ending `.hash`); and prereg-before-sweep ordering (prereg `96532537d4d` at 17:17:35Z,
 earliest sweep row `recorded_at` 17:37:08Z).
+
+---
+
+## Unit 3 — jbmt legacy synthetic, 347 cells
+
+**Pre-sweep smoke: `selftest` with two arms.** Red overall, and every failure names
+`partitioned_hash`, which does not exist in either binary:
+
+```
+[FAIL] status OK: … Code: 418 … Unexpected value of JoinAlgorithm: 'partitioned_hash'. Must be one of [… 'parallel_hash' …]. (UNKNOWN_JOIN)
+[FAIL] partitioned path event nonzero
+[FAIL] LEFT ANTI unit status consistent with path events: … 'partitioned_hash' … (UNKNOWN_JOIN)
+selftest: FAILURES PRESENT
+```
+`selftest` has no `--algorithms` flag (verified: passing one is `unrecognized arguments`), so
+it always runs the default algorithm pair and cannot pass on these binaries. What the
+campaign depends on all passed:
+
+```
+[PASS] no spurious path events under plain hash (baseline)
+[PASS] no spurious path events under plain hash (candidate)
+[PASS] timed runs alternate arms (parallel_hash): baselinecandidatebaselinecandidatebaselinecandidate
+[PASS] wrong expected -> INVALID: row_count 400000 != closed-form expected 400001
+[PASS] mid-run insert -> INVALID (parts or checksum)
+[PASS] fingerprint changes on mutation
+```
+The two-arm ABAB alternation passing here matters: the prior campaign was single-arm and
+never exercised this path. Checked that `selftest`'s "bootstrapping a small keys_store.k0"
+did not clobber the real one — `k0` reads `1.02 billion` on **both** arms on two shards.
+It does leave a small `bench.build_t`/`probe_t` behind; the sweep drops and recreates
+`bench` tables per cell, so it is inert.
+
+**Venue verification before sweeping (per shard, from `jbmt_prep_shard*.log`).** The
+strongest identity evidence in the campaign, because it reads the *running process*:
+
+```
+--- binary identity as the servers actually run them ---
+port 9005 pid 73844 sha256 0d32ef1c96e6d378
+port 9006 pid 74425 sha256 06d804546e0f029b
+--- verify both tiers against the snapshot reference ---
+verify: OK
+verify: OK
+```
+Plus `cloned /mnt/data/jbmt_server/data -> …/data_b (hardlinks: shared inodes, shared page
+cache, zero data bytes)`. All 8 shards ended `prep OK`, `rc=0`.
+
+**Sweep launched** 19:50 UTC, `--only` built from the 347 legacy ids:
+
+```
+python3 join_bench_mt.py sweep \
+  --arm baseline=/home/ubuntu/chj/clickhouse-base:9005 \
+  --arm candidate=/home/ubuntu/chj/clickhouse-cand:9006 \
+  --algorithms parallel_hash --suite synthetic --tier a \
+  --shards 8 --shard <i> --results results.syn.shard<i>.jsonl \
+  --only "$(cat only.syn.txt)"
+```
+
+jbmt's leader flip **does** work (contrast the `fleet_ab` defect): rows carry
+`lead_arm: candidate` and `lead_arm: baseline`, because it is derived from
+`zlib.crc32(unit_id) & 1` rather than from a positional index.
+
+Six shards finished with `sweep done: 46 run, 0 not OK/FALLBACK` (and 44/44/46/43/46). Shards
+4 and 6 ran long: both sat in `OPTIMIZE TABLE bench.probe_t FINAL` for over 30 minutes
+(shard 6: 2208 s) on the largest cells — the same single-threaded merge that dominated
+`prepare-keys`, not a hang.
+
+**Judgement call — Unit 4 tier a started on the 6 idle hosts while 4 and 6 finished Unit 3.**
+Each shard is a *separate physical machine*, and each machine runs exactly one sweep at a
+time, so this cannot contaminate either suite's measurements; it only stops six 96-core hosts
+idling for an hour. Unit 3 was **not** abandoned — it ran to completion on the two hosts that
+still needed it, and its result is reported in full. Revisit trigger: if any host were ever
+asked to run two sweeps at once, stop and discard the overlap.
+
+**Incident, disclosed — the first tier-a launch used the wrong plan partitioning.**
+`jbmt_sweep_phj_ph.sh` derived `--shards` from the *number of hosts being launched*
+(`NSHARDS=$(grep -c . "$HOSTS")`), which is 6 when launching a 6-host subset, so it issued
+`--shards 6` and, on the host labelled shard 7, the out-of-range `--shard 7`:
+
+```
+python3 join_bench_mt.py sweep … --suite real --tier a --shards 6 --shard 0 …
+```
+Caught within ~2 minutes by reading the remote process list rather than trusting the
+launcher's own "launched" output. Actions taken, in order:
+1. killed the sweeps;
+2. **preserved** the partial rows as `results.real_a_misshard6.shard<i>.jsonl` on each host
+   (5 hosts had rows; the shard-7 host had none, consistent with `--shard 7` of 6 being
+   out of range) — they are *not deleted* and *not scored*, because they were produced under
+   a different plan cut than the campaign's;
+3. fixed the driver so an explicit `NSHARDS` wins over the host count;
+4. relaunched, and verified from the remote process list that it now reads
+   `--shards 8 --shard 0`.
+
+This is an infrastructure fault I diagnosed, not a result I disliked, which is the only
+basis on which the prompt permits a rerun; both the discarded attempt and the relaunch are
+disclosed here and in the report.
+
+**Unit 3 complete — G5 GREEN.**
+
+```
+$ cd tmp/chj_amac/fleet/jbmt_results_phj_ph && python3 -c "…" 'results.syn.shard*.jsonl'
+legacy 347 missing 0 not-OK 0
+[] []
+G5_EXIT=0
+```
+Every one of the 347 named legacy ids is present and `OK`. Original cell ids preserved
+verbatim (they are what lets these results join against the other harnesses).
+
+**G7 for this suite — GREEN on all three asserted contents.**
+
+```
+$ python3 join_bench_mt.py report-ab --results 'results.syn.shard*.jsonl' --arm-a baseline --arm-b candidate --out AB_REPORT.syn.md
+347 result rows (347 multi-arm); statuses: {'OK': 347}
+binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+lead arm distribution (ABAB leader): {'candidate': 181, 'baseline': 166}
+```
+Two distinct shas ✓; both arms lead a non-trivial share (181/166) ✓; no `FALLBACK` in the
+statuses ✓ (`{'OK': 347}`, and my own recount confirms `units with any fallback_runs > 0:
+none`).
+
+**Orientation trap caught before it could invert the headline.** `report-ab` labels verdicts
+from the *reference* arm's point of view — `join_bench_mt.py:1492` is
+`return ("win" if va < vb else "loss", ratio)` with `va` = arm A = **baseline**, and the
+header says so: `ratio = candidate/baseline; ratio > 1 and 'win' mean baseline better`. So
+its `win: 175` means the **baseline** won 175 units, not the candidate. Quoting it directly
+would have reported the campaign's biggest result backwards. Every suite in this report is
+therefore stated candidate-centrically, with the raw `report-ab` output kept alongside.
+
+**Independent recount (`fleet/recount_jbmt.py`, does not import `join_bench_mt`).** First
+attempt disagreed by 2 units (tie 51 vs 53) because I banded on 5% of the baseline median;
+the documented rule (`join_memory_bench._noise_band_tie`) is
+`max(0.05 * max(median_a, median_b), max(stdev_a, stdev_b))` — 5% of the **larger** median.
+Implementing the documented rule correctly gives exact agreement:
+
+```
+--- candidate-centric wall verdicts (WIN = candidate better) ---
+units scored=347 win=119 tie=53 loss=175
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.057 (>1 means the candidate is slower/larger)
+
+--- candidate-centric memory verdicts (WIN = candidate better) ---
+units scored=347 win=5 tie=261 loss=81
+median ratio candidate/baseline = 1.034
+```
+`arm -> binary sha256 prefixes: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}`,
+`tool_versions: {'jbmt-v2': 347}`, `algorithms measured: {'parallel_hash': 347}`.
+
+**Unit 3 measured result: the candidate loses this suite.** 119 WIN / 53 TIE / 175 LOSS on
+wall, median 5.7% slower; on memory 5 WIN / 261 TIE / 81 LOSS, median 3.4% larger. The
+extremes are wide in both directions and are *shape*-structured, not noise:
+
+- biggest candidate wins, all `T96`: `D32000000_K7_mb16…T96` 0.574, `D32000000_K7_mb8…T96`
+  0.602, `D8000000_K7_mb16…T96` 0.637, `D32000000_K3_mb8…T96` 0.638 — i.e. the wide-key
+  (K7 = 64-byte string, K3 = 8-column numeric) high-thread shapes go up to **43% faster**;
+- biggest candidate losses, all `K1` at **low** thread counts: `D8000000_K1_…T2` **3.555×**,
+  `…T8` 3.513×, `…T4` 3.509×, `D32000000_K1_…T2` 3.341× — i.e. up to **3.5× slower** on the
+  narrow 2-column numeric key at T2–T8.
+
+That low-thread `K1` cluster is a **LEAD**, not a settled cause. It is, however, exactly the
+population the payload commit's own message flagged as needing re-validation ("Follow-up:
+re-validate the low-thread cells (T1/T48), which previously ran with thread-derived slot
+counts") — the candidate now pins 256 slots regardless of thread count, so a T2 query builds
+256 slot maps. Consistent with that mechanism, but this campaign has not isolated it: doing
+so needs a third arm or a slot-count sweep, neither of which is in scope. Named, not claimed.

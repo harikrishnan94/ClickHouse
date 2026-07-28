@@ -1,0 +1,40 @@
+=== [2026-07-28T18:13:04Z] shard 4 prep start ===
+--- warm-read data files (EBS lazy-load hydration) ---
+warm read done: 2026-07-28T18:51:22Z
+/dev/nvme1n1    1.5T  442G  999G  31% /mnt/data
+--- prepare-keys K0,K1,K2,K3,K4,K5,K6,K7,K8,K9 on the pre-clone data root ---
+arm PREP up: pid=81790 tcp=9005 http=8125 root=/mnt/data/jbmt_server/data
+preparing keys_store for K0
+  K0: 1024000000 rows
+preparing keys_store for K1
+  K1: 256000000 rows
+preparing keys_store for K2
+  K2: 256000000 rows
+preparing keys_store for K3
+  K3: 256000000 rows
+preparing keys_store for K4
+  K4: 256000000 rows
+preparing keys_store for K5
+  K5: 256000000 rows
+preparing keys_store for K6
+  K6: 256000000 rows
+preparing keys_store for K7
+  K7: 1024000000 rows
+preparing keys_store for K8
+  K8: 256000000 rows
+preparing keys_store for K9
+  K9: 256000000 rows
+stopped pid 81790
+prepare-keys done: 2026-07-28T19:36:36Z
+/dev/nvme1n1    1.5T  720G  720G  50% /mnt/data
+--- clone + start both arms ---
+cloned /mnt/data/jbmt_server/data -> /mnt/data/jbmt_server/data_b (hardlinks: shared inodes, shared page cache, zero data bytes)
+arm baseline up: pid=83248 tcp=9005 http=8125 root=/mnt/data/jbmt_server/data
+arm candidate up: pid=83846 tcp=9006 http=8126 root=/mnt/data/jbmt_server/data_b
+--- binary identity as the servers actually run them ---
+port 9005 pid 83248 sha256 0d32ef1c96e6d378
+port 9006 pid 83846 sha256 06d804546e0f029b
+--- verify both tiers against the snapshot reference ---
+verify: OK
+verify: OK
+=== [2026-07-28T19:37:43Z] shard 4 prep OK ===

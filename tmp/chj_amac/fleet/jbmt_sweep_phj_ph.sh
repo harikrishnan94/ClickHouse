@@ -29,7 +29,11 @@ ONLY_FILE=""
 if [ "${4:-}" = "--only-file" ]; then ONLY_FILE=${5:?only file}; fi
 BIN_A=/home/ubuntu/chj/clickhouse-base
 BIN_B=/home/ubuntu/chj/clickhouse-cand
-NSHARDS=$(grep -c . "$HOSTS")
+# NSHARDS is the PLAN partitioning, which is not the same as the number of hosts
+# being launched right now: a subset of hosts may be launched while the rest are
+# still finishing an earlier suite, and the plan must still be cut the same way
+# for every shard. Defaults to the host count, but an explicit NSHARDS wins.
+NSHARDS=${NSHARDS:-$(grep -c . "$HOSTS")}
 
 while IFS=$'\t' read -r shard iid ip az; do
     [ -n "${shard:-}" ] || continue
