@@ -184,3 +184,34 @@ Edits (all landed in working tree, building):
 - Local A/B floor cells (LOCAL, not acceptance): 3/3 TIE - key64 S1
   +0.56%, key64 S2 -2.71%, str S1 +2.47% (prior fleet: key64 S1
   +4.3% LOSS, str S1 +3.2% LOSS); ProbeLookup -28/-38/-37%.
+
+## Disk pressure incident (during U2 hygiene relink)
+
+- The final links of the hygiene verification build died with a bus
+  error: `/mnt/ch` at 98% (9.6 GB free; a 4.8 GB binary + debug info
+  did not fit). Cause: 76 GB of accumulated binary snapshots in
+  `tmp/chj_amac/bins/`.
+- Pruned (recorded, reproducible from their `source_commit` in
+  MANIFEST.tsv): the four prior-mission intermediate candidates and
+  all superseded `uncommitted-*.tmp.bin` snapshots (their gates are
+  closed and logged with sha256). KEPT: the three binaries of record
+  (baseline `a05f3ee81ff`, ahj reference `cf465cfbe23`, candidate
+  `5b276c5fb88`) and `uncommitted-u2.tmp.bin` (latest committed-state
+  snapshot). Also removed one-shot 03567 scratch server dirs.
+  Now at 86% (68 GB free).
+
+## U2 hygiene pass (96136264c16)
+
+- Reports: hygiene/96136264c16.{reduce,humanize}.md. Applied: the
+  redundant `slot_ids` parameter dropped from the scratch plumbing
+  chain (`joinRoutedBlock` takes `JoinProbeScratch &`; the raw
+  pointer is derived once and the hot loops keep their shape); dead
+  `using IJoin::joinBlock;` removed from `ConcurrentHashJoin.h`;
+  `probe_scratch_slots` -> `probe_scratch_by_lane` ("slot" stays
+  reserved for hash-join shards); the PREREG citation removed from a
+  gtest comment; contract prose consolidated; de-caps; dead member
+  initializer dropped. SKIPPED: the lane/stream_index seam rename
+  (cross-file API churn for a naming nit).
+- Re-gates: build rc=0 (after the disk incident above), gtests 23/23,
+  PARITY OK on the post-fixer snapshot (`uncommitted-u2hyg.tmp.bin`,
+  parity_u2hyg.log; force-pass 8/8+2x0).

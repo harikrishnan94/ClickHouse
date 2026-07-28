@@ -88,7 +88,7 @@ private:
     size_t max_block_size;
     /// Stable 0-based probe lane index, passed to `IJoin::joinBlock` so the join can bind
     /// lock-free per-lane probe scratch.
-    size_t stream_index = 0;
+    size_t stream_index;
 
     Block readExecute(Chunk & chunk);
 };

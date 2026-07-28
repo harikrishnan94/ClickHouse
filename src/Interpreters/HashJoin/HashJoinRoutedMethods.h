@@ -25,15 +25,14 @@ class RoutedHashJoinMethods
 {
 public:
     /// `slot_joins` are the per-slot `HashJoin`s (all sharing one `StoredColumnsIndex`);
-    /// `block` wraps the ORIGINAL left block (zero-copy); `slot_ids` carries one slot id per
-    /// source-block row (null when there is a single slot); `join_on_keys` is the block's
-    /// prepared key columns (see `HashJoin::joinRoutedBlock`).
+    /// `block` wraps the ORIGINAL left block (zero-copy); the scratch's `slot_ids` carries one
+    /// slot id per source-block row (empty when there is a single slot); `join_on_keys` is the
+    /// block's prepared key columns (see `HashJoin::joinRoutedBlock`).
     static JoinResultPtr joinBlockImpl(
         const std::vector<const HashJoin *> & slot_joins,
         ScatteredBlock block,
         const Block & block_with_columns_to_add,
-        const UInt8 * slot_ids,
-        JoinProbeScratch * scratch,
+        JoinProbeScratch & scratch,
         std::vector<JoinOnKeyColumns> join_on_keys);
 
 private:
@@ -43,7 +42,7 @@ private:
         AddedColumns & added_columns,
         const ScatteredBlock::Selector & selector,
         const UInt8 * slot_ids,
-        JoinProbeScratch * scratch);
+        JoinProbeScratch & scratch);
 
     /// The pre-loop dispatch layer: the additional-filter path (mixed ON conditions) and the
     /// selector-shape split.
@@ -56,7 +55,7 @@ private:
         AddedColumns & added_columns,
         const ScatteredBlock::Selector & selector,
         const UInt8 * slot_ids,
-        JoinProbeScratch * scratch);
+        JoinProbeScratch & scratch);
 
     /// The routed probe loop (single join clause; `parallel_hash` supports no disjuncts).
     template <typename KeyGetter, typename Map, typename AddedColumns, typename Selector>
@@ -68,7 +67,7 @@ private:
         AddedColumns & added_columns,
         const Selector & selector,
         const UInt8 * slot_ids,
-        JoinProbeScratch * scratch);
+        JoinProbeScratch & scratch);
 };
 
 /// Instantiated ahead in the RoutedHashJoin*.cpp files (one per strictness), mirroring the

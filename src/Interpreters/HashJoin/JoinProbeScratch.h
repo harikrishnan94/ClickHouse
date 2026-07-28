@@ -10,7 +10,7 @@ namespace DB
 /// reused across probe blocks so the steady state allocates nothing per block:
 /// - `slot_ids` - one route slot id per source-block row;
 /// - `found_word` - the AMAC find pass's per-row result: the matched cell's mapped value
-///   copied BY VALUE (0 = no match; `RowRef`/`RowRefList` are 8-byte words that are never 0
+///   copied by value (0 = no match; `RowRef`/`RowRefList` are 8-byte words that are never 0
 ///   for a real match), so the emit phase never dereferences the cell a second time after it
 ///   left the cache;
 /// - `found_offset` - the used-flags offset of the match (slot-local), filled only for the

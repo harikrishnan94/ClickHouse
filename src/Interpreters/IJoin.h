@@ -123,7 +123,7 @@ public:
     virtual JoinResultPtr joinBlock(Block block) = 0;
 
     /// Overload carrying the 0-based probe lane index (one per `JoiningTransform` stream).
-    /// Lets a join keep stable per-lane probe scratch without locking. Lane indices are NOT
+    /// Lets a join keep stable per-lane probe scratch without locking. Lane indices are not
     /// guaranteed to stay below the join's thread count in every pipeline shape, and distinct
     /// callers may share a lane (the totals transform, plan-time header probes) - joins must
     /// tolerate out-of-range and colliding lanes. Default ignores the lane and forwards.

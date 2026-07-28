@@ -690,8 +690,7 @@ TEST(ConcurrentHashJoinAmac, ProbeEmitsInLeftRowOrder)
 }
 
 /// The probe-scratch pool: one parked scratch per lane, lock-free acquire/release, with the
-/// mutexed pool absorbing collisions and out-of-range lanes (see PREREG 004). These tests pin
-/// the ownership contract, not performance.
+/// mutexed pool absorbing collisions and out-of-range lanes.
 TEST(ConcurrentHashJoinProbeScratch, PoolParksAndReusesPerLane)
 {
     auto built = buildJoin<UInt64>({1, 2, 3}, 1, AmacMode::Auto);
@@ -707,7 +706,7 @@ TEST(ConcurrentHashJoinProbeScratch, PoolParksAndReusesPerLane)
     ASSERT_EQ(second.get(), raw);
     EXPECT_EQ(second->slot_ids.size(), 1000u);
 
-    /// A different lane never steals a parked scratch that belongs to lane 0's slot.
+    /// A different lane never steals a parked scratch that belongs to lane 0.
     built.join->releaseProbeScratch(std::move(second), 0);
     auto other_lane = built.join->acquireProbeScratch(1);
     EXPECT_NE(other_lane.get(), raw);
@@ -718,15 +717,15 @@ TEST(ConcurrentHashJoinProbeScratch, PoolToleratesLaneCollisions)
 {
     auto built = buildJoin<UInt64>({1, 2, 3}, 1, AmacMode::Auto);
 
-    /// Two concurrent-in-time acquisitions of the SAME lane (the totals transform and stream 0
-    /// legally collide on lane 0) must produce two distinct live scratches.
+    /// Two overlapping acquisitions of the same lane (the totals transform and stream 0 both
+    /// use lane 0) must return two distinct live scratches.
     auto first = built.join->acquireProbeScratch(0);
     auto second = built.join->acquireProbeScratch(0);
     ASSERT_NE(first, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_NE(first.get(), second.get());
 
-    /// Releasing both parks one in the lane slot and diverts the loser to the pool - neither
+    /// Releasing both parks one under the lane and diverts the other to the pool - neither
     /// is lost: two follow-up acquisitions get both back without allocating.
     JoinProbeScratch * raw_first = first.get();
     JoinProbeScratch * raw_second = second.get();
@@ -765,14 +764,13 @@ TEST(ConcurrentHashJoinProbeScratch, ProbeReleasesScratchOnResultDestruction)
         auto result = built.join->joinBlock(
             makeKeyBlock("k", "probe_id", std::vector<UInt64>{1, 2, 3, 4, 5, 6}, {0, 1, 2, 3, 4, 5}), lane);
         drainResult(*built.join, *result, rows);
-        /// The scratch is still owned by the result here - the lane's slot is empty, so a
-        /// fresh acquisition must NOT observe the in-flight scratch.
+        /// The scratch is still owned by the result here - the lane's entry is empty, so a
+        /// fresh acquisition must not observe the in-flight scratch.
         auto while_alive = built.join->acquireProbeScratch(lane);
         EXPECT_EQ(while_alive->slot_ids.size(), 0u);
         built.join->releaseProbeScratch(std::move(while_alive), lane);
-        /// The result destructor runs at scope exit and parks the scratch... unless the slot
-        /// is occupied by the release above, in which case it goes to the pool - either way
-        /// it is recoverable below.
+        /// The destructor parks the scratch at scope exit - under the lane, or into the pool
+        /// if the release above occupied the entry; either way it is recoverable below.
     }
     EXPECT_EQ(rows.size(), probe_rows);
 

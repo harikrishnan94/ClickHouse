@@ -183,7 +183,7 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     , external_join_threshold(external_join_threshold_)
     /// 2x because probe lanes are pipeline streams, which are not guaranteed to stay below
     /// the slot count in every pipeline shape (see `IJoin::joinBlock`'s lane contract).
-    , probe_scratch_slots(2 * slots)
+    , probe_scratch_by_lane(2 * slots)
 {
     hash_joins.resize(slots);
 
@@ -241,9 +241,9 @@ ConcurrentHashJoin::ConcurrentHashJoin(
 
 ConcurrentHashJoin::~ConcurrentHashJoin()
 {
-    /// No probe result may be alive here, so every parked scratch is owned by the table.
-    for (auto & slot : probe_scratch_slots)
-        delete slot.load(std::memory_order_acquire);
+    /// No probe result may be alive here, so every parked scratch is owned by `probe_scratch_by_lane`.
+    for (auto & parked : probe_scratch_by_lane)
+        delete parked.load(std::memory_order_acquire);
 
     try
     {
@@ -271,9 +271,9 @@ ConcurrentHashJoin::~ConcurrentHashJoin()
 
 std::unique_ptr<JoinProbeScratch> ConcurrentHashJoin::acquireProbeScratch(size_t lane)
 {
-    /// Lane fast path: take the parked scratch of this probe stream with one atomic exchange.
-    if (lane < probe_scratch_slots.size())
-        if (JoinProbeScratch * parked = probe_scratch_slots[lane].exchange(nullptr, std::memory_order_acquire))
+    /// Lane fast path.
+    if (lane < probe_scratch_by_lane.size())
+        if (JoinProbeScratch * parked = probe_scratch_by_lane[lane].exchange(nullptr, std::memory_order_acquire))
             return std::unique_ptr<JoinProbeScratch>(parked);
 
     {
@@ -290,14 +290,14 @@ std::unique_ptr<JoinProbeScratch> ConcurrentHashJoin::acquireProbeScratch(size_t
 
 void ConcurrentHashJoin::releaseProbeScratch(std::unique_ptr<JoinProbeScratch> scratch, size_t lane)
 {
-    /// Park back into the lane's slot when it is free; a collision (or an out-of-range lane)
-    /// falls through to the pool, so the scratch is never lost and never double-owned.
-    if (lane < probe_scratch_slots.size())
+    /// Park back under the lane when its entry is free; a collision or an out-of-range lane
+    /// falls through to the pool.
+    if (lane < probe_scratch_by_lane.size())
     {
         JoinProbeScratch * expected = nullptr;
-        if (probe_scratch_slots[lane].compare_exchange_strong(expected, scratch.get(), std::memory_order_release))
+        if (probe_scratch_by_lane[lane].compare_exchange_strong(expected, scratch.get(), std::memory_order_release))
         {
-            scratch.release(); /// NOLINT(bugprone-unused-return-value): ownership moved into the slot
+            scratch.release(); /// NOLINT(bugprone-unused-return-value): ownership moved into the entry
             return;
         }
     }
@@ -480,12 +480,7 @@ public:
             /// cheap match row-refs. It does NOT gather any column values yet (that is
             /// deferred to `HashJoinResult::next`).
             ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
-            inner = HashJoin::joinRoutedBlock(
-                slot_joins,
-                std::move(block),
-                scratch->slot_ids.empty() ? nullptr : scratch->slot_ids.data(),
-                scratch.get(),
-                std::move(join_on_keys));
+            inner = HashJoin::joinRoutedBlock(slot_joins, std::move(block), *scratch, std::move(join_on_keys));
         }
 
         auto data = inner->next();
@@ -516,8 +511,6 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block, size_t lane)
             join0.getKeySizes().at(0),
             HashJoin::isLowCardinalityType(join0.getJoinedData()->type));
 
-        /// The lane's pooled scratch: the steady state reuses its capacity across blocks, so
-        /// nothing here allocates per block after warm-up.
         scratch = acquireProbeScratch(lane);
 
         /// Only the slot ids are derived here; the block itself is NOT scattered - the routed

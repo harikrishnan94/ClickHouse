@@ -14,8 +14,7 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     const std::vector<const HashJoin *> & slot_joins,
     ScatteredBlock block,
     const Block & block_with_columns_to_add,
-    const UInt8 * slot_ids,
-    JoinProbeScratch * scratch,
+    JoinProbeScratch & scratch,
     std::vector<JoinOnKeyColumns> join_on_keys)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
@@ -24,6 +23,10 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     const HashJoin & join = *slot_joins[0];
 
     chassert(join_on_keys.size() == 1, "parallel_hash supports a single join clause");
+
+    /// The slot ids ride in the scratch; the per-row loops below take a raw pointer, null when
+    /// there is a single slot.
+    const UInt8 * slot_ids = scratch.slot_ids.empty() ? nullptr : scratch.slot_ids.data();
 
     /// Slot 0 is the representative for everything the emit machinery reads through the join:
     /// the saved-block sample, the limits, and - crucially - the `StoredColumnsIndex`, which is
@@ -104,7 +107,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
     const UInt8 * slot_ids,
-    JoinProbeScratch * scratch)
+    JoinProbeScratch & scratch)
 {
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
     const HashJoin & join0 = *slot_joins[0];
@@ -153,7 +156,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
     const UInt8 * slot_ids,
-    JoinProbeScratch * scratch)
+    JoinProbeScratch & scratch)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
 
@@ -209,7 +212,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     AddedColumnsType & added_columns,
     const Selector & selector,
     const UInt8 * slot_ids,
-    JoinProbeScratch * scratch [[maybe_unused]])
+    JoinProbeScratch & scratch)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     /// Single join clause (`parallel_hash` supports no disjuncts), so right-row used flags are
@@ -509,16 +512,15 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             /// and zero-key rows synchronously, `step` records hits and misses - so the arrays
             /// need no pre-fill and phase B needs no skip logic. The offsets are recorded (and
             /// sized) only for the flagged shapes - they have no other consumer. The arrays
-            /// live in the lane's pooled scratch: `resize` never shrinks a `PaddedPODArray`,
-            /// so the steady state reuses the capacity across blocks.
-            chassert(scratch);
-            scratch->found_word.resize(rows);
-            UInt64 * found_word_data = scratch->found_word.data();
+            /// live in the lane's pooled scratch; `resize` never shrinks a `PaddedPODArray`,
+            /// so the capacity survives across blocks.
+            scratch.found_word.resize(rows);
+            UInt64 * found_word_data = scratch.found_word.data();
             UInt64 * found_offset_data = nullptr;
             if constexpr (join_features.need_flags)
             {
-                scratch->found_offset.resize(rows);
-                found_offset_data = scratch->found_offset.data();
+                scratch.found_offset.resize(rows);
+                found_offset_data = scratch.found_offset.data();
             }
 
             constexpr bool selector_is_range = !std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Indexes>;

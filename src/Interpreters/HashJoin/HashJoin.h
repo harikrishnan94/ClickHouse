@@ -157,17 +157,16 @@ public:
     JoinResultPtr joinBlock(Block block) override;
 
     /// The order-preserving routed probe of `ConcurrentHashJoin` (`parallel_hash`): one lookup
-    /// pass over the ORIGINAL left block, with `slot_ids` (one slot id per source row, null
-    /// when there is a single slot) selecting each row's slot map. `join_on_keys` holds the
-    /// block's prepared key columns; the caller builds them once and derives `slot_ids` from
-    /// the same columns. The `slot_joins` share one `StoredColumnsIndex`, so the result emits
-    /// every slot's matches through slot 0's machinery - in left-row order. See
+    /// pass over the ORIGINAL left block, with the scratch's `slot_ids` (one slot id per source
+    /// row, empty when there is a single slot) selecting each row's slot map. `join_on_keys`
+    /// holds the block's prepared key columns; the caller builds them once and derives the slot
+    /// ids from the same columns. The `slot_joins` share one `StoredColumnsIndex`, so the
+    /// result emits every slot's matches through slot 0's machinery - in left-row order. See
     /// `RoutedHashJoinMethods`.
     static JoinResultPtr joinRoutedBlock(
         const std::vector<const HashJoin *> & slot_joins,
         ScatteredBlock block,
-        const UInt8 * slot_ids,
-        JoinProbeScratch * scratch,
+        JoinProbeScratch & scratch,
         std::vector<JoinOnKeyColumns> join_on_keys);
 
     /// Check joinGet arguments and infer the return type.

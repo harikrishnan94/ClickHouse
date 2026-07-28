@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashJoin/JoinProbeScratch.h>
@@ -7,7 +8,6 @@
 #include <Interpreters/IJoin.h>
 #include <base/defines.h>
 #include <base/types.h>
-#include <limits>
 #include <Common/ThreadPool_fwd.h>
 #include <Interpreters/TableJoin.h>
 #include <atomic>
@@ -54,7 +54,6 @@ public:
     const TableJoin & getTableJoin() const override { return *table_join; }
     bool addBlockToJoin(const Block & right_block_, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
-    using IJoin::joinBlock;
     JoinResultPtr joinBlock(Block block) override { return joinBlock(std::move(block), invalid_lane); }
     JoinResultPtr joinBlock(Block block, size_t lane) override;
     void setTotals(const Block & block) override;
@@ -98,9 +97,8 @@ public:
 
     void onBuildPhaseFinish() override;
 
-    /// The pipeline-carried lane index binds a lock-free scratch slot per probe stream; lanes
-    /// outside the parking table (or the lane-less legacy entry points) fall back to the
-    /// mutexed pool, so lane collisions and out-of-range indices stay correct, just slower.
+    /// Lane value used by the lane-less `joinBlock` entry points; always takes the mutexed
+    /// pool path (see `probe_scratch_by_lane`).
     static constexpr size_t invalid_lane = std::numeric_limits<size_t>::max();
 
     std::unique_ptr<JoinProbeScratch> acquireProbeScratch(size_t lane);
@@ -137,11 +135,13 @@ private:
     StatsCollectingParams stats_collecting_params;
     const size_t external_join_threshold;
 
-    /// One parked scratch per probe lane (owned when the slot is non-null; freed by the
-    /// destructor). Acquire = atomic exchange out; release = CAS back in; misses go through
-    /// the pool. Sized once in the constructor, never resized: the lock-free fast paths index
-    /// the table without synchronizing against growth.
-    std::vector<std::atomic<JoinProbeScratch *>> probe_scratch_slots;
+    /// One parked scratch per probe lane - indexed by lane, not by hash-join slot - owned when
+    /// the entry is non-null and freed by the destructor. Acquire = atomic exchange out;
+    /// release = CAS back in; a lane collision or an out-of-range lane falls back to the
+    /// mutexed pool, so a scratch is never lost and never double-owned. Sized once in the
+    /// constructor, never resized: the lock-free fast paths index it without synchronizing
+    /// against growth.
+    std::vector<std::atomic<JoinProbeScratch *>> probe_scratch_by_lane;
     std::mutex probe_scratch_mutex;
     std::vector<std::unique_ptr<JoinProbeScratch>> probe_scratch_pool;
 
