@@ -173,3 +173,41 @@ orientation and labeled as such.
   hoist alone (commit a) must be perf-neutral-or-better.
 - Refutation: any parity/order diff -> descriptor/lifetime bug; any
   unexplained disasm delta -> port infidelity; fix before proceeding.
+
+## 006 — U4: ASOF pointer-recording ring, then the AmacWalk policy
+
+- Commit (a), ASOF ring (probe-only; the single-slot ASOF plan is
+  explicitly NOT adopted): the find ring gains the ASOF maps by
+  recording the matched cell's mapped POINTER bits in `found_word`
+  (never 0 for a match; the probe maps are immutable, so the pointer
+  stays valid into phase B). Phase B stays the full precomputed loop,
+  rebuilding the `FindResult` from the pointer and running `findAsof`
+  as today. The dispatch-free `word_loop` continues to exclude ASOF.
+  New `amacFindPass` instantiations for the ASOF maps land in
+  `AmacProbe.cpp`; the compile-time and binary-size deltas are
+  measured and reported. Tests: ring-vs-plain ASOF parity gtests
+  (duplicate-heavy keys, inequality boundaries for all four
+  inequalities), order; the full parity/order harnesses re-run.
+- Commit (b), `AmacWalk` policy (DESIGN item 7): a second compile-time
+  axis {bare, wrap_aware} on the find pass. `bare` stays byte-for-byte
+  today's steady loop (the ahj-anchored one); `wrap_aware` adds a
+  per-frame descriptor lane and wraps step and step-prefetch at the
+  pad end, replicating the grower's `next`. The engagement gate drops
+  the `!chain_may_wrap` term - a wrapped plan selects the wrap-aware
+  instantiation per `joinBlock` instead of disengaging; force mode
+  now engages on wrapped plans too. Tests: a degenerate-hash gtest
+  forcing a pad-spanning cluster (asserts the dispatcher never picks
+  `bare` on a wrapped map and ring results equal the sequential
+  find); SQL cannot reach wrapped plans deterministically - recorded
+  as the coverage boundary.
+- Expectation: all gates stay green (build, gtests, parity 636,
+  order); G-disasm: the BARE anchors must remain instruction-equal to
+  the ahj reference (the policy axis must not perturb them);
+  `wrap_aware` and the ASOF ring get standalone review anchors (no
+  ahj counterpart exists - ahj disengages on wrapped plans and rings
+  ASOF only under its single-leaf plan). Local orientation A/B on
+  asof cells (key64 S2-equivalent asof, str asof) - expect
+  `ProbeLookup` improvement or in-band.
+- Refutation: any parity diff -> pointer-lifetime or boundary bug;
+  any bare-anchor delta -> the axis leaked into the hot loop; fix
+  before proceeding, never weaken.

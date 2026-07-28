@@ -153,10 +153,8 @@ private:
     std::atomic<size_t> global_total_rows{0};
     std::atomic<size_t> global_total_bytes{0};
 
-    /// Once-per-build probe address material (see `RoutedProbePlan`): collected at the end of
-    /// the constructor (plan-time header probes run before any build) and re-collected by
-    /// `onBuildPhaseFinish` when the maps are final. Probe results reference it like
-    /// `slot_joins`.
+    /// Once-per-build probe address material (see `RoutedProbePlan`; the collection schedule
+    /// is on `collectRoutedProbePlan`). Probe results reference it like `slot_joins`.
     RoutedProbePlan routed_probe_plan;
 
     void collectRoutedProbePlan();

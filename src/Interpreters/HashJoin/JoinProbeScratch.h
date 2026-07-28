@@ -24,8 +24,7 @@ struct SlotMapDesc
 };
 
 /// Once-per-build address material of the routed `parallel_hash` probe, collected by
-/// `ConcurrentHashJoin` when the maps are final (and once at construction, so plan-time header
-/// probes see sized arrays), replacing per-probe-block O(slots) passes:
+/// `ConcurrentHashJoin` when the maps are final, replacing per-probe-block O(slots) passes:
 /// - `map_by_slot` - the active map object per slot, type-erased; the probe casts it back
 ///   under the same map-type switch that chose it;
 /// - `desc_by_slot` - `SlotMapDesc` per slot for the cursor-capable map types (empty for the

@@ -106,21 +106,22 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
     const HashJoin & join0 = *slot_joins[0];
 
+    chassert(plan.map_by_slot.size() == slot_joins.size());
+    chassert(added_columns.join_on_keys.size() == 1);
+    const auto & join_on_key = added_columns.join_on_keys[0];
+
     /// The map type is uniform across the slots: it is chosen from the shared right sample
     /// block, `ConcurrentHashJoin` never runs the post-build fixed-map conversion, and the
     /// All -> RightAny promotion is synchronized before the per-slot `onBuildPhaseFinish`.
     switch (join0.data->type)
     {
+/// The once-per-build plan holds the type-erased map pointers; this switch is the same one that
+/// erased them, so the cast back is exact.
 #define M(TYPE) \
     case HashJoin::Type::TYPE: { \
         using MapTypeVal = const typename std::remove_reference_t<decltype(MapsTemplate::TYPE)>::element_type; \
         using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, MapTypeVal>::Type; \
-        /* The once-per-build plan holds the type-erased map pointers; this switch is the same \
-           one that erased them, so the cast back is exact. */ \
         const auto * const * maps_by_slot = reinterpret_cast<const MapTypeVal * const *>(plan.map_by_slot.data()); \
-        chassert(plan.map_by_slot.size() == slot_joins.size()); \
-        chassert(added_columns.join_on_keys.size() == 1); \
-        const auto & join_on_key = added_columns.join_on_keys[0]; \
         return joinRightColumnsRouted<KeyGetter, MapTypeVal>( \
             slot_joins, \
             plan, \
@@ -189,19 +190,20 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
             slot_joins, plan, key_getter, maps_by_slot, added_columns, selector.getIndexes(), slot_ids, scratch);
 }
 
-/// The fused descriptor-based find of the routed plain loop (no ring): cheap-key getters over
-/// cursor-capable maps. Unlike the ring it serves every mapped shape (ASOF included) - the
-/// match is consumed in place, so the mapped value never needs to fit a word - and its walk is
-/// wrap-aware, so it also serves the wrapped-chain builds the ring must refuse.
+/// The key families served by `flatFindKey` when the ring is not engaged: cheap-key getters
+/// over cursor-capable maps (the string getters fall out via `has_cheap_key_calculation`).
+/// Unlike the ring, the flat find serves every mapped shape (ASOF included - the match is
+/// consumed in place, so the mapped value never needs to fit a word) and the wrapped-chain
+/// builds the ring must refuse.
 template <typename KeyGetter, typename Map>
 constexpr bool flat_lookup_supported
     = join_prefetch_supported<KeyGetter, Map> && AmacResumableMap<std::remove_const_t<Map>>;
 
-/// The fused descriptor-based find of the routed plain loop: address material from the
-/// once-per-build plan, the map object only for its hash/equality functors. The walk is
-/// wrap-AWARE (through the tail pad, wrapping at its end) - exactly `HashMapTable::find`
-/// under `TailPaddedHashTableGrower` - so it doubles as the fallback for wrapped-chain
-/// builds. The offset is the slot-local used-flags offset (`offsetInternal` semantics).
+/// The flat find of the routed plain loop: address material from the once-per-build plan, the
+/// map object only for its hash/equality functors. The walk is wrap-aware - through the tail
+/// pad, wrapping at its end, exactly `HashMapTable::find` under `TailPaddedHashTableGrower` -
+/// so it doubles as the fallback for wrapped-chain builds. The offset is the slot-local
+/// used-flags offset (`offsetInternal` semantics).
 template <typename KeyGetter, typename Map, typename KeyType>
 ALWAYS_INLINE typename KeyGetter::FindResult flatFindKey(const SlotMapDesc & desc, const KeyType & key, size_t hash)
 {
@@ -273,11 +275,13 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// Snapshots of the plan's arrays: the loop bodies below make opaque calls
     /// (`appendFromBlock`), after which the compiler must conservatively reload anything
     /// reachable through a captured object.
-    const Map * const * maps_data = maps_by_slot;
     JoinStuff::JoinUsedFlags * const * flags_data = plan.flags_by_slot.data();
-    /// Sized for every cursor-capable map type (the flat find's gate is a subset), empty for
-    /// the rest - where the flat arms are compiled out.
-    [[maybe_unused]] const SlotMapDesc * flat_descs = plan.desc_by_slot.data();
+    /// Sized for every cursor-capable map type (`flat_lookup_supported` implies
+    /// cursor-capable), empty for the rest - where the flat arms are compiled out.
+    [[maybe_unused]] const SlotMapDesc * descs_data = plan.desc_by_slot.data();
+    /// Hash provider and zero-key checker of the flat arms; stateless, so any slot's map
+    /// serves (see `map0` in `AmacProbe.cpp`).
+    [[maybe_unused]] const Map & map0 = *maps_by_slot[0];
 
     using MapNonConst = std::remove_const_t<Map>;
 
@@ -317,14 +321,14 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                 const size_t ind = selectorIndexAt(selector, k);
                 auto && key_holder = key_getter.getKeyHolder(ind, pool);
                 const auto & key = keyHolderGetKey(key_holder);
-                const SlotMapDesc & desc = flat_descs[slot_ids ? slot_ids[ind] : 0];
+                const SlotMapDesc & desc = descs_data[slot_ids ? slot_ids[ind] : 0];
                 using Cell = typename MapNonConst::cell_type;
-                __builtin_prefetch(static_cast<const Cell *>(desc.buf) + (maps_data[0]->hash(key) & desc.mask));
+                __builtin_prefetch(static_cast<const Cell *>(desc.buf) + (map0.hash(key) & desc.mask));
             }
             else if constexpr (can_prefetch)
             {
                 const size_t ind = selectorIndexAt(selector, k);
-                maps_data[slot_ids ? slot_ids[ind] : 0]->prefetch(key_getter.getKeyHolder(ind, pool));
+                maps_by_slot[slot_ids ? slot_ids[ind] : 0]->prefetch(key_getter.getKeyHolder(ind, pool));
             }
         });
 
@@ -332,7 +336,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// pass's per-row result (0 = miss; skipped rows were recorded as misses there, so the skip
     /// check compiles out); without it this is the sequential routed lookup. Everything
     /// downstream of the lookup is shared and standard.
-    auto loop = [&]<bool need_filter, bool with_skip, bool precomputed, bool flat_find = false>(
+    auto loop = [&]<bool need_filter, bool with_skip, bool precomputed>(
         const UInt64 * found_words [[maybe_unused]], const UInt64 * found_offsets [[maybe_unused]])
     {
         if constexpr (need_filter)
@@ -385,46 +389,29 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                 if (!skip_row)
                 {
                     const size_t slot = slot_ids ? slot_ids[ind] : 0;
-                    auto handle = [&](auto & find_result) ALWAYS_INLINE
+                    auto find_result = [&]() ALWAYS_INLINE
                     {
-                        if (find_result.isFound())
-                        {
-                            right_row_found = true;
-                            processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                                find_result, added_columns, *flags_data[slot], i, ind, current_offset, dummy_known_rows);
-                        }
-                    };
-                    /// The nested `if constexpr` matters: `flat_find` is the lambda's own
-                    /// parameter, but the arm's expressions only depend on the ENCLOSING
-                    /// template's types, so the trait check (dependent at the enclosing
-                    /// definition) is what keeps the arm out of the non-cursor families'
-                    /// instantiations.
-                    if constexpr (flat_find)
-                    {
+                        /// The trait check keeps the flat arm out of the non-cursor families' instantiations.
                         if constexpr (flat_lookup_supported<KeyGetter, Map>)
                         {
-                            /// The fused descriptor find: two cheap loads (slot id, descriptor)
-                            /// on the address path instead of the map-header chase.
                             auto && key_holder = key_getter.getKeyHolder(ind, pool);
                             const auto & key = keyHolderGetKey(key_holder);
-                            if (unlikely(maps_data[0]->isZeroKey(key)))
-                            {
-                                /// The zero key lives in the dedicated zero-value cell, outside
-                                /// the descriptor's buffer; the map-resolved find serves it.
-                                auto find_result = key_getter.findKey(*maps_data[slot], ind, pool);
-                                handle(find_result);
-                            }
-                            else
-                            {
-                                auto find_result = flatFindKey<KeyGetter, Map>(flat_descs[slot], key, maps_data[0]->hash(key));
-                                handle(find_result);
-                            }
+                            /// The zero key lives in the dedicated zero-value cell, outside the
+                            /// descriptor's buffer; the map-resolved find serves it.
+                            if (unlikely(map0.isZeroKey(key)))
+                                return key_getter.findKey(*maps_by_slot[slot], ind, pool);
+                            return flatFindKey<KeyGetter, Map>(descs_data[slot], key, map0.hash(key));
                         }
-                    }
-                    else
+                        else
+                        {
+                            return key_getter.findKey(*maps_by_slot[slot], ind, pool);
+                        }
+                    }();
+                    if (find_result.isFound())
                     {
-                        auto find_result = key_getter.findKey(*maps_data[slot], ind, pool);
-                        handle(find_result);
+                        right_row_found = true;
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                            find_result, added_columns, *flags_data[slot], i, ind, current_offset, dummy_known_rows);
                     }
                 }
             }
@@ -589,8 +576,8 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
             amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range>(
                 key_getter,
-                maps_data,
-                plan.desc_by_slot.data(),
+                maps_by_slot,
+                descs_data,
                 slot_ids,
                 rows,
                 range_first,
@@ -627,23 +614,22 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
     if (!amac_ran)
     {
-        /// The cheap-key cursor-capable families run the fused descriptor find instead of the
-        /// map-resolved `findKey`; everything else (strings below the ring gate, `hashed`,
-        /// LowCardinality, `key8`/`key16`) keeps the plain loop.
-        constexpr bool flat = flat_lookup_supported<KeyGetter, Map>;
+        /// The cheap-key cursor-capable families run the flat find (`flat_lookup_supported`)
+        /// instead of the map-resolved `findKey`; everything else (strings below the ring gate,
+        /// `hashed`, `LowCardinality`, `key8`/`key16`) keeps the plain lookup.
         if (added_columns.need_filter)
         {
             if (fast_path)
-                loop.template operator()<true, false, false, flat>(nullptr, nullptr);
+                loop.template operator()<true, false, false>(nullptr, nullptr);
             else
-                loop.template operator()<true, true, false, flat>(nullptr, nullptr);
+                loop.template operator()<true, true, false>(nullptr, nullptr);
         }
         else
         {
             if (fast_path)
-                loop.template operator()<false, false, false, flat>(nullptr, nullptr);
+                loop.template operator()<false, false, false>(nullptr, nullptr);
             else
-                loop.template operator()<false, true, false, flat>(nullptr, nullptr);
+                loop.template operator()<false, true, false>(nullptr, nullptr);
         }
     }
 

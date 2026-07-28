@@ -251,3 +251,17 @@ Edits (all landed in working tree, building):
   ahj hoists to callee-saved registers.
 - Local A/B below-threshold (LOCAL): 3/3 TIE - key64 S1 +0.22%,
   key64 S2 -2.33%, k128 S2 -1.20%; `ProbeLookup` -30%/-38%/-21%.
+
+## U3 hygiene pass (561c1d21b99 + aa98041d472)
+
+- Reports: hygiene/u3.{reduce,humanize}.md. Applied: the redundant
+  `flat_find` lambda parameter collapsed (the trait check alone
+  carries the discard); dead `maps_data` alias removed; chasserts and
+  `join_on_key` hoisted out of the `M` macro; `collect_map` passed to
+  `std::visit` directly; comment dedup (collect-twice schedule,
+  fused-find description), backticks, de-caps, `descs_data` naming,
+  the `map0` any-slot justification. Skipped flag-only items: typed
+  plan accessor, plan-carried `amacEnabled`, shared `homeCell`
+  helper.
+- Re-gates: build rc=0, gtests 23/23, PARITY OK 636 on the
+  post-fixer snapshot (`uncommitted-u3hyg.tmp.bin`).

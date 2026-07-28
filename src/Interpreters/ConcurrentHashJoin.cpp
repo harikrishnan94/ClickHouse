@@ -231,8 +231,7 @@ ConcurrentHashJoin::ConcurrentHashJoin(
         for (const auto & hash_join : hash_joins)
             slot_joins.push_back(hash_join->data.get());
 
-        /// The freshly built (empty) maps already have valid buffers, so plan-time header
-        /// probes see sized plan arrays; `onBuildPhaseFinish` re-collects over the final maps.
+        /// Plan-time header probes run before any build and need sized plan arrays.
         collectRoutedProbePlan();
     }
     catch (...)
@@ -243,6 +242,10 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     }
 }
 
+/// Runs twice: at the end of the constructor, because the freshly built (empty) maps already
+/// have valid buffers and plan-time header probes need sized plan arrays, and again from
+/// `onBuildPhaseFinish`, when shrink-to-fit has finalized the buffers - the probes may trust
+/// addresses and sizes only from that second collection.
 void ConcurrentHashJoin::collectRoutedProbePlan()
 {
     RoutedProbePlan plan;
@@ -254,37 +257,37 @@ void ConcurrentHashJoin::collectRoutedProbePlan()
     size_t total_rows_to_join = 0;
 
     const auto type = hash_joins[0]->data->getJoinedData()->type;
-    for (const auto & hash_join : hash_joins)
+    auto collect_map = [&](auto & maps)
     {
-        HashJoin & join = *hash_join->data;
-        plan.flags_by_slot.push_back(join.used_flags.get());
-        total_allocated_size += join.getJoinedData()->allocated_size;
-        total_rows_to_join += join.getJoinedData()->rows_to_join;
-
-        auto collect_map = [&](auto & maps)
+        switch (type)
         {
-            switch (type)
-            {
+/// The descriptor and the wrap bit exist only for the cursor-capable (tail-padded
+/// open-addressing) map types; the rest keep map-resolved lookups.
 #define M(NAME) \
     case HashJoin::Type::NAME: { \
         const auto & map = *maps.NAME; \
         plan.map_by_slot.push_back(&map); \
         plan.total_map_bytes += map.getBufferSizeInBytes(); \
-        /* The descriptor and the wrap bit exist only for the cursor-capable (tail-padded \
-           open-addressing) map types; the rest keep map-resolved lookups. */ \
         if constexpr (requires { map.cursorCells(); }) \
         { \
             plan.desc_by_slot.push_back({map.cursorCells(), map.cursorMask()}); \
-            plan.chain_may_wrap \
-                = plan.chain_may_wrap || !map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1); \
+            plan.chain_may_wrap |= !map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1); \
         } \
         break; \
     }
-                APPLY_FOR_JOIN_VARIANTS(M)
+            APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
-            }
-        };
-        std::visit([&](auto & maps) { collect_map(maps); }, join.getJoinedData()->maps.at(0));
+        }
+    };
+
+    for (const auto & hash_join : hash_joins)
+    {
+        HashJoin & join = *hash_join->data;
+        auto & joined = *join.getJoinedData();
+        plan.flags_by_slot.push_back(join.used_flags.get());
+        total_allocated_size += joined.allocated_size;
+        total_rows_to_join += joined.rows_to_join;
+        std::visit(collect_map, joined.maps.at(0));
     }
 
     plan.avg_joined_bytes_per_row = total_allocated_size / std::max<size_t>(1, total_rows_to_join);
@@ -906,9 +909,8 @@ void ConcurrentHashJoin::onBuildPhaseFinish()
     for (const auto & hash_join : hash_joins)
         hash_join->data->onBuildPhaseFinish();
 
-    /// The maps are final from here on (per-slot `onBuildPhaseFinish` includes shrink-to-fit,
-    /// which moves buffers and mutates `allocated_size`), so this is the one collection point
-    /// whose addresses and sizes the probes may trust.
+    /// Per-slot `onBuildPhaseFinish` includes shrink-to-fit, which moves buffers, so re-collect
+    /// the final addresses.
     collectRoutedProbePlan();
 }
 }
