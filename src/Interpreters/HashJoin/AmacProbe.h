@@ -102,7 +102,7 @@ void amacFindPass(
     KeyGetter & key_getter,
     const Map * const * slot_maps,
     const SlotMapDesc * slot_descs,
-    const UInt64 * slot_ids,
+    const UInt8 * slot_ids,
     size_t rows,
     size_t range_first,
     const UInt64 * selector_indexes,
@@ -133,7 +133,7 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
         AmacProbeKeyGetterFor_##TYPE<HashJoin::MAPS> & key_getter, \
         const AmacProbeMapFor_##TYPE<HashJoin::MAPS> * const * slot_maps, \
         const SlotMapDesc * slot_descs, \
-        const UInt64 * slot_ids, \
+        const UInt8 * slot_ids, \
         size_t rows, \
         size_t range_first, \
         const UInt64 * selector_indexes, \

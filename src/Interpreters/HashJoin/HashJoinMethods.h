@@ -27,8 +27,8 @@ size_t getMinBytesForPrefetchInJoin();
 template <typename Map>
 struct RoutedProbeContext
 {
-    /// One route word per source-block row; null = every row probes slot 0.
-    const UInt64 * slot_ids = nullptr;
+    /// One slot id per source-block row; null = every row probes slot 0.
+    const UInt8 * slot_ids = nullptr;
     const Map * const * maps_by_slot = nullptr;
     /// The per-slot used flags; offsets stay slot-local, so RIGHT/FULL non-joined streaming
     /// keeps its per-slot semantics.

@@ -55,3 +55,49 @@ probe cell + build guard + parity/order/tests/disasm + honest-red rule.
   9/9 (`test_u1a_hyg2_gtest.log`). G-parity re-run deliberately
   deferred to the U1b gate: the commit is comment/name/brace-only on
   code nothing calls yet (documented deviation, not silent).
+
+## U1b — dispatch flip to the fold + single key preparation (in progress)
+
+Edits (all landed in working tree, building):
+- `ConcurrentHashJoin.cpp`: `joinBlock` builds `JoinOnKeyColumns` once
+  (keep-LC for LC map types) and derives UInt8 slot ids over the
+  routed key prefix (`routeKeyColumns`; ASOF drops the trailing
+  inequality column) via `computeDispatchSlotIds` (`key8`/`key16`:
+  value low bits, bit-identical to the old identity-hash selector;
+  everything else: `JoinSlotRouting` fold). `RoutedJoinResult` owns
+  the prepared keys + slot ids and hands both to the lookup.
+  Build side: `prepareDispatchKeyColumns` mirrors the probe prep
+  (`JoinCommon::materializeColumns{,KeepLowCardinality}` + nested
+  extraction); `scatterBlocksWithSelector` consumes UInt8 ids
+  directly; `scatterBlocksByCopying` gets a one-shot widened
+  `IColumn::Selector` (core `IColumn::scatter` signature).
+  DELETED: `routeByHighBits`, `hashToSelector`, `calculateHashes`,
+  `DispatchKeyShape`/`getDispatchKeyShape`, `selectDispatchBlock`
+  (the per-family KeyGetter switch), `BlockHashes`.
+- `HashJoin.{h,cpp}`: `joinRoutedBlock` takes `const UInt8 *` +
+  `std::vector<JoinOnKeyColumns>` (fwd-declared in the header).
+- `HashJoinRoutedMethods{.h,Impl.h}`: `joinBlockImpl` consumes the
+  caller's `join_on_keys` (local construction deleted); `slot_ids`
+  narrowed to `UInt8 *` through `switchJoinRightColumns` /
+  `joinRightColumnsRouted` / `joinRightColumns`.
+- `HashJoinMethods.h`: `RoutedProbeContext::slot_ids` -> `UInt8 *`.
+- `AmacProbe.{h,cpp}`: find-pass `slot_ids` -> `UInt8 *`.
+- `ProfileEvents.cpp`: `ProbeDispatch` description now says key
+  preparation + route-word fold (names frozen).
+- gtest comment reworded (cited the deleted `hashToSelector`).
+970c2db6189a828c421f05ae702b5468363423b843f6ded9295aa5c09f87e79b  tmp/chj_amac/bins/uncommitted-u1b.tmp.bin
+- U1b snapshot sha256 970c2db6189a... = `bins/uncommitted-u1b.tmp.bin`.
+- G-order: ORDER OK (ok=9 fail=0 source_artifact=8/17, all engaged,
+  t1_global=OK, 03448/03711 x10 pass with engagement; log
+  tmp/chj_probe_parity/order_u1b.log). GREEN.
+- gtests: 19/19 (JoinSlotRouting 9 + ConcurrentHashJoinAmac 10).
+- G-parity: PARITY OK (636 cases: 634 compared, 2 matched-error,
+  0 failed; force-pass engaged 8/8+2x0 build,probe). GREEN.
+- G-tests differential (join selector, 893 tests, both arms — closes
+  the prior mission's named gap): 119 baseline failures (all
+  environmental on the scratch server) are a subset of the
+  candidate's 120; ONE candidate-only failure,
+  `03567_max_joined_block_size_bytes` — established PRE-EXISTING at
+  `5b276c5fb88` (single-test runs: baseline PASS, 5b276c5fb88 FAIL,
+  u1b FAIL). Root cause + fix pre-registered as PREREG 003; the fix
+  lands as the next commit and the differential re-runs there.

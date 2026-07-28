@@ -87,3 +87,26 @@ orientation and labeled as such.
   build and probe (fold contract broken) or prep divergence; fix
   before proceeding, never weaken the check. Slot-balance check
   (PREREG 001 gtest) already pins distribution.
+
+## 003 — Fix: routed probe's block-size estimate reads slot 0 only
+
+- FINDING (from the join-selector differential this mission added —
+  the prior mission's named gap): `03567_max_joined_block_size_bytes`
+  fails on routed-probe binaries (pre-existing at `5b276c5fb88`,
+  passes on the two-level baseline). Mechanism, confirmed by
+  arithmetic: `joinBlockImpl` fills
+  `HashJoinResult::Properties::avg_joined_bytes_per_row` from SLOT 0
+  (`join.data->allocated_size / max(1, join.data->rows_to_join)`);
+  with few distinct keys most slots are empty, slot 0's ratio is 0,
+  the estimate collapses to the left block's bytes/row (8), and
+  `max_rows = 1MiB / 8 = 131072` — the exact unsplit block the test
+  sees. The two-level baseline read the merged whole-join map.
+- Change: aggregate `allocated_size` and `rows_to_join` across ALL
+  `slot_joins` for the estimate (equals the baseline's whole-join
+  semantics). O(slots) per block; hoisted once-per-build later by
+  item 4.
+- Expectation: 03567 passes on the fixed binary (x3 runs); full join
+  differential becomes candidate ⊆ baseline (empty cand-only list);
+  parity + order stay green on the new snapshot.
+- Refutation: 03567 still failing -> mechanism wrong, re-diagnose
+  before any further commit; never weaken the test.

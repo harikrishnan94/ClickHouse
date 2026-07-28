@@ -26,6 +26,7 @@ namespace DB
 
 class TableJoin;
 class ExpressionActions;
+struct JoinOnKeyColumns;
 using Sizes = std::vector<size_t>;
 
 namespace JoinStuff
@@ -155,12 +156,16 @@ public:
     JoinResultPtr joinBlock(Block block) override;
 
     /// The order-preserving routed probe of `ConcurrentHashJoin` (`parallel_hash`): one lookup
-    /// pass over the ORIGINAL left block, with `slot_ids` (one route word per source row, null
-    /// when there is a single slot) selecting each row's slot map. The `slot_joins` share one
-    /// `StoredColumnsIndex`, so the result emits every slot's matches through slot 0's
-    /// machinery - in left-row order. See `RoutedHashJoinMethods`.
+    /// pass over the ORIGINAL left block, with `slot_ids` (one slot id per source row, null
+    /// when there is a single slot) selecting each row's slot map. `join_on_keys` is the
+    /// block's key preparation, built once by the caller and shared with its route derivation.
+    /// The `slot_joins` share one `StoredColumnsIndex`, so the result emits every slot's
+    /// matches through slot 0's machinery - in left-row order. See `RoutedHashJoinMethods`.
     static JoinResultPtr joinRoutedBlock(
-        const std::vector<const HashJoin *> & slot_joins, ScatteredBlock block, const UInt64 * slot_ids);
+        const std::vector<const HashJoin *> & slot_joins,
+        ScatteredBlock block,
+        const UInt8 * slot_ids,
+        std::vector<JoinOnKeyColumns> join_on_keys);
 
     /// Check joinGet arguments and infer the return type.
     DataTypePtr joinGetCheckAndGetReturnType(const DataTypes & data_types, const String & column_name, bool or_null) const;

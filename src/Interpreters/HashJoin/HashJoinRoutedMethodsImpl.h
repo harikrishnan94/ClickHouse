@@ -13,20 +13,15 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     const std::vector<const HashJoin *> & slot_joins,
     ScatteredBlock block,
     const Block & block_with_columns_to_add,
-    const UInt64 * slot_ids)
+    const UInt8 * slot_ids,
+    std::vector<JoinOnKeyColumns> join_on_keys)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
 
     chassert(!slot_joins.empty());
     const HashJoin & join = *slot_joins[0];
 
-    std::vector<JoinOnKeyColumns> join_on_keys;
-    const auto & onexprs = join.table_join->getClauses();
-    chassert(onexprs.size() == 1, "parallel_hash supports a single join clause");
-    for (const auto & onexpr : onexprs)
-        join_on_keys.emplace_back(
-            block, onexpr.key_names_left, onexpr.condColumnNames().first, join.key_sizes[0],
-            HashJoin::isLowCardinalityType(join.data->type));
+    chassert(join_on_keys.size() == 1, "parallel_hash supports a single join clause");
 
     /// Slot 0 is the representative for everything the emit machinery reads through the join:
     /// the saved-block sample, the limits, and - crucially - the `StoredColumnsIndex`, which is
@@ -95,7 +90,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
     const std::vector<const HashJoin *> & slot_joins,
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
-    const UInt64 * slot_ids)
+    const UInt8 * slot_ids)
 {
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
     const HashJoin & join0 = *slot_joins[0];
@@ -142,7 +137,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
     const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
-    const UInt64 * slot_ids)
+    const UInt8 * slot_ids)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
 
@@ -197,7 +192,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
     AddedColumnsType & added_columns,
     const Selector & selector,
-    const UInt64 * slot_ids)
+    const UInt8 * slot_ids)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     /// Single join clause (`parallel_hash` supports no disjuncts), so right-row used flags are

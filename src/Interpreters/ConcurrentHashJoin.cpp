@@ -24,13 +24,16 @@
 #include <Common/ThreadGroupSwitcher.h>
 #include <Common/typeid_cast.h>
 
+#include <Interpreters/HashJoin/AddedColumns.h>
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashJoin/JoinSlotRouting.h>
 #include <Interpreters/HashJoin/KeyGetter.h>
 #include <DataTypes/NullableUtils.h>
 #include <base/defines.h>
 #include <base/types.h>
 
 #include <algorithm>
+#include <bit>
 #include <numeric>
 #include <deque>
 #include <iterator>
@@ -61,8 +64,6 @@ extern const Metric ConcurrentHashJoinPoolThreadsScheduled;
 
 namespace
 {
-
-using BlockHashes = std::vector<UInt64>;
 
 void updateStatistics(const auto & hash_joins, const DB::StatsCollectingParams & params)
 {
@@ -343,8 +344,9 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
     return true;
 }
 
-static IColumn::Selector
-selectDispatchBlock(const HashJoin & join, size_t num_shards, const Strings & key_columns_names, const Block & from_block);
+static ColumnRawPtrs routeKeyColumns(const JoinOnKeyColumns & keys, const HashJoin & join);
+static void computeDispatchSlotIds(
+    const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids);
 
 class ConcatStreams final : public IBlocksStream
 {
@@ -389,8 +391,12 @@ class RoutedJoinResult : public IJoinResult
     /// `ConcurrentHashJoin::slot_joins`, stable for the lifetime of the join.
     const std::vector<const HashJoin *> & slot_joins;
     ScatteredBlock block;
-    /// Owns the route words for the lifetime of the lookup; null when there is a single slot.
-    std::optional<IColumn::Selector> slot_ids;
+    /// Owns the per-row slot ids for the lifetime of the lookup; empty when there is a single
+    /// slot.
+    PaddedPODArray<UInt8> slot_ids;
+    /// The block's prepared key columns (materialized keys, null map, ON-section mask), built
+    /// once in `joinBlock` and shared by the route derivation above and the lookup below.
+    std::vector<JoinOnKeyColumns> join_on_keys;
     /// Kept alive until destruction even after the last block: the `next_block` pointer
     /// returned to the caller points into it.
     JoinResultPtr inner;
@@ -399,10 +405,12 @@ public:
     RoutedJoinResult(
         const std::vector<const HashJoin *> & slot_joins_,
         ScatteredBlock && block_,
-        std::optional<IColumn::Selector> && slot_ids_)
+        PaddedPODArray<UInt8> && slot_ids_,
+        std::vector<JoinOnKeyColumns> && join_on_keys_)
         : slot_joins(slot_joins_)
         , block(std::move(block_))
         , slot_ids(std::move(slot_ids_))
+        , join_on_keys(std::move(join_on_keys_))
     {
     }
 
@@ -419,7 +427,8 @@ public:
             /// cheap match row-refs. It does NOT gather any column values yet (that is
             /// deferred to `HashJoinResult::next`).
             ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
-            inner = HashJoin::joinRoutedBlock(slot_joins, std::move(block), slot_ids ? slot_ids->data() : nullptr);
+            inner = HashJoin::joinRoutedBlock(
+                slot_joins, std::move(block), slot_ids.empty() ? nullptr : slot_ids.data(), std::move(join_on_keys));
         }
 
         auto data = inner->next();
@@ -431,18 +440,37 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
 {
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
 
-    std::optional<IColumn::Selector> slot_ids;
+    const HashJoin & join0 = *hash_joins[0]->data;
+    ScatteredBlock scattered;
+    std::vector<JoinOnKeyColumns> join_on_keys;
+    PaddedPODArray<UInt8> slot_ids;
     {
         ProfileEventTimeIncrement<Microseconds> probe_dispatch_watch(ProfileEvents::ConcurrentHashJoinProbeDispatchMicroseconds);
-        hash_joins[0]->data->materializeColumnsFromLeftBlock(block);
-        /// Only the route words are computed here; the block itself is NOT scattered - the
-        /// routed probe (see `RoutedHashJoinMethods`) follows the words per row and emits in
-        /// left-row order.
+        join0.materializeColumnsFromLeftBlock(block);
+        scattered = ScatteredBlock{std::move(block)};
+
+        /// The block's key columns are prepared ONCE: the route derivation below and the
+        /// routed lookup (through `RoutedJoinResult`) read the same `JoinOnKeyColumns`.
+        const auto & onexpr = table_join->getOnlyClause();
+        join_on_keys.emplace_back(
+            scattered,
+            onexpr.key_names_left,
+            onexpr.condColumnNames().first,
+            join0.getKeySizes().at(0),
+            HashJoin::isLowCardinalityType(join0.getJoinedData()->type));
+
+        /// Only the slot ids are derived here; the block itself is NOT scattered - the routed
+        /// probe (see `RoutedHashJoinMethods`) follows the ids per row and emits in left-row
+        /// order.
         if (slots > 1)
-            slot_ids = selectDispatchBlock(*hash_joins[0]->data, slots, table_join->getOnlyClause().key_names_left, block);
+        {
+            const size_t rows = scattered.rows();
+            slot_ids.resize(rows);
+            computeDispatchSlotIds(join0, routeKeyColumns(join_on_keys.front(), join0), rows, slots, slot_ids.data());
+        }
     }
 
-    return std::make_unique<RoutedJoinResult>(slot_joins, ScatteredBlock{std::move(block)}, std::move(slot_ids));
+    return std::make_unique<RoutedJoinResult>(slot_joins, std::move(scattered), std::move(slot_ids), std::move(join_on_keys));
 }
 
 void ConcurrentHashJoin::checkTypesOfKeys(const Block & block) const
@@ -538,128 +566,83 @@ IBlocksStreamPtr ConcurrentHashJoin::getNonJoinedBlocks(
     return std::make_shared<ConcatStreams>(std::move(streams));
 }
 
-/// Open-addressing hash maps put a key's home cell at `hash & mask` — the
-/// same low bits a plain `hash & (num_shards - 1)` route consumes. Routing by
-/// those bits leaves each slot's map with home cells only at positions
-/// congruent to the slot index modulo `num_shards`, so linear-probe runs grow
-/// roughly `num_shards` times longer than the load factor implies. Route the
-/// open-addressing types by the hash's bits 24+ instead — the same window
-/// `TwoLevelHashTable::getBucketFromHash` used when the slots shared
-/// two-level maps — which stays decorrelated from placement until a single
-/// slot's map exceeds 2^24 cells. `FixedHashMap` types (`key8`/`key16`)
-/// index cells directly by the key value and have no collision chains, so
-/// the low bits remain the natural route for them.
-static constexpr bool routeByHighBits(HashJoin::Type type)
+/// How many leading key columns participate in routing. For ASOF the trailing
+/// key is the inequality column and must NOT participate: the per-slot
+/// `HashJoin`'s bucket key is the equality-only prefix (see `HashJoin`'s
+/// constructor, where `key_columns.pop_back()` runs for ASOF before
+/// `chooseMethod` picks a key getter). Routing by the full list would send
+/// rows with equal equality keys but different asof values to different
+/// slots, and they would never meet.
+static size_t routeKeyColumnCount(const HashJoin & join, size_t total_key_columns)
 {
-    return type != HashJoin::Type::key8 && type != HashJoin::Type::key16;
+    if (join.getTableJoin().strictness() == JoinStrictness::Asof && total_key_columns > 0)
+        return total_key_columns - 1;
+    return total_key_columns;
 }
 
-static IColumn::Selector hashToSelector(const BlockHashes & hashes, size_t num_shards, bool route_by_high_bits)
+/// The routed prefix of the probe block's prepared key columns.
+static ColumnRawPtrs routeKeyColumns(const JoinOnKeyColumns & keys, const HashJoin & join)
 {
-    chassert(isPowerOf2(num_shards));
-    const size_t num_rows = hashes.size();
-    IColumn::Selector selector(num_rows);
-    if (route_by_high_bits)
+    const size_t count = routeKeyColumnCount(join, keys.key_columns.size());
+    return ColumnRawPtrs(keys.key_columns.begin(), keys.key_columns.begin() + count);
+}
+
+/// One slot id per row, shared by the build scatter and the probe dispatch.
+/// The open-addressing types route through the `JoinSlotRouting` fold - a
+/// route word deliberately independent of the CRC32C-family hashes the maps
+/// bucket by, so slot selection stays decorrelated from `grower.place`.
+/// `FixedHashMap` types (`key8`/`key16`) index cells directly by the key
+/// value and have no collision chains, so the key's low bits remain the
+/// natural route for them (bit-identical to the identity-hash selector this
+/// replaces).
+static void computeDispatchSlotIds(
+    const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids)
+{
+    chassert(isPowerOf2(num_shards) && num_shards > 1 && num_shards <= 256);
+
+    const auto type = join.getJoinedData()->type;
+    if (type == HashJoin::Type::key8 || type == HashJoin::Type::key16)
     {
-        for (size_t i = 0; i < num_rows; ++i)
-            selector[i] = (hashes[i] >> 24) & (num_shards - 1);
+        const IColumn & column = *route_columns.at(0);
+        const char * data = column.getRawData().data();
+        const size_t width = column.sizeOfValueIfFixed();
+        const UInt8 mask = static_cast<UInt8>(num_shards - 1);
+        /// The mask fits the value's low byte - the first byte on the little-endian targets
+        /// this code runs on.
+        for (size_t i = 0; i < rows; ++i)
+            slot_ids[i] = static_cast<UInt8>(data[i * width]) & mask;
+        return;
     }
-    else
-    {
-        for (size_t i = 0; i < num_rows; ++i)
-            selector[i] = hashes[i] & (num_shards - 1);
-    }
-    return selector;
+
+    JoinSlotRouting::computeJoinSlotIds(route_columns, rows, static_cast<size_t>(std::countr_zero(num_shards)), slot_ids);
 }
 
-template <typename KeyGetter, typename HashTable>
-BlockHashes calculateHashes(const HashTable & hash_table, const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
+/// Build-side preparation of the routed key-column prefix: the same unwrap
+/// chain `JoinOnKeyColumns` applies on the probe side (const/sparse unwrap,
+/// LowCardinality removal unless the map type consumes the live dictionary
+/// column, nullable-to-nested extraction). The fold is value-based, so the
+/// route words agree with the probe's even where the physical
+/// representations differ.
+struct DispatchKeyColumns
 {
-    const size_t num_rows = key_columns[0]->size();
-    Arena pool;
-    auto key_getter = KeyGetter(key_columns, key_sizes, nullptr);
-    BlockHashes hash(num_rows);
-    for (size_t i = 0; i < num_rows; ++i)
-        hash[i] = key_getter.getHash(hash_table, i, pool);
-    return hash;
-}
-
-/// Shape of the equality-key prefix used when computing the per-partition
-/// scatter selector in `selectDispatchBlock`. For non-ASOF joins this is
-/// identity over the full key list. For ASOF, the trailing key in
-/// `key_columns_names` is the asof inequality column and must NOT participate
-/// in scatter hashing: the per-partition HashJoin's bucket key is the
-/// equality-only prefix (see HashJoin::HashJoin where `key_columns.pop_back()`
-/// is called for ASOF before chooseMethod() picks a hash key getter). If we
-/// hashed by the full key list, rows with the same equality keys but
-/// different asof values would be scattered to different partitions and
-/// never meet.
-///
-/// For multi-column equality keys this slicing is load-bearing (the chosen
-/// key getter is HashMethodKeysFixed / HashMethodHashed, which read
-/// `key_sizes.size()` columns). For single-column equality keys the chosen
-/// getter is HashMethodOneNumber, which only reads column[0] and would
-/// harmlessly ignore the extra column anyway — but slicing the inputs to
-/// match the per-partition bucket-key shape is the correct invariant
-/// regardless.
-struct DispatchKeyShape
-{
-    size_t num_key_columns;
-    Sizes key_sizes;
+    Columns holders;
+    ColumnRawPtrs columns;
 };
 
-static DispatchKeyShape getDispatchKeyShape(const HashJoin & join, size_t total_key_columns)
+static DispatchKeyColumns prepareDispatchKeyColumns(
+    const HashJoin & join, const Strings & key_columns_names, const Block & from_block)
 {
-    DispatchKeyShape shape{total_key_columns, join.getKeySizes().at(0)};
-    if (join.getTableJoin().strictness() == JoinStrictness::Asof)
-    {
-        if (shape.num_key_columns > 0)
-            --shape.num_key_columns;
-        if (!shape.key_sizes.empty())
-            shape.key_sizes.pop_back();
-    }
-    return shape;
-}
+    const size_t count = routeKeyColumnCount(join, key_columns_names.size());
+    const bool keep_lowcardinality = HashJoin::isLowCardinalityType(join.getJoinedData()->type);
 
-static IColumn::Selector selectDispatchBlock(const HashJoin & join, size_t num_shards, const Strings & key_columns_names, const Block & from_block)
-{
-    const auto shape = getDispatchKeyShape(join, key_columns_names.size());
-
-    std::vector<ColumnPtr> key_column_holders;
-    ColumnRawPtrs key_columns;
-    key_columns.reserve(shape.num_key_columns);
-    for (size_t i = 0; i < shape.num_key_columns; ++i)
-    {
-        const auto & key_col = from_block.getByName(key_columns_names[i]).column->convertToFullColumnIfConst();
-        const auto & key_col_no_lc = recursiveRemoveLowCardinality(removeSpecialRepresentations(key_col));
-        key_column_holders.push_back(key_col_no_lc);
-        key_columns.push_back(key_col_no_lc.get());
-    }
+    const Names route_names(key_columns_names.begin(), key_columns_names.begin() + count);
+    DispatchKeyColumns result;
+    result.holders = keep_lowcardinality ? JoinCommon::materializeColumnsKeepLowCardinality(from_block, route_names)
+                                         : JoinCommon::materializeColumns(from_block, route_names);
+    result.columns = JoinCommon::getRawPointers(result.holders);
     ConstNullMapPtr null_map{};
-    extractNestedColumnsAndNullMap(key_columns, null_map);
-
-    auto calculate_selector = [&](auto & maps)
-    {
-        BlockHashes hash;
-
-        switch (join.getJoinedData()->type)
-        {
-        #define M(TYPE)                                                                                                                       \
-            case HashJoin::Type::TYPE:                                                                                                        \
-        hash = calculateHashes<typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                    *maps.TYPE, key_columns, shape.key_sizes);                                                                                \
-        return hashToSelector(hash, num_shards, routeByHighBits(HashJoin::Type::TYPE));
-
-            APPLY_FOR_JOIN_VARIANTS(M)
-#undef M
-        }
-        UNREACHABLE();
-    };
-
-    /// CHJ supports only one join clause for now
-    chassert(join.getJoinedData()->maps.size() == 1, "Expected to have only one join clause");
-
-    return std::visit([&](auto & maps) { return calculate_selector(maps); }, join.getJoinedData()->maps.at(0));
+    extractNestedColumnsAndNullMap(result.columns, null_map);
+    return result;
 }
 
 static ScatteredBlocks scatterBlocksByCopying(size_t num_shards, const IColumn::Selector & selector, const Block & from_block)
@@ -685,17 +668,17 @@ static ScatteredBlocks scatterBlocksByCopying(size_t num_shards, const IColumn::
     return result;
 }
 
-static ScatteredBlocks scatterBlocksWithSelector(size_t num_shards, const IColumn::Selector & selector, const Block & from_block)
+static ScatteredBlocks scatterBlocksWithSelector(size_t num_shards, const PaddedPODArray<UInt8> & slot_ids, const Block & from_block)
 {
     std::vector<ScatteredBlock::IndexesPtr> selectors(num_shards);
     for (size_t i = 0; i < num_shards; ++i)
     {
         selectors[i] = ScatteredBlock::Indexes::create();
-        selectors[i]->reserve(selector.size() / num_shards + 1);
+        selectors[i]->reserve(slot_ids.size() / num_shards + 1);
     }
-    for (size_t i = 0; i < selector.size(); ++i)
+    for (size_t i = 0; i < slot_ids.size(); ++i)
     {
-        const size_t shard = selector[i];
+        const size_t shard = slot_ids[i];
         selectors[shard]->getData().push_back(i);
     }
     ScatteredBlocks result;
@@ -715,7 +698,13 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
         return res;
     }
 
-    IColumn::Selector selector = selectDispatchBlock(*hash_joins[0]->data, num_shards, key_columns_names, from_block);
+    const HashJoin & join0 = *hash_joins[0]->data;
+    const size_t rows = from_block.rows();
+    PaddedPODArray<UInt8> slot_ids(rows);
+    {
+        const auto route_columns = prepareDispatchKeyColumns(join0, key_columns_names, from_block);
+        computeDispatchSlotIds(join0, route_columns.columns, rows, num_shards, slot_ids.data());
+    }
 
     /// With zero-copy approach we won't copy the source columns, but will create a new one with indices.
     /// This is not beneficial when the whole set of columns is e.g. a single small column.
@@ -730,8 +719,15 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
               { return sum + (type->haveMaximumSizeOfValue() ? type->getMaximumSizeOfValueInMemory() : threshold + 1); })
         > threshold;
 
-    return use_zero_copy_approach ? scatterBlocksWithSelector(num_shards, selector, from_block)
-                                  : scatterBlocksByCopying(num_shards, selector, from_block);
+    if (use_zero_copy_approach)
+        return scatterBlocksWithSelector(num_shards, slot_ids, from_block);
+
+    /// `IColumn::scatter` takes a UInt64 selector; widen once here, on the narrow-row path
+    /// where the block is copied anyway.
+    IColumn::Selector selector(rows);
+    for (size_t i = 0; i < rows; ++i)
+        selector[i] = slot_ids[i];
+    return scatterBlocksByCopying(num_shards, selector, from_block);
 }
 
 std::pair<size_t, size_t> ConcurrentHashJoin::updateTotalRowsAndBytesUnlocked(std::shared_ptr<InternalHashJoin> & hash_join)

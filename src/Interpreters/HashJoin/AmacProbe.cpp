@@ -102,7 +102,7 @@ struct AmacFindPolicy
     const Map & map0;
     const Map * const * slot_maps = nullptr; /// the zero-key sentinel path only
     const SlotMapDesc * slot_descs = nullptr;
-    const UInt64 * slot_ids = nullptr; /// null at the single-slot plan
+    const UInt8 * slot_ids = nullptr; /// null at the single-slot plan
     size_t selector_base = 0; /// the first row of a continuous-range selector
     const UInt64 * selector_indexes = nullptr; /// the data of an explicit-indexes selector
     const UInt8 * skip_data = nullptr; /// null on the fast path
@@ -228,7 +228,7 @@ void amacFindPass(
     KeyGetter & key_getter,
     const Map * const * slot_maps,
     const SlotMapDesc * slot_descs,
-    const UInt64 * slot_ids,
+    const UInt8 * slot_ids,
     size_t rows,
     size_t range_first,
     const UInt64 * selector_indexes,

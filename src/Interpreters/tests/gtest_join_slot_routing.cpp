@@ -180,8 +180,8 @@ TEST(JoinSlotRouting, SlotIdsAgreeWithWordsForEveryBitCount)
 TEST(JoinSlotRouting, SlotDistributionIsBalanced)
 {
     /// Require max/mean slot fill < 1.5 at 1M rows over 256 slots, for both sequential and
-    /// random keys. Sequential keys are the adversarial case for a weak route (a low-bit
-    /// selector such as the `hashToSelector` fallback maps them to consecutive slots).
+    /// random keys. Sequential keys are the adversarial case for a weak route (a selector
+    /// built from the key's low bits maps them to consecutive slots).
     constexpr size_t rows = 1 << 20;
     constexpr size_t bits = 8;
     constexpr size_t slots = 1 << bits;
