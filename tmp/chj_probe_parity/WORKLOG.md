@@ -122,3 +122,41 @@ Edits (all landed in working tree, building):
 - G-parity on u1c: running.
 - G-parity on u1c: PARITY OK (636: 634 compared, 2 matched-error,
   0 failed; force-pass 8/8+2x0). GREEN. All U1c gates green.
+
+## U1 local A/B orientation (LOCAL numbers, not acceptance)
+
+- 4 cells, baseline vs u1c, 10 runs ABAB, calibrated rows,
+  engagement asserted (`local_ab_u1c.jsonl`): 4/4 TIE on wall
+  (fixstr S2 -0.92%, key64 S2 -1.94%, mixed S2 +0.72%, mixed S3
+  -1.51%) - the prior fleet had these families at +5.0/+4.9/+10.7/
+  +7.4% LOSS.
+- Phase economics moved as designed: candidate ProbeDispatch mixed S2
+  0.98 thread-s (prior fleet 6.29s, ~6.4x cheaper), mixed S3 0.86s
+  (prior 6.24s), key64 S2 0.33s, fixstr S2 0.67s; ProbeLookup
+  -36%/-24% (key64/fixstr, ring engaged), mixed -9.4%/-0.4% (partly
+  the key-prep accounting shift from the lookup window into the
+  dispatch window). Build side: BuildDispatch mixed S3 459->149
+  thread-ms, BuildMerge ~0.
+- Fleet acceptance still decides the gate (U5); these are direction
+  confirmation only.
+- U1c hygiene review (72a1e91c99e.both.md): clean; noted for U3 -
+  the once-per-build hoist should consolidate the three per-block
+  O(slots) passes and snapshot AFTER `onBuildPhaseFinish`
+  (shrink-to-fit mutates `allocated_size` post-insert).
+
+## U1 hygiene pass (f8d4826722d + 72a1e91c99e)
+
+- Reports: hygiene/f8d4826722d.{reduce,humanize}.md +
+  hygiene/72a1e91c99e.both.md. Applied: 5 compile-verified dead
+  includes removed from `ConcurrentHashJoin.cpp`; stale
+  `RoutedJoinResult`/`joinRoutedBlock` docs; contract-prose dedup;
+  decorrelation-rationale trim; caps/backticks; `routeKeyColumns`
+  parameter-order consistency; U1c comment rewrap.
+- SKIPPED (behavior-adjacent, recorded): reusing `JoinOnKeyColumns`
+  for the build-side route prep - it would allocate a join-mask/
+  null-map holder per build block; the value-based fold plus the
+  LC/plain gtest contract already pin build/probe route equality.
+- Re-gates: build rc=0, gtests 19/19, PARITY OK on the post-fixer
+  snapshot (`uncommitted-u1hyg.tmp.bin`; parity_u1hyg.log).
+- U3 note carried from review: the once-per-build hoist must snapshot
+  AFTER `onBuildPhaseFinish` (shrink-to-fit mutates `allocated_size`).

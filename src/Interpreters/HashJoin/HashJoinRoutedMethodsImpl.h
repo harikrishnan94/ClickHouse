@@ -60,8 +60,8 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     }
 
     /// The joined-bytes-per-row estimate that sizes the output-block splitting must cover the
-    /// WHOLE join, not slot 0: with few distinct keys most slots are empty, and an empty slot
-    /// 0 would zero the estimate and disable `max_joined_block_bytes` splitting entirely.
+    /// WHOLE join, not slot 0: with few distinct keys most slots are empty, and an empty
+    /// slot 0 would zero the estimate and disable `max_joined_block_bytes` splitting entirely.
     size_t total_allocated_size = 0;
     size_t total_rows_to_join = 0;
     for (const HashJoin * slot_join : slot_joins)

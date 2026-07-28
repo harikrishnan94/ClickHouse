@@ -26,8 +26,8 @@ class RoutedHashJoinMethods
 public:
     /// `slot_joins` are the per-slot `HashJoin`s (all sharing one `StoredColumnsIndex`);
     /// `block` wraps the ORIGINAL left block (zero-copy); `slot_ids` carries one slot id per
-    /// source-block row (null when there is a single slot); `join_on_keys` is the block's key
-    /// preparation, built once by the caller and shared with its route derivation.
+    /// source-block row (null when there is a single slot); `join_on_keys` is the block's
+    /// prepared key columns (see `HashJoin::joinRoutedBlock`).
     static JoinResultPtr joinBlockImpl(
         const std::vector<const HashJoin *> & slot_joins,
         ScatteredBlock block,

@@ -1,9 +1,6 @@
-#include <Columns/ColumnSparse.h>
-#include <Columns/FilterDescription.h>
 #include <Columns/IColumn.h>
 #include <Core/Names.h>
 #include <Core/NamesAndTypes.h>
-#include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/IDataType.h>
 #include <DataTypes/Serializations/ISerialization.h>
 #include <Interpreters/ConcurrentHashJoin.h>
@@ -22,12 +19,10 @@
 #include <Common/AllocatorWithMemoryTracking.h>
 #include <Common/setThreadName.h>
 #include <Common/ThreadGroupSwitcher.h>
-#include <Common/typeid_cast.h>
 
 #include <Interpreters/HashJoin/AddedColumns.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashJoin/JoinSlotRouting.h>
-#include <Interpreters/HashJoin/KeyGetter.h>
 #include <DataTypes/NullableUtils.h>
 #include <base/defines.h>
 #include <base/types.h>
@@ -344,7 +339,7 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
     return true;
 }
 
-static ColumnRawPtrs routeKeyColumns(const JoinOnKeyColumns & keys, const HashJoin & join);
+static ColumnRawPtrs routeKeyColumns(const HashJoin & join, const JoinOnKeyColumns & keys);
 static void computeDispatchSlotIds(
     const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids);
 
@@ -382,20 +377,20 @@ private:
 };
 
 /// The lazy result of the routed probe. The routed lookup itself is deferred to the first
-/// `next()` call, keeping `joinBlock` as cheap as before (it only derives the route words);
-/// after that this is a thin timing shim around the inner `HashJoinResult`. A
-/// `max_joined_block_rows` remainder (`next_block`) is passed through to the caller -
-/// `JoiningTransform` re-feeds it through `joinBlock`, which re-derives its routes.
+/// `next()` call, keeping `joinBlock` cheap (it only prepares the key columns and derives
+/// the slot ids); after that this is a thin timing shim around the inner `HashJoinResult`.
+/// A `max_joined_block_rows` remainder (`next_block`) is passed through to the caller -
+/// `JoiningTransform` re-feeds it through `joinBlock`, which re-prepares its keys and slot ids.
 class RoutedJoinResult : public IJoinResult
 {
     /// `ConcurrentHashJoin::slot_joins`, stable for the lifetime of the join.
     const std::vector<const HashJoin *> & slot_joins;
     ScatteredBlock block;
-    /// Owns the per-row slot ids for the lifetime of the lookup; empty when there is a single
-    /// slot.
+    /// Owns the per-row slot ids for the lifetime of the lookup; empty when there is a
+    /// single slot.
     PaddedPODArray<UInt8> slot_ids;
-    /// The block's prepared key columns (materialized keys, null map, ON-section mask), built
-    /// once in `joinBlock` and shared by the route derivation above and the lookup below.
+    /// The block's prepared key columns (materialized keys, null map, ON-section mask),
+    /// built in `joinBlock`.
     std::vector<JoinOnKeyColumns> join_on_keys;
     /// Kept alive until destruction even after the last block: the `next_block` pointer
     /// returned to the caller points into it.
@@ -449,8 +444,8 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
         join0.materializeColumnsFromLeftBlock(block);
         scattered = ScatteredBlock{std::move(block)};
 
-        /// The block's key columns are prepared ONCE: the route derivation below and the
-        /// routed lookup (through `RoutedJoinResult`) read the same `JoinOnKeyColumns`.
+        /// The block's key columns are prepared here so that the slot-id derivation below and
+        /// the routed lookup (through `RoutedJoinResult`) read the same `JoinOnKeyColumns`.
         const auto & onexpr = table_join->getOnlyClause();
         join_on_keys.emplace_back(
             scattered,
@@ -466,7 +461,7 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
         {
             const size_t rows = scattered.rows();
             slot_ids.resize(rows);
-            computeDispatchSlotIds(join0, routeKeyColumns(join_on_keys.front(), join0), rows, slots, slot_ids.data());
+            computeDispatchSlotIds(join0, routeKeyColumns(join0, join_on_keys.front()), rows, slots, slot_ids.data());
         }
     }
 
@@ -581,20 +576,18 @@ static size_t routeKeyColumnCount(const HashJoin & join, size_t total_key_column
 }
 
 /// The routed prefix of the probe block's prepared key columns.
-static ColumnRawPtrs routeKeyColumns(const JoinOnKeyColumns & keys, const HashJoin & join)
+static ColumnRawPtrs routeKeyColumns(const HashJoin & join, const JoinOnKeyColumns & keys)
 {
     const size_t count = routeKeyColumnCount(join, keys.key_columns.size());
     return ColumnRawPtrs(keys.key_columns.begin(), keys.key_columns.begin() + count);
 }
 
 /// One slot id per row, shared by the build scatter and the probe dispatch.
-/// The open-addressing types route through the `JoinSlotRouting` fold - a
-/// route word deliberately independent of the CRC32C-family hashes the maps
-/// bucket by, so slot selection stays decorrelated from `grower.place`.
-/// `FixedHashMap` types (`key8`/`key16`) index cells directly by the key
-/// value and have no collision chains, so the key's low bits remain the
-/// natural route for them (bit-identical to the identity-hash selector this
-/// replaces).
+/// The open-addressing types route through the `JoinSlotRouting` fold (see
+/// there for why the route must stay decorrelated from the maps' own
+/// hashes). `FixedHashMap` types (`key8`/`key16`) index cells directly by
+/// the key value and have no collision chains, so the key's low bits are
+/// the natural route for them.
 static void computeDispatchSlotIds(
     const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids)
 {
@@ -607,8 +600,8 @@ static void computeDispatchSlotIds(
         const char * data = column.getRawData().data();
         const size_t width = column.sizeOfValueIfFixed();
         const UInt8 mask = static_cast<UInt8>(num_shards - 1);
-        /// The mask fits the value's low byte - the first byte on the little-endian targets
-        /// this code runs on.
+        /// The mask fits the value's low byte; on little-endian targets (the only ones this
+        /// code runs on), the value's low byte is its first byte.
         for (size_t i = 0; i < rows; ++i)
             slot_ids[i] = static_cast<UInt8>(data[i * width]) & mask;
         return;
@@ -619,7 +612,7 @@ static void computeDispatchSlotIds(
 
 /// Build-side preparation of the routed key-column prefix: the same unwrap
 /// chain `JoinOnKeyColumns` applies on the probe side (const/sparse unwrap,
-/// LowCardinality removal unless the map type consumes the live dictionary
+/// `LowCardinality` removal unless the map type consumes the live dictionary
 /// column, nullable-to-nested extraction). The fold is value-based, so the
 /// route words agree with the probe's even where the physical
 /// representations differ.
@@ -722,7 +715,7 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
     if (use_zero_copy_approach)
         return scatterBlocksWithSelector(num_shards, slot_ids, from_block);
 
-    /// `IColumn::scatter` takes a UInt64 selector; widen once here, on the narrow-row path
+    /// `IColumn::scatter` takes a `UInt64` selector; widen once here, on the narrow-row path
     /// where the block is copied anyway.
     IColumn::Selector selector(rows);
     for (size_t i = 0; i < rows; ++i)

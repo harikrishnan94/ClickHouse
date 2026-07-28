@@ -110,3 +110,34 @@ orientation and labeled as such.
   parity + order stay green on the new snapshot.
 - Refutation: 03567 still failing -> mechanism wrong, re-diagnose
   before any further commit; never weaken the test.
+
+## 004 — U2: probe-lane plumbing + pooled ProbeScratch
+
+- Change: (a) `IJoin::joinBlock(Block, size_t lane)` defaulted virtual
+  (forwards to the lane-less overload; no other join touched);
+  `JoiningTransform` gains a `stream_index` constructor parameter
+  (the `joinPipelinesRightLeft` per-stream loop index) and passes it
+  per `joinBlock` call; (b) `ConcurrentHashJoin::ProbeScratch`
+  {`PaddedPODArray<UInt8>` slot_ids, `PaddedPODArray<UInt64>`
+  found_word, found_offset} parked in a fixed table of
+  2 x slots-hint atomic slots (acquire = `exchange(nullptr)`,
+  release = `compare_exchange`; mutexed pool fallback for collision
+  losers, out-of-range lanes, and the lane-less `invalid_lane`
+  entries); (c) the scratch is owned by `RoutedJoinResult` and
+  CAS-released in its destructor (the lookup is lazy - this is the
+  deliberate deviation from the eager AHJ scope-exit release);
+  (d) acquisition stays lazy: slots == 1 and empty blocks allocate
+  nothing; (e) the AMAC find pass's found_word/found_offset arrays
+  come from the same scratch (no per-call PaddedPODArray locals).
+- Expectation: parity/order/tests all stay green (affinity-only
+  change, zero correctness role); pool gtests prove collision safety
+  (two results alive on one lane), invalid_lane fallback, and
+  capacity reuse across blocks (no per-block allocation after
+  warm-up, asserted via allocation probe or capacity identity);
+  local orientation A/B on S1/S2 floor cells (key64 S1, str S1,
+  key64 S2) - expect small PDisp/alloc shaving, no regressions
+  outside local noise.
+- Refutation: any parity diff -> ownership/lifetime bug (scratch
+  reused while a result still reads it); fix before proceeding.
+  Memory accounting note: scratches live on the join until dtor,
+  uncounted in getTotalByteCount (AHJ precedent) - documented.
