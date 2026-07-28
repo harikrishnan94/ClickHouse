@@ -9,3 +9,4 @@ clickhouse-candidate-5b276c5fb88.bin	dc8b1f17e5a7fcce614c8d26e25031cf1adb100f609
 6495b05ab061c8a33aca9f1e954997e9bfab1fa8869ed1a9a31f8fd580159057  /mnt/ch/ClickHouse/tmp/chj_amac/bins/clickhouse-candidate-final-d1c77571b39.bin
 6edb195b141688c62cd076b4d403110c94b642668259b0db0fd275a4fb251e0d  /mnt/ch/ClickHouse/tmp/chj_amac/bins/clickhouse-candidate-fix1-06e0bbd0aa3.bin
 a7515405c7c948a8a8e6bbd3497ac97f6522e1e2c54bf807284649156127427e  /mnt/ch/ClickHouse/tmp/chj_amac/bins/clickhouse-candidate-fix2-6598f4b872f.bin
+clickhouse-candidate-96532537d4d.bin	06d804546e0f029b459fbfa806debb4f33c688fe55dd18770c3ed79957dcb971	4847564584	96532537d4d04fa19c3b00c47739e03d56052e1c	/mnt/ch/ClickHouse/build/reldeb/build_candidate-96532537d4d.log	2026-07-28T17:18:28Z

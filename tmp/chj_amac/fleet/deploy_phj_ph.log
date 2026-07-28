@@ -1,0 +1,9 @@
+shard 6 (172.31.6.162): deployed
+shard 0 (172.31.9.199): deployed
+shard 7 (172.31.3.104): deployed
+shard 4 (172.31.11.84): deployed
+shard 5 (172.31.10.36): deployed
+shard 3 (172.31.10.61): deployed
+shard 2 (172.31.1.38): deployed
+shard 1 (172.31.2.102): deployed
+DEPLOY DONE: verify smoke_phjph_shard*.log shas against bins/MANIFEST.tsv

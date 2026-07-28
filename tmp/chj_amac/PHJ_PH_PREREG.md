@@ -114,3 +114,24 @@ claim); any `DEFAULT-UNCALIBRATED` cell.
 **Reruns.** A cell is rerun only for a diagnosed infrastructure fault (ssh/instance/server
 crash), never because its verdict is unwelcome; both attempts stay in the JSONL and the
 rerun is disclosed in the report.
+
+**Addendum, written before the sweep runs — the calibration file changes.** The G3
+invocation above names `tmp/chj_amac/calibration/calibration.json`, following the prompt's
+resource map. That file cannot be used: `fleet_ab.resolve_shape` evaluates
+`int(calibration[family][size])` and the value there is a dict, so it raises `TypeError`
+instead of degrading. The sweep therefore passes
+`--calibration tmp/chj_amac/fleet/calibration_rows.json`, which matches the flag's
+documented `{family: {size: build_rows}}` contract, is the exact flat projection of the
+nested file (zero value mismatches), and leaves 0 of the 94 cells uncalibrated. Neither
+file is edited. The prediction `uncalibrated=0` is unchanged and now rests on this file.
+
+**Addendum — the smoke run that preceded the sweep (orientation, never acceptance).**
+One cell (`key64:probe.inner_all.S2.T1`) was run against shard 0 with `--runs 2
+--warmups 1` into a **separate** file, `fleet/smoke_phj_ph/smoke.jsonl`, purely to prove the
+remote path and the engagement gate before committing 8 hosts to a long sweep
+(`fleet_ab.py` itself warns `remote mode is UNTESTED`). Its reduced run count is why it is
+orientation only: it is not in the campaign results directory, is not scored, and appears in
+no verdict count. It did establish two things the sweep depends on: `--require-engagement`
+does **not** trip on the candidate arm (only the expected
+`SKIPPED: AMAC engagement counters absent … (arm=baseline)` line appears), and
+`rows_source=calibration-file`.

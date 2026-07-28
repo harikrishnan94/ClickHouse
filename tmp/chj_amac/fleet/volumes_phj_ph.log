@@ -1,0 +1,19 @@
+snapshot snap-021cbdc2484f86607 state=completed
+shard 0: created vol-09c4e9ba1983fdccf in ap-south-2a for i-01ab31f17f082596e
+shard 1: created vol-0848273a57ae77390 in ap-south-2a for i-065ebd96c4dd296e2
+shard 2: created vol-056bf3d5c48f8ca91 in ap-south-2a for i-069d5483a4d36300d
+shard 3: created vol-007d748bef0937ddc in ap-south-2a for i-0781d51e1d57c8b1a
+shard 4: created vol-0d92b3896d8ef4737 in ap-south-2a for i-0cdef32c6d6060ecb
+shard 5: created vol-0aeff043418eaeb06 in ap-south-2a for i-0d65b4dd8f104e168
+shard 6: created vol-0b1198722222e06e4 in ap-south-2a for i-0f8dadc4b4757f83d
+shard 7: created vol-012e93820b6d74251 in ap-south-2a for i-0f8ece4037a96fadc
+all volumes available
+vol-09c4e9ba1983fdccf	i-01ab31f17f082596e	attaching
+vol-0848273a57ae77390	i-065ebd96c4dd296e2	attaching
+vol-056bf3d5c48f8ca91	i-069d5483a4d36300d	attaching
+vol-007d748bef0937ddc	i-0781d51e1d57c8b1a	attaching
+vol-0d92b3896d8ef4737	i-0cdef32c6d6060ecb	attaching
+vol-0aeff043418eaeb06	i-0d65b4dd8f104e168	attaching
+vol-0b1198722222e06e4	i-0f8dadc4b4757f83d	attaching
+vol-012e93820b6d74251	i-0f8ece4037a96fadc	attaching
+VOLUMES READY: 8 attached at /dev/sdf; mapping in /mnt/ch/ClickHouse/tmp/chj_amac/fleet/volumes.phj_ph.tsv; RUN_TAG=phj-ph-ab-20260728

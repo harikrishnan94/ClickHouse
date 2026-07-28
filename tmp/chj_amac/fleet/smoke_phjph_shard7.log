@@ -1,0 +1,27 @@
+0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4  /home/ubuntu/chj/clickhouse-base
+06d804546e0f029b459fbfa806debb4f33c688fe55dd18770c3ed79957dcb971  /home/ubuntu/chj/clickhouse-cand
+aarch64
+96
+Architecture:                            aarch64
+CPU op-mode(s):                          64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  96
+On-line CPU(s) list:                     0-95
+Vendor ID:                               ARM
+Model name:                              Neoverse-V2
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      96
+Socket(s):                               1
+Stepping:                                r0p1
+BogoMIPS:                                2000.00
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti
+L1d cache:                               6 MiB (96 instances)
+L1i cache:                               6 MiB (96 instances)
+L2 cache:                                192 MiB (96 instances)
+L3 cache:                                36 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-95
+               total        used        free      shared  buff/cache   available
+Mem:             370           5         358           0           9         365
+/dev/root       290G   11G  279G   4% /

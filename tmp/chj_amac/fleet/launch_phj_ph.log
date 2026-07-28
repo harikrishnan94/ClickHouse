@@ -1,0 +1,52 @@
+quota=1152.0 running_vcpus=96 need=768
+Generating public/private ed25519 key pair.
+Your identification has been saved in /mnt/ch/ClickHouse/tmp/chj_amac/fleet/ssh_phj_ph/id_ed25519
+Your public key has been saved in /mnt/ch/ClickHouse/tmp/chj_amac/fleet/ssh_phj_ph/id_ed25519.pub
+The key fingerprint is:
+SHA256:srazMql4GQ/5KHIfao4zVWB5NktRTOhrOJwilHzzXhg chj-phjph-fleet
+The key's randomart image is:
++--[ED25519 256]--+
+|   ..*o          |
+|  + * .          |
+|...* o           |
+| + o+E           |
+|...=o.+ S        |
+|o X oo +         |
+|.o Xo.+          |
+|=o*.*+..         |
+|+O+o.ooo         |
++----[SHA256]-----+
+{
+    "Return": true,
+    "SecurityGroupRules": [
+        {
+            "SecurityGroupRuleId": "sgr-090e4612bf8de2f94",
+            "GroupId": "sg-021349461933fb060",
+            "GroupOwnerId": "662591887723",
+            "IsEgress": false,
+            "IpProtocol": "tcp",
+            "FromPort": 22,
+            "ToPort": 22,
+            "CidrIpv4": "172.31.5.72/32",
+            "SecurityGroupRuleArn": "arn:aws:ec2:ap-south-2:662591887723:security-group-rule/sgr-090e4612bf8de2f94"
+        }
+    ]
+}
+ami=ami-0feea81f640baa6fb sg=sg-021349461933fb060 vpc=vpc-0dbe56e29f84d24a3
+shard 0: i-01ab31f17f082596e in subnet-07fde41a9bd25176e
+shard 1: i-065ebd96c4dd296e2 in subnet-07fde41a9bd25176e
+shard 2: i-0f8dadc4b4757f83d in subnet-07fde41a9bd25176e
+shard 3: i-0cdef32c6d6060ecb in subnet-07fde41a9bd25176e
+shard 4: i-0f8ece4037a96fadc in subnet-07fde41a9bd25176e
+shard 5: i-0d65b4dd8f104e168 in subnet-07fde41a9bd25176e
+shard 6: i-0781d51e1d57c8b1a in subnet-07fde41a9bd25176e
+shard 7: i-069d5483a4d36300d in subnet-07fde41a9bd25176e
+0	i-01ab31f17f082596e	172.31.9.199	ap-south-2a
+1	i-065ebd96c4dd296e2	172.31.2.102	ap-south-2a
+2	i-069d5483a4d36300d	172.31.1.38	ap-south-2a
+3	i-0781d51e1d57c8b1a	172.31.10.61	ap-south-2a
+4	i-0cdef32c6d6060ecb	172.31.11.84	ap-south-2a
+5	i-0d65b4dd8f104e168	172.31.10.36	ap-south-2a
+6	i-0f8dadc4b4757f83d	172.31.6.162	ap-south-2a
+7	i-0f8ece4037a96fadc	172.31.3.104	ap-south-2a
+FLEET LAUNCHED: 8 shards; SG sg-021349461933fb060; RUN_TAG phj-ph-ab-20260728
