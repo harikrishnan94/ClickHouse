@@ -59,6 +59,17 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
         next_scattered_block = ScatteredBlock(std::move(raw_block), std::move(split_selector.second));
     }
 
+    /// The joined-bytes-per-row estimate that sizes the output-block splitting must cover the
+    /// WHOLE join, not slot 0: with few distinct keys most slots are empty, and an empty slot
+    /// 0 would zero the estimate and disable `max_joined_block_bytes` splitting entirely.
+    size_t total_allocated_size = 0;
+    size_t total_rows_to_join = 0;
+    for (const HashJoin * slot_join : slot_joins)
+    {
+        total_allocated_size += slot_join->data->allocated_size;
+        total_rows_to_join += slot_join->data->rows_to_join;
+    }
+
     auto join_result = std::make_unique<HashJoinResult>(
         std::move(added_columns.lazy_output),
         std::move(added_columns.columns),
@@ -72,7 +83,7 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
             join.required_right_keys_sources,
             join.max_joined_block_rows,
             join.max_joined_block_bytes,
-            join.data->allocated_size / std::max<size_t>(1, join.data->rows_to_join),
+            total_allocated_size / std::max<size_t>(1, total_rows_to_join),
             join_features.need_filter,
             /*is_join_get=*/false,
             join.joined_block_split_single_row,

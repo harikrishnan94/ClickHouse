@@ -101,3 +101,24 @@ Edits (all landed in working tree, building):
   `5b276c5fb88` (single-test runs: baseline PASS, 5b276c5fb88 FAIL,
   u1b FAIL). Root cause + fix pre-registered as PREREG 003; the fix
   lands as the next commit and the differential re-runs there.
+
+## U1c — whole-join bytes-per-row estimate fix (PREREG 003)
+
+- Fix: `joinBlockImpl` sums `allocated_size`/`rows_to_join` across all
+  `slot_joins` for `HashJoinResult::Properties` (was slot 0 only).
+- 03567 x3 PASS on the fixed snapshot (`uncommitted-u1c.tmp.bin`,
+  sha a5c83da8c59f...). Build rc=0; gtests 19/19.
+- Join differential re-run: cand2 failures = 119 == baseline set;
+  candidate-only EMPTY. G-tests GREEN (prior mission's named gap
+  closed; found + fixed one pre-existing product defect on the way).
+- G-order on u1c: ORDER OK (ok=9 fail=0, all engaged, stateless x10
+  pass). GREEN.
+- hash-NFC (U1b binary, report hash_nfc_u1b.md): PASS — 14064
+  non-Routed `HashJoinMethods` symbols pair 1:1, zero size mismatches;
+  anchors instruction-identical modulo GOT/address shifts; the one
+  semantic diff is the intended `ldr`->`ldrb` at 2 sites double-guarded
+  by the routed-context null check the `hash` path never passes.
+  Transfers to u1c (the fix touches a routed-only template).
+- G-parity on u1c: running.
+- G-parity on u1c: PARITY OK (636: 634 compared, 2 matched-error,
+  0 failed; force-pass 8/8+2x0). GREEN. All U1c gates green.
