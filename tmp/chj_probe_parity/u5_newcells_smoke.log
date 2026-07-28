@@ -1,0 +1,9 @@
+sweep: 3 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/chj_probe_parity/u5_newcells_smoke.jsonl), 3 to run
+=== cell 1/3: key64:probe.mixed_on.S1.T48 rows_build=24000 rows_probe=96000000 expected_rows=96000000 threads=48 rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  cell OK (5.9s)
+=== cell 2/3: key64:probe.inner_all.S1p5.T48 rows_build=96000 rows_probe=96000000 expected_rows=96000000 threads=48 rows_source=calibration-file ===
+  cell OK (5.5s)
+=== cell 3/3: str:probe.inner_all.S1p5.T48 rows_build=96000 rows_probe=96000000 expected_rows=96000000 threads=48 rows_source=calibration-file ===
+  cell OK (10.3s)
+FLEET_AB SWEEP RESULT: cells_run=3 cells_ok=3 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/chj_probe_parity/u5_newcells_smoke.jsonl -> PASS

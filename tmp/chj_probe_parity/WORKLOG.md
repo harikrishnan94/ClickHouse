@@ -378,3 +378,17 @@ Edits (all landed in working tree, building):
   Also recorded: the per-run `events` field carries the seven shared
   events only; the Amac counters live in the cell-level `engagement`
   capture (matters for verification scripts).
+
+## Mission close (2026-07-28)
+
+- U5 fix cycle 2 (`6598f4b872f`): cheap-key-only ASOF exclusion;
+  str asof recovered +11.9 -> +4.94%; key64 asof kept its fix-1
+  numbers (+3.57/+5.89%).
+- FINAL GATE (independently recomputed, zero differences): 54 WIN /
+  18 TIE / 7 HONEST-RED / 17 unverdictable-at-floor / 1
+  INFEASIBLE-ON-FLEET (lcstr S5 baseline OOM - the verifier caught
+  the tally omission) = 97. 72/79 verdictable cells win-or-parity.
+- Independent verification: FIX-THEN-SHIP; all five documentation
+  fixes applied in REPORT.md -> SHIP.
+- Fleet torn down 12:54:51Z; ~15.2 instance-hours; accounting in
+  REPORT.md.

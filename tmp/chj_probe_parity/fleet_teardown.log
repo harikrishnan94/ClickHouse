@@ -1,0 +1,23 @@
+i-0835dd2b94f58d777	shutting-down
+i-0ce2277f7bfc85900	shutting-down
+i-0a20f4512b380c324	shutting-down
+i-083c60e0061494efe	shutting-down
+i-0208a88aba917e0c7	shutting-down
+i-0a66e74ee58659049	shutting-down
+i-0bc8727ca5fb011b8	shutting-down
+i-00c93b0e011a3d0d8	shutting-down
+all instances terminated
+{
+    "Return": true,
+    "GroupId": "sg-0a32c30cee50aa10e"
+}
+SG sg-0a32c30cee50aa10e deleted
+i-0bc8727ca5fb011b8	terminated
+i-0a66e74ee58659049	terminated
+i-0208a88aba917e0c7	terminated
+i-083c60e0061494efe	terminated
+i-00c93b0e011a3d0d8	terminated
+i-0a20f4512b380c324	terminated
+i-0ce2277f7bfc85900	terminated
+i-0835dd2b94f58d777	terminated
+TEARDOWN COMPLETE 2026-07-28T12:54:51Z — copy this output into REPORT.md accounting
