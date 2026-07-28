@@ -328,3 +328,18 @@ Edits (all landed in working tree, building):
 - Re-gates: build rc=0, gtests 25/25, symbols 160 byte-identical,
   PARITY OK 636 on the post-fixer snapshot
   (`uncommitted-u4hyg.tmp.bin`).
+
+## U5 fix cycle 1 (PREREG 008)
+
+- Full-sweep gate (8 shards, gate_verdicts_fullsweep.txt): 54 win /
+  18 tie / 7 probe-red / 17 floor-invalid. Red mechanisms: 3 ASOF
+  cells (the U4a pointer ring is a fleet-measured net loss for ASOF
+  lookups), lcstr S3 (per-row dictionary fold in the route pass;
+  wall actually WINS -5.3%), and the structural key32/key64 S5 +
+  anti S4 residuals (ablation-informed decision pending).
+- Fix 1a: ASOF leaves ring engagement under `Auto` (`Force` keeps it
+  for the gtest). Fix 1b: single-column LowCardinality routes fold
+  each dictionary entry once and gather by index (value-identical
+  words; pinned by the LC == plain gtest).
+- Local gates: build rc=0, gtests 25/25, PARITY OK 636, ORDER OK
+  (parity_u5fix1.log / order_u5fix1.log).

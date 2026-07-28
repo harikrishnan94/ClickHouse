@@ -250,3 +250,56 @@ orientation and labeled as such.
   re-runs 3 random cells, and checks the teardown accounting.
 - Teardown: `teardown.sh` + accounting (instance-hours, cells run)
   recorded in REPORT.md before the mission closes.
+
+### 007 addendum — fleet identity (recorded at launch)
+
+```
+0	i-0bc8727ca5fb011b8	172.31.19.173	ap-south-2c
+1	i-0a66e74ee58659049	172.31.21.127	ap-south-2c
+2	i-0208a88aba917e0c7	172.31.20.42	ap-south-2c
+3	i-083c60e0061494efe	172.31.18.123	ap-south-2c
+4	i-00c93b0e011a3d0d8	172.31.21.255	ap-south-2c
+5	i-0a20f4512b380c324	172.31.20.51	ap-south-2c
+6	i-0ce2277f7bfc85900	172.31.16.166	ap-south-2c
+7	i-0835dd2b94f58d777	172.31.16.98	ap-south-2c
+SG: sg-0a32c30cee50aa10e
+```
+
+lscpu digests:
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard0.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard1.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard2.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard3.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard4.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard5.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard6.log:Model name:                              Neoverse-V2
+/mnt/ch/ClickHouse/tmp/chj_amac/fleet/smoke_shard7.log:Model name:                              Neoverse-V2
+
+## 008 — U5 fix cycle 1: ASOF Auto-exclusion + dictionary-aware LC route
+
+- Trigger (interim gate, 7/8 shards, gate_verdicts.py): 52 win /
+  17 tie / 6 probe-red / 16 floor-invalid. Phase attribution:
+  (a) `key64:probe.asof.S4.T96` +26.56% (`ProbeLookup` +13.3
+  thread-s) and `asof.S2` +4.13% (wall TIE) - the U4a pointer ring
+  HURTS ASOF on the fleet (the named contingency from U4a's local
+  S2 note fires); (b) `lcstr:probe.inner_all.S3.T96` +17.74% probe
+  (wall WIN -5.34%) - `ProbeDispatch` +1.29 thread-s from the
+  per-row `getDataAt` byte fold plus dictionary-cache interference
+  in the lookup.
+- Fix 1a: ASOF maps leave the ring's engagement under `Auto`
+  (`Force` keeps them - the gtest still drives the pointer ring).
+  Expectation: asof cells revert to the plain routed loop, which
+  with the route-fold/prep-once/plan gains should land in band or
+  better; refutation = asof S4 still probe-red after re-run ->
+  honest-red with attribution.
+- Fix 1b: single-column LowCardinality routes fold each DICTIONARY
+  entry once and gather the word per row by index (value-identical
+  words to the plain fold by construction - pinned by the existing
+  LC == plain gtest). Expectation: lcstr PDisp collapses and the
+  lookup interference disappears; lcstr S3 probe in band or win.
+- Protocol: local gates (build, 25 gtests, parity 636, order) ->
+  commit -> deploy new candidate to fleet -> re-run affected cells
+  (key64 asof S2/S4, str asof S2, lcstr S2/S3/S5 as present in the
+  plan) + no-regress spot checks (key64 S4, str S2 inner) with the
+  FIX-CYCLE binary; final gate report substitutes these cells'
+  verdicts and records the substitution.

@@ -1,0 +1,106 @@
+fixstr:probe.inner_all.S2.T96                    TIE  probe A=      9.85s B=      9.04s diff= -8.24% band=18.7% | wall  -2.16%
+fixstr:probe.inner_all.S3.T96                    WIN  probe A=     15.79s B=     13.21s diff=-16.32% band= 3.0% | wall  -5.98%
+fixstr:probe.inner_all.S5.T96                    WIN  probe A=     57.79s B=     51.72s diff=-10.50% band= 3.0% | wall  -6.18%
+k128:probe.inner_all.S2.T96                      WIN  probe A=     10.80s B=      9.87s diff= -8.58% band= 5.0% | wall  -1.07%
+k128:probe.inner_all.S3.T96                      WIN  probe A=     16.17s B=     13.30s diff=-17.79% band= 3.0% | wall  -6.21%
+k128:probe.inner_all.S5.T96                      WIN  probe A=     60.59s B=     57.72s diff= -4.74% band= 3.7% | wall  -5.18%
+k256:build.inner_all.S2.T96                      INVALID (['below-duration-floor (arm A median 40.2 ms < 200 ms)'])
+k256:build.inner_all.S3.T96                      INVALID (['below-duration-floor (arm A median 86.0 ms < 200 ms)'])
+k256:build.inner_all.S5.T96                      GUARD-OK  wall A=    1.62s B=    1.34s diff=-17.71% band= 8.9%
+k256:probe.inner_all.S1.T96                      WIN  probe A=     10.33s B=      7.20s diff=-30.31% band= 9.8% | wall  -5.26%
+k256:probe.inner_all.S2.T1                       WIN  probe A=      0.09s B=      0.05s diff=-39.70% band= 3.0% | wall  -7.86%
+k256:probe.inner_all.S2.T48                      WIN  probe A=      4.69s B=      3.07s diff=-34.66% band= 5.9% | wall  -7.83%
+k256:probe.inner_all.S2.T96                      WIN  probe A=     17.91s B=      9.84s diff=-45.05% band= 4.8% | wall  -9.35%
+k256:probe.inner_all.S3.T96                      WIN  probe A=     25.73s B=     12.19s diff=-52.61% band= 3.0% | wall -15.94%
+k256:probe.inner_all.S4.T1                       WIN  probe A=     22.33s B=     13.70s diff=-38.66% band= 3.0% | wall -14.63%
+k256:probe.inner_all.S4.T48                      WIN  probe A=     16.33s B=     11.98s diff=-26.63% band= 6.1% | wall  +2.28%
+k256:probe.inner_all.S4.T96                      WIN  probe A=     25.19s B=     13.94s diff=-44.65% band= 3.0% | wall -14.73%
+k256:probe.inner_all.S5.T96                      WIN  probe A=    118.88s B=     62.36s diff=-47.54% band= 5.8% | wall -16.80%
+key32:probe.inner_all.S2.T96                     WIN  probe A=      6.77s B=      5.65s diff=-16.45% band= 6.4% | wall  -3.48%
+key32:probe.inner_all.S3.T96                     WIN  probe A=     10.85s B=      7.99s diff=-26.37% band= 3.0% | wall  -2.66%
+key32:probe.inner_all.S5.T96                     LOSS probe A=     86.04s B=     96.86s diff=+12.58% band= 3.0% | wall +13.19%
+key64:build.inner_all.S2.T96                     INVALID (['below-duration-floor (arm A median 23.0 ms < 200 ms)'])
+key64:build.inner_all.S3.T1                      GUARD-OK  wall A=    1.58s B=    1.51s diff= -4.57% band= 3.0%
+key64:build.inner_all.S3.T48                     INVALID (['below-duration-floor (arm A median 72.7 ms < 200 ms)'])
+key64:build.inner_all.S3.T96                     INVALID (['below-duration-floor (arm A median 73.7 ms < 200 ms)'])
+key64:build.inner_all.S3.T96.dup16               GUARD-OK  wall A=    0.27s B=    0.27s diff= -1.35% band= 3.4%
+key64:build.inner_all.S3.T96.statson             INVALID (['below-duration-floor (arm A median 68.7 ms < 200 ms)'])
+key64:build.inner_all.S5.T96                     GUARD-OK  wall A=    1.58s B=    1.58s diff= +0.27% band= 4.0%
+key64:build.left_all.S3.T96.dup16                GUARD-OK  wall A=    0.27s B=    0.27s diff= -0.83% band= 3.0%
+key64:probe.any.S2.T96                           WIN  probe A=      8.24s B=      6.13s diff=-25.56% band= 5.1% | wall  -3.22%
+key64:probe.any.S4.T96                           WIN  probe A=     26.89s B=     17.65s diff=-34.34% band= 3.0% | wall  +7.71%
+key64:probe.asof.S2.T96                          LOSS probe A=     18.63s B=     19.40s diff= +4.13% band= 4.0% | wall  -0.02%
+key64:probe.asof.S4.T96                          LOSS probe A=     52.25s B=     66.12s diff=+26.56% band= 3.0% | wall +15.33%
+key64:probe.inner_all.S1.T96                     WIN  probe A=      4.64s B=      4.41s diff= -4.85% band= 4.2% | wall  +0.38%
+key64:probe.inner_all.S1p5.T96                   TIE  probe A=      5.67s B=      5.40s diff= -4.74% band= 7.1% | wall  -0.01%
+key64:probe.inner_all.S2.T1                      WIN  probe A=      0.04s B=      0.03s diff=-17.38% band= 4.1% | wall  -2.77%
+key64:probe.inner_all.S2.T48                     WIN  probe A=      2.27s B=      1.96s diff=-13.97% band=13.3% | wall  -2.36%
+key64:probe.inner_all.S2.T96                     WIN  probe A=      7.53s B=      6.11s diff=-18.81% band= 4.7% | wall  -1.84%
+key64:probe.inner_all.S3.T96                     WIN  probe A=     11.31s B=      8.30s diff=-26.62% band= 3.0% | wall  -4.02%
+key64:probe.inner_all.S3.T96.h05                 INVALID (['below-duration-floor (arm A median 125.0 ms < 200 ms)'])
+key64:probe.inner_all.S3.T96.h50                 WIN  probe A=      8.24s B=      6.49s diff=-21.19% band= 3.0% | wall  -1.99%
+key64:probe.inner_all.S3.T96.statson             WIN  probe A=     11.36s B=      8.44s diff=-25.73% band= 3.0% | wall  -4.66%
+key64:probe.inner_all.S4.T1                      WIN  probe A=     13.41s B=      9.85s diff=-26.56% band= 3.0% | wall  -7.71%
+key64:probe.inner_all.S4.T48                     WIN  probe A=     14.91s B=     11.90s diff=-20.15% band= 3.0% | wall  -6.01%
+key64:probe.inner_all.S4.T96                     WIN  probe A=     23.22s B=     17.99s diff=-22.51% band= 3.0% | wall  +8.31%
+key64:probe.inner_all.S5.T96                     LOSS probe A=     88.84s B=    100.65s diff=+13.30% band= 3.7% | wall  +6.25%
+key64:probe.left_all.S2.T96                      WIN  probe A=      7.95s B=      6.79s diff=-14.62% band= 5.0% | wall  -1.98%
+key64:probe.left_all.S3.T96.jun                  WIN  probe A=     15.26s B=     12.34s diff=-19.11% band= 4.8% | wall  -1.43%
+key64:probe.left_all.S4.T96                      WIN  probe A=     23.85s B=     19.99s diff=-16.17% band= 4.6% | wall  +9.75%
+key64:probe.mixed_on.S3.T96                      WIN  probe A=     18.45s B=     17.24s diff= -6.56% band= 3.0% | wall  -0.76%
+key64:probe.rf_all.S2.T96                        TIE  probe A=     11.09s B=     11.03s diff= -0.55% band= 3.0% | wall  -0.81%
+key64:probe.rf_all.S4.T96                        TIE  probe A=     45.70s B=     46.10s diff= +0.89% band= 4.4% | wall -69.24%
+key64:probe.semi_anti.S2.T96                     WIN  probe A=      7.27s B=      6.07s diff=-16.47% band= 7.9% | wall  -3.50%
+key64:probe.semi_anti.S2.T96.anti                INVALID (['below-duration-floor (arm A median 36.1 ms < 200 ms)'])
+key64:probe.semi_anti.S4.T96                     WIN  probe A=     22.55s B=     18.47s diff=-18.11% band= 3.8% | wall +10.93%
+key64:probe.semi_anti.S4.T96.anti                LOSS probe A=      8.83s B=     10.24s diff=+16.02% band= 3.0% | wall +40.26%
+lcstr:probe.inner_all.S2.T96                     TIE  probe A=     16.59s B=     20.36s diff=+22.70% band=35.0% | wall  +0.34%
+lcstr:probe.inner_all.S3.T96                     LOSS probe A=     23.27s B=     27.40s diff=+17.74% band= 5.6% | wall  -5.34%
+mixed:build.inner_all.S2.T96                     INVALID (['below-duration-floor (arm A median 38.7 ms < 200 ms)'])
+mixed:build.inner_all.S3.T96                     INVALID (['below-duration-floor (arm A median 92.5 ms < 200 ms)'])
+mixed:build.inner_all.S5.T96                     GUARD-OK  wall A=    1.21s B=    1.14s diff= -6.07% band= 3.0%
+mixed:probe.inner_all.S2.T96                     TIE  probe A=     22.10s B=     21.25s diff= -3.86% band= 6.5% | wall  -0.08%
+mixed:probe.inner_all.S3.T96                     TIE  probe A=     41.23s B=     42.14s diff= +2.20% band= 3.0% | wall  -0.23%
+mixed:probe.inner_all.S5.T96                     TIE  probe A=    191.32s B=    195.55s diff= +2.21% band= 3.0% | wall  +1.15%
+null64:probe.inner_all.S2.T96                    WIN  probe A=      8.38s B=      7.12s diff=-15.02% band= 6.7% | wall  +0.05%
+null64:probe.inner_all.S3.T96                    WIN  probe A=     12.53s B=      8.70s diff=-30.57% band= 3.2% | wall  -0.28%
+null64:probe.inner_all.S5.T96                    TIE  probe A=    104.84s B=    106.86s diff= +1.93% band= 3.0% | wall  +4.66%
+str:build.inner_all.S2.T96                       INVALID (['below-duration-floor (arm A median 28.1 ms < 200 ms)'])
+str:build.inner_all.S3.T96                       INVALID (['below-duration-floor (arm A median 64.1 ms < 200 ms)'])
+str:build.inner_all.S3.T96.dup16                 INVALID (['below-duration-floor (arm A median 128.9 ms < 200 ms)'])
+str:build.inner_all.S5.T96                       GUARD-OK  wall A=    1.21s B=    0.85s diff=-29.93% band= 6.4%
+str:build.left_all.S3.T96.dup16                  INVALID (['below-duration-floor (arm A median 131.3 ms < 200 ms)'])
+str:probe.any.S2.T96                             WIN  probe A=     16.70s B=      9.46s diff=-43.33% band= 3.3% | wall -15.51%
+str:probe.any.S4.T96                             WIN  probe A=     27.37s B=     15.25s diff=-44.28% band= 3.0% | wall -26.33%
+str:probe.asof.S2.T96                            LOSS probe A=     20.48s B=     21.34s diff= +4.18% band= 4.0% | wall  -1.67%
+str:probe.asof.S4.T96                            TIE  probe A=     34.34s B=     33.85s diff= -1.42% band= 3.0% | wall  -6.18%
+str:probe.inner_all.S1.T96                       TIE  probe A=      6.34s B=      6.28s diff= -0.92% band= 5.3% | wall  +1.46%
+str:probe.inner_all.S1p5.T96                     WIN  probe A=     10.00s B=      7.28s diff=-27.26% band=24.3% | wall  -5.65%
+str:probe.inner_all.S2.T1                        INVALID (['below-duration-floor (arm B median 169.0 ms < 200 ms)'])
+str:probe.inner_all.S2.T48                       WIN  probe A=      4.30s B=      2.63s diff=-38.94% band= 5.8% | wall -14.33%
+str:probe.inner_all.S2.T96                       WIN  probe A=     12.08s B=      8.40s diff=-30.45% band= 5.7% | wall  -9.39%
+str:probe.inner_all.S3.T96                       WIN  probe A=     19.67s B=     13.05s diff=-33.69% band= 3.0% | wall -17.50%
+str:probe.inner_all.S3.T96.h05                   INVALID (['below-duration-floor (arm A median 161.1 ms < 200 ms)'])
+str:probe.inner_all.S3.T96.h50                   WIN  probe A=     14.19s B=     10.01s diff=-29.47% band= 3.0% | wall -18.17%
+str:probe.inner_all.S4.T1                        WIN  probe A=     13.59s B=      6.79s diff=-49.99% band= 3.0% | wall -27.31%
+str:probe.inner_all.S4.T48                       WIN  probe A=     14.65s B=      8.39s diff=-42.74% band= 3.0% | wall -11.21%
+str:probe.inner_all.S4.T96                       WIN  probe A=     19.92s B=     13.57s diff=-31.86% band= 3.0% | wall -19.43%
+str:probe.inner_all.S5.T96                       WIN  probe A=     89.00s B=     58.52s diff=-34.24% band= 3.0% | wall -20.02%
+str:probe.left_all.S2.T96                        WIN  probe A=     15.06s B=     11.45s diff=-23.95% band= 4.5% | wall  -8.17%
+str:probe.left_all.S4.T96                        WIN  probe A=     22.82s B=     16.19s diff=-29.06% band= 3.0% | wall -17.73%
+str:probe.rf_all.S2.T96                          WIN  probe A=     22.97s B=     19.17s diff=-16.57% band= 3.0% | wall  -6.66%
+str:probe.rf_all.S4.T96                          WIN  probe A=     33.96s B=     31.49s diff= -7.28% band= 3.0% | wall -73.08%
+str:probe.semi_anti.S2.T96                       WIN  probe A=     11.95s B=      8.63s diff=-27.76% band= 8.2% | wall  -8.66%
+str:probe.semi_anti.S2.T96.anti                  INVALID (['below-duration-floor (arm A median 58.8 ms < 200 ms)'])
+str:probe.semi_anti.S4.T96                       WIN  probe A=     19.46s B=     13.50s diff=-30.63% band= 3.0% | wall -17.58%
+str:probe.semi_anti.S4.T96.anti                  WIN  probe A=      9.91s B=      9.07s diff= -8.48% band= 3.0% | wall -23.15%
+
+GATE RESULT: win=54 tie=18 loss=7 invalid/insufficient=17
+PROBE-RED CELLS:
+  key32:probe.inner_all.S5.T96  +12.58% (band 3.0%)
+  key64:probe.asof.S2.T96  +4.13% (band 4.0%)
+  key64:probe.asof.S4.T96  +26.56% (band 3.0%)
+  key64:probe.inner_all.S5.T96  +13.30% (band 3.7%)
+  key64:probe.semi_anti.S4.T96.anti  +16.02% (band 3.0%)
+  lcstr:probe.inner_all.S3.T96  +17.74% (band 5.6%)
+  str:probe.asof.S2.T96  +4.18% (band 4.0%)

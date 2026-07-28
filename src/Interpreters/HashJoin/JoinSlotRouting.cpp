@@ -120,6 +120,28 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
         }
     }
 
+    /// The single-column live-LowCardinality fast path: fold each DICTIONARY entry once and
+    /// gather the word per row by index - value-identical to folding the row's bytes (the
+    /// accumulator starts at 0 for a single column), at dictionary cost instead of row cost,
+    /// and without streaming the dictionary through the cache once per row.
+    if (key_columns.size() == 1)
+    {
+        if (const auto * low_cardinality = typeid_cast<const ColumnLowCardinality *>(key_columns[0]))
+        {
+            const auto & dictionary = low_cardinality->getDictionary();
+            const size_t dict_size = dictionary.size();
+            PaddedPODArray<UInt32> dict_words(dict_size);
+            for (size_t e = 0; e < dict_size; ++e)
+            {
+                const std::string_view value = dictionary.getDataAt(e);
+                dict_words[e] = finalizeRoute(foldBytes(0, value.data(), value.size()));
+            }
+            for (size_t i = 0; i < rows; ++i)
+                sink(i, dict_words[low_cardinality->getIndexAt(i)]);
+            return;
+        }
+    }
+
     std::vector<RouteColumn> columns;
     columns.reserve(key_columns.size());
     for (const auto * column : key_columns)
