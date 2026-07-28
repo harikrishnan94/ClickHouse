@@ -304,3 +304,144 @@ add `RUN_TAG`, while G8's proof filters on `tag:RUN_TAG` and the prompt requires
 creation time. `volumes_phj_ph.sh` therefore issues `create-volume` directly with the
 helper's hard-coded shape (gp3 / 4000 IOPS / 1000 MBps, same snapshot) plus the tags. The
 snapshot is read-only to this run. Revisit trigger: none.
+
+**Sweep launched** (the pre-registered command, with the calibration deviation applied):
+
+```
+$ python3 tmp/chj_amac/fleet/run_sweep_stealing.py \
+    --hosts tmp/chj_amac/fleet/hosts.phj_ph.tsv --ssh-key tmp/chj_amac/fleet/ssh_phj_ph/id_ed25519 \
+    --arm-a tmp/chj_amac/bins/clickhouse-baseline-a05f3ee81ff.bin \
+    --arm-b tmp/chj_amac/bins/clickhouse-candidate-96532537d4d.bin \
+    --name-a baseline --name-b candidate \
+    --remote-bin-a /home/ubuntu/chj/clickhouse-base --remote-bin-b /home/ubuntu/chj/clickhouse-cand \
+    --calibration tmp/chj_amac/fleet/calibration_rows.json \
+    --results-dir tmp/chj_amac/fleet/results_phj_ph \
+    --cells "$(cat tmp/chj_amac/fleet/cells_94.txt)" -- --require-engagement
+stealing sweep: 94 cells planned, 0 already complete, 94 queued (costliest first) across 8 shards
+…
+real	30m39.273s
+SWEEP_EXIT=1
+```
+
+Deploy was verified first: all 8 shards report both binaries at the expected sha256
+(`0d32ef1c96e6…` base, `06d804546e0f…` cand), `aarch64`, `96` cores, 370 GiB RAM —
+8/8 matches for each hash.
+
+**G3 — sweep completed every cell. RED (honest).** Raw final lines:
+
+```
+FLEET_STEALING RESULT: cells_run=94 cells_failed=17 shard0=14 shard1=18 shard2=3 shard3=6 shard4=17 shard5=2 shard6=18 shard7=16 -> FAIL
+  FAILED lcstr:probe.inner_all.S5.T96 on shard 0 rc=1
+  FAILED str:probe.inner_all.S3.T96.h05 on shard 7 rc=1
+  FAILED str:probe.semi_anti.S2.T96.anti on shard 4 rc=1
+  FAILED key64:probe.inner_all.S3.T96.h05 on shard 1 rc=1
+  FAILED key64:probe.semi_anti.S2.T96.anti on shard 6 rc=1
+  FAILED str:build.inner_all.S3.T96.dup16 on shard 7 rc=1
+  FAILED str:build.left_all.S3.T96.dup16 on shard 1 rc=1
+  FAILED mixed:build.inner_all.S3.T96 on shard 0 rc=1
+  FAILED k256:build.inner_all.S3.T96 on shard 7 rc=1
+  FAILED str:build.inner_all.S3.T96 on shard 1 rc=1
+  FAILED key64:build.inner_all.S3.T96 on shard 4 rc=1
+  FAILED key64:build.inner_all.S3.T48 on shard 7 rc=1
+  FAILED key64:build.inner_all.S3.T96.statson on shard 6 rc=1
+  FAILED mixed:build.inner_all.S2.T96 on shard 7 rc=1
+  FAILED k256:build.inner_all.S2.T96 on shard 6 rc=1
+  FAILED str:build.inner_all.S2.T96 on shard 4 rc=1
+  FAILED key64:build.inner_all.S2.T96 on shard 1 rc=1
+```
+
+`cells_run=94`, so **every cell was attempted** — nothing was skipped by resume or lost with
+a worker. The 17 failures are two diagnosed causes, neither of which is a candidate
+regression, and neither of which I may act on:
+
+- **16 cells: the protocol's own fail-closed 200 ms duration floor.** Each of these logged
+  `CELL FAILED: <cell>: one or more runs INVALID (see invalid_reason in results)`, and every
+  one of the 320 invalid rows carries a `below-duration-floor (arm A median NN ms < 200 ms)`
+  reason — arm **A**, the baseline, i.e. the cell's timed query is too fast to measure at
+  T96, exactly what `MIN_CELL_DURATION_US` exists to refuse. Full reason histogram:
+
+```
+$ # invalid_reason histogram over all 320 invalid rows
+   20 x below-duration-floor (arm A median 87.6 ms < 200 ms)      … (16 distinct medians,
+   20 x below-duration-floor (arm A median 156.4 ms < 200 ms)         20 rows each: 10 runs
+   20 x below-duration-floor (arm A median 25.4 ms < 200 ms)          x 2 arms x 16 cells)
+```
+
+- **1 cell: `lcstr:probe.inner_all.S5.T96` cannot be built by the baseline arm here.**
+
+```
+CELL FAILED: lcstr:probe.inner_all.S5.T96: warmup 0 failed on arm baseline: Received exception from server (version 26.8.1):
+Code: 241. DB::Exception: … (total) memory limit exceeded: would use 186.12 GiB (attempt to allocate chunk of 128.00 MiB), current RSS: 193.70 GiB, maximum: 193.71 GiB. … While executing FillingRightJoinSide. (MEMORY_LIMIT_EXCEEDED)
+```
+340M `LowCardinality(String)` build keys, on a 370 GiB host running **two** resident
+servers. The U5 precedent hit the same cell, same arm, same exception (`would use
+191.45 GiB`) and dispositioned it `EXCLUDED-INVALID`. It produced **no rows at all** (the
+failure is in warmup 0), which is why the report sees 93 cells and not 94.
+
+**No iteration is possible on this red, and that is the finding.** Turning G3 green would
+require one of: rerunning a red cell hoping it flips; raising the server memory limit
+(changing the venue mid-campaign); or dropping cells from the frozen 94-cell plan. All three
+are banned moves. I did none of them and I am not spending the unit's 3 iteration cycles
+re-running a deterministic OOM and a deterministic arithmetic floor. **G3 stays RED with
+`cells_failed=17`.**
+
+**G4 — coverage and validity. RED (honest).**
+
+```
+$ python3 tmp/chj_amac/fleet_ab.py report --results "$(ls -1 tmp/chj_amac/fleet/results_phj_ph/results.shard*.jsonl | paste -sd,)"
+FLEET_AB REPORT RESULT: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0 uncalibrated=0
+G4_EXIT=1
+```
+
+Two pre-registered predictions are **refuted** and I record both as such: `invalid=0` (it is
+16) and `cells=94` (it is 93). Two hold: `insufficient=0` and `uncalibrated=0` — the latter
+confirming the calibration deviation worked as argued. The gate exits 1 because `invalid`
+is non-zero, which is the gate behaving correctly, not a tooling problem.
+
+**Unit 2 measured result (the deliverable, red included).**
+93 cells with data out of 94 planned: **27 WIN / 28 TIE / 22 LOSS / 16 INVALID /
+0 INSUFFICIENT**, 0 uncalibrated. Arm→binary mapping recomputed from the rows themselves,
+930 rows per arm, exactly two distinct binaries:
+
+```
+arm -> binary sha256 prefix: {('A', '0d32ef1c96e6'): 930, ('B', '06d804546e0f'): 930}
+planned=94 with_rows=93 no_rows=1: ['lcstr:probe.inner_all.S5.T96']
+```
+
+**Probe-event gate metric.** Two distinct things share that name in this harness, so I
+report both rather than guess which was meant:
+
+1. *Engagement* (what `--require-engagement` actually gates on):
+   `ConcurrentHashJoinAmacProbeRows > 0` on the candidate arm in **82 of 93** cells; zero in
+   11; the counter was **never absent** on the candidate (`counter absent in 0`). The 11
+   zero-engagement cells are the compile-time-excluded families and shapes (`mixed`, `lcstr`,
+   `asof`), which is the documented expectation, not a miss.
+2. *Phase attribution*, `ConcurrentHashJoinProbeLookupMicroseconds` — the event a probe-side
+   win is supposed to be carried by. The candidate's probe-lookup median is lower on
+   **61 of 70** probe-side cells, by up to −64% (`k256:probe.inner_all.S3.T96` −64.10%,
+   `k256:probe.inner_all.S2.T96` −58.68%) — **while several of those same cells lose on
+   wall**. `fixstr:probe.inner_all.S5.T96` is the sharpest example: probe lookup −7.91%,
+   wall verdict **LOSS** +10.43%. The routed/AMAC probe is doing its job on the phase it
+   claims; the wall regression is elsewhere. Recorded as a measured tension, not resolved.
+
+   The 9 probe-side cells where lookup is *higher* on the candidate, named rather than
+   summarised: `lcstr:probe.inner_all.S2.T96` +22.03%, `lcstr:probe.inner_all.S3.T96`
+   +18.31%, `key64:probe.semi_anti.S4.T96.anti` +15.08%, `key64:probe.asof.S4.T96` +9.92%,
+   `key64:probe.inner_all.S1.T96` +5.83%, `key64:probe.asof.S2.T96` +3.85%,
+   `mixed:probe.inner_all.S5.T96` +2.04%, `mixed:probe.inner_all.S2.T96` +1.46%,
+   `mixed:probe.inner_all.S3.T96` +0.80%. The three `mixed` cells are the compile-time
+   AMAC-excluded family (engagement 0 by design), so their ~1–2% is noise; the `lcstr` and
+   `asof` cells are the shapes the branch deliberately routes off the ring, and they carry
+   the largest lookup regressions. That is a **LEAD**, not a settled claim: I have not
+   isolated a mechanism.
+
+   **Correction, amending forward:** an earlier draft of this entry claimed lookup was lower
+   on "every probe-side cell measured (68/68)". That was wrong — it is 61/70, and the nine
+   exceptions are named above. The error was caught by re-running the analysis output rather
+   than trusting the sentence; the corrected figure is what the report carries.
+
+**Judgement call — I did not rerun anything.** Two shards (2 and 5) ran only 3 and 2 cells
+respectively while shards 1 and 6 ran 18 each. That is the work-stealing driver behaving as
+designed (costliest-first, so a shard that draws an S5 cell is busy for minutes), not an
+imbalance to correct. No cell was rerun; there are no rerun files in
+`fleet/results_phj_ph/`, and every row of the sweep is preserved.

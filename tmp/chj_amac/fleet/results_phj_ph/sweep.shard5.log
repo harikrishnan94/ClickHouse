@@ -1,0 +1,16 @@
+
+=== shard 5 pulls key32:probe.inner_all.S5.T96 ===
+NOTE: remote mode is UNTESTED (no fleet yet); see SELFTEST.md
+sweep: 1 cells planned, 0 already complete (resume via tmp/chj_amac/fleet/results_phj_ph/results.shard5.jsonl), 1 to run
+=== cell 1/1: key32:probe.inner_all.S5.T96 rows_build=384000000 rows_probe=1536000000 expected_rows=1536000000 threads=96 rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  cell OK (158.4s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=tmp/chj_amac/fleet/results_phj_ph/results.shard5.jsonl -> PASS
+
+=== shard 5 pulls k256:probe.inner_all.S4.T1 ===
+NOTE: remote mode is UNTESTED (no fleet yet); see SELFTEST.md
+sweep: 1 cells planned, 0 already complete (resume via tmp/chj_amac/fleet/results_phj_ph/results.shard5.jsonl), 1 to run
+=== cell 1/1: k256:probe.inner_all.S4.T1 rows_build=48000000 rows_probe=192000000 expected_rows=192000000 threads=1 rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  cell OK (1642.8s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=tmp/chj_amac/fleet/results_phj_ph/results.shard5.jsonl -> PASS

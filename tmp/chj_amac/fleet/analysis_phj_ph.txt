@@ -1,0 +1,134 @@
+=== THIS CAMPAIGN (8 files, 1860 rows) ===
+cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0
+arm -> binary sha256 prefix: {('A', '0d32ef1c96e6'): 930, ('B', '06d804546e0f'): 930}
+planned=94 with_rows=93 no_rows=1: ['lcstr:probe.inner_all.S5.T96']
+
+--- probe-event gate metric (candidate arm B) ---
+ConcurrentHashJoinAmacProbeRows: engaged(>0) in 82 cells; zero in 11; counter absent in 0 (of 93)
+
+--- ConcurrentHashJoinProbeLookupMicroseconds median per arm, probe-side cells ---
+cell                                            verdict           A(us)         B(us)   delta%
+fixstr:probe.inner_all.S2.T96                   TIE             7110526       6003640   -15.57
+fixstr:probe.inner_all.S3.T96                   TIE            13342362       9928867   -25.58
+fixstr:probe.inner_all.S5.T96                   LOSS           49200688      45309381    -7.91
+k128:probe.inner_all.S2.T96                     TIE             8647315       6902632   -20.18
+k128:probe.inner_all.S3.T96                     TIE            13687135      10137478   -25.93
+k128:probe.inner_all.S5.T96                     LOSS           58178462      51521680   -11.44
+k256:probe.inner_all.S1.T96                     WIN             8242828       4122337   -49.99
+k256:probe.inner_all.S2.T1                      TIE               74264         38620   -48.00
+k256:probe.inner_all.S2.T48                     WIN             3912324       2005982   -48.73
+k256:probe.inner_all.S2.T96                     WIN            15113503       6244504   -58.68
+k256:probe.inner_all.S3.T96                     WIN            23799923       8543199   -64.10
+k256:probe.inner_all.S4.T1                      WIN            20808650      12294848   -40.91
+k256:probe.inner_all.S4.T48                     WIN            15321662       8584088   -43.97
+k256:probe.inner_all.S4.T96                     WIN            23280259      11084920   -52.38
+k256:probe.inner_all.S5.T96                     WIN           116224204      71476163   -38.50
+key32:probe.inner_all.S2.T96                    TIE             4356248       3004190   -31.04
+key32:probe.inner_all.S3.T96                    TIE             8447722       5326308   -36.95
+key32:probe.inner_all.S5.T96                    LOSS           67481851      53496457   -20.72
+key64:probe.any.S2.T96                          TIE             7207602       5025711   -30.27
+key64:probe.any.S4.T96                          TIE            25710300      14696306   -42.84
+key64:probe.asof.S2.T96                         TIE            16927643      17578676    +3.85
+key64:probe.asof.S4.T96                         TIE            47497531      52208062    +9.92
+key64:probe.inner_all.S1.T96                    LOSS            2370811       2508980    +5.83
+key64:probe.inner_all.S2.T1                     LOSS              22357         15760   -29.51
+key64:probe.inner_all.S2.T48                    TIE             1443444        997218   -30.91
+key64:probe.inner_all.S2.T96                    TIE             5189356       3181975   -38.68
+key64:probe.inner_all.S3.T96                    TIE             8944302       5471738   -38.82
+key64:probe.inner_all.S3.T96.h50                LOSS            6965934       4981748   -28.48
+key64:probe.inner_all.S3.T96.statson            TIE             8870603       5492186   -38.09
+key64:probe.inner_all.S4.T1                     TIE            10027762       6391144   -36.27
+key64:probe.inner_all.S4.T48                    LOSS           11130344       7768594   -30.20
+key64:probe.inner_all.S4.T96                    LOSS           18901622      12557764   -33.56
+key64:probe.inner_all.S5.T96                    LOSS           73960445      55201888   -25.36
+key64:probe.left_all.S2.T96                     TIE             4883945       3211132   -34.25
+key64:probe.left_all.S3.T96.jun                 LOSS            9155938       6197187   -32.32
+key64:probe.left_all.S4.T96                     LOSS           18565380      12655664   -31.83
+key64:probe.rf_all.S2.T96                       TIE             6567952       5433412   -17.27
+key64:probe.rf_all.S4.T96                       WIN            37367076      34430954    -7.86
+key64:probe.semi_anti.S2.T96                    TIE             4957688       3231126   -34.83
+key64:probe.semi_anti.S4.T96                    LOSS           17991768      12515405   -30.44
+key64:probe.semi_anti.S4.T96.anti               LOSS            8772228      10095462   +15.08
+lcstr:probe.inner_all.S2.T96                    TIE            13172021      16073414   +22.03
+lcstr:probe.inner_all.S3.T96                    WIN            21453387      25382318   +18.31
+mixed:probe.inner_all.S2.T96                    LOSS           19008609      19286875    +1.46
+mixed:probe.inner_all.S3.T96                    TIE            39300422      39615553    +0.80
+mixed:probe.inner_all.S5.T96                    TIE           185426351     189205483    +2.04
+null64:probe.inner_all.S2.T96                   TIE             5920134       3744488   -36.75
+null64:probe.inner_all.S3.T96                   LOSS            9829265       6084052   -38.10
+null64:probe.inner_all.S5.T96                   LOSS           85786050      64619899   -24.67
+str:probe.any.S2.T96                            WIN            13817362       6192942   -55.18
+str:probe.any.S4.T96                            WIN            26238510      11439932   -56.40
+str:probe.asof.S2.T96                           TIE            18703251      18545278    -0.84
+str:probe.asof.S4.T96                           LOSS           32318894      30417780    -5.88
+str:probe.inner_all.S1.T96                      LOSS            4174489       2778500   -33.44
+str:probe.inner_all.S2.T1                       WIN               68836         25020   -63.65
+str:probe.inner_all.S2.T48                      WIN             3183760       1437676   -54.84
+str:probe.inner_all.S2.T96                      WIN             9951688       5092452   -48.83
+str:probe.inner_all.S3.T96                      WIN            17596703       9266955   -47.34
+str:probe.inner_all.S3.T96.h50                  WIN            13161588       7578038   -42.42
+str:probe.inner_all.S4.T1                       WIN            11576360       5553431   -52.03
+str:probe.inner_all.S4.T48                      WIN            12908786       5723482   -55.66
+str:probe.inner_all.S4.T96                      WIN            18200278       9940936   -45.38
+str:probe.inner_all.S5.T96                      WIN            83625644      47520998   -43.17
+str:probe.left_all.S2.T96                       WIN            11118706       5584398   -49.77
+str:probe.left_all.S4.T96                       WIN            19529882      10554268   -45.96
+str:probe.rf_all.S2.T96                         WIN            15596024       8084480   -48.16
+str:probe.rf_all.S4.T96                         WIN            27307014      21414870   -21.58
+str:probe.semi_anti.S2.T96                      WIN             9859040       4854704   -50.76
+str:probe.semi_anti.S4.T96                      WIN            17746670       9986434   -43.73
+str:probe.semi_anti.S4.T96.anti                 TIE             9833503       8061970   -18.02
+probe-side cells with ConcurrentHashJoinProbeLookupMicroseconds lower on the candidate: 61/70
+
+=== U5 PRECEDENT (8 files, 1920 rows), rescored with fleet_ab.cell_verdicts ===
+cells=96 win=42 tie=28 loss=9 invalid=17 insufficient=0
+arm -> binary sha256 prefix: {('A', '0d32ef1c96e6'): 960, ('B', '6495b05ab061'): 960}
+
+--- cell-set overlap: both=93 only-now=0 only-U5=3 ---
+  only in U5: ['key64:probe.inner_all.S1p5.T96', 'key64:probe.mixed_on.S3.T96', 'str:probe.inner_all.S1p5.T96']
+
+--- CHANGED VERDICTS: 31 of 93 shared cells ---
+cell                                            U5            now             U5 diff%  now diff%
+fixstr:probe.inner_all.S3.T96                   WIN           TIE                -5.98       2.67
+fixstr:probe.inner_all.S5.T96                   WIN           LOSS               -6.18      10.43
+k128:probe.inner_all.S3.T96                     WIN           TIE                -6.21       0.52
+k128:probe.inner_all.S5.T96                     WIN           LOSS               -5.18       8.33
+k256:build.inner_all.S5.T96                     WIN           TIE               -17.71       0.83
+k256:probe.inner_all.S2.T1                      WIN           TIE                -7.86       0.96
+k256:probe.inner_all.S4.T48                     TIE           WIN                 2.28      -7.30
+key32:probe.inner_all.S2.T96                    WIN           TIE                -3.48      -2.24
+key64:build.inner_all.S3.T1                     TIE           LOSS               -4.57      63.87
+key64:build.inner_all.S3.T96.dup16              TIE           LOSS               -1.35       7.92
+key64:build.inner_all.S5.T96                    TIE           LOSS                0.27      23.66
+key64:build.left_all.S3.T96.dup16               TIE           LOSS               -0.83       9.23
+key64:probe.any.S2.T96                          WIN           TIE                -3.22      -1.40
+key64:probe.any.S4.T96                          LOSS          TIE                 7.71       0.85
+key64:probe.asof.S4.T96                         LOSS          TIE                15.33      -2.51
+key64:probe.inner_all.S1.T96                    TIE           LOSS                0.38       3.90
+key64:probe.inner_all.S2.T1                     TIE           LOSS               -2.77       7.43
+key64:probe.inner_all.S3.T96                    WIN           TIE                -4.02       1.83
+key64:probe.inner_all.S3.T96.h50                TIE           LOSS               -1.99       4.92
+key64:probe.inner_all.S3.T96.statson            WIN           TIE                -4.66       2.81
+key64:probe.inner_all.S4.T1                     WIN           TIE                -7.71      -2.94
+key64:probe.inner_all.S4.T48                    WIN           LOSS               -6.01       7.68
+key64:probe.left_all.S3.T96.jun                 TIE           LOSS               -1.43       6.40
+key64:probe.semi_anti.S2.T96                    WIN           TIE                -3.50      -1.30
+mixed:probe.inner_all.S2.T96                    TIE           LOSS               -0.08       3.29
+null64:probe.inner_all.S3.T96                   TIE           LOSS               -0.28       3.71
+str:build.inner_all.S5.T96                      WIN           TIE               -29.93       3.04
+str:probe.asof.S4.T96                           WIN           LOSS               -6.18       4.42
+str:probe.inner_all.S1.T96                      TIE           LOSS                1.46       3.40
+str:probe.inner_all.S2.T1                       INVALID       WIN                  nan      -4.33
+str:probe.semi_anti.S4.T96.anti                 WIN           TIE               -23.15       5.06
+
+--- transition matrix (U5 -> now) ---
+  INVALID       -> INVALID       16
+  INVALID       -> WIN           1
+  LOSS          -> LOSS          7
+  LOSS          -> TIE           2
+  TIE           -> LOSS          11
+  TIE           -> TIE           14
+  TIE           -> WIN           1
+  WIN           -> LOSS          4
+  WIN           -> TIE           12
+  WIN           -> WIN           25
