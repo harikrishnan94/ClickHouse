@@ -125,6 +125,19 @@ documented `{family: {size: build_rows}}` contract, is the exact flat projection
 nested file (zero value mismatches), and leaves 0 of the 94 cells uncalibrated. Neither
 file is edited. The prediction `uncalibrated=0` is unchanged and now rests on this file.
 
+**Addendum — a measured red I am recording as a prediction failure before the sweep ends.**
+At cell 20 of 94, `lcstr:probe.inner_all.S5.T96` failed on the **baseline** arm with
+`Code: 241 … (total) memory limit exceeded: would use 186.12 GiB … maximum: 193.71 GiB …
+While executing FillingRightJoinSide`. My pre-registered prediction of `cells_failed=0` is
+therefore **refuted**, and G3 will be red with `cells_failed=1`. This is the same cell,
+same arm, and same failure mode the U5 precedent recorded (`would use 191.45 GiB`), where
+it was dispositioned `EXCLUDED-INVALID`. I am **not** rerunning it, **not** raising the
+server memory limit, and **not** removing it from the 94-cell list — all three would be
+banned moves. Consequence to state plainly: **G3 and G4 as written cannot go green on this
+venue**, because one cell of the frozen measured plan cannot be built by the baseline arm
+within one of two co-resident servers' memory. That conflict between the gate's expectation
+and the frozen plan is itself a finding for the report, not something to engineer away.
+
 **Addendum — the smoke run that preceded the sweep (orientation, never acceptance).**
 One cell (`key64:probe.inner_all.S2.T1`) was run against shard 0 with `--runs 2
 --warmups 1` into a **separate** file, `fleet/smoke_phj_ph/smoke.jsonl`, purely to prove the
@@ -135,3 +148,147 @@ no verdict count. It did establish two things the sweep depends on: `--require-e
 does **not** trip on the candidate arm (only the expected
 `SKIPPED: AMAC engagement counters absent … (arm=baseline)` line appears), and
 `rows_source=calibration-file`.
+
+---
+
+## Unit 3 — jbmt legacy synthetic, 347 cells (profile OPTIMIZATION, risk low)
+
+**Cell selection.** The plan's `LEGACY` group is *exactly* the 347 `cell_id`s in
+`join_bench_mt_legacy_cells.json` — verified, not assumed:
+
+```
+$ python3 join_bench_mt.py plan --suite synthetic 2>&1 >/dev/null | tail -1
+-- 432 units (432 cells, 0 queries), 1 shards
+$ # plan LEGACY set == legacy json set?  True ; overlap of the other 85 with it: 0
+```
+I select them with `--only "^(id1|id2|…)$"` built from that JSON (13,752 chars, matching
+347/347 LEGACY and 0/85 non-LEGACY) rather than sweeping the 432 superset, so the fleet
+spends no time on 85 cells this campaign does not report. Original cell ids are preserved
+verbatim — they are the join key against the other harnesses — and nothing is renamed.
+
+**Declared prerequisite and its cost.** The synthetic suite reads `keys_store.k0…k9`, which
+the sweep does **not** create; `prepare-keys` does, and the snapshot does not contain them
+(the prior campaign never ran this suite). The 347 legacy cells use all of K0–K9, whose
+`keys_store` tables are 256M–1.024B rows each (K0 alone is
+`INSERT … FROM numbers(1024000000)`). This is a multi-hour, previously-unmeasured
+prerequisite with no prior timing to plan against, and it is the main risk to this unit
+completing. It is run **once per host on the pre-clone data root**, then the root is cloned,
+so both arms share the same keys at zero extra bytes — preparing them per arm would double
+both the time and the disk.
+
+**Predicted outcome.** All 347 cells `OK` on both arms; no `FALLBACK` (which would be a hard
+failure, not a datapoint); the cross-arm `(row_count, checksum)` reference agrees, so no
+`INVALID`. Wall verdicts honestly unknown. I explicitly do **not** predict a net win.
+
+**Gate invocation (G5), run from the directory holding `join_bench_mt_legacy_cells.json`:**
+
+```
+python3 -c "import json,glob,sys; leg={c['cell_id'] for c in json.load(open('join_bench_mt_legacy_cells.json'))}; rows=[json.loads(l) for f in glob.glob(sys.argv[1]) for l in open(f) if l.strip()]; st={}; [st.setdefault(r['unit_id'],set()).add(r['status']) for r in rows]; missing=sorted(leg-set(st)); bad=sorted(u for u in leg if st.get(u)!={'OK'}); print('legacy',len(leg),'missing',len(missing),'not-OK',len(bad)); print(missing[:10], bad[:10]); sys.exit(1 if missing or bad else 0)" 'RESULTS_GLOB'
+```
+Expected: `legacy 347 missing 0 not-OK 0`, exit 0.
+
+**What would refute it.** Any missing id (incomplete sweep), any `FALLBACK` (the
+`parallel_hash` path event stayed zero — a hard failure), any `INVALID` (cross-arm
+row_count/checksum disagreement, or a run over the 600 s budget), any `ERROR`.
+
+---
+
+## Unit 4 — jbmt real suite, 376 units per tier, tiers a and b (profile OPTIMIZATION, risk high)
+
+**Predicted outcome.** `Planned 376 units; results for 376; missing 0; extraneous 0.` at each
+tier, with the only non-`OK` statuses being `TIMEOUT_EXCEEDED`-caused `INVALID` rows on the
+pre-registered units below. Wall verdicts honestly unknown.
+
+**Expected INVALID units, named — 4 in total on this ARM-only fleet.** These are the
+prompt's accepted tradeoff, and the names are taken from the prior ARM fleet's raw JSONL
+(`results.arm.{a,b}.shard*.jsonl`), not from its prose:
+
+Tier a (1):
+- `tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera`
+
+Tier b (3):
+- `tpch__customer_c_nationkey__supplier_s_nationkey__T16__tierb`
+- `tpch__customer_c_nationkey__supplier_s_nationkey__T96__tierb`
+- `tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk__T16__tierb`
+
+Cause in both families: a join on a ~25-distinct-value key (`nationkey`) produces an
+enormous output, and the tier-b `catalog_sales × store_returns` customer join is inherently
+over budget. The 600 s budget is **not** raised and these are **not** retried to green.
+
+**Declared borderline case, so it cannot be passed off as a surprise later.**
+`tpch__customer_c_nationkey__supplier_s_nationkey__T96__tiera` was `OK` on the prior ARM
+fleet but at the edge (that campaign recorded a run at `600000.86 ms`, 0.86 ms *over* on the
+T16 variant). This campaign runs **two** resident servers instead of one, so if a fifth
+INVALID appears I predict it is that unit. That would be a documented near-miss of the same
+cause, not a new finding. Anything INVALID **outside** the `tpch customer × supplier` and
+`tpcds catalog_sales × store_returns` families **is** a finding and will be reported as one.
+
+**Gate invocation (G6), per tier:**
+
+```
+python3 join_bench_mt.py report --results RESULTS_FILES --suite real --tier TIER --arm ARMNAME
+```
+Expected: `Planned 376 units; results for 376; missing 0; extraneous 0.` then a `Statuses:`
+line whose only non-`OK` entries are the units named above.
+
+**What would refute it.** `missing > 0` or `extraneous > 0`; an INVALID outside the two named
+families; any `FALLBACK`.
+
+---
+
+## Unit 5 — reporting and U5 comparison (profile AUTHORING, risk low)
+
+**Predicted outcome.** Per-suite verdict counts recomputable from the raw JSONL alone; the
+`fleet_ab` probe-event gate metric reported alongside the wall verdicts; every changed
+verdict versus the U5 precedent named with both old and new values; an honest-red list.
+
+**Gate invocation (G7), per jbmt configuration:**
+
+```
+python3 join_bench_mt.py report-ab --results RESULTS_FILES --arm-a baseline --arm-b candidate --out AB_REPORT.md
+```
+`report-ab` always exits 0, so the gate is on **content**, asserted explicitly: the
+`binaries:` line names exactly two distinct sha256 prefixes (`0d32ef1c96e6` and the
+candidate's `06d804546e0f`); the `lead arm distribution (ABAB leader):` line shows both arms
+leading a non-trivial share of units; the statuses list contains no `FALLBACK`.
+
+**Constraint I bind myself to now.** The U5 precedent is the *same measurement lineage* as
+this campaign (same baseline binary, same harness family, same fleet shape). It is used only
+to name **changed verdicts**, never as independent corroboration of any verdict here. Every
+comparison point is re-established fresh: both arms resident on the same host, same volume,
+same settings, ABAB-interleaved. No inherited baseline number is compared against a fresh
+candidate number.
+
+**What would refute it.** A `binaries:` line with one sha (two ports of the same build); a
+lead distribution concentrated on one arm (the ABAB interleave did not alternate); any
+`FALLBACK`; a verdict count that a recount from raw JSONL does not reproduce.
+
+---
+
+## Unit 6 — teardown (risk high)
+
+**Predicted outcome.** Every instance, volume and security group this run created is gone,
+and the shared snapshot is untouched. This unit runs even if earlier units failed.
+
+**Gate invocation (G8):**
+
+```
+aws ec2 describe-instances --profile Dev_AWS_Admin --region ap-south-2 --filters "Name=tag:RUN_TAG,Values=phj-ph-ab-20260728" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query 'Reservations[].Instances[].InstanceId' --output text
+aws ec2 describe-volumes --profile Dev_AWS_Admin --region ap-south-2 --filters "Name=tag:RUN_TAG,Values=phj-ph-ab-20260728" "Name=status,Values=creating,available,in-use" --query 'Volumes[].VolumeId' --output text
+aws ec2 describe-security-groups --profile Dev_AWS_Admin --region ap-south-2 --filters "Name=tag:RUN_TAG,Values=phj-ph-ab-20260728" --query 'SecurityGroups[].GroupId' --output text
+aws ec2 describe-snapshots --snapshot-ids snap-021cbdc2484f86607 --region ap-south-2 --profile Dev_AWS_Admin --query 'Snapshots[0].State'
+```
+Expected: first three empty, fourth `"completed"`.
+
+**Known obstacle, pre-declared.** The prior campaign recorded `DeleteVolume` being denied by
+an identity policy (`DenyDeleteVolumeExceptNdcDbgTagged`) unless the volume carries
+`ndc-dbg-target=true`. Teardown tags the 8 campaign volumes with that marker before
+deleting. If deletion is still denied, I do **not** escalate: I leave the volumes, list
+exactly what would be deleted, and flag it at the top of the report as requiring
+authorization.
+
+**Power-to-fail note.** These filters are only meaningful because every instance, volume and
+SG was tagged `RUN_TAG` **at creation time** (`launch_phj_ph.sh`, `volumes_phj_ph.sh`); a
+tag-filtered proof over an untagged fleet would be vacuously green. Before teardown I record
+the same queries returning the **non-empty** live inventory, so the gate is shown to have
+the power to fail.

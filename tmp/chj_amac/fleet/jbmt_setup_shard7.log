@@ -1,0 +1,21 @@
+device: /dev/nvme1n1
+ext4    1.5T 441.3G
+jbmt_server
+jbmt_smoke
+jbmt_work
+lost+found
+config.xml
+data
+load_A.log
+load_B.log
+loads.a.json
+loads.b.json
+server.log
+stdout.log
+users.xml
+verify_a.log
+verify_b.log
+TOOL_VERSION = "jbmt-v2"
+033169aff05d4fa2 ac014f7f2b47f071 
+
+
