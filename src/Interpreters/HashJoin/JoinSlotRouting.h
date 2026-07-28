@@ -15,12 +15,12 @@ namespace DB::JoinSlotRouting
 
 /** Slot routing of `ConcurrentHashJoin`: one 32-bit route word per row over the prepared join
   * key columns, deliberately independent of the CRC32C-family hashes the slot maps bucket by,
-  * so slot selection stays decorrelated from in-table cell placement. A plan of `bits` slots
-  * routes a row to slot `word >> (32 - bits)` (MSB-first).
+  * so slot selection stays decorrelated from in-table cell placement. For `bits` route bits,
+  * a row goes to slot `word >> (32 - bits)` (MSB-first).
   *
-  * The build scatter and the probe dispatch consume ONE shared fold implementation, and the
-  * word is a build/probe contract: the fold chain must not change without changing both sides
-  * in lockstep, or probe rows visit slots their keys were never inserted into.
+  * The build scatter and the probe dispatch share one fold implementation, and the word is a
+  * build/probe contract: the fold chain must not change without changing both sides in
+  * lockstep, or probe rows visit slots their keys were never inserted into.
   *
   * `key_columns` are the prepared key columns after null-map extraction (nested,
   * non-nullable); a live `ColumnLowCardinality` (kept for the dictionary-aware map types) is
@@ -82,11 +82,11 @@ ALWAYS_INLINE inline UInt64 foldBytes(UInt64 h, const char * p, size_t w)
 }
 
 /// One route word per row into `words`. The contract-pinning entry point: the slot sink below
-/// instantiates the same fold, and tests compare its output against these words.
+/// instantiates the same fold.
 void computeJoinRouteWords(const ColumnRawPtrs & key_columns, size_t rows, UInt32 * words);
 
 /// The slot sink shared by build scatter and probe dispatch: slot id `word >> (32 - bits)`
-/// stored per row directly, no 32-bit word transient. `bits` in [1, 8] -
+/// stored per row directly, without materializing the 32-bit words. `bits` in [1, 8] -
 /// `ConcurrentHashJoin` slot counts are powers of two <= 256.
 void computeJoinSlotIds(const ColumnRawPtrs & key_columns, size_t rows, size_t bits, UInt8 * slot_ids);
 

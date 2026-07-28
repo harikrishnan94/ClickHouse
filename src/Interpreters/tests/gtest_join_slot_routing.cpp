@@ -10,7 +10,6 @@
 #include <Columns/ColumnsNumber.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeString.h>
-#include <DataTypes/DataTypesNumber.h>
 #include <Interpreters/HashJoin/JoinSlotRouting.h>
 
 using namespace DB;
@@ -160,7 +159,7 @@ TEST(JoinSlotRouting, MixedFixedAndStringMatchesReference)
     }
 }
 
-TEST(JoinSlotRouting, SlotIdsAgreeWithWordsForEveryPlan)
+TEST(JoinSlotRouting, SlotIdsAgreeWithWordsForEveryBitCount)
 {
     constexpr size_t rows = 10007;
     std::vector<UInt64> values;
@@ -180,9 +179,9 @@ TEST(JoinSlotRouting, SlotIdsAgreeWithWordsForEveryPlan)
 
 TEST(JoinSlotRouting, SlotDistributionIsBalanced)
 {
-    /// PREREG 001 check 4: max/mean slot fill < 1.5 at 1M rows over 256 slots, for both
-    /// sequential and random keys. Sequential keys are the adversarial case for a weak route
-    /// (the old low-bit selector clustered them perfectly).
+    /// Require max/mean slot fill < 1.5 at 1M rows over 256 slots, for both sequential and
+    /// random keys. Sequential keys are the adversarial case for a weak route (a low-bit
+    /// selector such as the `hashToSelector` fallback maps them to consecutive slots).
     constexpr size_t rows = 1 << 20;
     constexpr size_t bits = 8;
     constexpr size_t slots = 1 << bits;

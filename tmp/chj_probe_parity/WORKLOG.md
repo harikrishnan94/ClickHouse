@@ -43,3 +43,15 @@ probe cell + build guard + parity/order/tests/disasm + honest-red rule.
   slot ids == `word >> (32 - bits)` for bits 1..8; distribution
   max/mean < 1.5 at 1M rows x 256 slots (sequential AND random).
 - Containment: nothing calls the new code yet; `hash` untouched.
+
+## U1a hygiene pass
+
+- Reports: `hygiene/7dfe941a6d0.reduce.md` (clean; 1 unused include)
+  and `hygiene/7dfe941a6d0.humanize.md` (10 findings). Fixer applied
+  findings 1-9 + include removal + the same-class `default:` brace;
+  finding 10 (evidence file in commit) is the mission's deliberate
+  evidence convention - won't fix.
+- Re-gates: build rc=0 / 0 errors (`build_u1a_hyg{,2}.log`); gtests
+  9/9 (`test_u1a_hyg2_gtest.log`). G-parity re-run deliberately
+  deferred to the U1b gate: the commit is comment/name/brace-only on
+  code nothing calls yet (documented deviation, not silent).

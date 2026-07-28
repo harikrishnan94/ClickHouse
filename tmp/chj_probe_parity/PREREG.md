@@ -52,3 +52,38 @@ orientation and labeled as such.
   random UInt64 keys (chi-square sanity bound, prereg: max/mean slot
   fill < 1.5 at 1M rows, 256 slots); (5) build sink and probe sink
   agree on the shared top bits for every bits in [1, 8].
+
+## 002 — U1b: dispatch flip to the fold + single key preparation
+
+- Change (one commit, build+probe together — any consistent route is
+  parity-neutral only if both sides flip at once):
+  (a) probe: `ConcurrentHashJoin::joinBlock` builds the block's
+  `JoinOnKeyColumns` once (materialize + nested unwrap + mask, LC kept
+  for LC map types), routes over its prepared `key_columns` (ASOF
+  equality prefix) via `JoinSlotRouting::computeJoinSlotIds` into a
+  `PaddedPODArray<UInt8>`, stores both in `RoutedJoinResult`;
+  `HashJoin::joinRoutedBlock` takes the vector + `const UInt8 *`
+  (slot_ids UInt64->UInt8 through RoutedHashJoinMethods /
+  RoutedProbeContext / AmacProbe);
+  (b) build: `dispatchBlock` routes via a shared prep+fold helper into
+  UInt8 ids; `scatterBlocksWithSelector` consumes them directly;
+  `scatterBlocksByCopying` widens once at the `IColumn::scatter`
+  boundary;
+  (c) `key8`/`key16` keep low-bit-of-key routing (`value & (slots-1)`,
+  bit-identical to today's `FixedHashTable::hash` identity selector);
+  (d) dead code deleted: `calculateHashes`, `hashToSelector`,
+  `routeByHighBits`, `selectDispatchBlock`'s per-family KeyGetter
+  switch; event descriptions updated (names frozen).
+- Expectation: G-build green; G-parity `PARITY OK` (636 cases incl.
+  force-engagement staged counters); G-order `ORDER OK`; G-tests
+  candidate failures subset of baseline; gtests all green
+  (JoinSlotRouting.* + ConcurrentHashJoinAmac.*); `hash` join
+  algorithm codegen NFC (routing lives in ConcurrentHashJoin only).
+- Local orientation A/B (labeled local, not acceptance): mixed S2/S3,
+  key64 S2, fixstr S2 probe cells — expect ProbeDispatch to collapse
+  (mixed: SipHash-128 pass -> fold); no PLook regression outside local
+  noise.
+- Refutation: any parity/order diff -> route inconsistency between
+  build and probe (fold contract broken) or prep divergence; fix
+  before proceeding, never weaken the check. Slot-balance check
+  (PREREG 001 gtest) already pins distribution.

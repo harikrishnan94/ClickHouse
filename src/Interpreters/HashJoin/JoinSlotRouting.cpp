@@ -15,15 +15,15 @@ namespace
 {
 
 /// How one key column feeds the per-row route accumulator. The classification must give the
-/// same fold for the same VALUES on both join sides; the only cross-representation pairs the
-/// planner allows without a cast are plain-vs-LowCardinality strings and nullable-vs-plain
+/// same fold for the same values on both join sides; the only cross-representation pairs the
+/// planner allows without a cast are plain-vs-`LowCardinality` strings and nullable-vs-plain
 /// (already stripped by the caller), both of which fold identical value bytes.
 enum class RouteColumnKind : UInt8
 {
     Fixed, /// fixed-and-contiguous values: fold the raw value bytes
-    String, /// ColumnString: fold the value bytes
-    LowCardinality, /// live dictionary column: fold the value bytes via getDataAt
-    Generic, /// anything else: fold a vectorized value-based hash (computeHashInto)
+    String, /// `ColumnString`: fold the value bytes
+    LowCardinality, /// live dictionary column: fold the value bytes via `getDataAt`
+    Generic, /// anything else: fold a vectorized value-based hash (`computeHashInto`)
 };
 
 struct RouteColumn
@@ -71,11 +71,13 @@ struct RouteColumn
         switch (kind)
         {
             case RouteColumnKind::Fixed: return foldBytes(h, data + row * width, width);
-            case RouteColumnKind::String: {
+            case RouteColumnKind::String:
+            {
                 const size_t begin = offsets[static_cast<ssize_t>(row) - 1];
                 return foldBytes(h, chars + begin, offsets[row] - begin);
             }
-            case RouteColumnKind::LowCardinality: {
+            case RouteColumnKind::LowCardinality:
+            {
                 const std::string_view value = column->getDataAt(row);
                 return foldBytes(h, value.data(), value.size());
             }
@@ -92,9 +94,8 @@ void routeSingleNumericColumn(const char * data, size_t rows, Sink & sink)
         sink(i, routeWord(static_cast<UInt64>(values[i])));
 }
 
-/// `sink(row, word)` is a compile-time-known callable inlined into the loops. The words are a
-/// build/probe contract: both public entry points instantiate this one implementation, and the
-/// fold/finalize chain must not change without changing both sides in lockstep.
+/// `sink(row, word)` is a compile-time-known callable inlined into the loops. Both public
+/// entry points instantiate this one implementation.
 template <typename Sink>
 void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, Sink && sink)
 {
@@ -104,7 +105,7 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
 
     /// The hot single-numeric-key path: `routeWord` on the value. Restricted to numeric
     /// columns so that a column that can pair with a different physical representation on the
-    /// other side (FixedString vs LowCardinality) takes the byte fold.
+    /// other side (`FixedString` vs `LowCardinality`) takes the byte fold.
     if (key_columns.size() == 1 && key_columns[0]->isNumeric() && key_columns[0]->isFixedAndContiguous())
     {
         const IColumn & column = *key_columns[0];
@@ -127,8 +128,7 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
     /// All-fixed fast path (multi-column numeric keys, e.g. `keys128`/`keys256`): fold each
     /// row with the accumulator in a register, in one pass over the rows. The column-outer
     /// loop below would instead stream the accumulator array through memory once per column.
-    /// The per-row fold chain (all columns in clause order) is bit-identical to the
-    /// column-outer accumulation, preserving the build/probe contract.
+    /// Bit-identical to the reference fold chain.
     if (std::ranges::all_of(columns, [](const RouteColumn & c) { return c.kind == RouteColumnKind::Fixed; }))
     {
         struct FixedSource
@@ -136,14 +136,14 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
             const char * data;
             size_t width;
         };
-        std::vector<FixedSource> sources; /// STYLE_CHECK_ALLOW_STD_CONTAINERS
+        std::vector<FixedSource> sources;
         sources.reserve(columns.size());
         for (const auto & column : columns)
             sources.push_back({column.data, column.width});
 
         /// The multi-column numeric keys are almost always all-8-byte columns (`keys128` =
-        /// 2xUInt64, `keys256` = 4xUInt64). With the width only known at runtime, the general
-        /// row loop below re-evaluates `foldBytes`' width loop AND its tail switch per column
+        /// 2 x `UInt64`, `keys256` = 4 x `UInt64`). With the width only known at runtime, the general
+        /// row loop below re-evaluates `foldBytes`' width loop and its tail switch per column
         /// per row, and reloads the source pointer/width pair from the vector each time. A
         /// compile-time width-8 fold (bit-identical: `foldBytes(h, p, 8)` is exactly one full
         /// `mixStep` step with no tail) with the column count unrolled for the common counts
@@ -172,7 +172,8 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
                 case 2: fold_all_w8.template operator()<2>(); return;
                 case 3: fold_all_w8.template operator()<3>(); return;
                 case 4: fold_all_w8.template operator()<4>(); return;
-                default: {
+                default:
+                {
                     for (size_t i = 0; i < rows; ++i)
                     {
                         UInt64 h = 0;
@@ -199,9 +200,8 @@ void computeJoinRouteWordsImpl(const ColumnRawPtrs & key_columns, size_t rows, S
         return;
     }
 
-    /// Column-outer accumulation keeps the per-column dispatch out of the row loop; the
-    /// per-row fold chain (all columns in clause order) is the same as a row-outer loop would
-    /// produce.
+    /// Column-outer accumulation keeps the per-column dispatch out of the row loop;
+    /// bit-identical to the reference fold chain.
     PaddedPODArray<UInt64> accumulator(rows, 0);
     for (const auto & column : columns)
         for (size_t i = 0; i < rows; ++i)
