@@ -118,6 +118,17 @@ struct AmacFindPolicy
             return selector_indexes[i];
     }
 
+    /// The per-row result: the mapped value by value where it fits a word, its address where
+    /// it does not (ASOF; the maps are immutable, so the pointer stays valid into the emit
+    /// phase). Neither is 0 for a built cell, so 0 keeps encoding a miss.
+    ALWAYS_INLINE static UInt64 recordedWordOf(const Cell * cell)
+    {
+        if constexpr (amac_mapped_fits_word<typename Map::mapped_type>)
+            return mappedWordOf(cell->getMapped());
+        else
+            return reinterpret_cast<UInt64>(&cell->getMapped());
+    }
+
     /// The synchronous zero-key path of `start`: the cell (the map's dedicated zero-value cell,
     /// or null) comes from the map object, and so does its slot-local used-flags offset.
     ALWAYS_INLINE void record(size_t i, const Cell * cell, const Map & map [[maybe_unused]])
@@ -127,7 +138,7 @@ struct AmacFindPolicy
             found_word[i] = 0;
             return;
         }
-        found_word[i] = mappedWordOf(cell->getMapped());
+        found_word[i] = recordedWordOf(cell);
         if constexpr (need_flags)
             found_offset[i] = map.offsetInternal(cell);
     }
@@ -138,7 +149,7 @@ struct AmacFindPolicy
     /// for the flagged shapes).
     ALWAYS_INLINE void recordHit(size_t i, size_t slot [[maybe_unused]], const Cell * cell)
     {
-        found_word[i] = mappedWordOf(cell->getMapped());
+        found_word[i] = recordedWordOf(cell);
         if constexpr (need_flags)
         {
             const auto pos = static_cast<size_t>(cell - static_cast<const Cell *>(slot_descs[slot].buf));

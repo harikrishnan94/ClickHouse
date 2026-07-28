@@ -265,3 +265,25 @@ Edits (all landed in working tree, building):
   helper.
 - Re-gates: build rc=0, gtests 23/23, PARITY OK 636 on the
   post-fixer snapshot (`uncommitted-u3hyg.tmp.bin`).
+
+## U4a — ASOF pointer-recording ring (PREREG 006 commit a)
+
+- The find ring now serves the ASOF maps: `recordedWordOf` stores the
+  mapped value's ADDRESS where it does not fit a word (the maps are
+  immutable during the probe, and the address is never 0), and the
+  precomputed emit loop rebuilds the `FindResult` from the pointer
+  and runs `findAsof` exactly as the plain loop. ASOF stays routed
+  across all slots; the single-slot plan is not adopted. The
+  dispatch-free `word_loop` still excludes ASOF.
+- Cost: +16 `amacFindPass` symbols (64 -> 80; the planned `MapsAsof`
+  set), binary +1.15 MB (+0.024%).
+- Gates: build rc=0; gtests 24/24 (new
+  `RingMatchesSequentialFindAcrossInequalities`: 64 keys x 3 points,
+  boundary probes, all four inequalities, ring == sequential rows,
+  engagement counters staged); PARITY OK 636; ORDER OK.
+- Local A/B asof S2 (LOCAL): 2/2 TIE on wall - str asof S2 -1.02%
+  (prior fleet LOSS +3.4%), key64 asof S2 +1.03%. HONEST note:
+  key64 asof S2 `ProbeLookup` +5.2% locally - at cache-resident
+  sizes the ASOF ring's two-phase cost is marginal; the fleet's S4
+  asof cells are the target, and an ASOF-specific engagement
+  threshold is the named contingency if they stay red.

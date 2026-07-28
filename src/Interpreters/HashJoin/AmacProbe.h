@@ -61,13 +61,21 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
     }
 }
 
+/// Mapped values the find pass records by POINTER instead: the ASOF sorted-lookup holder does
+/// not fit a word, but the probe maps are immutable, so the mapped value's address (never 0
+/// for a built cell) stays valid into the emit phase, which rebuilds the `FindResult` from it
+/// and runs `findAsof` as the plain loop would.
+template <typename Mapped>
+inline constexpr bool amac_mapped_by_pointer = std::is_same_v<Mapped, AsofRowRefs>;
+
 /// The compile-time gate of the AMAC probe find pass: the build ring's gate (cursor-capable map,
-/// no excluded getter) plus the by-value mapped-word contract above. The ASOF maps carry a
-/// `unique_ptr` mapped value and keep the plain routed loop.
+/// no excluded getter) plus a recordable mapped value - by value for the word-sized mapped
+/// types, by pointer for ASOF.
 template <typename KeyGetter, typename Map>
 constexpr bool amac_probe_supported = amac_join_supported<KeyGetter, std::remove_const_t<Map>>
     /// This `typename` is required (a template argument is not a typename-optional context; the check misfires).
-    && amac_mapped_fits_word<typename std::remove_const_t<Map>::mapped_type>; /// NOLINT(readability-redundant-typename)
+    && (amac_mapped_fits_word<typename std::remove_const_t<Map>::mapped_type> /// NOLINT(readability-redundant-typename)
+        || amac_mapped_by_pointer<typename std::remove_const_t<Map>::mapped_type>); /// NOLINT(readability-redundant-typename)
 
 /// The grower contract of the descriptor-based find ring: linear probing with a power-of-two
 /// home mask and the tail-padded buffer of `TailPaddedHashTableGrower` (the walk runs into the
@@ -144,7 +152,9 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
     AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, true) \
     AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, false) \
     AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, true) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false)
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, true) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, false)
 
 #define M(TYPE) AMAC_FIND_PASS_INSTANTIATIONS(extern, TYPE)
 APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)

@@ -781,3 +781,100 @@ TEST(ConcurrentHashJoinProbeScratch, ProbeReleasesScratchOnResultDestruction)
     const bool found_probe_scratch = (a && a->slot_ids.size() == probe_rows) || (b && b->slot_ids.size() == probe_rows);
     EXPECT_TRUE(found_probe_scratch);
 }
+
+namespace
+{
+
+Block makeAsofBlock(
+    const String & key_name,
+    const String & asof_name,
+    const String & id_name,
+    const std::vector<UInt64> & keys,
+    const std::vector<UInt64> & asofs,
+    const std::vector<UInt64> & ids)
+{
+    auto key_column = ColumnUInt64::create();
+    auto asof_column = ColumnUInt64::create();
+    auto id_column = ColumnUInt64::create();
+    key_column->getData().assign(keys.begin(), keys.end());
+    asof_column->getData().assign(asofs.begin(), asofs.end());
+    id_column->getData().assign(ids.begin(), ids.end());
+    Block block;
+    block.insert({std::move(key_column), std::make_shared<DataTypeUInt64>(), key_name});
+    block.insert({std::move(asof_column), std::make_shared<DataTypeUInt64>(), asof_name});
+    block.insert({std::move(id_column), std::make_shared<DataTypeUInt64>(), id_name});
+    return block;
+}
+
+/// One full ASOF build + probe under the given hook mode: 64 keys x asof points {10, 20, 30}
+/// on the build side, every key probed at the boundary and between-point values
+/// {5, 10, 15, 20, 25, 30, 35} (448 rows). The returned rows are sorted; `build_id` uniquely
+/// identifies the matched build row, so equality across modes pins the inequality semantics.
+JoinedRows<UInt64> runAsofProbe(AmacMode mode, ASOFJoinInequality inequality)
+{
+    setAmacModeForTests(mode);
+    const Block left_header = makeAsofBlock("k", "t", "probe_id", {}, {}, {});
+    const Block right_header = makeAsofBlock("rk", "rt", "build_id", {}, {}, {});
+    auto table_join = makeTableJoin(left_header, right_header, JoinKind::Inner, JoinStrictness::Asof);
+    /// The trailing key pair is the asof inequality column.
+    table_join->getClauses().back().addKey("t", "rt", /*null_safe_comparison=*/false);
+    table_join->setAsofInequality(inequality);
+    auto join = std::make_shared<ConcurrentHashJoin>(
+        table_join, num_slots, std::make_shared<const Block>(right_header), StatsCollectingParams{});
+
+    std::vector<UInt64> rk;
+    std::vector<UInt64> rt;
+    std::vector<UInt64> build_ids;
+    UInt64 build_id = 0;
+    for (UInt64 key = 0; key < 64; ++key)
+    {
+        for (UInt64 point : {10, 20, 30})
+        {
+            rk.push_back(key);
+            rt.push_back(point);
+            build_ids.push_back(build_id++);
+        }
+    }
+    join->addBlockToJoin(makeAsofBlock("rk", "rt", "build_id", rk, rt, build_ids), /*check_limits=*/true);
+    join->onBuildPhaseFinish();
+
+    std::vector<UInt64> k;
+    std::vector<UInt64> t;
+    std::vector<UInt64> probe_ids;
+    UInt64 probe_id = 0;
+    for (UInt64 key = 0; key < 64; ++key)
+    {
+        for (UInt64 value : {5, 10, 15, 20, 25, 30, 35})
+        {
+            k.push_back(key);
+            t.push_back(value);
+            probe_ids.push_back(probe_id++);
+        }
+    }
+    auto result = join->joinBlock(makeAsofBlock("k", "t", "probe_id", k, t, probe_ids));
+    JoinedRows<UInt64> rows;
+    drainResult(*join, *result, rows);
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+}
+
+TEST(ConcurrentHashJoinAmacAsof, RingMatchesSequentialFindAcrossInequalities)
+{
+    for (auto inequality :
+         {ASOFJoinInequality::Less, ASOFJoinInequality::LessOrEquals, ASOFJoinInequality::Greater, ASOFJoinInequality::GreaterOrEquals})
+    {
+        const UInt64 probe_rows_before_off = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+        const auto sequential = runAsofProbe(AmacMode::Off, inequality);
+        EXPECT_EQ(eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows) - probe_rows_before_off, 0u);
+
+        const UInt64 probe_rows_before_force = eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows);
+        const auto ring = runAsofProbe(AmacMode::Force, inequality);
+        EXPECT_GT(eventValue(ProfileEvents::ConcurrentHashJoinAmacProbeRows) - probe_rows_before_force, 0u);
+
+        EXPECT_FALSE(sequential.empty());
+        EXPECT_EQ(sequential, ring);
+    }
+    setAmacModeForTests(AmacMode::Auto);
+}

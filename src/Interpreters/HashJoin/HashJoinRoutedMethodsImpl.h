@@ -379,6 +379,20 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                             find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
                     }
                 }
+                else if constexpr (amac_mapped_by_pointer<std::remove_const_t<Mapped>>)
+                {
+                    /// The find pass recorded the mapped value's ADDRESS (ASOF: the sorted
+                    /// lookup does not fit a word; the maps are immutable, so it is valid
+                    /// here). ASOF is never flagged, so there is no offset to carry.
+                    if (const UInt64 word = found_words[i])
+                    {
+                        right_row_found = true;
+                        auto * mapped = reinterpret_cast<Mapped *>(word);
+                        typename KeyGetter::FindResult find_result(mapped, true, 0);
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                            find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
+                    }
+                }
             }
             else
             {
