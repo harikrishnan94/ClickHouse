@@ -30,3 +30,16 @@ probe cell + build guard + parity/order/tests/disasm + honest-red rule.
 - Build-at-HEAD check: `ninja -C build/reldeb clickhouse` rc=0
   (relink only), log `build/reldeb/build_u0_noop_check.log`.
 - PREREG 001 (U1a) registered.
+
+## U1a — JoinSlotRouting fold family (dead code)
+
+- `src/Interpreters/HashJoin/JoinSlotRouting.{h,cpp}` + 
+  `src/Interpreters/tests/gtest_join_slot_routing.cpp`.
+- G-build: rc=0, 0 errors (`build/reldeb/build_u1a.log`).
+- gtests: 9/9 PASSED (`build/reldeb/test_u1a_gtest.log`), incl. the
+  PREREG 001 contract checks: single-numeric == `routeWord`; LC ==
+  plain-string words; unrolled == reference chain (2/3/4/5 cols);
+  wide-numeric byte fold; embedded-zero strings don't collide;
+  slot ids == `word >> (32 - bits)` for bits 1..8; distribution
+  max/mean < 1.5 at 1M rows x 256 slots (sequential AND random).
+- Containment: nothing calls the new code yet; `hash` untouched.
