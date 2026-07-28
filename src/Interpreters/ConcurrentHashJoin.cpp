@@ -181,6 +181,9 @@ ConcurrentHashJoin::ConcurrentHashJoin(
           /*queue_size_*/ slots))
     , stats_collecting_params(stats_collecting_params_)
     , external_join_threshold(external_join_threshold_)
+    /// 2x because probe lanes are pipeline streams, which are not guaranteed to stay below
+    /// the slot count in every pipeline shape (see `IJoin::joinBlock`'s lane contract).
+    , probe_scratch_slots(2 * slots)
 {
     hash_joins.resize(slots);
 
@@ -238,6 +241,10 @@ ConcurrentHashJoin::ConcurrentHashJoin(
 
 ConcurrentHashJoin::~ConcurrentHashJoin()
 {
+    /// No probe result may be alive here, so every parked scratch is owned by the table.
+    for (auto & slot : probe_scratch_slots)
+        delete slot.load(std::memory_order_acquire);
+
     try
     {
         updateStatistics(hash_joins, stats_collecting_params);
@@ -260,6 +267,43 @@ ConcurrentHashJoin::~ConcurrentHashJoin()
         tryLogCurrentException(__PRETTY_FUNCTION__);
         pool->wait();
     }
+}
+
+std::unique_ptr<JoinProbeScratch> ConcurrentHashJoin::acquireProbeScratch(size_t lane)
+{
+    /// Lane fast path: take the parked scratch of this probe stream with one atomic exchange.
+    if (lane < probe_scratch_slots.size())
+        if (JoinProbeScratch * parked = probe_scratch_slots[lane].exchange(nullptr, std::memory_order_acquire))
+            return std::unique_ptr<JoinProbeScratch>(parked);
+
+    {
+        std::lock_guard lock(probe_scratch_mutex);
+        if (!probe_scratch_pool.empty())
+        {
+            auto scratch = std::move(probe_scratch_pool.back());
+            probe_scratch_pool.pop_back();
+            return scratch;
+        }
+    }
+    return std::make_unique<JoinProbeScratch>();
+}
+
+void ConcurrentHashJoin::releaseProbeScratch(std::unique_ptr<JoinProbeScratch> scratch, size_t lane)
+{
+    /// Park back into the lane's slot when it is free; a collision (or an out-of-range lane)
+    /// falls through to the pool, so the scratch is never lost and never double-owned.
+    if (lane < probe_scratch_slots.size())
+    {
+        JoinProbeScratch * expected = nullptr;
+        if (probe_scratch_slots[lane].compare_exchange_strong(expected, scratch.get(), std::memory_order_release))
+        {
+            scratch.release(); /// NOLINT(bugprone-unused-return-value): ownership moved into the slot
+            return;
+        }
+    }
+
+    std::lock_guard lock(probe_scratch_mutex);
+    probe_scratch_pool.push_back(std::move(scratch));
 }
 
 bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_limits)
@@ -383,12 +427,17 @@ private:
 /// `JoiningTransform` re-feeds it through `joinBlock`, which re-prepares its keys and slot ids.
 class RoutedJoinResult : public IJoinResult
 {
-    /// `ConcurrentHashJoin::slot_joins`, stable for the lifetime of the join.
+    /// The parent join outlives every probe result (the pipeline holds it for as long as
+    /// results are drained), so the reference into its slot table and the scratch release
+    /// below are safe.
+    ConcurrentHashJoin & parent;
     const std::vector<const HashJoin *> & slot_joins;
     ScatteredBlock block;
-    /// Owns the per-row slot ids for the lifetime of the lookup; empty when there is a
-    /// single slot.
-    PaddedPODArray<UInt8> slot_ids;
+    /// Owns the lane's pooled scratch (slot ids + the AMAC find-pass result arrays) for the
+    /// lifetime of the lookup; parked back into the pool by the destructor - the lookup is
+    /// lazy, so the release point cannot be `joinBlock`'s scope.
+    std::unique_ptr<JoinProbeScratch> scratch;
+    const size_t lane;
     /// The block's prepared key columns (materialized keys, null map, ON-section mask),
     /// built in `joinBlock`.
     std::vector<JoinOnKeyColumns> join_on_keys;
@@ -398,15 +447,24 @@ class RoutedJoinResult : public IJoinResult
 
 public:
     RoutedJoinResult(
+        ConcurrentHashJoin & parent_,
         const std::vector<const HashJoin *> & slot_joins_,
         ScatteredBlock && block_,
-        PaddedPODArray<UInt8> && slot_ids_,
+        std::unique_ptr<JoinProbeScratch> && scratch_,
+        size_t lane_,
         std::vector<JoinOnKeyColumns> && join_on_keys_)
-        : slot_joins(slot_joins_)
+        : parent(parent_)
+        , slot_joins(slot_joins_)
         , block(std::move(block_))
-        , slot_ids(std::move(slot_ids_))
+        , scratch(std::move(scratch_))
+        , lane(lane_)
         , join_on_keys(std::move(join_on_keys_))
     {
+    }
+
+    ~RoutedJoinResult() override
+    {
+        parent.releaseProbeScratch(std::move(scratch), lane);
     }
 
     JoinResultBlock next() override
@@ -423,7 +481,11 @@ public:
             /// deferred to `HashJoinResult::next`).
             ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
             inner = HashJoin::joinRoutedBlock(
-                slot_joins, std::move(block), slot_ids.empty() ? nullptr : slot_ids.data(), std::move(join_on_keys));
+                slot_joins,
+                std::move(block),
+                scratch->slot_ids.empty() ? nullptr : scratch->slot_ids.data(),
+                scratch.get(),
+                std::move(join_on_keys));
         }
 
         auto data = inner->next();
@@ -431,14 +493,14 @@ public:
     }
 };
 
-JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
+JoinResultPtr ConcurrentHashJoin::joinBlock(Block block, size_t lane)
 {
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
 
     const HashJoin & join0 = *hash_joins[0]->data;
     ScatteredBlock scattered;
     std::vector<JoinOnKeyColumns> join_on_keys;
-    PaddedPODArray<UInt8> slot_ids;
+    std::unique_ptr<JoinProbeScratch> scratch;
     {
         ProfileEventTimeIncrement<Microseconds> probe_dispatch_watch(ProfileEvents::ConcurrentHashJoinProbeDispatchMicroseconds);
         join0.materializeColumnsFromLeftBlock(block);
@@ -454,18 +516,25 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block)
             join0.getKeySizes().at(0),
             HashJoin::isLowCardinalityType(join0.getJoinedData()->type));
 
+        /// The lane's pooled scratch: the steady state reuses its capacity across blocks, so
+        /// nothing here allocates per block after warm-up.
+        scratch = acquireProbeScratch(lane);
+
         /// Only the slot ids are derived here; the block itself is NOT scattered - the routed
         /// probe (see `RoutedHashJoinMethods`) follows the ids per row and emits in left-row
         /// order.
         if (slots > 1)
         {
             const size_t rows = scattered.rows();
-            slot_ids.resize(rows);
-            computeDispatchSlotIds(join0, routeKeyColumns(join0, join_on_keys.front()), rows, slots, slot_ids.data());
+            scratch->slot_ids.resize(rows);
+            computeDispatchSlotIds(join0, routeKeyColumns(join0, join_on_keys.front()), rows, slots, scratch->slot_ids.data());
         }
+        else
+            scratch->slot_ids.clear();
     }
 
-    return std::make_unique<RoutedJoinResult>(slot_joins, std::move(scattered), std::move(slot_ids), std::move(join_on_keys));
+    return std::make_unique<RoutedJoinResult>(
+        *this, slot_joins, std::move(scattered), std::move(scratch), lane, std::move(join_on_keys));
 }
 
 void ConcurrentHashJoin::checkTypesOfKeys(const Block & block) const

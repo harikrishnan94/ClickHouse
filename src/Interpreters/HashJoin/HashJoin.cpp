@@ -1048,6 +1048,7 @@ JoinResultPtr HashJoin::joinRoutedBlock(
     const std::vector<const HashJoin *> & slot_joins,
     ScatteredBlock block,
     const UInt8 * slot_ids,
+    JoinProbeScratch * scratch,
     std::vector<JoinOnKeyColumns> join_on_keys)
 {
     chassert(!slot_joins.empty());
@@ -1090,17 +1091,17 @@ JoinResultPtr HashJoin::joinRoutedBlock(
             if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAll *>>)
             {
                 res = RoutedHashJoinMethods<kind_, strictness_, MapsAll>::joinBlockImpl(
-                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids, std::move(join_on_keys));
+                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids, scratch, std::move(join_on_keys));
             }
             else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsOne *>>)
             {
                 res = RoutedHashJoinMethods<kind_, strictness_, MapsOne>::joinBlockImpl(
-                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids, std::move(join_on_keys));
+                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids, scratch, std::move(join_on_keys));
             }
             else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAsof *>>)
             {
                 res = RoutedHashJoinMethods<kind_, strictness_, MapsAsof>::joinBlockImpl(
-                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids, std::move(join_on_keys));
+                    slot_joins, std::move(block), join0.sample_block_with_columns_to_add, slot_ids, scratch, std::move(join_on_keys));
             }
             else
             {

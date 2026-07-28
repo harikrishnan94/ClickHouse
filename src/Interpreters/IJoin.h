@@ -122,6 +122,13 @@ public:
     /// Could be called from different threads in parallel.
     virtual JoinResultPtr joinBlock(Block block) = 0;
 
+    /// Overload carrying the 0-based probe lane index (one per `JoiningTransform` stream).
+    /// Lets a join keep stable per-lane probe scratch without locking. Lane indices are NOT
+    /// guaranteed to stay below the join's thread count in every pipeline shape, and distinct
+    /// callers may share a lane (the totals transform, plan-time header probes) - joins must
+    /// tolerate out-of-range and colliding lanes. Default ignores the lane and forwards.
+    virtual JoinResultPtr joinBlock(Block block, size_t /*lane*/) { return joinBlock(std::move(block)); }
+
     /** Set/Get totals for right table
       * Keep "totals" (separate part of dataset, see WITH TOTALS) to use later.
       */

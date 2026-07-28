@@ -4,6 +4,7 @@
 #include <Interpreters/HashJoin/AmacProbe.h>
 #include <Interpreters/HashJoin/HashJoinMethodsImpl.h>
 #include <Interpreters/HashJoin/HashJoinRoutedMethods.h>
+#include <Interpreters/HashJoin/JoinProbeScratch.h>
 
 namespace DB
 {
@@ -14,6 +15,7 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     ScatteredBlock block,
     const Block & block_with_columns_to_add,
     const UInt8 * slot_ids,
+    JoinProbeScratch * scratch,
     std::vector<JoinOnKeyColumns> join_on_keys)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
@@ -46,7 +48,7 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     else
         added_columns.reserve(join_features.need_replication);
 
-    size_t processed_rows = switchJoinRightColumns(slot_joins, added_columns, block.getSelector(), slot_ids);
+    size_t processed_rows = switchJoinRightColumns(slot_joins, added_columns, block.getSelector(), slot_ids, scratch);
     /// Do not hold memory for join_on_keys anymore
     added_columns.join_on_keys.clear();
 
@@ -101,7 +103,8 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
     const std::vector<const HashJoin *> & slot_joins,
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
-    const UInt8 * slot_ids)
+    const UInt8 * slot_ids,
+    JoinProbeScratch * scratch)
 {
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
     const HashJoin & join0 = *slot_joins[0];
@@ -132,7 +135,8 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
             flags_by_slot, \
             added_columns, \
             selector, \
-            slot_ids); \
+            slot_ids, \
+            scratch); \
     }
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
@@ -148,7 +152,8 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
     const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
-    const UInt8 * slot_ids)
+    const UInt8 * slot_ids,
+    JoinProbeScratch * scratch)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
 
@@ -188,10 +193,10 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
 
     if (selector.isContinuousRange())
         return joinRightColumns<KeyGetter, Map>(
-            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getRange(), slot_ids);
+            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getRange(), slot_ids, scratch);
     else
         return joinRightColumns<KeyGetter, Map>(
-            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getIndexes(), slot_ids);
+            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getIndexes(), slot_ids, scratch);
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
@@ -203,7 +208,8 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
     AddedColumnsType & added_columns,
     const Selector & selector,
-    const UInt8 * slot_ids)
+    const UInt8 * slot_ids,
+    JoinProbeScratch * scratch [[maybe_unused]])
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     /// Single join clause (`parallel_hash` supports no disjuncts), so right-row used flags are
@@ -502,14 +508,17 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             /// Phase A: the AMAC find pass. Every row gets a result - `start` records skipped
             /// and zero-key rows synchronously, `step` records hits and misses - so the arrays
             /// need no pre-fill and phase B needs no skip logic. The offsets are recorded (and
-            /// sized) only for the flagged shapes - they have no other consumer.
-            PaddedPODArray<UInt64> found_word(rows);
-            PaddedPODArray<UInt64> found_offset;
+            /// sized) only for the flagged shapes - they have no other consumer. The arrays
+            /// live in the lane's pooled scratch: `resize` never shrinks a `PaddedPODArray`,
+            /// so the steady state reuses the capacity across blocks.
+            chassert(scratch);
+            scratch->found_word.resize(rows);
+            UInt64 * found_word_data = scratch->found_word.data();
             UInt64 * found_offset_data = nullptr;
             if constexpr (join_features.need_flags)
             {
-                found_offset.resize(rows);
-                found_offset_data = found_offset.data();
+                scratch->found_offset.resize(rows);
+                found_offset_data = scratch->found_offset.data();
             }
 
             constexpr bool selector_is_range = !std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Indexes>;
@@ -530,7 +539,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                 sel_indexes,
                 skip_data,
                 pool,
-                found_word.data(),
+                found_word_data,
                 found_offset_data);
 
             if constexpr (degenerate_phase_b)
@@ -538,9 +547,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                 auto word_dispatch = [&]<bool need_filter>()
                 {
                     if (added_columns.has_columns_to_add)
-                        word_loop.template operator()<need_filter, true>(found_word.data());
+                        word_loop.template operator()<need_filter, true>(found_word_data);
                     else
-                        word_loop.template operator()<need_filter, false>(found_word.data());
+                        word_loop.template operator()<need_filter, false>(found_word_data);
                 };
                 if (added_columns.need_filter)
                     word_dispatch.template operator()<true>();
@@ -550,9 +559,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             else
             {
                 if (added_columns.need_filter)
-                    loop.template operator()<true, false, true>(found_word.data(), found_offset_data);
+                    loop.template operator()<true, false, true>(found_word_data, found_offset_data);
                 else
-                    loop.template operator()<false, false, true>(found_word.data(), found_offset_data);
+                    loop.template operator()<false, false, true>(found_word_data, found_offset_data);
             }
             amac_ran = true;
         }

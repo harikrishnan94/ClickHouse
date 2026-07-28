@@ -48,7 +48,8 @@ public:
         size_t max_block_size_,
         bool on_totals_ = false,
         bool default_totals_ = false,
-        FinishCounterPtr finish_counter_ = nullptr);
+        FinishCounterPtr finish_counter_ = nullptr,
+        size_t stream_index_ = 0);
 
     ~JoiningTransform() override;
 
@@ -85,6 +86,9 @@ private:
     FinishCounterPtr finish_counter;
     IBlocksStreamPtr non_joined_blocks;
     size_t max_block_size;
+    /// Stable 0-based probe lane index, passed to `IJoin::joinBlock` so the join can bind
+    /// lock-free per-lane probe scratch.
+    size_t stream_index = 0;
 
     Block readExecute(Chunk & chunk);
 };

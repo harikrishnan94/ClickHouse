@@ -121,6 +121,7 @@ public:
     }
 
     /// Used just to get result header
+    using IJoin::joinBlock;
     JoinResultPtr joinBlock(Block block) override
     {
         for (const auto & col : *right_sample_block)

@@ -27,6 +27,7 @@ namespace DB
 class TableJoin;
 class ExpressionActions;
 struct JoinOnKeyColumns;
+struct JoinProbeScratch;
 using Sizes = std::vector<size_t>;
 
 namespace JoinStuff
@@ -166,6 +167,7 @@ public:
         const std::vector<const HashJoin *> & slot_joins,
         ScatteredBlock block,
         const UInt8 * slot_ids,
+        JoinProbeScratch * scratch,
         std::vector<JoinOnKeyColumns> join_on_keys);
 
     /// Check joinGet arguments and infer the return type.

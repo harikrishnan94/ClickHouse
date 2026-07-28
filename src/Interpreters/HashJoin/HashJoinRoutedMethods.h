@@ -33,6 +33,7 @@ public:
         ScatteredBlock block,
         const Block & block_with_columns_to_add,
         const UInt8 * slot_ids,
+        JoinProbeScratch * scratch,
         std::vector<JoinOnKeyColumns> join_on_keys);
 
 private:
@@ -41,7 +42,8 @@ private:
         const std::vector<const HashJoin *> & slot_joins,
         AddedColumns & added_columns,
         const ScatteredBlock::Selector & selector,
-        const UInt8 * slot_ids);
+        const UInt8 * slot_ids,
+        JoinProbeScratch * scratch);
 
     /// The pre-loop dispatch layer: the additional-filter path (mixed ON conditions) and the
     /// selector-shape split.
@@ -53,7 +55,8 @@ private:
         const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
         AddedColumns & added_columns,
         const ScatteredBlock::Selector & selector,
-        const UInt8 * slot_ids);
+        const UInt8 * slot_ids,
+        JoinProbeScratch * scratch);
 
     /// The routed probe loop (single join clause; `parallel_hash` supports no disjuncts).
     template <typename KeyGetter, typename Map, typename AddedColumns, typename Selector>
@@ -64,7 +67,8 @@ private:
         const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
         AddedColumns & added_columns,
         const Selector & selector,
-        const UInt8 * slot_ids);
+        const UInt8 * slot_ids,
+        JoinProbeScratch * scratch);
 };
 
 /// Instantiated ahead in the RoutedHashJoin*.cpp files (one per strictness), mirroring the

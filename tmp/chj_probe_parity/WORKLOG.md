@@ -160,3 +160,27 @@ Edits (all landed in working tree, building):
   snapshot (`uncommitted-u1hyg.tmp.bin`; parity_u1hyg.log).
 - U3 note carried from review: the once-per-build hoist must snapshot
   AFTER `onBuildPhaseFinish` (shrink-to-fit mutates `allocated_size`).
+
+## U2 — probe lanes + pooled scratch (PREREG 004)
+
+- New `JoinProbeScratch.h`; `IJoin::joinBlock(Block, lane)` defaulted
+  virtual (+ `using IJoin::joinBlock;` in 8 implementers for
+  `-Woverloaded-virtual`); `JoiningTransform` carries `stream_index`
+  (pipeline-builder loop index); `ConcurrentHashJoin` parks one
+  scratch per lane (atomic exchange/CAS, mutexed pool fallback,
+  `invalid_lane` legacy entries); `RoutedJoinResult` owns the scratch
+  and releases it in its destructor (the lookup is lazy); the AMAC
+  find-pass result arrays and the slot ids live in the scratch -
+  steady state allocates nothing per block. Wrappers
+  (`SpillingHashJoin`, `JoinSwitcher`) forward lane-less -> pool
+  fallback (correct; known affinity limitation, gate cells run
+  standalone).
+- Gates: build rc=0 (attempt 1 hit `-Woverloaded-virtual`, fixed);
+  gtests 23/23 (4 new `ConcurrentHashJoinProbeScratch` pool tests:
+  per-lane park/reuse with capacity identity, collision safety,
+  invalid/out-of-range lanes, release-on-result-destruction);
+  PARITY OK (636: 634 compared, 2 matched-error, 0 failed, force-pass
+  8/8+2x0); ORDER OK (all engaged, 03448/03711 x10).
+- Local A/B floor cells (LOCAL, not acceptance): 3/3 TIE - key64 S1
+  +0.56%, key64 S2 -2.71%, str S1 +2.47% (prior fleet: key64 S1
+  +4.3% LOSS, str S1 +3.2% LOSS); ProbeLookup -28/-38/-37%.

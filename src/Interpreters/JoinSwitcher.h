@@ -36,6 +36,7 @@ public:
         join->checkTypesOfKeys(block);
     }
 
+    using IJoin::joinBlock;
     JoinResultPtr joinBlock(Block block) override
     {
         return join->joinBlock(block);

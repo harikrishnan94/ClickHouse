@@ -688,3 +688,98 @@ TEST(ConcurrentHashJoinAmac, ProbeEmitsInLeftRowOrder)
         }
     }
 }
+
+/// The probe-scratch pool: one parked scratch per lane, lock-free acquire/release, with the
+/// mutexed pool absorbing collisions and out-of-range lanes (see PREREG 004). These tests pin
+/// the ownership contract, not performance.
+TEST(ConcurrentHashJoinProbeScratch, PoolParksAndReusesPerLane)
+{
+    auto built = buildJoin<UInt64>({1, 2, 3}, 1, AmacMode::Auto);
+
+    auto first = built.join->acquireProbeScratch(0);
+    ASSERT_NE(first, nullptr);
+    first->slot_ids.resize(1000);
+    JoinProbeScratch * raw = first.get();
+    built.join->releaseProbeScratch(std::move(first), 0);
+
+    /// The same lane gets the same parked scratch back, capacity intact.
+    auto second = built.join->acquireProbeScratch(0);
+    ASSERT_EQ(second.get(), raw);
+    EXPECT_EQ(second->slot_ids.size(), 1000u);
+
+    /// A different lane never steals a parked scratch that belongs to lane 0's slot.
+    built.join->releaseProbeScratch(std::move(second), 0);
+    auto other_lane = built.join->acquireProbeScratch(1);
+    EXPECT_NE(other_lane.get(), raw);
+    built.join->releaseProbeScratch(std::move(other_lane), 1);
+}
+
+TEST(ConcurrentHashJoinProbeScratch, PoolToleratesLaneCollisions)
+{
+    auto built = buildJoin<UInt64>({1, 2, 3}, 1, AmacMode::Auto);
+
+    /// Two concurrent-in-time acquisitions of the SAME lane (the totals transform and stream 0
+    /// legally collide on lane 0) must produce two distinct live scratches.
+    auto first = built.join->acquireProbeScratch(0);
+    auto second = built.join->acquireProbeScratch(0);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_NE(first.get(), second.get());
+
+    /// Releasing both parks one in the lane slot and diverts the loser to the pool - neither
+    /// is lost: two follow-up acquisitions get both back without allocating.
+    JoinProbeScratch * raw_first = first.get();
+    JoinProbeScratch * raw_second = second.get();
+    built.join->releaseProbeScratch(std::move(first), 0);
+    built.join->releaseProbeScratch(std::move(second), 0);
+    auto reacquired_a = built.join->acquireProbeScratch(0);
+    auto reacquired_b = built.join->acquireProbeScratch(0);
+    const bool both_recovered = (reacquired_a.get() == raw_first && reacquired_b.get() == raw_second)
+        || (reacquired_a.get() == raw_second && reacquired_b.get() == raw_first);
+    EXPECT_TRUE(both_recovered);
+    built.join->releaseProbeScratch(std::move(reacquired_a), 0);
+    built.join->releaseProbeScratch(std::move(reacquired_b), 0);
+}
+
+TEST(ConcurrentHashJoinProbeScratch, PoolToleratesInvalidAndOutOfRangeLanes)
+{
+    auto built = buildJoin<UInt64>({1, 2, 3}, 1, AmacMode::Auto);
+
+    auto legacy = built.join->acquireProbeScratch(ConcurrentHashJoin::invalid_lane);
+    ASSERT_NE(legacy, nullptr);
+    built.join->releaseProbeScratch(std::move(legacy), ConcurrentHashJoin::invalid_lane);
+
+    auto out_of_range = built.join->acquireProbeScratch(1000000);
+    ASSERT_NE(out_of_range, nullptr);
+    built.join->releaseProbeScratch(std::move(out_of_range), 1000000);
+}
+
+TEST(ConcurrentHashJoinProbeScratch, ProbeReleasesScratchOnResultDestruction)
+{
+    auto built = buildJoin<UInt64>({1, 2, 3, 4, 5, 6, 7, 8}, 1, AmacMode::Auto);
+
+    constexpr size_t lane = 2;
+    constexpr size_t probe_rows = 6;
+    JoinedRows<UInt64> rows;
+    {
+        auto result = built.join->joinBlock(
+            makeKeyBlock("k", "probe_id", std::vector<UInt64>{1, 2, 3, 4, 5, 6}, {0, 1, 2, 3, 4, 5}), lane);
+        drainResult(*built.join, *result, rows);
+        /// The scratch is still owned by the result here - the lane's slot is empty, so a
+        /// fresh acquisition must NOT observe the in-flight scratch.
+        auto while_alive = built.join->acquireProbeScratch(lane);
+        EXPECT_EQ(while_alive->slot_ids.size(), 0u);
+        built.join->releaseProbeScratch(std::move(while_alive), lane);
+        /// The result destructor runs at scope exit and parks the scratch... unless the slot
+        /// is occupied by the release above, in which case it goes to the pool - either way
+        /// it is recoverable below.
+    }
+    EXPECT_EQ(rows.size(), probe_rows);
+
+    /// After destruction some recoverable scratch carries the probe's slot ids (sized to the
+    /// probed rows - the join has 4 slots, so the routed path filled them).
+    auto a = built.join->acquireProbeScratch(lane);
+    auto b = built.join->acquireProbeScratch(lane);
+    const bool found_probe_scratch = (a && a->slot_ids.size() == probe_rows) || (b && b->slot_ids.size() == probe_rows);
+    EXPECT_TRUE(found_probe_scratch);
+}

@@ -45,13 +45,15 @@ JoiningTransform::JoiningTransform(
     size_t max_block_size_,
     bool on_totals_,
     bool default_totals_,
-    FinishCounterPtr finish_counter_)
+    FinishCounterPtr finish_counter_,
+    size_t stream_index_)
     : IProcessor({input_header}, {output_header})
     , join(std::move(join_))
     , on_totals(on_totals_)
     , default_totals(default_totals_)
     , finish_counter(std::move(finish_counter_))
     , max_block_size(max_block_size_)
+    , stream_index(stream_index_)
 {
     if (!join->isFilled())
         inputs.emplace_back(Block(), this); // Wait for FillingRightJoinSideTransform
@@ -243,7 +245,7 @@ Block JoiningTransform::readExecute(Chunk & chunk)
     {
         Block block = inputs.front().getHeader().cloneWithColumns(chunk.detachColumns());
         ProfileEvents::increment(ProfileEvents::JoinProbeTableRowCount, block.rows());
-        join_result = join->joinBlock(std::move(block));
+        join_result = join->joinBlock(std::move(block), stream_index);
     }
 
     auto data = join_result->next();

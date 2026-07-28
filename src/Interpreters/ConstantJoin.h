@@ -48,6 +48,7 @@ public:
 
     void checkTypesOfKeys(const Block &) const override {}
 
+    using IJoin::joinBlock;
     JoinResultPtr joinBlock(Block block) override;
 
     size_t getTotalRowCount() const override { return in_memory_rows; }

@@ -77,6 +77,7 @@ public:
     bool addBlockToJoin(const Block & block, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     void initialize(const Block & sample_block) override;
+    using IJoin::joinBlock;
     JoinResultPtr joinBlock(Block block) override;
 
     void setTotals(const Block & block) override;

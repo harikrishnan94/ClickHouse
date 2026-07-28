@@ -42,6 +42,7 @@ public:
     const TableJoin & getTableJoin() const override { return *table_join; }
     bool addBlockToJoin(const Block & block, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
+    using IJoin::joinBlock;
     JoinResultPtr joinBlock(Block block) override;
     void joinBlock(Block & block, std::optional<MergeJoin::NotProcessed> & not_processed);
 
