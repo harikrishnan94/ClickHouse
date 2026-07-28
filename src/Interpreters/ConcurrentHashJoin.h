@@ -153,6 +153,14 @@ private:
     std::atomic<size_t> global_total_rows{0};
     std::atomic<size_t> global_total_bytes{0};
 
+    /// Once-per-build probe address material (see `RoutedProbePlan`): collected at the end of
+    /// the constructor (plan-time header probes run before any build) and re-collected by
+    /// `onBuildPhaseFinish` when the maps are final. Probe results reference it like
+    /// `slot_joins`.
+    RoutedProbePlan routed_probe_plan;
+
+    void collectRoutedProbePlan();
+
     ScatteredBlocks dispatchBlock(const Strings & key_columns_names, Block && from_block);
     std::pair<size_t, size_t> updateTotalRowsAndBytesUnlocked(std::shared_ptr<InternalHashJoin> & hash_join);
     void resetTotalRowsAndBytesUnlocked(std::shared_ptr<InternalHashJoin> & hash_join);

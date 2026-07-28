@@ -141,3 +141,35 @@ orientation and labeled as such.
   reused while a result still reads it); fix before proceeding.
   Memory accounting note: scratches live on the join until dtor,
   uncounted in getTotalByteCount (AHJ precedent) - documented.
+
+## 005 — U3: once-built slot tables, then the flat descriptor loop
+
+- Commit (a), once-built tables: after the build finishes (all slots
+  through `onBuildPhaseFinish`; collection runs AFTER it because
+  shrink-to-fit mutates `allocated_size`), `ConcurrentHashJoin`
+  collects once per join: per-map-type slot descriptor arrays
+  ({buf, mask} per slot), type-erased map pointers, used-flags
+  pointers, per-slot wrap bits (last tail-pad cell occupied) OR'd
+  into the plan bool, the AMAC engagement decision (aggregate bytes
+  threshold), and the whole-join bytes-per-row estimate - replacing
+  the per-probe-block O(slots) passes (descriptor build in the AMAC
+  arm, `maps_by_slot`/`flags_by_slot` vectors, the estimate loop).
+- Commit (b), flat descriptor fused loop: for `has_cheap_key_
+  calculation` cursor-capable families (key32/64, keys32/64/128/256)
+  below the AMAC engagement gate, replace the plain routed loop with
+  a fused find+emit loop reading `cell = desc.buf + (hash &
+  desc.mask)` from the once-built descriptor array (wrap-aware walk
+  through the tail pad - also the wrapped-chain fallback), with its
+  own adaptive look-ahead prefetcher (home-cell line, same
+  L2-outgrowth gate, mutually exclusive with AMAC). Strings,
+  `hashed`, LC, `key8`/`key16` keep the plain loop.
+- Expectation: G-build green; gtests all green (existing 23 + any
+  added flat-loop parity tests); PARITY OK; ORDER OK; G-disasm: flat
+  loop key64 + keys256 anchors instruction-equivalent to the ahj
+  reference binary `c8260c682b78...` (llvm-nm/objdump address ranges,
+  never the analyze-assembly cache); local orientation A/B on
+  below-threshold cells (key64 S1/S2, k128 S2) - expect PLook
+  improvement or in-band, no regressions outside local noise; the
+  hoist alone (commit a) must be perf-neutral-or-better.
+- Refutation: any parity/order diff -> descriptor/lifetime bug; any
+  unexplained disasm delta -> port infidelity; fix before proceeding.

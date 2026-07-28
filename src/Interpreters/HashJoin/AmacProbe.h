@@ -3,6 +3,7 @@
 #include <Interpreters/HashJoin/AmacBuild.h>
 #include <Interpreters/HashJoin/AmacRing.h>
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashJoin/JoinProbeScratch.h>
 #include <Interpreters/HashJoin/KeyGetter.h>
 #include <Interpreters/HashJoin/ResumableHashMap.h>
 #include <Interpreters/RowRefs.h>
@@ -67,16 +68,6 @@ template <typename KeyGetter, typename Map>
 constexpr bool amac_probe_supported = amac_join_supported<KeyGetter, std::remove_const_t<Map>>
     /// This `typename` is required (a template argument is not a typename-optional context; the check misfires).
     && amac_mapped_fits_word<typename std::remove_const_t<Map>::mapped_type>; /// NOLINT(readability-redundant-typename)
-
-/// Per-slot address material of the find ring, resolved once per probe call from the slot maps:
-/// the cell buffer base and the home mask of the power-of-two region (NOT `bufSize - 1`; the
-/// buffers are tail-padded - see `TailPaddedHashTableGrower`). At most 256 slots x 16 bytes,
-/// so the whole array stays cache-resident under the ring.
-struct SlotMapDesc
-{
-    const void * buf;
-    size_t mask;
-};
 
 /// The grower contract of the descriptor-based find ring: linear probing with a power-of-two
 /// home mask and the tail-padded buffer of `TailPaddedHashTableGrower` (the walk runs into the

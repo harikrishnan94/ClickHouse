@@ -215,3 +215,17 @@ Edits (all landed in working tree, building):
 - Re-gates: build rc=0 (after the disk incident above), gtests 23/23,
   PARITY OK on the post-fixer snapshot (`uncommitted-u2hyg.tmp.bin`,
   parity_u2hyg.log; force-pass 8/8+2x0).
+
+## U3a — once-per-build RoutedProbePlan (PREREG 005 commit a)
+
+- `RoutedProbePlan` (JoinProbeScratch.h; `SlotMapDesc` moved there):
+  type-erased map pointers, cursor-map descriptors, used-flags
+  pointers, aggregate map bytes, the whole-join splitting estimate,
+  and the wrap bit - collected at construction (plan-time header
+  probes see sized arrays) and re-collected at the end of
+  `onBuildPhaseFinish`, after shrink-to-fit finalizes buffers.
+  Replaces the per-probe-block O(slots) passes: the map/flags vector
+  builds in the type switch, the descriptor + wrap scan in the AMAC
+  arm, the byte totals, and the estimate loop.
+- Gates: build rc=0 first try; gtests 23/23; ORDER OK; PARITY OK 636
+  (force-pass 8/8+2x0). Snapshot `uncommitted-u3a.tmp.bin`.

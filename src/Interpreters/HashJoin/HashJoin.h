@@ -28,6 +28,7 @@ class TableJoin;
 class ExpressionActions;
 struct JoinOnKeyColumns;
 struct JoinProbeScratch;
+struct RoutedProbePlan;
 using Sizes = std::vector<size_t>;
 
 namespace JoinStuff
@@ -165,6 +166,7 @@ public:
     /// `RoutedHashJoinMethods`.
     static JoinResultPtr joinRoutedBlock(
         const std::vector<const HashJoin *> & slot_joins,
+        const RoutedProbePlan & plan,
         ScatteredBlock block,
         JoinProbeScratch & scratch,
         std::vector<JoinOnKeyColumns> join_on_keys);
@@ -495,6 +497,9 @@ public:
 private:
     friend class NotJoinedHash;
     friend class JoinSource;
+    /// Collects the once-per-build `RoutedProbePlan` (maps, descriptors, used flags) across
+    /// its slots.
+    friend class ConcurrentHashJoin;
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
     friend class HashJoinMethods;

@@ -30,6 +30,7 @@ public:
     /// block's prepared key columns (see `HashJoin::joinRoutedBlock`).
     static JoinResultPtr joinBlockImpl(
         const std::vector<const HashJoin *> & slot_joins,
+        const RoutedProbePlan & plan,
         ScatteredBlock block,
         const Block & block_with_columns_to_add,
         JoinProbeScratch & scratch,
@@ -39,6 +40,7 @@ private:
     template <typename AddedColumns>
     static size_t switchJoinRightColumns(
         const std::vector<const HashJoin *> & slot_joins,
+        const RoutedProbePlan & plan,
         AddedColumns & added_columns,
         const ScatteredBlock::Selector & selector,
         const UInt8 * slot_ids,
@@ -49,9 +51,9 @@ private:
     template <typename KeyGetter, typename Map, typename AddedColumns>
     static size_t joinRightColumnsRouted(
         const std::vector<const HashJoin *> & slot_joins,
+        const RoutedProbePlan & plan,
         KeyGetter && key_getter,
-        const std::vector<const Map *> & maps_by_slot,
-        const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
+        const Map * const * maps_by_slot,
         AddedColumns & added_columns,
         const ScatteredBlock::Selector & selector,
         const UInt8 * slot_ids,
@@ -61,9 +63,9 @@ private:
     template <typename KeyGetter, typename Map, typename AddedColumns, typename Selector>
     static size_t joinRightColumns(
         const std::vector<const HashJoin *> & slot_joins,
+        const RoutedProbePlan & plan,
         KeyGetter & key_getter,
-        const std::vector<const Map *> & maps_by_slot,
-        const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
+        const Map * const * maps_by_slot,
         AddedColumns & added_columns,
         const Selector & selector,
         const UInt8 * slot_ids,

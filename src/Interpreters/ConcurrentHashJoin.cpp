@@ -230,6 +230,10 @@ ConcurrentHashJoin::ConcurrentHashJoin(
         slot_joins.reserve(slots);
         for (const auto & hash_join : hash_joins)
             slot_joins.push_back(hash_join->data.get());
+
+        /// The freshly built (empty) maps already have valid buffers, so plan-time header
+        /// probes see sized plan arrays; `onBuildPhaseFinish` re-collects over the final maps.
+        collectRoutedProbePlan();
     }
     catch (...)
     {
@@ -237,6 +241,54 @@ ConcurrentHashJoin::ConcurrentHashJoin(
         pool->wait();
         throw;
     }
+}
+
+void ConcurrentHashJoin::collectRoutedProbePlan()
+{
+    RoutedProbePlan plan;
+    plan.map_by_slot.reserve(slots);
+    plan.desc_by_slot.reserve(slots);
+    plan.flags_by_slot.reserve(slots);
+
+    size_t total_allocated_size = 0;
+    size_t total_rows_to_join = 0;
+
+    const auto type = hash_joins[0]->data->getJoinedData()->type;
+    for (const auto & hash_join : hash_joins)
+    {
+        HashJoin & join = *hash_join->data;
+        plan.flags_by_slot.push_back(join.used_flags.get());
+        total_allocated_size += join.getJoinedData()->allocated_size;
+        total_rows_to_join += join.getJoinedData()->rows_to_join;
+
+        auto collect_map = [&](auto & maps)
+        {
+            switch (type)
+            {
+#define M(NAME) \
+    case HashJoin::Type::NAME: { \
+        const auto & map = *maps.NAME; \
+        plan.map_by_slot.push_back(&map); \
+        plan.total_map_bytes += map.getBufferSizeInBytes(); \
+        /* The descriptor and the wrap bit exist only for the cursor-capable (tail-padded \
+           open-addressing) map types; the rest keep map-resolved lookups. */ \
+        if constexpr (requires { map.cursorCells(); }) \
+        { \
+            plan.desc_by_slot.push_back({map.cursorCells(), map.cursorMask()}); \
+            plan.chain_may_wrap \
+                = plan.chain_may_wrap || !map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1); \
+        } \
+        break; \
+    }
+                APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+            }
+        };
+        std::visit([&](auto & maps) { collect_map(maps); }, join.getJoinedData()->maps.at(0));
+    }
+
+    plan.avg_joined_bytes_per_row = total_allocated_size / std::max<size_t>(1, total_rows_to_join);
+    routed_probe_plan = std::move(plan);
 }
 
 ConcurrentHashJoin::~ConcurrentHashJoin()
@@ -432,6 +484,9 @@ class RoutedJoinResult : public IJoinResult
     /// below are safe.
     ConcurrentHashJoin & parent;
     const std::vector<const HashJoin *> & slot_joins;
+    /// The once-per-build probe address material; owned by `parent`, stable while any probe
+    /// result is alive (like `slot_joins`).
+    const RoutedProbePlan & plan;
     ScatteredBlock block;
     /// Owns the lane's pooled scratch (slot ids + the AMAC find-pass result arrays) for the
     /// lifetime of the lookup; parked back into the pool by the destructor - the lookup is
@@ -449,12 +504,14 @@ public:
     RoutedJoinResult(
         ConcurrentHashJoin & parent_,
         const std::vector<const HashJoin *> & slot_joins_,
+        const RoutedProbePlan & plan_,
         ScatteredBlock && block_,
         std::unique_ptr<JoinProbeScratch> && scratch_,
         size_t lane_,
         std::vector<JoinOnKeyColumns> && join_on_keys_)
         : parent(parent_)
         , slot_joins(slot_joins_)
+        , plan(plan_)
         , block(std::move(block_))
         , scratch(std::move(scratch_))
         , lane(lane_)
@@ -480,7 +537,7 @@ public:
             /// cheap match row-refs. It does NOT gather any column values yet (that is
             /// deferred to `HashJoinResult::next`).
             ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
-            inner = HashJoin::joinRoutedBlock(slot_joins, std::move(block), *scratch, std::move(join_on_keys));
+            inner = HashJoin::joinRoutedBlock(slot_joins, plan, std::move(block), *scratch, std::move(join_on_keys));
         }
 
         auto data = inner->next();
@@ -527,7 +584,7 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block, size_t lane)
     }
 
     return std::make_unique<RoutedJoinResult>(
-        *this, slot_joins, std::move(scattered), std::move(scratch), lane, std::move(join_on_keys));
+        *this, slot_joins, routed_probe_plan, std::move(scattered), std::move(scratch), lane, std::move(join_on_keys));
 }
 
 void ConcurrentHashJoin::checkTypesOfKeys(const Block & block) const
@@ -848,5 +905,10 @@ void ConcurrentHashJoin::onBuildPhaseFinish()
     // `onBuildPhaseFinish` cannot be called concurrently with other IJoin methods, so we don't need a lock to access internal joins.
     for (const auto & hash_join : hash_joins)
         hash_join->data->onBuildPhaseFinish();
+
+    /// The maps are final from here on (per-slot `onBuildPhaseFinish` includes shrink-to-fit,
+    /// which moves buffers and mutates `allocated_size`), so this is the one collection point
+    /// whose addresses and sizes the probes may trust.
+    collectRoutedProbePlan();
 }
 }

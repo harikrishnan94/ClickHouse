@@ -12,6 +12,7 @@ namespace DB
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     const std::vector<const HashJoin *> & slot_joins,
+    const RoutedProbePlan & plan,
     ScatteredBlock block,
     const Block & block_with_columns_to_add,
     JoinProbeScratch & scratch,
@@ -51,7 +52,7 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
     else
         added_columns.reserve(join_features.need_replication);
 
-    size_t processed_rows = switchJoinRightColumns(slot_joins, added_columns, block.getSelector(), slot_ids, scratch);
+    size_t processed_rows = switchJoinRightColumns(slot_joins, plan, added_columns, block.getSelector(), slot_ids, scratch);
     /// Do not hold memory for join_on_keys anymore
     added_columns.join_on_keys.clear();
 
@@ -62,17 +63,6 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
         auto split_selector = raw_selector.split(processed_rows);
         block = ScatteredBlock(raw_block, std::move(split_selector.first));
         next_scattered_block = ScatteredBlock(std::move(raw_block), std::move(split_selector.second));
-    }
-
-    /// The joined-bytes-per-row estimate that sizes the output-block splitting must cover the
-    /// WHOLE join, not slot 0: with few distinct keys most slots are empty, and an empty
-    /// slot 0 would zero the estimate and disable `max_joined_block_bytes` splitting entirely.
-    size_t total_allocated_size = 0;
-    size_t total_rows_to_join = 0;
-    for (const HashJoin * slot_join : slot_joins)
-    {
-        total_allocated_size += slot_join->data->allocated_size;
-        total_rows_to_join += slot_join->data->rows_to_join;
     }
 
     auto join_result = std::make_unique<HashJoinResult>(
@@ -88,7 +78,10 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
             join.required_right_keys_sources,
             join.max_joined_block_rows,
             join.max_joined_block_bytes,
-            total_allocated_size / std::max<size_t>(1, total_rows_to_join),
+            /// The whole-join output-splitting estimate (never slot 0's alone: with few
+            /// distinct keys most slots are empty and a zero estimate would disable
+            /// `max_joined_block_bytes` splitting entirely).
+            plan.avg_joined_bytes_per_row,
             join_features.need_filter,
             /*is_join_get=*/false,
             join.joined_block_split_single_row,
@@ -104,6 +97,7 @@ template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename AddedColumns>
 size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightColumns(
     const std::vector<const HashJoin *> & slot_joins,
+    const RoutedProbePlan & plan,
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
     const UInt8 * slot_ids,
@@ -111,7 +105,6 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
 {
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
     const HashJoin & join0 = *slot_joins[0];
-    const size_t num_slots = slot_joins.size();
 
     /// The map type is uniform across the slots: it is chosen from the shared right sample
     /// block, `ConcurrentHashJoin` never runs the post-build fixed-map conversion, and the
@@ -122,20 +115,17 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightCol
     case HashJoin::Type::TYPE: { \
         using MapTypeVal = const typename std::remove_reference_t<decltype(MapsTemplate::TYPE)>::element_type; \
         using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, MapTypeVal>::Type; \
-        std::vector<const MapTypeVal *> maps_by_slot(num_slots); \
-        std::vector<JoinStuff::JoinUsedFlags *> flags_by_slot(num_slots); \
-        for (size_t s = 0; s < num_slots; ++s) \
-        { \
-            maps_by_slot[s] = std::get<MapsTemplate>(slot_joins[s]->data->maps.at(0)).TYPE.get(); \
-            flags_by_slot[s] = slot_joins[s]->used_flags.get(); \
-        } \
+        /* The once-per-build plan holds the type-erased map pointers; this switch is the same \
+           one that erased them, so the cast back is exact. */ \
+        const auto * const * maps_by_slot = reinterpret_cast<const MapTypeVal * const *>(plan.map_by_slot.data()); \
+        chassert(plan.map_by_slot.size() == slot_joins.size()); \
         chassert(added_columns.join_on_keys.size() == 1); \
         const auto & join_on_key = added_columns.join_on_keys[0]; \
         return joinRightColumnsRouted<KeyGetter, MapTypeVal>( \
             slot_joins, \
+            plan, \
             createKeyGetter<KeyGetter, is_asof_join>(join_on_key.key_columns, join_on_key.key_sizes, join0.data->key_range), \
             maps_by_slot, \
-            flags_by_slot, \
             added_columns, \
             selector, \
             slot_ids, \
@@ -150,9 +140,9 @@ template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename Map, typename AddedColumns>
 size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRouted(
     const std::vector<const HashJoin *> & slot_joins,
+    const RoutedProbePlan & plan,
     KeyGetter && key_getter,
-    const std::vector<const Map *> & maps_by_slot,
-    const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
+    const Map * const * maps_by_slot,
     AddedColumns & added_columns,
     const ScatteredBlock::Selector & selector,
     const UInt8 * slot_ids,
@@ -168,14 +158,11 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
             /// with the per-row map/flags selection routed by slot. Single clause, so per-row
             /// (block-keyed) flags are needed only for the flagged RIGHT/FULL shapes.
             const bool mark_per_row_used = join_features.right || join_features.full;
-            size_t total_map_bytes = 0;
-            for (const Map * map : maps_by_slot)
-                total_map_bytes += map->getBufferSizeInBytes();
             const RoutedProbeContext<Map> routed_ctx{
                 .slot_ids = slot_ids,
-                .maps_by_slot = maps_by_slot.data(),
-                .flags_by_slot = flags_by_slot.data(),
-                .total_map_bytes = total_map_bytes};
+                .maps_by_slot = maps_by_slot,
+                .flags_by_slot = plan.flags_by_slot.data(),
+                .total_map_bytes = plan.total_map_bytes};
             std::vector<KeyGetter> key_getter_vector;
             key_getter_vector.push_back(std::forward<KeyGetter>(key_getter));
             const std::vector<const Map *> mapv{maps_by_slot[0]};
@@ -183,7 +170,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
                 std::move(key_getter_vector),
                 mapv,
                 added_columns,
-                *flags_by_slot[0],
+                *plan.flags_by_slot[0],
                 selector,
                 added_columns.need_filter,
                 mark_per_row_used,
@@ -196,19 +183,19 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
 
     if (selector.isContinuousRange())
         return joinRightColumns<KeyGetter, Map>(
-            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getRange(), slot_ids, scratch);
+            slot_joins, plan, key_getter, maps_by_slot, added_columns, selector.getRange(), slot_ids, scratch);
     else
         return joinRightColumns<KeyGetter, Map>(
-            slot_joins, key_getter, maps_by_slot, flags_by_slot, added_columns, selector.getIndexes(), slot_ids, scratch);
+            slot_joins, plan, key_getter, maps_by_slot, added_columns, selector.getIndexes(), slot_ids, scratch);
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename Map, typename AddedColumnsType, typename Selector>
 size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     const std::vector<const HashJoin *> & slot_joins [[maybe_unused]],
+    const RoutedProbePlan & plan,
     KeyGetter & key_getter,
-    const std::vector<const Map *> & maps_by_slot,
-    const std::vector<JoinStuff::JoinUsedFlags *> & flags_by_slot,
+    const Map * const * maps_by_slot,
     AddedColumnsType & added_columns,
     const Selector & selector,
     const UInt8 * slot_ids,
@@ -243,17 +230,12 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (join_features.need_replication)
         added_columns.offsets_to_replicate = IColumn::Offsets(rows);
 
-    size_t total_map_bytes = 0;
-    for (const Map * map : maps_by_slot)
-        total_map_bytes += map->getBufferSizeInBytes();
-
-    /// Snapshots of the per-slot arrays: the loop bodies below make opaque calls
+    /// Snapshots of the plan's arrays: the loop bodies below make opaque calls
     /// (`appendFromBlock`), after which the compiler must conservatively reload anything
-    /// reachable through a captured vector.
-    const Map * const * maps_data = maps_by_slot.data();
-    JoinStuff::JoinUsedFlags * const * flags_data = flags_by_slot.data();
+    /// reachable through a captured object.
+    const Map * const * maps_data = maps_by_slot;
+    JoinStuff::JoinUsedFlags * const * flags_data = plan.flags_by_slot.data();
 
-    const size_t num_slots = maps_by_slot.size();
     using MapNonConst = std::remove_const_t<Map>;
 
     /// AMAC find-ring engagement (see `AmacProbe.h`): the process hook, the per-join opt-in
@@ -261,30 +243,16 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// AGGREGATE map bytes; `Force` bypasses the thresholds so tests and A/B harnesses can pin
     /// the path.
     bool use_amac = false;
-    std::vector<SlotMapDesc> slot_descs;
     if constexpr (amac_probe_supported<KeyGetter, Map>)
     {
         const AmacMode amac_mode = joinAmacMode();
-        use_amac = amac_mode != AmacMode::Off && slot_joins[0]->amacEnabled()
+        /// The wrap-free guard of the ring's bare `++cell` walk (a chain through some buffer's
+        /// last pad cell - astronomically rare, adversarially constructible) is collected once
+        /// per build into the plan; it is correctness, not a threshold, so it applies under
+        /// `Force` too.
+        use_amac = amac_mode != AmacMode::Off && slot_joins[0]->amacEnabled() && !plan.chain_may_wrap
             && (amac_mode == AmacMode::Force
-                || (total_map_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows));
-        if (use_amac)
-        {
-            /// Slot descriptors plus the wrap-free guard of the ring's bare `++cell` walk: a
-            /// build where some collision chain reached a buffer's last (pad) cell -
-            /// astronomically rare at load factor 0.5, but adversarially constructible - keeps
-            /// the wrap-aware plain loop. The guard is correctness, not a threshold, so it
-            /// applies under `Force` too.
-            slot_descs.resize(num_slots);
-            bool chain_may_wrap = false;
-            for (size_t s = 0; s < num_slots; ++s)
-            {
-                const MapNonConst & map = *maps_by_slot[s];
-                slot_descs[s] = {map.cursorCells(), map.cursorMask()};
-                chain_may_wrap |= !map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1);
-            }
-            use_amac = !chain_may_wrap;
-        }
+                || (plan.total_map_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows));
     }
 
     /// Look-ahead software prefetch of the plain loop, mutually exclusive with the AMAC pass,
@@ -294,7 +262,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = !use_amac && added_columns.enable_prefetch && total_map_bytes > getMinBytesForPrefetchInJoin();
+        use_prefetch = !use_amac && added_columns.enable_prefetch && plan.total_map_bytes > getMinBytesForPrefetchInJoin();
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -534,7 +502,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range>(
                 key_getter,
                 maps_data,
-                slot_descs.data(),
+                plan.desc_by_slot.data(),
                 slot_ids,
                 rows,
                 range_first,
