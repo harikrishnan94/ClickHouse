@@ -189,6 +189,46 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
             slot_joins, plan, key_getter, maps_by_slot, added_columns, selector.getIndexes(), slot_ids, scratch);
 }
 
+/// The fused descriptor-based find of the routed plain loop (no ring): cheap-key getters over
+/// cursor-capable maps. Unlike the ring it serves every mapped shape (ASOF included) - the
+/// match is consumed in place, so the mapped value never needs to fit a word - and its walk is
+/// wrap-aware, so it also serves the wrapped-chain builds the ring must refuse.
+template <typename KeyGetter, typename Map>
+constexpr bool flat_lookup_supported
+    = join_prefetch_supported<KeyGetter, Map> && AmacResumableMap<std::remove_const_t<Map>>;
+
+/// The fused descriptor-based find of the routed plain loop: address material from the
+/// once-per-build plan, the map object only for its hash/equality functors. The walk is
+/// wrap-AWARE (through the tail pad, wrapping at its end) - exactly `HashMapTable::find`
+/// under `TailPaddedHashTableGrower` - so it doubles as the fallback for wrapped-chain
+/// builds. The offset is the slot-local used-flags offset (`offsetInternal` semantics).
+template <typename KeyGetter, typename Map, typename KeyType>
+ALWAYS_INLINE typename KeyGetter::FindResult flatFindKey(const SlotMapDesc & desc, const KeyType & key, size_t hash)
+{
+    using Cell = typename std::remove_const_t<Map>::cell_type;
+    using Mapped = typename std::remove_const_t<Map>::mapped_type;
+    static constexpr HashTableNoState no_state{};
+    static constexpr size_t tail_pad = std::remove_const_t<Map>::grower_type::tail_pad;
+
+    const Cell * buf = static_cast<const Cell *>(desc.buf);
+    const Cell * pad_end = buf + desc.mask + 1 + tail_pad;
+    const Cell * cell = buf + (hash & desc.mask);
+    while (!cell->isZero(no_state))
+    {
+        if (cell->keyEquals(key, hash, no_state))
+        {
+            /// The probe maps are immutable; the const cast only recovers `findKey`'s own
+            /// `FindResult` shape (its mapped pointer is non-const).
+            auto * mapped = const_cast<Mapped *>(&cell->getMapped());
+            return typename KeyGetter::FindResult(mapped, true, static_cast<size_t>(cell - buf) + 1);
+        }
+        ++cell;
+        if (unlikely(cell == pad_end))
+            cell = buf;
+    }
+    return typename KeyGetter::FindResult(nullptr, false, 0);
+}
+
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename Map, typename AddedColumnsType, typename Selector>
 size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
@@ -235,6 +275,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// reachable through a captured object.
     const Map * const * maps_data = maps_by_slot;
     JoinStuff::JoinUsedFlags * const * flags_data = plan.flags_by_slot.data();
+    /// Sized for every cursor-capable map type (the flat find's gate is a subset), empty for
+    /// the rest - where the flat arms are compiled out.
+    [[maybe_unused]] const SlotMapDesc * flat_descs = plan.desc_by_slot.data();
 
     using MapNonConst = std::remove_const_t<Map>;
 
@@ -267,7 +310,18 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
         {
-            if constexpr (can_prefetch)
+            if constexpr (flat_lookup_supported<KeyGetter, Map>)
+            {
+                /// The flat find's look-ahead: the home-cell address from the descriptor, no
+                /// map-header loads on the prefetch path either.
+                const size_t ind = selectorIndexAt(selector, k);
+                auto && key_holder = key_getter.getKeyHolder(ind, pool);
+                const auto & key = keyHolderGetKey(key_holder);
+                const SlotMapDesc & desc = flat_descs[slot_ids ? slot_ids[ind] : 0];
+                using Cell = typename MapNonConst::cell_type;
+                __builtin_prefetch(static_cast<const Cell *>(desc.buf) + (maps_data[0]->hash(key) & desc.mask));
+            }
+            else if constexpr (can_prefetch)
             {
                 const size_t ind = selectorIndexAt(selector, k);
                 maps_data[slot_ids ? slot_ids[ind] : 0]->prefetch(key_getter.getKeyHolder(ind, pool));
@@ -278,7 +332,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// pass's per-row result (0 = miss; skipped rows were recorded as misses there, so the skip
     /// check compiles out); without it this is the sequential routed lookup. Everything
     /// downstream of the lookup is shared and standard.
-    auto loop = [&]<bool need_filter, bool with_skip, bool precomputed>(
+    auto loop = [&]<bool need_filter, bool with_skip, bool precomputed, bool flat_find = false>(
         const UInt64 * found_words [[maybe_unused]], const UInt64 * found_offsets [[maybe_unused]])
     {
         if constexpr (need_filter)
@@ -331,12 +385,46 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                 if (!skip_row)
                 {
                     const size_t slot = slot_ids ? slot_ids[ind] : 0;
-                    auto find_result = key_getter.findKey(*maps_data[slot], ind, pool);
-                    if (find_result.isFound())
+                    auto handle = [&](auto & find_result) ALWAYS_INLINE
                     {
-                        right_row_found = true;
-                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                            find_result, added_columns, *flags_data[slot], i, ind, current_offset, dummy_known_rows);
+                        if (find_result.isFound())
+                        {
+                            right_row_found = true;
+                            processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                                find_result, added_columns, *flags_data[slot], i, ind, current_offset, dummy_known_rows);
+                        }
+                    };
+                    /// The nested `if constexpr` matters: `flat_find` is the lambda's own
+                    /// parameter, but the arm's expressions only depend on the ENCLOSING
+                    /// template's types, so the trait check (dependent at the enclosing
+                    /// definition) is what keeps the arm out of the non-cursor families'
+                    /// instantiations.
+                    if constexpr (flat_find)
+                    {
+                        if constexpr (flat_lookup_supported<KeyGetter, Map>)
+                        {
+                            /// The fused descriptor find: two cheap loads (slot id, descriptor)
+                            /// on the address path instead of the map-header chase.
+                            auto && key_holder = key_getter.getKeyHolder(ind, pool);
+                            const auto & key = keyHolderGetKey(key_holder);
+                            if (unlikely(maps_data[0]->isZeroKey(key)))
+                            {
+                                /// The zero key lives in the dedicated zero-value cell, outside
+                                /// the descriptor's buffer; the map-resolved find serves it.
+                                auto find_result = key_getter.findKey(*maps_data[slot], ind, pool);
+                                handle(find_result);
+                            }
+                            else
+                            {
+                                auto find_result = flatFindKey<KeyGetter, Map>(flat_descs[slot], key, maps_data[0]->hash(key));
+                                handle(find_result);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        auto find_result = key_getter.findKey(*maps_data[slot], ind, pool);
+                        handle(find_result);
                     }
                 }
             }
@@ -539,19 +627,23 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
     if (!amac_ran)
     {
+        /// The cheap-key cursor-capable families run the fused descriptor find instead of the
+        /// map-resolved `findKey`; everything else (strings below the ring gate, `hashed`,
+        /// LowCardinality, `key8`/`key16`) keeps the plain loop.
+        constexpr bool flat = flat_lookup_supported<KeyGetter, Map>;
         if (added_columns.need_filter)
         {
             if (fast_path)
-                loop.template operator()<true, false, false>(nullptr, nullptr);
+                loop.template operator()<true, false, false, flat>(nullptr, nullptr);
             else
-                loop.template operator()<true, true, false>(nullptr, nullptr);
+                loop.template operator()<true, true, false, flat>(nullptr, nullptr);
         }
         else
         {
             if (fast_path)
-                loop.template operator()<false, false, false>(nullptr, nullptr);
+                loop.template operator()<false, false, false, flat>(nullptr, nullptr);
             else
-                loop.template operator()<false, true, false>(nullptr, nullptr);
+                loop.template operator()<false, true, false, flat>(nullptr, nullptr);
         }
     }
 

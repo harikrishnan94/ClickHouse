@@ -229,3 +229,25 @@ Edits (all landed in working tree, building):
   arm, the byte totals, and the estimate loop.
 - Gates: build rc=0 first try; gtests 23/23; ORDER OK; PARITY OK 636
   (force-pass 8/8+2x0). Snapshot `uncommitted-u3a.tmp.bin`.
+
+## U3b — flat descriptor fused loop (PREREG 005 commit b)
+
+- `flat_lookup_supported` (cheap-key getter + cursor-capable map) runs
+  a fused descriptor find in the routed plain loop: two cheap loads
+  (slot id, `SlotMapDesc`) on the address path instead of the
+  map-header chase; wrap-aware walk through the tail pad (also the
+  wrapped-chain fallback); descriptor-based look-ahead prefetch.
+  Families: key32/64, keys32/64/128/256; strings below the ring gate,
+  `hashed`, LowCardinality and `key8`/`key16` keep the plain loop.
+  Porting lesson recorded: discarded `if constexpr` branches in a
+  generic lambda are still checked for enclosing-only-dependent
+  expressions - the nested trait guard does the real discard.
+- Gates: build rc=0; gtests 23/23; PARITY OK 636 (force-pass
+  8/8+2x0); ORDER OK; G-disasm PASS on both anchors (key64, keys256
+  vs the ahj reference - `disasm_u3b.md`: descriptor `ldp`
+  addressing, zero map-header loads, identical wrap points, per-visit
+  counts within +-1, 7 deltas all explained). Known micro-lever: the
+  candidate reloads closure snapshots per row (~5-9 L1 loads) where
+  ahj hoists to callee-saved registers.
+- Local A/B below-threshold (LOCAL): 3/3 TIE - key64 S1 +0.22%,
+  key64 S2 -2.33%, k128 S2 -1.20%; `ProbeLookup` -30%/-38%/-21%.
