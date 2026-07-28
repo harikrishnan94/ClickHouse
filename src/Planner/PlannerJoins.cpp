@@ -1215,7 +1215,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                         table_join->getTempDataOnDisk(),
                         params.grace_hash_join_initial_buckets,
                         params.grace_hash_join_max_buckets,
-                        params.max_threads,
+                        ConcurrentHashJoin::max_slots,
                         stats_collecting_params,
                         params.join_any_take_last_row);
                 }
@@ -1240,7 +1240,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             {
                 return std::make_shared<ConcurrentHashJoin>(
                     table_join,
-                    params.max_threads,
+                    ConcurrentHashJoin::max_slots,
                     right_table_expression_header,
                     stats_collecting_params,
                     params.join_any_take_last_row);
@@ -1297,7 +1297,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                     table_join->getTempDataOnDisk(),
                     params.grace_hash_join_initial_buckets,
                     params.grace_hash_join_max_buckets,
-                    params.max_threads,
+                    ConcurrentHashJoin::max_slots,
                     stats_collecting_params,
                     params.join_any_take_last_row);
             }

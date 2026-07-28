@@ -89,7 +89,6 @@ namespace Setting
     extern const SettingsBool group_by_use_nulls;
     extern const SettingsUInt64 max_bytes_in_set;
     extern const SettingsUInt64 max_rows_in_set;
-    extern const SettingsMaxThreads max_threads;
     extern const SettingsUInt64 min_count_to_compile_aggregate_expression;
     extern const SettingsUInt64 min_count_to_compile_sort_description;
     extern const SettingsOverflowMode set_overflow_mode;
@@ -1058,7 +1057,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                         context->getTempDataOnDisk(),
                         settings[Setting::grace_hash_join_initial_buckets],
                         settings[Setting::grace_hash_join_max_buckets],
-                        settings[Setting::max_threads],
+                        ConcurrentHashJoin::max_slots,
                         StatsCollectingParams{});
                 else
                     return std::make_shared<SpillingHashJoin>(
@@ -1073,7 +1072,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
 
         if (analyzed_join->allowParallelHashJoin())
             return std::make_shared<ConcurrentHashJoin>(
-                analyzed_join, settings[Setting::max_threads], right_sample_block, StatsCollectingParams{});
+                analyzed_join, ConcurrentHashJoin::max_slots, right_sample_block, StatsCollectingParams{});
         return std::make_shared<HashJoin>(analyzed_join, right_sample_block);
     }
 
@@ -1117,7 +1116,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                         context->getTempDataOnDisk(),
                         settings[Setting::grace_hash_join_initial_buckets],
                         settings[Setting::grace_hash_join_max_buckets],
-                        settings[Setting::max_threads],
+                        ConcurrentHashJoin::max_slots,
                         StatsCollectingParams{});
                 else
                     return std::make_shared<SpillingHashJoin>(

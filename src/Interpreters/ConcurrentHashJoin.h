@@ -35,6 +35,15 @@ class ConcurrentHashJoin : public IJoin
 {
 
 public:
+    /// The slot-count ceiling: the routed probe's slot ids are bytes, so at most 8 route bits.
+    /// Production callers pass exactly this many slots instead of a thread-derived count:
+    /// smaller per-slot maps reach their final buffer size with (almost) no rehash growth
+    /// during the build, and that is what keeps the AMAC find ring's prefetches effective at
+    /// probe time on huge maps - maps grown through several rehash generations defeat them
+    /// (measured on `key64:probe.inner_all.S5.T96`; see the commit that introduced this
+    /// constant). Tests pass explicit smaller counts to cover the single- and few-slot plans.
+    static constexpr size_t max_slots = 256;
+
     /// `external_join_threshold_` is the auto-spill memory cap supplied by `SpillingHashJoin`
     /// when this instance is wrapped. It bounds statistics-driven preallocation so the
     /// reserve cannot blow past the wrapper's spill threshold. Pass 0 for standalone use

@@ -170,7 +170,9 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     bool any_take_last_row_,
     size_t external_join_threshold_)
     : table_join(table_join_)
-    , slots(toPowerOfTwo(std::min<UInt32>(static_cast<UInt32>(slots_), 256)))
+    /// The requested count is honored (tests cover the single- and few-slot plans); production
+    /// callers pass `max_slots` - see its comment for why the count is not thread-derived.
+    , slots(toPowerOfTwo(std::min<UInt32>(static_cast<UInt32>(slots_), max_slots)))
     , any_take_last_row(any_take_last_row_)
     , pool(std::make_unique<ThreadPool>(
           CurrentMetrics::ConcurrentHashJoinPoolThreads,
