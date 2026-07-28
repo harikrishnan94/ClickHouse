@@ -303,3 +303,23 @@ lscpu digests:
   plan) + no-regress spot checks (key64 S4, str S2 inner) with the
   FIX-CYCLE binary; final gate report substitutes these cells'
   verdicts and records the substitution.
+
+## 009 — U5 fix cycle 2: ASOF exclusion narrowed to cheap-key getters
+
+- Trigger (fix-cycle-1 re-run): key64 asof S4 +26.56% -> +5.62% and
+  S2 ~unchanged (+4.49%) - 1a worked where the sorted-vector search
+  dominates cheap keys; but str asof S2 +4.18% -> +11.91% - the
+  blanket exclusion overcorrected: string ASOF keys are expensive to
+  hash and walk, so the ring's MLP still pays there. lcstr S3
+  unmoved (+18.41%; the red is the lookup component, not dispatch) -
+  1b kept (cheaper dispatch, harmless), lcstr disposition to
+  honest-red with the wall-WIN tension recorded.
+- Fix 2: `auto_engageable = !is_asof_join ||
+  !KeyGetter::has_cheap_key_calculation` - ASOF leaves Auto
+  engagement only for cheap-key (numeric) families; string ASOF
+  rings again.
+- Expectation: str asof S2 returns to its ring number (~+4%,
+  marginal at its 4% band); key64 asof S2/S4 keep their fix-1
+  numbers. Remaining marginal ASOF reds (route floor) and lcstr ->
+  honest-red with attribution; no further cycles (arithmetic
+  recorded in WORKLOG).

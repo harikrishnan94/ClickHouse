@@ -293,10 +293,12 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (amac_probe_supported<KeyGetter, Map>)
     {
         const AmacMode amac_mode = joinAmacMode();
-        /// ASOF stays out under `Auto`: the fleet measured the pointer-recording ring a
-        /// net loss for ASOF lookups (the sorted-vector search dominates and the ring's
-        /// two-phase cost stacks on top). `Force` still engages it - tests drive it there.
-        constexpr bool auto_engageable = !join_features.is_asof_join;
+        /// Cheap-key ASOF stays out under `Auto`: the fleet measured the pointer-recording
+        /// ring a net loss there (the sorted-vector search dominates a numeric key's cheap
+        /// hash, and the ring's two-phase cost stacks on top), while string ASOF keys are
+        /// expensive enough that the ring's memory-level parallelism still pays. `Force`
+        /// engages every supported shape - tests drive it there.
+        constexpr bool auto_engageable = !join_features.is_asof_join || !KeyGetter::has_cheap_key_calculation;
         use_amac = amac_mode != AmacMode::Off && slot_joins[0]->amacEnabled()
             && (amac_mode == AmacMode::Force
                 || (auto_engageable && plan.total_map_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows));

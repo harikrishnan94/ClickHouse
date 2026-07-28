@@ -343,3 +343,38 @@ Edits (all landed in working tree, building):
   words; pinned by the LC == plain gtest).
 - Local gates: build rc=0, gtests 25/25, PARITY OK 636, ORDER OK
   (parity_u5fix1.log / order_u5fix1.log).
+
+## U5 aux verdicts (ablation + boundary) and the S5/anti disposition
+
+- Ring-off ablation (arm B = `CLICKHOUSE_JOIN_AMAC=0`; LOSS = OFF
+  slower): k256 S3 +18.88%, str S5 +18.48%, key64 S5 +4.88%, key32
+  S5 +6.65% (TIE at its 8.4% band, directionally consistent). The
+  claimed wins regress with the ring off - G-ablation GREEN - and
+  the ring HELPS at the red S5 cells too, exonerating it there.
+- Boundary cells: force-at-S1/S1p5 = 3/3 TIE (the L2 engagement
+  threshold is placed right; engaging earlier neither helps nor
+  hurts); flat-loop-off at S1p5 = +5.35% (key64) / +15.77% (str
+  ... str S1p5 runs the plain loop below the ring gate, so this
+  arm measures the ring+flat stack off) - the below-threshold
+  engines carry real weight at the boundary.
+- S5/anti honest-red decision (PREREG 008): at `key64 S5` the probe
+  gap is +8.8 thread-s lookup + 2.2 thread-s route vs a 3.7% band
+  (~2.9 s); the ring-off delta shows the ring already contributes
+  ~+5%, and lever 1 (fused ring->emit) could at most recover the
+  found-word round trip (~1-2 thread-s) plus none of the route pass
+  - it cannot reach the band arithmetically. `anti S4`: the route
+  pass alone (0.74 thread-s) exceeds the band (0.29 s) on an
+  emit-light cell - no lever removes routing. Disposition:
+  HONEST-RED x3 (key32 S5, key64 S5, anti S4) with this attribution;
+  lever 1 recorded as a future lead, not attempted as a doomed
+  cycle.
+- Force-engage: satisfied from the boundary force arm - counters
+  present under force (`AmacProbeRows` 192M, build ring 24000 rows +
+  128 growths) and the cell in-band (+0.12%). Honest nuance: at S1
+  the ring already auto-engages on the fleet's 128-slot plans (the
+  per-slot minimum buffers aggregate past the L2 threshold), so the
+  force arm contrasts ON-vs-ON; the off arm (`boundary_off`)
+  supplies the real ON-vs-OFF contrast (+5.35%/+15.77% for ON).
+  Also recorded: the per-run `events` field carries the seven shared
+  events only; the Amac counters live in the cell-level `engagement`
+  capture (matters for verification scripts).
