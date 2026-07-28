@@ -445,3 +445,177 @@ respectively while shards 1 and 6 ran 18 each. That is the work-stealing driver 
 designed (costliest-first, so a shard that draws an S5 cell is busy for minutes), not an
 imbalance to correct. No cell was rerun; there are no rerun files in
 `fleet/results_phj_ph/`, and every row of the sweep is preserved.
+
+---
+
+## Units 3–4 venue preparation
+
+**Goal.** Get both arms resident on one snapshot-cloned volume per shard, with the
+`keys_store` tables the legacy suite reads, without touching the measurement protocol.
+
+**Warm-read hydration — measured, and the reason it was worth doing.**
+
+```
+$ # shard 0, first attempt, xargs -P 8
+35.3497 GB read … 37.2199 GB read after 20s     ->  93 MB/s
+$ # after raising to xargs -P 64
+throughput: 473 MB/s   cats: 64
+$ # single-stream tail (1 cat left, 396 GB of ~417 GB done)
+396.1 GB read … 14 MB/s
+$ # after launching fleet/hydrate_tail.py (64 concurrent 64 MiB ranges)
+rate now: 554 MB/s ; 436.3 GB read total
+```
+A snapshot-backed volume serves each first-touch block with an S3 round trip, so the limit
+is latency, not the 1000 MB/s the volume is provisioned for; only concurrency hides it. All
+8 shards finished (`warm read done: 2026-07-28T18:51:25Z`, `442G` used / `999G` free). This
+is insurance against the prior campaign's recorded failure where a *first* touch of a
+tier-b table blew the fixed 600 s budget.
+
+**Judgement call — venue left alone rather than tuned, on evidence.**
+`prepare-keys` bottlenecked on `OPTIMIZE TABLE keys_store.k0 FINAL`: 817 s elapsed, 16 parts
+/ 11.48 GiB, 90% progress. My first instinct was that the gp3 volume's 4000 IOPS was the
+constraint and that `modify-volume` (my own tagged resource, applied identically to both
+arms, therefore unable to bias a within-host A/B) would buy back an hour. The evidence says
+otherwise:
+
+```
+$ cat /proc/loadavg
+1.07 2.67 6.69 1/1650 73294
+```
+Load 1.07 = exactly one core busy, i.e. the merge is single-thread CPU bound, not I/O bound,
+so more IOPS would buy nothing. Decision: **do not modify the volumes**, keep the shape the
+runbook's helper hard-codes, and absorb the wait. Revisit trigger: if a later phase shows
+device saturation (sustained >900 MB/s or IOPS at the 4000 ceiling) rather than a single busy
+core, revisit — and if I do change it, it gets applied to all 8 shards *before* any timed run
+so no measurement straddles the change, and recorded as a deviation.
+
+**Teardown readiness proven early, with the gate's power to fail recorded.**
+
+```
+$ bash tmp/chj_amac/fleet/teardown_phj_ph.sh --dry-run
+=== TEARDOWN phj-ph-ab-20260728 … (DRY RUN) ===
+instances: i-069d5483a4d36300d	i-065ebd96c4dd296e2	i-0781d51e1d57c8b1a	i-0d65b4dd8f104e168	i-0f8ece4037a96fadc	i-0cdef32c6d6060ecb	i-0f8dadc4b4757f83d	i-01ab31f17f082596e
+volumes:   vol-0274f5096443069ca vol-09c4e9ba1983fdccf vol-0a24edfb74a2bb4a8 vol-0d92b3896d8ef4737 vol-012e93820b6d74251 vol-07ecb7ef8433fc040 vol-00922d1ef1d9576c9 vol-056bf3d5c48f8ca91 vol-0aeff043418eaeb06 vol-0b1198722222e06e4 vol-016d8aa7ded5fbd2b vol-0d4006d03541ec926 vol-0d6f450b79172d1c1 vol-0f899edf947e6ba79 vol-0848273a57ae77390 vol-007d748bef0937ddc
+sgs:       sg-021349461933fb060
+```
+16 volumes = the 8 data clones plus the 8 `DeleteOnTermination` root volumes, all tagged at
+creation. Recording this **before** teardown is what makes the post-teardown empty result
+meaningful rather than vacuous.
+
+---
+
+## Independent verification pass 1 (Units 1–2) and the blocking finding it produced
+
+A verifier subagent that did none of the execution was given the prompt, the raw JSONL, the
+worklog and the gate outputs, and asked to refute. Its verdict was **FIX-THEN-RESHIP** with
+one blocking finding and three leads. **Its tooling was degraded** — the `Shell` tool was
+unavailable to it for the whole session, so it could not run `sha256sum`, `git`, or `python`
+and substituted read-only greps plus `.git/logs/HEAD`. Its independence was intact; its
+ability to execute the gates was not. Recorded here because that materially weakens two of
+its non-findings, and because the shell-based re-checks below were then run by me, the doer —
+which is *not* independent. A second verifier pass with a working shell is required before
+final delivery and is noted as such.
+
+### Finding 1 — BLOCKING, and it is real. The per-cell ABAB leader flip never fired.
+
+Verified myself from the raw rows:
+
+```
+$ python3 tmp/chj_amac/fleet/recount_independent.py 'tmp/chj_amac/fleet/results_phj_ph/results.shard*.jsonl' tmp/chj_amac/fleet/report_phj_ph.txt
+arm leading at run 0 (position 0): {'A': 93}
+within-cell positions for one cell (should strictly alternate A,B,A,B,...):
+  0:A 1:B 2:A 3:B 4:A 5:B 6:A 7:B 8:A 9:B 10:A 11:B
+```
+
+**Mechanism.** `fleet_ab.run_cell` picks the leader positionally:
+`order_pair = (0, 1) if cell_index % 2 == 0 else (1, 0)`. `run_sweep_stealing.py` runs
+**one cell per `fleet_ab.py sweep` invocation** (it passes `--cells <single id>`), so
+`enumerate(cells)` always yields `cell_index = 0` and the leader is always arm A. The flip is
+positional, not content-derived, so it cannot survive being sharded one-cell-per-process.
+Note the contrast the campaign prompt itself draws: jbmt flips its leader with
+`zlib.crc32(unit_id) & 1`, which *is* stable under that sharding; `fleet_ab` is not.
+
+**This is a genuine, previously undisclosed deviation from the protocol I pre-registered**
+("ABAB with the per-cell leader flip"). It is disclosed, not argued away.
+
+**Measured impact, rather than an assurance.** Two facts bound it. First, the interleave
+*within* a cell is still strict ABAB — arm A at even positions, arm B at odd, shown above —
+so both arms sample the same time window and the same thermal/neighbour conditions; what did
+not vary is only *who goes first in each pair*. Second, a leave-out-first-pair sensitivity
+recount over the same rows (no re-running, no protocol change) moves exactly **one** verdict
+of 93:
+
+```
+--- sensitivity: drop the first A/B pair, recompute every verdict ---
+all 10 runs:    cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0
+runs 1..9 only: cells=93 win=27 tie=27 loss=23 invalid=16 insufficient=0
+verdicts that change when the leading pair is dropped: 1
+  str:probe.semi_anti.S4.T96.anti                 TIE -> LOSS  (diff +5.06% -> +6.68%)
+```
+
+The single affected cell moves **against** the candidate (TIE → LOSS), i.e. the
+always-A-first ordering was, in the one place it mattered, mildly *flattering* to the
+candidate. So the defect cannot be responsible for the campaign's regression finding — it
+works the other way. 92 of 93 verdicts are invariant to who led.
+
+**Not fixed by re-running.** Correcting the flip means editing `fleet_ab.run_cell`'s leader
+selection — a change to the measurement protocol mid-campaign, which is forbidden, and which
+would also make the results incomparable to the U5 precedent that ran the same positional
+flip. The defect is reported, its impact is measured, and the recommendation (re-express the
+leader as `crc32(cell_id) & 1` so it survives one-cell-per-invocation) is left for a future
+campaign that can adopt it before measuring.
+
+### Finding 2 — VALID, and now settled. "Recomputed independently" was overstated.
+
+The verifier correctly noticed that `fleet/analyze_phj_ph.py` calls
+`fleet_ab.cell_verdicts`, so it re-invokes the *same* scoring function and cannot disagree
+with it. Fixed by writing `fleet/recount_independent.py`, which does **not** import
+`fleet_ab` and re-implements the rule from its documented semantics (both arms present, all
+rows valid, ≥5 valid runs per arm, median `duration_us` of B vs A against the per-cell band
+the harness printed). It agrees exactly:
+
+```
+--- independent recount (no fleet_ab import) ---
+all 10 runs: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0
+```
+
+Identical to `FLEET_AB REPORT RESULT: cells=93 win=27 tie=28 loss=22 invalid=16
+insufficient=0`. The report's wording is corrected to distinguish the two.
+
+### Finding 3 — REFUTED with evidence. The sweep console logs exist and are committed.
+
+The verifier reported that the cited `fleet/results_phj_ph/sweep.shard*.log` and
+`fleet/sweep_phj_ph.log` do not exist, so the `FLEET_STEALING` line and the OOM exception
+lived only in prose. They exist and are tracked:
+
+```
+$ git ls-files tmp/chj_amac/fleet/results_phj_ph/ | grep -c 'sweep.shard.*log'
+8
+$ git ls-files tmp/chj_amac/fleet/sweep_phj_ph.log
+tmp/chj_amac/fleet/sweep_phj_ph.log
+```
+The finding is an artifact of the verifier being unable to run `ls`/`git`. The OOM's arm
+attribution *is* independently checkable from `sweep.shard0.log`, which contains
+`warmup 0 failed on arm baseline`.
+
+### Finding 4 — REFUTED with evidence. No uncommitted harness edit.
+
+```
+$ git status --porcelain
+ M tmp/chj_amac/PHJ_PH_WORKLOG.md
+```
+Only this worklog (being written) is dirty. `fleet_ab.py` was committed as `635aa368fd5`
+before any sweep; the ` M tmp/chj_amac/fleet_ab.py` the verifier saw is the *opening* git
+status quoted in this worklog's Unit 0 section, i.e. the pre-commit state, not a live delta.
+
+### Findings the verifier looked for and did not find
+
+Binary identity and arm binding (930 rows each, zero cross-binding, every `proc_exe_sha256`
+matching a claimed prefix); the 320 invalid rows all naming **arm A**; the OOM cell having
+zero rows; absence of reruns; `collect_hash_table_stats_during_joins = 1` on every row
+(proved via the plain cell and its `.statson` twin carrying an identical
+`settings_fingerprint`, which also confirms `.statson` is now a no-op); U5's arm-B sha being
+distinct and its settings fingerprint differing (so the confound is real, as reported); the
+31-changed-verdict table transcription (5 rows spot-checked); G2's teeth (106 vs 94, all 12
+extras ending `.hash`); and prereg-before-sweep ordering (prereg `96532537d4d` at 17:17:35Z,
+earliest sweep row `recorded_at` 17:37:08Z).

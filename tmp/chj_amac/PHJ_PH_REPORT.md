@@ -30,6 +30,42 @@ command line that produced them:
 
 *(none raised yet; the one candidate is volume deletion at teardown — see Unit 6)*
 
+### Protocol deviation found in verification — disclosed, impact measured
+
+**The `fleet_ab` per-cell ABAB leader flip never fired: arm A (baseline) led the pair in all
+93 cells.** Found by the independent verifier, confirmed from the raw rows.
+
+*Mechanism.* `fleet_ab.run_cell` selects the leader positionally
+(`order_pair = (0, 1) if cell_index % 2 == 0 else (1, 0)`), and
+`run_sweep_stealing.py` runs **one cell per `fleet_ab.py sweep` process**, so `cell_index` is
+always 0. A positional flip cannot survive one-cell-per-invocation sharding. (Contrast jbmt,
+which derives its leader from `zlib.crc32(unit_id) & 1` and *is* stable under the same
+sharding — confirmed live in this campaign: its rows carry `lead_arm: candidate` and
+`lead_arm: baseline`.)
+
+*What is still true.* The interleave **within** each cell is strict ABAB — arm A at even
+positions, arm B at odd, verified from the `position` field:
+`0:A 1:B 2:A 3:B 4:A 5:B 6:A 7:B 8:A 9:B` — so both arms sample the same window under the
+same conditions. Only *who goes first in each pair* failed to alternate across cells.
+
+*Measured impact, not an assurance.* A leave-out-the-first-pair recount over the same rows
+(no re-running, no protocol change) moves exactly **one verdict of 93**, and it moves
+**against** the candidate:
+
+```
+all 10 runs:    cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0
+runs 1..9 only: cells=93 win=27 tie=27 loss=23 invalid=16 insufficient=0
+verdicts that change when the leading pair is dropped: 1
+  str:probe.semi_anti.S4.T96.anti                 TIE -> LOSS  (+5.06% -> +6.68%)
+```
+
+So the defect cannot manufacture this campaign's regression finding — in the one cell where
+it mattered, always-A-first mildly *flattered* the candidate. 92 of 93 verdicts are invariant
+to who led. **Not fixed mid-campaign:** correcting it means editing `run_cell`'s leader
+selection, which is a protocol change and would also break comparability with the U5
+precedent that ran the same positional flip. Recommended for a future campaign, before it
+measures.
+
 ### HIGH-IMPACT assumptions
 
 1. **The A/B compares the branch tip, not the slot-decoupling commit in isolation.** The
@@ -61,8 +97,9 @@ command line that produced them:
 
 ## Suite 1 — `fleet_ab` measured plan (94 cells)
 
-**Verdict counts** (`fleet/report_phj_ph.txt`, recomputed independently in
-`fleet/analysis_phj_ph.txt`):
+**Verdict counts** (`fleet/report_phj_ph.txt`; re-scored with the same
+`fleet_ab.cell_verdicts` in `fleet/analysis_phj_ph.txt`, and **independently re-implemented**
+without importing `fleet_ab` in `fleet/recount_independent.py`, which agrees exactly):
 
 | cells with data | WIN | TIE | LOSS | INVALID | INSUFFICIENT | uncalibrated |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -289,12 +326,75 @@ required, and it changes a *setting*, not a run count, validity rule or scoring 
 | Candidate has the 3 AMAC engagement counters | `./tmp/chj_amac/bins/clickhouse-candidate-96532537d4d.bin local --query "SELECT name FROM system.events WHERE name LIKE 'ConcurrentHashJoinAmac%' ORDER BY name SETTINGS system_events_show_zero_values = 1"` | `ConcurrentHashJoinAmacBuildRingGrowths` / `…AmacBuildRows` / `…AmacProbeRows` | (1) `strings -a … \| grep -c ConcurrentHashJoinAmac` → `12`; (2) same query on the **baseline** → `0` (differential control: the check can fail); (3) `src/Common/ProfileEvents.cpp:438-440` | **GREEN** (2 independently-failing origins) |
 | The swept cell list is exactly the 94-cell measured plan, no `hash` cells | `python3 -c "import json; c=json.load(open('tmp/chj_amac/fleet/matrix.json'))['measured_plan']['cells']; h=[x for x in c if x.endswith('.hash')]; assert len(c)==94 and not h, (len(c), h); print(','.join(c))"` | 94 ids, exit `0` | `load_cells_file` in `fleet_ab.py` concatenates `measured_plan` + `hash_inband` → 106, confirming what an unset `--cells` would have swept | **GREEN (G2)** |
 | The sweep completed every cell | `python3 tmp/chj_amac/fleet/run_sweep_stealing.py … -- --require-engagement` | `FLEET_STEALING RESULT: cells_run=94 cells_failed=17 … -> FAIL` | per-cell `CELL FAILED` lines in `fleet/results_phj_ph/sweep.shard*.log`; 320 invalid rows all reading `below-duration-floor (arm A …)` | **RED (G3)** — cause diagnosed (R2, R3), unreachable without a banned move |
-| Coverage and validity | `python3 tmp/chj_amac/fleet_ab.py report --results "$(ls -1 tmp/chj_amac/fleet/results_phj_ph/results.shard*.jsonl \| paste -sd,)"` | `FLEET_AB REPORT RESULT: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0 uncalibrated=0` (exit 1) | independent recount from raw JSONL via `fleet/analyze_phj_ph.py` → identical counts | **RED (G4)** — `invalid=16`, `cells=93` |
+| Coverage and validity | `python3 tmp/chj_amac/fleet_ab.py report --results "$(ls -1 tmp/chj_amac/fleet/results_phj_ph/results.shard*.jsonl \| paste -sd,)"` | `FLEET_AB REPORT RESULT: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0 uncalibrated=0` (exit 1) | `fleet/recount_independent.py` — a second implementation that does **not** import `fleet_ab` — recomputes `cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0`, identical | **RED (G4)** — `invalid=16`, `cells=93` |
 | `parallel_hash` actually engaged on the candidate | (non-gate) `fleet/analyze_phj_ph.py` | `ConcurrentHashJoinAmacProbeRows: engaged(>0) in 82 cells; zero in 11; counter absent in 0 (of 93)` | `--require-engagement` was passed and did **not** trip (it fails closed at cell 0 if the candidate lacks the counters) | **GREEN** |
 | jbmt legacy suite: all 347 cells OK | G5 (see prereg) | *(pending)* | — | *(see status)* |
 | jbmt real suite coverage per tier | G6 (see prereg) | *(pending)* | — | *(see status)* |
 | Cross-arm A/B result | G7 (see prereg) | *(pending)* | — | *(see status)* |
 | Teardown proof | G8 (see prereg) | *(pending)* | — | *(see status)* |
+
+---
+
+## Independent verification
+
+**Pass 1 (Units 1–2).** A verifier subagent that did none of the execution was given this
+prompt, the raw JSONL, the worklog and the gate outputs and asked to refute. Verdict:
+**FIX-THEN-RESHIP**, one blocking finding, three leads.
+
+**Its tooling was degraded and that is disclosed, not glossed:** the `Shell` tool was
+unavailable to it for the entire session, so it could not run `sha256sum`, `git`, `python`, or
+re-execute G1–G4, and substituted read-only greps plus `.git/logs/HEAD`. Its *independence*
+was intact; its *executability* was not. The shell-based re-checks were then run by me, the
+doer — which is **not** independent. A second verifier pass with a working shell is required
+before final delivery.
+
+| Finding | Status | Resolution |
+| --- | --- | --- |
+| 1. ABAB per-cell leader flip never fired; arm A led all 93 cells | **CONFIRMED, blocking** | Disclosed above with mechanism and a measured impact bound (1 verdict of 93 changes, against the candidate). Not fixed mid-campaign — that would be a protocol edit. |
+| 2. "Recomputed independently" overstated — `analyze_phj_ph.py` imports `fleet_ab.cell_verdicts` | **VALID** | Wording corrected, and `fleet/recount_independent.py` written as a genuine second implementation that does not import `fleet_ab`. It agrees exactly. |
+| 3. Cited sweep console logs allegedly absent | **REFUTED** | `git ls-files` shows all 8 `fleet/results_phj_ph/sweep.shard*.log` plus `fleet/sweep_phj_ph.log` tracked. The verifier could not run `ls`/`git`. The OOM's arm attribution *is* checkable: `sweep.shard0.log` contains `warmup 0 failed on arm baseline`. |
+| 4. Uncommitted working-tree edit to `fleet_ab.py` | **REFUTED** | `git status --porcelain` shows only the in-progress worklog dirty. The ` M fleet_ab.py` the verifier saw is the *opening* status quoted inside the worklog — the pre-commit state, not a live delta. |
+
+Checks the verifier ran that found nothing wrong: two distinct binaries cleanly bound to arms
+(930 rows each, zero cross-binding, every `proc_exe_sha256` matching a claimed prefix); all
+320 invalid rows naming **arm A**; the OOM cell having zero rows; no reruns;
+`collect_hash_table_stats_during_joins = 1` on every row (proved by a plain cell and its
+`.statson` twin sharing an identical `settings_fingerprint`, which also confirms `.statson` is
+now a no-op); U5's arm-B sha distinct and its settings fingerprint different, so the confound
+is real as reported; the 31-changed-verdict table (5 rows spot-checked); G2's teeth (106 vs
+94, all 12 extras ending `.hash`); prereg-before-sweep ordering (prereg `96532537d4d` at
+17:17:35Z vs earliest sweep row 17:37:08Z).
+
+---
+
+## jbmt two-arm smoke (`selftest`) — orientation, and honestly red
+
+`selftest` has no `--algorithms` flag, so it always exercises the default
+`partitioned_hash,parallel_hash` pair. `partitioned_hash` does not exist in either campaign
+binary, so it fails — by design of the campaign, not by defect:
+
+```
+[FAIL] status OK: … Code: 418. DB::Exception: Unexpected value of JoinAlgorithm: 'partitioned_hash'. Must be one of [… 'parallel_hash' …]. (UNKNOWN_JOIN)
+[FAIL] partitioned path event nonzero
+[FAIL] LEFT ANTI unit status consistent with path events: … 'partitioned_hash' … (UNKNOWN_JOIN)
+selftest: FAILURES PRESENT
+```
+
+**Every failure names `partitioned_hash`.** What matters for this campaign passed:
+
+```
+[PASS] no spurious path events under plain hash (baseline)
+[PASS] no spurious path events under plain hash (candidate)
+[PASS] timed runs alternate arms (parallel_hash): baselinecandidatebaselinecandidatebaselinecandidate
+[PASS] wrong expected -> INVALID: row_count 400000 != closed-form expected 400001
+[PASS] mid-run insert -> INVALID (parts or checksum)
+[PASS] fingerprint changes on mutation
+```
+
+The four must-fail proofs all fire, and **the two-arm ABAB alternation is verified live** —
+which matters because the prior campaign was single-arm and never exercised jbmt's two-arm
+path. `selftest` also reported bootstrapping a small `keys_store.k0`; it did not clobber the
+real one — `k0` reads `1.02 billion` rows on both arms on the shards checked.
 
 ---
 

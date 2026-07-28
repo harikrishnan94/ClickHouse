@@ -1,0 +1,14 @@
+rows=1860 bands_read_from_report=77
+
+--- independent recount (no fleet_ab import) ---
+all 10 runs: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0
+
+--- ABAB leader check: who led the pair in each cell ---
+arm leading at run 0 (position 0): {'A': 93}
+within-cell positions for one cell (should strictly alternate A,B,A,B,...):
+  0:A 1:B 2:A 3:B 4:A 5:B 6:A 7:B 8:A 9:B 10:A 11:B
+
+--- sensitivity: drop the first A/B pair, recompute every verdict ---
+runs 1..9 only: cells=93 win=27 tie=27 loss=23 invalid=16 insufficient=0
+verdicts that change when the leading pair is dropped: 1
+  str:probe.semi_anti.S4.T96.anti                 TIE -> LOSS  (diff +5.06% -> +6.68%)
