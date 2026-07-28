@@ -1,0 +1,6 @@
+=== TEARDOWN phj-ph-ab-20260728 2026-07-28T18:57:44Z (DRY RUN) ===
+--- BEFORE: live inventory by RUN_TAG (this is the gate's power to fail) ---
+instances: i-069d5483a4d36300d	i-065ebd96c4dd296e2	i-0781d51e1d57c8b1a	i-0d65b4dd8f104e168	i-0f8ece4037a96fadc	i-0cdef32c6d6060ecb	i-0f8dadc4b4757f83d	i-01ab31f17f082596e
+volumes:   vol-0274f5096443069ca	vol-09c4e9ba1983fdccf	vol-0a24edfb74a2bb4a8	vol-0d92b3896d8ef4737	vol-012e93820b6d74251	vol-07ecb7ef8433fc040	vol-00922d1ef1d9576c9	vol-056bf3d5c48f8ca91	vol-0aeff043418eaeb06	vol-0b1198722222e06e4	vol-016d8aa7ded5fbd2b	vol-0d4006d03541ec926	vol-0d6f450b79172d1c1	vol-0f899edf947e6ba79	vol-0848273a57ae77390	vol-007d748bef0937ddc
+sgs:       sg-021349461933fb060
+DRY RUN: would terminate the instances above, tag+delete the volumes above, delete the SGs above
