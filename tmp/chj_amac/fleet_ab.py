@@ -530,7 +530,11 @@ def timed_settings(cell: Cell, arm: "Arm", threads: int) -> dict:
         "enable_join_runtime_filters": 0,
         "max_bytes_before_external_join": 0,
         "max_bytes_ratio_before_external_join": 0,
-        "collect_hash_table_stats_during_joins": 1 if cell.statson else 0,
+        # Stats collection/reuse is ClickHouse's production default, so the fleet measures it:
+        # within a cell the first runs on each server collect, later runs pre-reserve from the
+        # cached stats (servers persist across a cell's runs; they restart between cells). The
+        # legacy `.statson` cell modifier is now a no-op kept for cell-id compatibility.
+        "collect_hash_table_stats_during_joins": 1,
         "max_execution_time": 600,
         "join_use_nulls": 1 if cell.jun else 0,
     }
