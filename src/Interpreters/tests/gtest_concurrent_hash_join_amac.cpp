@@ -806,7 +806,7 @@ Block makeAsofBlock(
     return block;
 }
 
-/// One full ASOF build + probe under the given hook mode: 64 keys x asof points {10, 20, 30}
+/// One full ASOF build + probe under the given hook mode: 64 keys x ASOF points {10, 20, 30}
 /// on the build side, every key probed at the boundary and between-point values
 /// {5, 10, 15, 20, 25, 30, 35} (448 rows). The returned rows are sorted; `build_id` uniquely
 /// identifies the matched build row, so equality across modes pins the inequality semantics.
@@ -816,7 +816,7 @@ JoinedRows<UInt64> runAsofProbe(AmacMode mode, ASOFJoinInequality inequality)
     const Block left_header = makeAsofBlock("k", "t", "probe_id", {}, {}, {});
     const Block right_header = makeAsofBlock("rk", "rt", "build_id", {}, {}, {});
     auto table_join = makeTableJoin(left_header, right_header, JoinKind::Inner, JoinStrictness::Asof);
-    /// The trailing key pair is the asof inequality column.
+    /// The trailing key pair is the ASOF inequality column.
     table_join->getClauses().back().addKey("t", "rt", /*null_safe_comparison=*/false);
     table_join->setAsofInequality(inequality);
     auto join = std::make_shared<ConcurrentHashJoin>(

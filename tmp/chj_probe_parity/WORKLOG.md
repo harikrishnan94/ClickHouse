@@ -312,3 +312,19 @@ Edits (all landed in working tree, building):
   per-visit steady loop untouched).
 - Coverage boundary (as pre-registered): SQL cannot reach wrapped
   plans deterministically; ring-on-wrapped coverage is the gtest.
+
+## U4 hygiene pass (633cca3879a + 349bafd1e1e)
+
+- Reports: hygiene/u4.{reduce,humanize}.md. Applied: all five stale
+  doc-drift comments corrected (the precomputed arm's
+  cannot-serve-ASOF claim, the 64-instantiation count, the moved
+  policy doc's copy-only and wrap-refusing-gate claims, stale
+  cross-references); the `_WALKS` wrapper macro restores the 10-line
+  instantiation list (demangled symbol set verified byte-identical,
+  160); the phase-B by-word/by-pointer arms share one prologue and a
+  single `processMatch` site; rationale dedup + de-caps. Skipped
+  (flag-only / API churn): enum casing, `makeAsofBlock` fold,
+  "slot lane" wording, namespace naming.
+- Re-gates: build rc=0, gtests 25/25, symbols 160 byte-identical,
+  PARITY OK 636 on the post-fixer snapshot
+  (`uncommitted-u4hyg.tmp.bin`).

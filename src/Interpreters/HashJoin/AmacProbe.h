@@ -61,7 +61,7 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
     }
 }
 
-/// Mapped values the find pass records by POINTER instead: the ASOF sorted-lookup holder does
+/// Mapped values the find pass records by pointer instead: the ASOF sorted-lookup holder does
 /// not fit a word, but the probe maps are immutable, so the mapped value's address (never 0
 /// for a built cell) stays valid into the emit phase, which rebuilds the `FindResult` from it
 /// and runs `findAsof` as the plain loop would.
@@ -98,14 +98,18 @@ template <size_t initial_size_degree>
 inline constexpr bool is_tail_padded_linear_grower<TailPaddedHashTableGrower<initial_size_degree>> = true;
 
 /** Run the AMAC find pass over `rows` probe rows: out-of-order lookups filling the per-row
-  * result arrays - `found_word[i]` is the matched cell's mapped value copied BY VALUE (0 = no
-  * match; skipped and zero-key rows are recorded synchronously, so every row gets a result) and,
-  * for the flagged shapes only (`need_flags`), `found_offset[i]` is the matched cell's
-  * slot-LOCAL used-flags offset (`(cell - buf) + 1`, matching `offsetInternal`; the flag
+  * result arrays - `found_word[i]` is the matched cell's recorded word (the mapped value by
+  * value for the word-sized mapped types, its address for ASOF - see `amac_mapped_by_pointer`;
+  * 0 = no match; skipped and zero-key rows are recorded synchronously, so every row gets a
+  * result) and, for the flagged shapes only (`need_flags`), `found_offset[i]` is the matched
+  * cell's slot-LOCAL used-flags offset (`(cell - buf) + 1`, matching `offsetInternal`; the flag
   * structures stay per-slot, and the emit side re-derives the slot from `slot_ids[ind]`).
   * The source row of pass position `i` is `range_first + i` when `selector_is_range`,
-  * `selector_indexes[i]` otherwise. Internally chunked so the ring's row index fits 16 bits.
+  * `selector_indexes[i]` otherwise. `walk` selects the collision-walk policy (see `AmacWalk`).
+  * Internally chunked so the ring's row index fits 16 bits.
   * Increments `ConcurrentHashJoinAmacProbeRows` by `rows`, once per pass.
+  * The template body lives in `AmacProbeImpl.h`, included by `AmacProbe.cpp` (the explicit
+  * instantiations below) and by tests that instantiate it over adversarial maps.
   */
 template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range, AmacWalk walk>
 void amacFindPass(
@@ -153,30 +157,25 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
         UInt64 * found_word, \
         UInt64 * found_offset);
 
-/// All 64 instantiations: 8 families x {`RowRef`, `RowRefList`} mapped x flagged-or-not x
-/// {range, indexes} selector. Both flag arms exist for every shape, so any (kind, strictness)
-/// resolves to a preinstantiated symbol.
+/// Both walk siblings of one shape: the walk axis is orthogonal to every other axis.
+#define AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE, AmacWalk::wrap_aware)
+
+/// All 160 instantiations: 8 families x {`MapsOne`, `MapsAll` (both flag arms each), `MapsAsof`
+/// (flagless)} x {range, indexes} selector x {bare, wrap-aware} walk. Any reachable
+/// (kind, strictness) resolves to a preinstantiated symbol.
 #define AMAC_FIND_PASS_INSTANTIATIONS(EXTERN, TYPE) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, true, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, true, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, false, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, false, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, true, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, true, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, false, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, false, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, true, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, true, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, false, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, false, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, true, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, true, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, true, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, true, AmacWalk::wrap_aware) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, false, AmacWalk::bare) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, false, AmacWalk::wrap_aware)
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsOne, false, true) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsOne, false, false) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsOne, true, true) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsOne, true, false) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsAll, false, true) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsAll, false, false) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsAll, true, true) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsAll, true, false) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsAsof, false, true) \
+    AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MapsAsof, false, false)
 
 #define M(TYPE) AMAC_FIND_PASS_INSTANTIATIONS(extern, TYPE)
 APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)

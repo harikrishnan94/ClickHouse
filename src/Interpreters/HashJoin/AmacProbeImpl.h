@@ -19,27 +19,28 @@ namespace DB
 namespace AmacProbeDetail
 {
 
-
 /** The AMAC find policy of the two-phase routed probe (phase A): out-of-order lookups that only
-  * fill the per-row result arrays - the matched cell's mapped value copied by value into
-  * `found_word` (0 = no match; see `amac_mapped_fits_word` in `AmacProbe.h` for why the copy,
-  * not a pointer, is recorded) and, for the flagged shapes only, its slot-local used-flags
-  * offset. Nothing is emitted here; phase B consumes the results in left-row order - the
-  * flagless word-mapped lazy shapes through the dispatch-free `word_loop`, the rest through the
-  * standard `processMatch` (see `HashJoinRoutedMethodsImpl.h`).
+  * fill the per-row result arrays - the matched cell's recorded word (the mapped value by
+  * value, or its address for ASOF; see `amac_mapped_fits_word` and `amac_mapped_by_pointer` in
+  * `AmacProbe.h`) into `found_word` (0 = no match) and, for the flagged shapes only, its
+  * slot-local used-flags offset. Nothing is emitted here; phase B consumes the results in
+  * left-row order - the flagless word-mapped lazy shapes through the dispatch-free `word_loop`,
+  * the rest through the standard `processMatch` (see `HashJoinRoutedMethodsImpl.h`).
   *
   * One ring serves MANY maps - each row's route slot's. The slot's address material is resolved
   * once at admit from the flat descriptor array and carried in the ring slot as the RESOLVED
   * CELL POINTER, so a steady visit dereferences nothing but the cell itself and the stored
   * probe key: the map headers, scattered across as many heap objects as there are slots, would
-  * otherwise sit on the address chain of every visit. The collision walk is a bare `++cell` -
-  * no mask, no bound check: the buffers are tail-padded (`TailPaddedHashTableGrower`) and the
-  * engagement gate verified that no chain reached a buffer's last cell, so every walk
-  * terminates at an empty cell at or before it. The key is packed ONCE at admit and read per
-  * visit: re-fetching it through `getKeyHolder` re-packs the wide fixed keys (keys128/keys256)
-  * from the column pointers on EVERY visit - measured on the `ahj` prototype as the dominant
-  * per-visit cost of the wide-key ring. Ported (as ideas) from `RoutedAmacFindPolicy` of the
-  * `ahj` prototype (`src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h`).
+  * otherwise sit on the address chain of every visit. The collision walk is `++cell` under the
+  * `walk` policy selected from the plan's wrap bit (see `AmacWalk`): bare - no mask, no bound
+  * check - for the plans where no chain reached a buffer's last pad cell, so every walk
+  * terminates at an empty cell in the tail-padded buffer (`TailPaddedHashTableGrower`);
+  * wrap-aware, wrapping at the pad end like the grower's `next`, for the rare builds where
+  * one did. The key is packed ONCE at admit and read per visit: re-fetching it through
+  * `getKeyHolder` re-packs the wide fixed keys (keys128/keys256) from the column pointers on
+  * EVERY visit - measured on the `ahj` prototype as the dominant per-visit cost of the
+  * wide-key ring. Ported (as ideas) from `RoutedAmacFindPolicy` of the `ahj` prototype
+  * (`src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h`).
   */
 template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range, AmacWalk walk>
 struct AmacFindPolicy
@@ -124,9 +125,9 @@ struct AmacFindPolicy
             return selector_indexes[i];
     }
 
-    /// The per-row result: the mapped value by value where it fits a word, its address where
-    /// it does not (ASOF; the maps are immutable, so the pointer stays valid into the emit
-    /// phase). Neither is 0 for a built cell, so 0 keeps encoding a miss.
+    /// The per-row result: the mapped value by value where it fits a word, its address
+    /// otherwise (see `amac_mapped_by_pointer`). Neither is 0 for a built cell, so 0 keeps
+    /// encoding a miss.
     ALWAYS_INLINE static UInt64 recordedWordOf(const Cell * cell)
     {
         if constexpr (amac_mapped_fits_word<typename Map::mapped_type>)
@@ -233,7 +234,7 @@ struct AmacFindPolicy
         {
             /// A wrapped-chain plan (some chain reached a buffer's last pad cell): the walk
             /// wraps exactly where the grower's `next` does. The slot lane recovers the
-            /// bounds from the L1-resident descriptor table.
+            /// bounds from the cache-resident descriptor table.
             const SlotMapDesc & desc = slot_descs[ring.slot[s]];
             const Cell * pad_end
                 = static_cast<const Cell *>(desc.buf) + desc.mask + 1 + Map::grower_type::tail_pad;
@@ -250,7 +251,6 @@ struct AmacFindPolicy
 };
 
 }
-
 
 template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range, AmacWalk walk>
 void amacFindPass(
@@ -296,6 +296,5 @@ void amacFindPass(
     /// traffic next to the ring.
     ProfileEvents::increment(ProfileEvents::ConcurrentHashJoinAmacProbeRows, rows);
 }
-
 
 }

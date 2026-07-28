@@ -13,9 +13,9 @@ namespace
 
 /// Sends every key to one home cell near the end of the power-of-two region, so a modest
 /// insert count builds a collision chain that runs through the whole tail pad, occupies its
-/// last cell and wraps to the buffer's start - the plan the bare walk must refuse and the
-/// wrap-aware walk must serve. Unreachable through the production hash functions or SQL, which
-/// is why this test instantiates the find pass directly (see `AmacProbeImpl.h`).
+/// last cell and wraps to the buffer's start - the layout the wrap-aware walk exists for (see
+/// `AmacWalk`). Unreachable through the production hash functions or SQL, which is why this
+/// test instantiates the find pass directly (see `AmacProbeImpl.h`).
 struct DegenerateHash
 {
     size_t operator()(UInt64) const { return 250; }

@@ -280,7 +280,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// cursor-capable), empty for the rest - where the flat arms are compiled out.
     [[maybe_unused]] const SlotMapDesc * descs_data = plan.desc_by_slot.data();
     /// Hash provider and zero-key checker of the flat arms; stateless, so any slot's map
-    /// serves (see `map0` in `AmacProbe.cpp`).
+    /// serves (see `map0` in `AmacProbeImpl.h`).
     [[maybe_unused]] const Map & map0 = *maps_by_slot[0];
 
     using MapNonConst = std::remove_const_t<Map>;
@@ -355,38 +355,34 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             if constexpr (precomputed)
             {
                 using Mapped = std::remove_reference_t<decltype(std::declval<typename KeyGetter::FindResult &>().getMapped())>;
-                /// The find pass recorded the mapped value by-value from the map's mapped type;
-                /// this side rebuilds it from the FindResult's - they must be the same type, or
-                /// a word would be reinterpreted as a pointer. The guard keeps the by-word
-                /// rebuild out of the shapes the find pass cannot serve (ASOF), whose loop is
-                /// only ever invoked without `precomputed`.
+                /// The find pass recorded the map's mapped value - by word where it fits one,
+                /// by pointer for ASOF; `amac_probe_supported` is exactly that disjunction, so
+                /// the arms below are exhaustive. This side rebuilds the `FindResult` from its
+                /// own mapped type; the type equality keeps a word from being rebuilt as the
+                /// wrong mapped type.
                 static_assert(std::is_same_v<std::remove_const_t<Mapped>, typename std::remove_const_t<Map>::mapped_type>);
-                if constexpr (amac_mapped_fits_word<std::remove_const_t<Mapped>>)
+                if (const UInt64 word = found_words[i])
                 {
-                    if (const UInt64 word = found_words[i])
+                    right_row_found = true;
+                    size_t offset = 0;
+                    if constexpr (join_features.need_flags)
+                        offset = found_offsets[i];
+                    auto emit = [&](Mapped * mapped) ALWAYS_INLINE
                     {
-                        right_row_found = true;
-                        size_t offset = 0;
-                        if constexpr (join_features.need_flags)
-                            offset = found_offsets[i];
+                        typename KeyGetter::FindResult find_result(mapped, true, offset);
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                            find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
+                    };
+                    if constexpr (amac_mapped_fits_word<std::remove_const_t<Mapped>>)
+                    {
                         auto mapped_value = mappedFromWord<std::remove_const_t<Mapped>>(word);
-                        typename KeyGetter::FindResult find_result(&mapped_value, true, offset);
-                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                            find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
+                        emit(&mapped_value);
                     }
-                }
-                else if constexpr (amac_mapped_by_pointer<std::remove_const_t<Mapped>>)
-                {
-                    /// The find pass recorded the mapped value's ADDRESS (ASOF: the sorted
-                    /// lookup does not fit a word; the maps are immutable, so it is valid
-                    /// here). ASOF is never flagged, so there is no offset to carry.
-                    if (const UInt64 word = found_words[i])
+                    else
                     {
-                        right_row_found = true;
-                        auto * mapped = reinterpret_cast<Mapped *>(word);
-                        typename KeyGetter::FindResult find_result(mapped, true, 0);
-                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                            find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
+                        /// ASOF: the find pass recorded the mapped value's address (see
+                        /// `amac_mapped_by_pointer`); never flagged, so `offset` stays 0.
+                        emit(reinterpret_cast<Mapped *>(word));
                     }
                 }
             }
@@ -584,10 +580,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             else
                 sel_indexes = selector.getData().data();
 
-            /// The walk policy comes from the plan's wrap bit: a build where some collision
-            /// chain reached a buffer's last pad cell (astronomically rare, adversarially
-            /// constructible) selects the wrap-aware instantiation - correctness, not a
-            /// threshold, so it holds under `Force` too; every other plan keeps the bare walk.
+            /// Correctness, not a threshold: a wrapped plan (see `chain_may_wrap`) must take
+            /// the wrap-aware walk even under `Force`; every other plan keeps the bare walk
+            /// (see `AmacWalk`).
             auto find_pass = [&]<AmacWalk walk>()
             {
                 amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range, walk>(
