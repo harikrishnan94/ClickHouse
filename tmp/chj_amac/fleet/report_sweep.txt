@@ -1,0 +1,986 @@
+CELL fixstr:probe.inner_all.S2.T96 verdict=LOSS A[armA]=304754us B[armB]=320061us diff=+5.02% band=3.0% spread(A/B)=2330/1207us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       42324        40484        -1840
+    ConcurrentHashJoinBuildDispatchMicroseconds                1665         1692          +26
+    ConcurrentHashJoinBuildInsertMicroseconds                 39227        38647         -580
+    ConcurrentHashJoinBuildMergeMicroseconds                   1345           30        -1314
+    ConcurrentHashJoinProbeMicroseconds                     9703848     10628800      +924951
+    ConcurrentHashJoinProbeDispatchMicroseconds                 615      1527363     +1526748
+    ConcurrentHashJoinProbeLookupMicroseconds               7543632      6726370      -817262
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL fixstr:probe.inner_all.S3.T96 verdict=TIE A[armA]=405142us B[armB]=403904us diff=-0.31% band=3.0% spread(A/B)=2353/2809us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     4378148      3947764      -430384
+    ConcurrentHashJoinBuildDispatchMicroseconds              180590       174144        -6446
+    ConcurrentHashJoinBuildInsertMicroseconds               4185478      3771918      -413560
+    ConcurrentHashJoinBuildMergeMicroseconds                   1468           32        -1436
+    ConcurrentHashJoinProbeMicroseconds                    15767913     14770754      -997159
+    ConcurrentHashJoinProbeDispatchMicroseconds                 552      1415320     +1414767
+    ConcurrentHashJoinProbeLookupMicroseconds              13423665     10648445     -2775220
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=7760911, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL fixstr:probe.inner_all.S5.T96 verdict=TIE A[armA]=2626540us B[armB]=2573432us diff=-2.02% band=6.1% spread(A/B)=67495/157149us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   115969124    110736728     -5232396
+    ConcurrentHashJoinBuildDispatchMicroseconds             2145578      2187291       +41714
+    ConcurrentHashJoinBuildInsertMicroseconds             113801040    108499180     -5301860
+    ConcurrentHashJoinBuildMergeMicroseconds                   1534           32        -1502
+    ConcurrentHashJoinProbeMicroseconds                    57838930     56961348      -877583
+    ConcurrentHashJoinProbeDispatchMicroseconds                2681      6179868     +6177186
+    ConcurrentHashJoinProbeLookupMicroseconds              48119278     39598942     -8520335
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=187763830, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=768000000
+CELL k128:probe.inner_all.S2.T96 verdict=LOSS A[armA]=430636us B[armB]=451936us diff=+4.95% band=3.0% spread(A/B)=2722/2953us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       47100        44900        -2200
+    ConcurrentHashJoinBuildDispatchMicroseconds                1896         1806          -91
+    ConcurrentHashJoinBuildInsertMicroseconds                 43780        42872         -908
+    ConcurrentHashJoinBuildMergeMicroseconds                   1384           33        -1351
+    ConcurrentHashJoinProbeMicroseconds                    10819526     11526342      +706816
+    ConcurrentHashJoinProbeDispatchMicroseconds                  31      1924240     +1924209
+    ConcurrentHashJoinProbeLookupMicroseconds               8631719      7173992     -1457727
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k128:probe.inner_all.S3.T96 verdict=TIE A[armA]=528129us B[armB]=517797us diff=-1.96% band=3.0% spread(A/B)=1950/1606us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     4167774      3391347      -776427
+    ConcurrentHashJoinBuildDispatchMicroseconds              193900       177221       -16679
+    ConcurrentHashJoinBuildInsertMicroseconds               3966187      3220733      -745454
+    ConcurrentHashJoinBuildMergeMicroseconds                   1461           30        -1431
+    ConcurrentHashJoinProbeMicroseconds                    16201680     15013257     -1188424
+    ConcurrentHashJoinProbeDispatchMicroseconds                  58      1821647     +1821590
+    ConcurrentHashJoinProbeLookupMicroseconds              13852008     10566672     -3285337
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=7759792, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k128:probe.inner_all.S5.T96 verdict=TIE A[armA]=3002832us B[armB]=2959968us diff=-1.43% band=4.9% spread(A/B)=30408/145297us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   112466618    107989903     -4476715
+    ConcurrentHashJoinBuildDispatchMicroseconds             1762039      1818025       +55986
+    ConcurrentHashJoinBuildInsertMicroseconds             110662954    106140357     -4522598
+    ConcurrentHashJoinBuildMergeMicroseconds                   1526           32        -1494
+    ConcurrentHashJoinProbeMicroseconds                    59980685     61520354     +1539670
+    ConcurrentHashJoinProbeDispatchMicroseconds                 256      7459502     +7459247
+    ConcurrentHashJoinProbeLookupMicroseconds              50874844     43913997     -6960848
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=187763025, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=768000000
+CELL k256:build.inner_all.S2.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 40.3 ms < 200 ms)']
+CELL k256:build.inner_all.S3.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 84.7 ms < 200 ms)']
+CELL k256:build.inner_all.S5.T96 verdict=WIN A[armA]=1594552us B[armB]=1309660us diff=-17.87% band=12.9% spread(A/B)=151030/168649us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   131675267    105979966    -25695300
+    ConcurrentHashJoinBuildDispatchMicroseconds             2429360      2433227        +3867
+    ConcurrentHashJoinBuildInsertMicroseconds             129250919    103498622    -25752298
+    ConcurrentHashJoinBuildMergeMicroseconds                   1764           30        -1734
+    ConcurrentHashJoinProbeMicroseconds                     6674350      5392120     -1282230
+    ConcurrentHashJoinProbeDispatchMicroseconds                  52       396230      +396178
+    ConcurrentHashJoinProbeLookupMicroseconds               6142502      4407527     -1734974
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=190902692, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=48000000
+CELL k256:probe.inner_all.S1.T96 verdict=TIE A[armA]=567828us B[armB]=552484us diff=-2.70% band=3.0% spread(A/B)=4126/4989us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                        4128         2250        -1877
+    ConcurrentHashJoinBuildDispatchMicroseconds                 302          308           +6
+    ConcurrentHashJoinBuildInsertMicroseconds                  2076         1898         -178
+    ConcurrentHashJoinBuildMergeMicroseconds                   1714           30        -1684
+    ConcurrentHashJoinProbeMicroseconds                    10579814      8035118     -2544695
+    ConcurrentHashJoinProbeDispatchMicroseconds                 710      1725056     +1724346
+    ConcurrentHashJoinProbeLookupMicroseconds               8458341      4051802     -4406538
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k256:probe.inner_all.S2.T1 verdict=WIN A[armA]=447817us B[armB]=418994us diff=-6.44% band=3.0% spread(A/B)=3347/3371us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       11837        12325         +488
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                 11816        12306         +491
+    ConcurrentHashJoinBuildMergeMicroseconds                      2            1           -1
+    ConcurrentHashJoinProbeMicroseconds                       89476        55341       -34134
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                 70416        36678       -33738
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=202656, ConcurrentHashJoinAmacBuildRingGrowths=1, ConcurrentHashJoinAmacProbeRows=2000000
+CELL k256:probe.inner_all.S2.T1.hash verdict=TIE A[armA]=444388us B[armB]=441570us diff=-0.63% band=3.0% spread(A/B)=2227/3480us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL k256:probe.inner_all.S2.T48 verdict=WIN A[armA]=495302us B[armB]=475448us diff=-4.01% band=3.0% spread(A/B)=1815/1434us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       24540        21333        -3207
+    ConcurrentHashJoinBuildDispatchMicroseconds                2618         2650          +33
+    ConcurrentHashJoinBuildInsertMicroseconds                 21096        18629        -2466
+    ConcurrentHashJoinBuildMergeMicroseconds                    812           19         -792
+    ConcurrentHashJoinProbeMicroseconds                     4699354      3692006     -1007348
+    ConcurrentHashJoinProbeDispatchMicroseconds                  26       764195      +764170
+    ConcurrentHashJoinProbeLookupMicroseconds               3766842      1969324     -1797518
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=96000000
+CELL k256:probe.inner_all.S2.T96 verdict=WIN A[armA]=625599us B[armB]=580287us diff=-7.24% band=3.0% spread(A/B)=4280/5225us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       30570        24464        -6106
+    ConcurrentHashJoinBuildDispatchMicroseconds                3050         2922         -128
+    ConcurrentHashJoinBuildInsertMicroseconds                 26098        21437        -4662
+    ConcurrentHashJoinBuildMergeMicroseconds                   1546           39        -1506
+    ConcurrentHashJoinProbeMicroseconds                    17643600     10601964     -7041636
+    ConcurrentHashJoinProbeDispatchMicroseconds                 362      1690852     +1690490
+    ConcurrentHashJoinProbeLookupMicroseconds              15569896      6543624     -9026272
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k256:probe.inner_all.S2.T96.hash verdict=TIE A[armA]=636014us B[armB]=638436us diff=+0.38% band=3.0% spread(A/B)=3726/1255us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL k256:probe.inner_all.S3.T96 verdict=WIN A[armA]=739556us B[armB]=638230us diff=-13.70% band=3.0% spread(A/B)=2751/3442us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3376559      2688368      -688192
+    ConcurrentHashJoinBuildDispatchMicroseconds              196707       191308        -5399
+    ConcurrentHashJoinBuildInsertMicroseconds               3175523      2497958      -677565
+    ConcurrentHashJoinBuildMergeMicroseconds                   1762           35        -1728
+    ConcurrentHashJoinProbeMicroseconds                    25531169     13087798    -12443370
+    ConcurrentHashJoinProbeDispatchMicroseconds                 292      1680867     +1680575
+    ConcurrentHashJoinProbeLookupMicroseconds              23406036      8765110    -14640926
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=10899919, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k256:probe.inner_all.S4.T1 verdict=WIN A[armA]=61594754us B[armB]=52592446us diff=-14.62% band=3.0% spread(A/B)=324291/131492us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     5566626      5487014       -79612
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            5           +5
+    ConcurrentHashJoinBuildInsertMicroseconds               5563862      5484510       -79352
+    ConcurrentHashJoinBuildMergeMicroseconds                      2            1           -1
+    ConcurrentHashJoinProbeMicroseconds                    22642244     13903187     -8739057
+    ConcurrentHashJoinProbeDispatchMicroseconds                   6            2           -4
+    ConcurrentHashJoinProbeLookupMicroseconds              20850470     12131198     -8719272
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=47942656, ConcurrentHashJoinAmacBuildRingGrowths=6, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k256:probe.inner_all.S4.T1.hash verdict=TIE A[armA]=60209958us B[armB]=61532030us diff=+2.20% band=3.0% spread(A/B)=192008/322653us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL k256:probe.inner_all.S4.T48 verdict=LOSS A[armA]=1374568us B[armB]=1434085us diff=+4.33% band=3.0% spread(A/B)=29435/27338us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    12388166     18501621     +6113456
+    ConcurrentHashJoinBuildDispatchMicroseconds              509978       521930       +11952
+    ConcurrentHashJoinBuildInsertMicroseconds              11867559     17967073     +6099514
+    ConcurrentHashJoinBuildMergeMicroseconds                    907           19         -888
+    ConcurrentHashJoinProbeMicroseconds                    16088238     13317740     -2770498
+    ConcurrentHashJoinProbeDispatchMicroseconds                 135      1490486     +1490350
+    ConcurrentHashJoinProbeLookupMicroseconds              14213760      9963578     -4250182
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=47428474, ConcurrentHashJoinAmacBuildRingGrowths=192, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k256:probe.inner_all.S4.T96 verdict=WIN A[armA]=889696us B[armB]=768936us diff=-13.57% band=4.3% spread(A/B)=38167/11878us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    18448512     14888046     -3560466
+    ConcurrentHashJoinBuildDispatchMicroseconds              663438       665488        +2049
+    ConcurrentHashJoinBuildInsertMicroseconds              17767969     14213500     -3554468
+    ConcurrentHashJoinBuildMergeMicroseconds                   1788           31        -1756
+    ConcurrentHashJoinProbeMicroseconds                    25155311     14765777    -10389534
+    ConcurrentHashJoinProbeDispatchMicroseconds                 311      1681392     +1681082
+    ConcurrentHashJoinProbeLookupMicroseconds              23039770     10563728    -12476042
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46911012, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+CELL k256:probe.inner_all.S4.T96.hash verdict=TIE A[armA]=6660908us B[armB]=6676572us diff=+0.24% band=10.1% spread(A/B)=46190/673373us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL k256:probe.inner_all.S5.T96 verdict=WIN A[armA]=4541470us B[armB]=3839034us diff=-15.47% band=6.0% spread(A/B)=66824/228752us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   164656560    127641138    -37015422
+    ConcurrentHashJoinBuildDispatchMicroseconds             2382566      2497947      +115381
+    ConcurrentHashJoinBuildInsertMicroseconds             162232710    125129926    -37102784
+    ConcurrentHashJoinBuildMergeMicroseconds                   1789           32        -1757
+    ConcurrentHashJoinProbeMicroseconds                   117626625     74991168    -42635457
+    ConcurrentHashJoinProbeDispatchMicroseconds                1178      6214266     +6213088
+    ConcurrentHashJoinProbeLookupMicroseconds             109431425     59435964    -49995461
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=190902433, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=768000000
+CELL key32:probe.inner_all.S2.T96 verdict=TIE A[armA]=264838us B[armB]=261504us diff=-1.26% band=3.0% spread(A/B)=2638/2167us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       12742         9768        -2974
+    ConcurrentHashJoinBuildDispatchMicroseconds                1166         1262          +96
+    ConcurrentHashJoinBuildInsertMicroseconds                 10009         8436        -1573
+    ConcurrentHashJoinBuildMergeMicroseconds                   1504           28        -1477
+    ConcurrentHashJoinProbeMicroseconds                     6774120      6056163      -717957
+    ConcurrentHashJoinProbeDispatchMicroseconds                 561       464846      +464284
+    ConcurrentHashJoinProbeLookupMicroseconds               4559916      3193548     -1366367
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key32:probe.inner_all.S3.T96 verdict=TIE A[armA]=337018us B[armB]=339667us diff=+0.79% band=3.0% spread(A/B)=2052/5660us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3248244      4874294     +1626050
+    ConcurrentHashJoinBuildDispatchMicroseconds              245032       262379       +17348
+    ConcurrentHashJoinBuildInsertMicroseconds               3000866      4612657     +1611790
+    ConcurrentHashJoinBuildMergeMicroseconds                   1643           33        -1610
+    ConcurrentHashJoinProbeMicroseconds                    10821864      8617122     -2204742
+    ConcurrentHashJoinProbeDispatchMicroseconds                 556       460124      +459569
+    ConcurrentHashJoinProbeLookupMicroseconds               8394708      5473062     -2921645
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=19749834, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key32:probe.inner_all.S5.T96 verdict=LOSS A[armA]=3819192us B[armB]=4246309us diff=+11.18% band=3.0% spread(A/B)=45373/55675us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   137927607    178655480    +40727874
+    ConcurrentHashJoinBuildDispatchMicroseconds             3611114      4902765     +1291650
+    ConcurrentHashJoinBuildInsertMicroseconds             134226076    173661503    +39435428
+    ConcurrentHashJoinBuildMergeMicroseconds                   1598           36        -1562
+    ConcurrentHashJoinProbeMicroseconds                    85642853     86752908     +1110055
+    ConcurrentHashJoinProbeDispatchMicroseconds                1783      3096627     +3094844
+    ConcurrentHashJoinProbeLookupMicroseconds              66973391     64129357     -2844034
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=379752632, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=1536000000
+CELL key64:build.inner_all.S2.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 23.4 ms < 200 ms)']
+CELL key64:build.inner_all.S3.T1 verdict=TIE A[armA]=1554660us B[armB]=1550024us diff=-0.30% band=11.7% spread(A/B)=44664/182060us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                      886263       915774       +29511
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                885212       914872       +29660
+    ConcurrentHashJoinBuildMergeMicroseconds                      2            1           -1
+    ConcurrentHashJoinProbeMicroseconds                      144822       119304       -25519
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                 89492        64606       -24886
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=23942656, ConcurrentHashJoinAmacBuildRingGrowths=5, ConcurrentHashJoinAmacProbeRows=6000000
+CELL key64:build.inner_all.S3.T48 verdict=INVALID reasons=['below-duration-floor (arm A median 71.8 ms < 200 ms)']
+CELL key64:build.inner_all.S3.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 75.2 ms < 200 ms)']
+CELL key64:build.inner_all.S3.T96.dup16 verdict=TIE A[armA]=270556us B[armB]=270516us diff=-0.01% band=3.0% spread(A/B)=3029/2779us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3068522      2717644      -350878
+    ConcurrentHashJoinBuildDispatchMicroseconds              225127       222971        -2156
+    ConcurrentHashJoinBuildInsertMicroseconds               2839298      2490980      -348318
+    ConcurrentHashJoinBuildMergeMicroseconds                   1690           28        -1662
+    ConcurrentHashJoinProbeMicroseconds                     4540517      4529932       -10585
+    ConcurrentHashJoinProbeDispatchMicroseconds                   8        13566       +13558
+    ConcurrentHashJoinProbeLookupMicroseconds                231837       248147       +16310
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=6000000
+CELL key64:build.inner_all.S3.T96.statson verdict=INVALID reasons=['below-duration-floor (arm A median 66.4 ms < 200 ms)']
+CELL key64:build.inner_all.S5.T96 verdict=TIE A[armA]=1595220us B[armB]=1602841us diff=+0.48% band=19.0% spread(A/B)=125640/304133us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   133301542    130937098     -2364444
+    ConcurrentHashJoinBuildDispatchMicroseconds             3472370      4264550      +792180
+    ConcurrentHashJoinBuildInsertMicroseconds             129797092    126540726     -3256366
+    ConcurrentHashJoinBuildMergeMicroseconds                   1614           34        -1579
+    ConcurrentHashJoinProbeMicroseconds                     6709060      8244394     +1535334
+    ConcurrentHashJoinProbeDispatchMicroseconds                 198       285738      +285540
+    ConcurrentHashJoinProbeLookupMicroseconds               5554076      6676625     +1122548
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=379751402, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=96000000
+CELL key64:build.left_all.S3.T96.dup16 verdict=TIE A[armA]=270946us B[armB]=270296us diff=-0.24% band=3.0% spread(A/B)=3729/3443us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3009000      2690015      -318986
+    ConcurrentHashJoinBuildDispatchMicroseconds              215480       212842        -2638
+    ConcurrentHashJoinBuildInsertMicroseconds               2786818      2470388      -316431
+    ConcurrentHashJoinBuildMergeMicroseconds                   1650           26        -1624
+    ConcurrentHashJoinProbeMicroseconds                     4500066      4554974       +54908
+    ConcurrentHashJoinProbeDispatchMicroseconds                  11        13538       +13526
+    ConcurrentHashJoinProbeLookupMicroseconds                236654       251096       +14442
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=6000000
+CELL key64:probe.any.S2.T96 verdict=TIE A[armA]=310244us B[armB]=302597us diff=-2.46% band=3.0% spread(A/B)=3515/2148us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       13636        11428        -2208
+    ConcurrentHashJoinBuildDispatchMicroseconds                1175         1301         +126
+    ConcurrentHashJoinBuildInsertMicroseconds                 10896        10016         -880
+    ConcurrentHashJoinBuildMergeMicroseconds                   1488           23        -1465
+    ConcurrentHashJoinProbeMicroseconds                     8234856      6501433     -1733422
+    ConcurrentHashJoinProbeDispatchMicroseconds                 337       587497      +587160
+    ConcurrentHashJoinProbeLookupMicroseconds               7574534      5157854     -2416680
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.any.S4.T96 verdict=LOSS A[armA]=880221us B[armB]=965358us diff=+9.67% band=4.1% spread(A/B)=21179/39130us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    17837675     30584120    +12746444
+    ConcurrentHashJoinBuildDispatchMicroseconds              980186      1066670       +86484
+    ConcurrentHashJoinBuildInsertMicroseconds              16844386     29506376    +12661990
+    ConcurrentHashJoinBuildMergeMicroseconds                   1586           24        -1562
+    ConcurrentHashJoinProbeMicroseconds                    26983530     19035140     -7948390
+    ConcurrentHashJoinProbeDispatchMicroseconds                 504      1044836     +1044331
+    ConcurrentHashJoinProbeLookupMicroseconds              25647981     16544574     -9103406
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=91770030, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.asof.S2.T96 verdict=TIE A[armA]=427278us B[armB]=439124us diff=+2.77% band=3.0% spread(A/B)=3160/2851us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       43962        30016       -13947
+    ConcurrentHashJoinBuildDispatchMicroseconds                1225         1404         +179
+    ConcurrentHashJoinBuildInsertMicroseconds                 32838        28550        -4288
+    ConcurrentHashJoinBuildMergeMicroseconds                   9411           24        -9387
+    ConcurrentHashJoinProbeMicroseconds                    18803796     20957957     +2154161
+    ConcurrentHashJoinProbeDispatchMicroseconds                 208       458212      +458004
+    ConcurrentHashJoinProbeLookupMicroseconds              16799661     18502696     +1703036
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL key64:probe.asof.S4.T96 verdict=LOSS A[armA]=1387331us B[armB]=1503623us diff=+8.38% band=5.2% spread(A/B)=22096/78718us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    38080295     45372298     +7292004
+    ConcurrentHashJoinBuildDispatchMicroseconds             1145533       923055      -222478
+    ConcurrentHashJoinBuildInsertMicroseconds              36933954     44473350     +7539395
+    ConcurrentHashJoinBuildMergeMicroseconds                   9696           28        -9668
+    ConcurrentHashJoinProbeMicroseconds                    52168600     57326164     +5157563
+    ConcurrentHashJoinProbeDispatchMicroseconds                 684      1015346     +1014662
+    ConcurrentHashJoinProbeLookupMicroseconds              47676503     51972304     +4295801
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL key64:probe.inner_all.S1.T96 verdict=LOSS A[armA]=284707us B[armB]=297060us diff=+4.34% band=3.0% spread(A/B)=1557/1787us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                        2693         1344        -1348
+    ConcurrentHashJoinBuildDispatchMicroseconds                 140          152          +11
+    ConcurrentHashJoinBuildInsertMicroseconds                  1042         1158         +116
+    ConcurrentHashJoinBuildMergeMicroseconds                   1489           24        -1465
+    ConcurrentHashJoinProbeMicroseconds                     4627016      4876979      +249963
+    ConcurrentHashJoinProbeDispatchMicroseconds                 780       633497      +632716
+    ConcurrentHashJoinProbeLookupMicroseconds               2412252      1870092      -542159
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.inner_all.S2.T1 verdict=TIE A[armA]=210554us B[armB]=205420us diff=-2.44% band=3.0% spread(A/B)=1591/943us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                        5084         4452         -633
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                  5070         4437         -632
+    ConcurrentHashJoinBuildMergeMicroseconds                      1            1           +0
+    ConcurrentHashJoinProbeMicroseconds                       38856        31507        -7348
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                 20024        13178        -6846
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=202656, ConcurrentHashJoinAmacBuildRingGrowths=1, ConcurrentHashJoinAmacProbeRows=2000000
+CELL key64:probe.inner_all.S2.T1.hash verdict=TIE A[armA]=211176us B[armB]=213063us diff=+0.89% band=3.0% spread(A/B)=739/903us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL key64:probe.inner_all.S2.T48 verdict=TIE A[armA]=240884us B[armB]=240146us diff=-0.31% band=3.0% spread(A/B)=652/1005us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       10288         8885        -1403
+    ConcurrentHashJoinBuildDispatchMicroseconds                 963         1141         +178
+    ConcurrentHashJoinBuildInsertMicroseconds                  8498         7650         -848
+    ConcurrentHashJoinBuildMergeMicroseconds                    778           15         -762
+    ConcurrentHashJoinProbeMicroseconds                     2178508      2156916       -21593
+    ConcurrentHashJoinProbeDispatchMicroseconds                  28       193526      +193498
+    ConcurrentHashJoinProbeLookupMicroseconds               1253744      1017074      -236670
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=96000000
+CELL key64:probe.inner_all.S2.T96 verdict=TIE A[armA]=308956us B[armB]=314465us diff=+1.78% band=3.0% spread(A/B)=2503/3467us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       13802        11448        -2355
+    ConcurrentHashJoinBuildDispatchMicroseconds                1182         1312         +129
+    ConcurrentHashJoinBuildInsertMicroseconds                 11080        10048        -1032
+    ConcurrentHashJoinBuildMergeMicroseconds                   1482           30        -1451
+    ConcurrentHashJoinProbeMicroseconds                     7613729      6692926      -920803
+    ConcurrentHashJoinProbeDispatchMicroseconds                 668       617492      +616823
+    ConcurrentHashJoinProbeLookupMicroseconds               5346074      3586750     -1759324
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.inner_all.S2.T96.hash verdict=TIE A[armA]=310014us B[armB]=310936us diff=+0.30% band=3.0% spread(A/B)=1817/1336us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL key64:probe.inner_all.S3.T96 verdict=TIE A[armA]=384536us B[armB]=379890us diff=-1.21% band=3.0% spread(A/B)=1591/3739us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3298296      4304544     +1006248
+    ConcurrentHashJoinBuildDispatchMicroseconds              264296       272057        +7760
+    ConcurrentHashJoinBuildInsertMicroseconds               3020545      4030538     +1009994
+    ConcurrentHashJoinBuildMergeMicroseconds                   1568           30        -1538
+    ConcurrentHashJoinProbeMicroseconds                    11386380      8971106     -2415273
+    ConcurrentHashJoinProbeDispatchMicroseconds                 750       606946      +606196
+    ConcurrentHashJoinProbeLookupMicroseconds               8928282      5602408     -3325873
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=19749012, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.inner_all.S3.T96.h05 verdict=INVALID reasons=['below-duration-floor (arm A median 126.1 ms < 200 ms)']
+CELL key64:probe.inner_all.S3.T96.h50 verdict=LOSS A[armA]=246682us B[armB]=255244us diff=+3.47% band=3.0% spread(A/B)=2058/5168us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3243020      4538820     +1295800
+    ConcurrentHashJoinBuildDispatchMicroseconds              254052       269490       +15438
+    ConcurrentHashJoinBuildInsertMicroseconds               2979118      4259394     +1280275
+    ConcurrentHashJoinBuildMergeMicroseconds                   1577           30        -1546
+    ConcurrentHashJoinProbeMicroseconds                     8223247      7212260     -1010988
+    ConcurrentHashJoinProbeDispatchMicroseconds                 360       605094      +604734
+    ConcurrentHashJoinProbeLookupMicroseconds               6961437      5198414     -1763023
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=19748758, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.inner_all.S3.T96.statson verdict=TIE A[armA]=373828us B[armB]=365770us diff=-2.16% band=3.0% spread(A/B)=2267/3236us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     2505224      2538694       +33470
+    ConcurrentHashJoinBuildDispatchMicroseconds              265650       306519       +40868
+    ConcurrentHashJoinBuildInsertMicroseconds               2234640      2230308        -4332
+    ConcurrentHashJoinBuildMergeMicroseconds                   1612           30        -1582
+    ConcurrentHashJoinProbeMicroseconds                    11354232      9082742     -2271490
+    ConcurrentHashJoinProbeDispatchMicroseconds                 672       604396      +603724
+    ConcurrentHashJoinProbeLookupMicroseconds               8924580      5729912     -3194668
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=23972948, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.inner_all.S4.T1 verdict=WIN A[armA]=50115906us B[armB]=45836357us diff=-8.54% band=3.0% spread(A/B)=324439/208561us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     4746066      4362961      -383104
+    ConcurrentHashJoinBuildDispatchMicroseconds                  10            4           -5
+    ConcurrentHashJoinBuildInsertMicroseconds               4741700      4359340      -382360
+    ConcurrentHashJoinBuildMergeMicroseconds                      2            1           -1
+    ConcurrentHashJoinProbeMicroseconds                    13362135      9599925     -3762210
+    ConcurrentHashJoinProbeDispatchMicroseconds                  18            5          -12
+    ConcurrentHashJoinProbeLookupMicroseconds               9824682      6089007     -3735675
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=95942656, ConcurrentHashJoinAmacBuildRingGrowths=7, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.inner_all.S4.T1.hash verdict=TIE A[armA]=49283834us B[armB]=49664476us diff=+0.77% band=3.0% spread(A/B)=205205/599588us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL key64:probe.inner_all.S4.T48 verdict=WIN A[armA]=1247478us B[armB]=1197538us diff=-4.00% band=3.0% spread(A/B)=27823/19029us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     8744238      8865306      +121068
+    ConcurrentHashJoinBuildDispatchMicroseconds              499218       564759       +65541
+    ConcurrentHashJoinBuildInsertMicroseconds               8231468      8281646       +50177
+    ConcurrentHashJoinBuildMergeMicroseconds                    850           18         -832
+    ConcurrentHashJoinProbeMicroseconds                    14864443     13075328     -1789114
+    ConcurrentHashJoinProbeDispatchMicroseconds                  86       770928      +770842
+    ConcurrentHashJoinProbeLookupMicroseconds              11096216      8469670     -2626546
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=93871204, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.inner_all.S4.T96 verdict=LOSS A[armA]=860237us B[armB]=970364us diff=+12.80% band=3.1% spread(A/B)=27049/21134us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    18372926     29557924    +11184998
+    ConcurrentHashJoinBuildDispatchMicroseconds              955800      1027361       +71561
+    ConcurrentHashJoinBuildInsertMicroseconds              17395272     28505664    +11110392
+    ConcurrentHashJoinBuildMergeMicroseconds                   1590           34        -1556
+    ConcurrentHashJoinProbeMicroseconds                    23318628     19488957     -3829670
+    ConcurrentHashJoinProbeDispatchMicroseconds                1142      1097686     +1096543
+    ConcurrentHashJoinProbeLookupMicroseconds              18589504     13133485     -5456019
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=91770080, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.inner_all.S4.T96.hash verdict=TIE A[armA]=5709884us B[armB]=5791762us diff=+1.43% band=3.0% spread(A/B)=47584/44832us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL key64:probe.inner_all.S5.T96 verdict=LOSS A[armA]=4136632us B[armB]=4710152us diff=+13.86% band=3.0% spread(A/B)=39826/68692us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   138448598    182880101    +44431502
+    ConcurrentHashJoinBuildDispatchMicroseconds             3803434      4618122      +814688
+    ConcurrentHashJoinBuildInsertMicroseconds             134611638    178212336    +43600697
+    ConcurrentHashJoinBuildMergeMicroseconds                   1585           34        -1551
+    ConcurrentHashJoinProbeMicroseconds                    90515212    106420476    +15905264
+    ConcurrentHashJoinProbeDispatchMicroseconds                2508      4345018     +4342510
+    ConcurrentHashJoinProbeLookupMicroseconds              71726596     83440887    +11714290
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=379751586, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=1536000000
+CELL key64:probe.left_all.S2.T96 verdict=TIE A[armA]=313586us B[armB]=319118us diff=+1.76% band=3.0% spread(A/B)=2159/2505us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       13400        11598        -1801
+    ConcurrentHashJoinBuildDispatchMicroseconds                1188         1327         +140
+    ConcurrentHashJoinBuildInsertMicroseconds                 10652        10210         -441
+    ConcurrentHashJoinBuildMergeMicroseconds                   1490           30        -1460
+    ConcurrentHashJoinProbeMicroseconds                     7981510      7396555      -584954
+    ConcurrentHashJoinProbeDispatchMicroseconds                 545       614512      +613968
+    ConcurrentHashJoinProbeLookupMicroseconds               5099490      3573784     -1525706
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.left_all.S3.T96.jun verdict=TIE A[armA]=500220us B[armB]=505640us diff=+1.08% band=3.0% spread(A/B)=1981/3744us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3571654      4714453     +1142798
+    ConcurrentHashJoinBuildDispatchMicroseconds              278394       299558       +21164
+    ConcurrentHashJoinBuildInsertMicroseconds               3287173      4404822     +1117648
+    ConcurrentHashJoinBuildMergeMicroseconds                   1649           30        -1618
+    ConcurrentHashJoinProbeMicroseconds                    15414541     12891133     -2523408
+    ConcurrentHashJoinProbeDispatchMicroseconds                 458       602897      +602438
+    ConcurrentHashJoinProbeLookupMicroseconds               9235152      5624242     -3610910
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=19749133, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.left_all.S4.T96 verdict=LOSS A[armA]=844696us B[armB]=969635us diff=+14.79% band=3.0% spread(A/B)=25680/17775us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    16626546     28675147    +12048601
+    ConcurrentHashJoinBuildDispatchMicroseconds              902312      1070958      +168646
+    ConcurrentHashJoinBuildInsertMicroseconds              15706773     27587395    +11880622
+    ConcurrentHashJoinBuildMergeMicroseconds                   1603           34        -1570
+    ConcurrentHashJoinProbeMicroseconds                    23916238     21080498     -2835740
+    ConcurrentHashJoinProbeDispatchMicroseconds                 731      1022112     +1021382
+    ConcurrentHashJoinProbeLookupMicroseconds              18013224     12983301     -5029923
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=91770355, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.rf_all.S2.T96 verdict=LOSS A[armA]=362473us B[armB]=377530us diff=+4.15% band=3.0% spread(A/B)=2266/3506us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       30594        15779       -14814
+    ConcurrentHashJoinBuildDispatchMicroseconds                1154         1272         +118
+    ConcurrentHashJoinBuildInsertMicroseconds                 15475        13950        -1525
+    ConcurrentHashJoinBuildMergeMicroseconds                  13998          546       -13452
+    ConcurrentHashJoinProbeMicroseconds                    11025976     11926468      +900492
+    ConcurrentHashJoinProbeDispatchMicroseconds                3102       643792      +640690
+    ConcurrentHashJoinProbeLookupMicroseconds               6542000      5960628      -581372
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.rf_all.S4.T96 verdict=WIN A[armA]=6281515us B[armB]=1952044us diff=-68.92% band=6.7% spread(A/B)=141170/131683us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    46558071     60058730    +13500660
+    ConcurrentHashJoinBuildDispatchMicroseconds             2209104      2855694      +646590
+    ConcurrentHashJoinBuildInsertMicroseconds              40122626     56913350    +16790724
+    ConcurrentHashJoinBuildMergeMicroseconds                4157087       312438     -3844650
+    ConcurrentHashJoinProbeMicroseconds                    45693527     45205478      -488050
+    ConcurrentHashJoinProbeDispatchMicroseconds                6669      1220678     +1214010
+    ConcurrentHashJoinProbeLookupMicroseconds              37201615     33153661     -4047954
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=91770041, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.semi_anti.S2.T96 verdict=TIE A[armA]=307982us B[armB]=316484us diff=+2.76% band=3.0% spread(A/B)=1922/2755us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       13894        11547        -2348
+    ConcurrentHashJoinBuildDispatchMicroseconds                1204         1292          +87
+    ConcurrentHashJoinBuildInsertMicroseconds                 11048        10198         -850
+    ConcurrentHashJoinBuildMergeMicroseconds                   1522           24        -1498
+    ConcurrentHashJoinProbeMicroseconds                     7281394      6694078      -587316
+    ConcurrentHashJoinProbeDispatchMicroseconds                 616       620142      +619526
+    ConcurrentHashJoinProbeLookupMicroseconds               4993078      3602944     -1390134
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL key64:probe.semi_anti.S2.T96.anti verdict=INVALID reasons=['below-duration-floor (arm A median 35.6 ms < 200 ms)']
+CELL key64:probe.semi_anti.S4.T96 verdict=LOSS A[armA]=850836us B[armB]=956873us diff=+12.46% band=3.0% spread(A/B)=24301/25968us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    17903895     28544354    +10640460
+    ConcurrentHashJoinBuildDispatchMicroseconds              998214      1042164       +43950
+    ConcurrentHashJoinBuildInsertMicroseconds              16883949     27489388    +10605438
+    ConcurrentHashJoinBuildMergeMicroseconds                   1616           24        -1592
+    ConcurrentHashJoinProbeMicroseconds                    22356943     19314528     -3042416
+    ConcurrentHashJoinProbeDispatchMicroseconds                 864      1099546     +1098682
+    ConcurrentHashJoinProbeLookupMicroseconds              17669945     13124003     -4545942
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=91769426, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=384000000
+CELL key64:probe.semi_anti.S4.T96.anti verdict=LOSS A[armA]=298342us B[armB]=424685us diff=+42.35% band=10.3% spread(A/B)=28463/43712us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    17114394     26013340     +8898946
+    ConcurrentHashJoinBuildDispatchMicroseconds              966266      1117126      +150860
+    ConcurrentHashJoinBuildInsertMicroseconds              16134465     24878854     +8744390
+    ConcurrentHashJoinBuildMergeMicroseconds                   1606           26        -1580
+    ConcurrentHashJoinProbeMicroseconds                     8896269     11872971     +2976702
+    ConcurrentHashJoinProbeDispatchMicroseconds                  44      1261926     +1261881
+    ConcurrentHashJoinProbeLookupMicroseconds               8784040     10523888     +1739848
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=91770082, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=384000000
+CELL lcstr:probe.inner_all.S2.T96 verdict=TIE A[armA]=1078669us B[armB]=1100053us diff=+1.98% band=3.0% spread(A/B)=13289/5992us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                      238884        63084      -175800
+    ConcurrentHashJoinBuildDispatchMicroseconds                4542         4944         +402
+    ConcurrentHashJoinBuildInsertMicroseconds                232181        57989      -174192
+    ConcurrentHashJoinBuildMergeMicroseconds                   1943           38        -1905
+    ConcurrentHashJoinProbeMicroseconds                    15148723     21049827     +5901104
+    ConcurrentHashJoinProbeDispatchMicroseconds                 176      2046410     +2046234
+    ConcurrentHashJoinProbeLookupMicroseconds              12935859     16801434     +3865574
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL lcstr:probe.inner_all.S3.T96 verdict=WIN A[armA]=1330404us B[armB]=1271134us diff=-4.46% band=3.0% spread(A/B)=17399/12318us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    19421498     11230934     -8190564
+    ConcurrentHashJoinBuildDispatchMicroseconds              388263       370520       -17742
+    ConcurrentHashJoinBuildInsertMicroseconds              19026140     10861624     -8164516
+    ConcurrentHashJoinBuildMergeMicroseconds                   2135           38        -2096
+    ConcurrentHashJoinProbeMicroseconds                    23351288     28326031     +4974742
+    ConcurrentHashJoinProbeDispatchMicroseconds                 140      2066914     +2066774
+    ConcurrentHashJoinProbeLookupMicroseconds              21052073     23985634     +2933561
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL mixed:build.inner_all.S2.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 38.3 ms < 200 ms)']
+CELL mixed:build.inner_all.S3.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 93.5 ms < 200 ms)']
+CELL mixed:build.inner_all.S5.T96 verdict=TIE A[armA]=1241258us B[armB]=1241422us diff=+0.01% band=7.2% spread(A/B)=81241/89832us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    98653488     93832408     -4821080
+    ConcurrentHashJoinBuildDispatchMicroseconds             6925622      6979344       +53722
+    ConcurrentHashJoinBuildInsertMicroseconds              91689784     86818170     -4871614
+    ConcurrentHashJoinBuildMergeMicroseconds                   1586           29        -1557
+    ConcurrentHashJoinProbeMicroseconds                    11896678     13841422     +1944744
+    ConcurrentHashJoinProbeDispatchMicroseconds                   4      1576565     +1576561
+    ConcurrentHashJoinProbeLookupMicroseconds              11387551     11721582      +334031
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL mixed:probe.inner_all.S2.T96 verdict=LOSS A[armA]=477688us B[armB]=528974us diff=+10.74% band=3.0% spread(A/B)=3226/4660us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       43762        38654        -5107
+    ConcurrentHashJoinBuildDispatchMicroseconds                9386         9310          -76
+    ConcurrentHashJoinBuildInsertMicroseconds                 32916        29234        -3682
+    ConcurrentHashJoinBuildMergeMicroseconds                   1376           34        -1342
+    ConcurrentHashJoinProbeMicroseconds                    22061834     27719249     +5657415
+    ConcurrentHashJoinProbeDispatchMicroseconds                  14      6293599     +6293585
+    ConcurrentHashJoinProbeLookupMicroseconds              20076379     19482471      -593908
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL mixed:probe.inner_all.S3.T96 verdict=LOSS A[armA]=712214us B[armB]=764780us diff=+7.38% band=3.0% spread(A/B)=9367/5170us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3887057      3480568      -406488
+    ConcurrentHashJoinBuildDispatchMicroseconds              463302       445242       -18060
+    ConcurrentHashJoinBuildInsertMicroseconds               3421130      3020020      -401110
+    ConcurrentHashJoinBuildMergeMicroseconds                   1528           34        -1494
+    ConcurrentHashJoinProbeMicroseconds                    41232348     46900403     +5668056
+    ConcurrentHashJoinProbeDispatchMicroseconds                  24      6239232     +6239208
+    ConcurrentHashJoinProbeLookupMicroseconds              39288593     38722489      -566104
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL mixed:probe.inner_all.S5.T96 verdict=LOSS A[armA]=3992462us B[armB]=4296386us diff=+7.61% band=3.0% spread(A/B)=19078/52378us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   111138854    115000944     +3862090
+    ConcurrentHashJoinBuildDispatchMicroseconds             6890800      7034266      +143466
+    ConcurrentHashJoinBuildInsertMicroseconds             104212700    107961050     +3748350
+    ConcurrentHashJoinBuildMergeMicroseconds                   1557           32        -1524
+    ConcurrentHashJoinProbeMicroseconds                   191505856    219033311    +27527456
+    ConcurrentHashJoinProbeDispatchMicroseconds                  51     24963727    +24963676
+    ConcurrentHashJoinProbeLookupMicroseconds             183759553    186474802     +2715248
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL null64:probe.inner_all.S2.T96 verdict=TIE A[armA]=379088us B[armB]=385706us diff=+1.75% band=3.0% spread(A/B)=2220/2406us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       15288        16395        +1107
+    ConcurrentHashJoinBuildDispatchMicroseconds                1392         1498         +107
+    ConcurrentHashJoinBuildInsertMicroseconds                 12385        14804        +2418
+    ConcurrentHashJoinBuildMergeMicroseconds                   1490           37        -1454
+    ConcurrentHashJoinProbeMicroseconds                     8238598      7694824      -543774
+    ConcurrentHashJoinProbeDispatchMicroseconds                 879       638641      +637762
+    ConcurrentHashJoinProbeLookupMicroseconds               5819854      4417594     -1402260
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL null64:probe.inner_all.S3.T96 verdict=TIE A[armA]=452064us B[armB]=461109us diff=+2.00% band=3.0% spread(A/B)=2416/6080us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     3594840      5081892     +1487052
+    ConcurrentHashJoinBuildDispatchMicroseconds              275048       291086       +16038
+    ConcurrentHashJoinBuildInsertMicroseconds               3310090      4785762     +1475672
+    ConcurrentHashJoinBuildMergeMicroseconds                   1620           33        -1587
+    ConcurrentHashJoinProbeMicroseconds                    12521056      9765167     -2755890
+    ConcurrentHashJoinProbeDispatchMicroseconds                 746       654410      +653664
+    ConcurrentHashJoinProbeLookupMicroseconds               9936142      6219125     -3717017
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=22471916, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL null64:probe.inner_all.S5.T96 verdict=LOSS A[armA]=5201232us B[armB]=5668966us diff=+8.99% band=3.0% spread(A/B)=139548/77510us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   147125300    189772916    +42647617
+    ConcurrentHashJoinBuildDispatchMicroseconds             4088948      4903924      +814976
+    ConcurrentHashJoinBuildInsertMicroseconds             142937595    184742318    +41804723
+    ConcurrentHashJoinBuildMergeMicroseconds                   1576           29        -1546
+    ConcurrentHashJoinProbeMicroseconds                   105202027    122219937    +17017910
+    ConcurrentHashJoinProbeDispatchMicroseconds                3146      5027732     +5024586
+    ConcurrentHashJoinProbeLookupMicroseconds              84318078     95468122    +11150043
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=422760578, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=1708000000
+CELL str:build.inner_all.S2.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 27.5 ms < 200 ms)']
+CELL str:build.inner_all.S3.T96 verdict=INVALID reasons=['below-duration-floor (arm A median 63.2 ms < 200 ms)']
+CELL str:build.inner_all.S3.T96.dup16 verdict=INVALID reasons=['below-duration-floor (arm A median 128.0 ms < 200 ms)']
+CELL str:build.inner_all.S5.T96 verdict=WIN A[armA]=1196915us B[armB]=906151us diff=-24.29% band=12.4% spread(A/B)=148387/99331us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   102569629     76217528    -26352102
+    ConcurrentHashJoinBuildDispatchMicroseconds             1636652      1763252      +126599
+    ConcurrentHashJoinBuildInsertMicroseconds             100902038     74412776    -26489262
+    ConcurrentHashJoinBuildMergeMicroseconds                   2155           34        -2122
+    ConcurrentHashJoinProbeMicroseconds                     5450371      4445276     -1005095
+    ConcurrentHashJoinProbeDispatchMicroseconds                  59       249474      +249415
+    ConcurrentHashJoinProbeLookupMicroseconds               4908130      3605568     -1302562
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=190903011, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=48000000
+CELL str:build.left_all.S3.T96.dup16 verdict=INVALID reasons=['below-duration-floor (arm A median 128.9 ms < 200 ms)']
+CELL str:probe.any.S2.T96 verdict=WIN A[armA]=341747us B[armB]=289184us diff=-15.38% band=3.0% spread(A/B)=1274/1243us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       29024        20610        -8413
+    ConcurrentHashJoinBuildDispatchMicroseconds                1662         1663           +1
+    ConcurrentHashJoinBuildInsertMicroseconds                 25327        18826        -6502
+    ConcurrentHashJoinBuildMergeMicroseconds                   1954           25        -1929
+    ConcurrentHashJoinProbeMicroseconds                    16970534      9818794     -7151739
+    ConcurrentHashJoinProbeDispatchMicroseconds                 136      1034129     +1033994
+    ConcurrentHashJoinProbeLookupMicroseconds              15524631      6323538     -9201092
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.any.S4.T96 verdict=WIN A[armA]=603187us B[armB]=453330us diff=-24.84% band=4.8% spread(A/B)=29217/12446us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    14550857     11369090     -3181766
+    ConcurrentHashJoinBuildDispatchMicroseconds              460530       502518       +41988
+    ConcurrentHashJoinBuildInsertMicroseconds              14073806     10857844     -3215962
+    ConcurrentHashJoinBuildMergeMicroseconds                   2120           23        -2097
+    ConcurrentHashJoinProbeMicroseconds                    27400644     15323400    -12077244
+    ConcurrentHashJoinProbeDispatchMicroseconds                 157      1039331     +1039174
+    ConcurrentHashJoinProbeLookupMicroseconds              26008918     12266762    -13742156
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46911166, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.asof.S2.T96 verdict=LOSS A[armA]=403185us B[armB]=417022us diff=+3.43% band=3.0% spread(A/B)=3947/2474us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       77218        50364       -26854
+    ConcurrentHashJoinBuildDispatchMicroseconds                1958         1674         -284
+    ConcurrentHashJoinBuildInsertMicroseconds                 61033        48633       -12400
+    ConcurrentHashJoinBuildMergeMicroseconds                  14134           26       -14108
+    ConcurrentHashJoinProbeMicroseconds                    20512840     23574720     +3061879
+    ConcurrentHashJoinProbeDispatchMicroseconds                 170       771689      +771518
+    ConcurrentHashJoinProbeLookupMicroseconds              18531860     20783494     +2251634
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL str:probe.asof.S4.T96 verdict=TIE A[armA]=873768us B[armB]=854632us diff=-2.19% band=3.0% spread(A/B)=17098/8865us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    31597646     27007984     -4589662
+    ConcurrentHashJoinBuildDispatchMicroseconds              408570       412756        +4185
+    ConcurrentHashJoinBuildInsertMicroseconds              31192556     26609952     -4582604
+    ConcurrentHashJoinBuildMergeMicroseconds                  14596           27       -14570
+    ConcurrentHashJoinProbeMicroseconds                    34433955     37730950     +3296996
+    ConcurrentHashJoinProbeDispatchMicroseconds                 224       765272      +765048
+    ConcurrentHashJoinProbeLookupMicroseconds              32372283     34840345     +2468062
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL str:probe.inner_all.S1.T96 verdict=LOSS A[armA]=241896us B[armB]=249541us diff=+3.16% band=3.0% spread(A/B)=1725/2057us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                        3750         1848        -1903
+    ConcurrentHashJoinBuildDispatchMicroseconds                 188          192           +4
+    ConcurrentHashJoinBuildInsertMicroseconds                  1504         1612         +109
+    ConcurrentHashJoinBuildMergeMicroseconds                   2018           26        -1992
+    ConcurrentHashJoinProbeMicroseconds                     6362107      6461389       +99282
+    ConcurrentHashJoinProbeDispatchMicroseconds                 422      1212963     +1212541
+    ConcurrentHashJoinProbeLookupMicroseconds               4195597      2786869     -1408728
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S2.T1 verdict=INVALID reasons=['below-duration-floor (arm B median 168.4 ms < 200 ms)']
+CELL str:probe.inner_all.S2.T1.hash verdict=TIE A[armA]=220302us B[armB]=223195us diff=+1.31% band=3.0% spread(A/B)=981/2301us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL str:probe.inner_all.S2.T48 verdict=WIN A[armA]=238845us B[armB]=204178us diff=-14.51% band=3.0% spread(A/B)=611/812us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       20258        17429        -2828
+    ConcurrentHashJoinBuildDispatchMicroseconds                1339         1464         +125
+    ConcurrentHashJoinBuildInsertMicroseconds                 17864        15845        -2020
+    ConcurrentHashJoinBuildMergeMicroseconds                   1040           18        -1022
+    ConcurrentHashJoinProbeMicroseconds                     4263062      2657026     -1606036
+    ConcurrentHashJoinProbeDispatchMicroseconds                  19       331654      +331636
+    ConcurrentHashJoinProbeLookupMicroseconds               3344620      1379012     -1965608
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=96000000
+CELL str:probe.inner_all.S2.T96 verdict=WIN A[armA]=294425us B[armB]=273759us diff=-7.02% band=3.0% spread(A/B)=2986/1833us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       28859        22468        -6392
+    ConcurrentHashJoinBuildDispatchMicroseconds                1727         1670          -58
+    ConcurrentHashJoinBuildInsertMicroseconds                 25142        20750        -4393
+    ConcurrentHashJoinBuildMergeMicroseconds                   1939           34        -1904
+    ConcurrentHashJoinProbeMicroseconds                    12101072      8795553     -3305519
+    ConcurrentHashJoinProbeDispatchMicroseconds                 226      1101123     +1100896
+    ConcurrentHashJoinProbeLookupMicroseconds              10072979      5377990     -4694988
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S2.T96.hash verdict=TIE A[armA]=294832us B[armB]=295077us diff=+0.08% band=3.0% spread(A/B)=2019/2586us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL str:probe.inner_all.S3.T96 verdict=WIN A[armA]=400124us B[armB]=337623us diff=-15.62% band=3.0% spread(A/B)=1965/1764us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     2639805      2193140      -446665
+    ConcurrentHashJoinBuildDispatchMicroseconds              147114       146436         -678
+    ConcurrentHashJoinBuildInsertMicroseconds               2494211      2031450      -462760
+    ConcurrentHashJoinBuildMergeMicroseconds                   2069           33        -2036
+    ConcurrentHashJoinProbeMicroseconds                    19610204     13466446     -6143757
+    ConcurrentHashJoinProbeDispatchMicroseconds                 237      1045880     +1045643
+    ConcurrentHashJoinProbeLookupMicroseconds              17568522     10002727     -7565795
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=10899038, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S3.T96.h05 verdict=INVALID reasons=['below-duration-floor (arm A median 160.8 ms < 200 ms)']
+CELL str:probe.inner_all.S3.T96.h50 verdict=WIN A[armA]=273532us B[armB]=227472us diff=-16.84% band=3.0% spread(A/B)=3056/1961us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     2671104      2021280      -649824
+    ConcurrentHashJoinBuildDispatchMicroseconds              145676       143602        -2074
+    ConcurrentHashJoinBuildInsertMicroseconds               2511524      1882141      -629383
+    ConcurrentHashJoinBuildMergeMicroseconds                   2102           33        -2070
+    ConcurrentHashJoinProbeMicroseconds                    14204919     10404972     -3799947
+    ConcurrentHashJoinProbeDispatchMicroseconds                 142      1069230     +1069088
+    ConcurrentHashJoinProbeLookupMicroseconds              13137679      8088114     -5049565
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=10900186, ConcurrentHashJoinAmacBuildRingGrowths=128, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S4.T1 verdict=WIN A[armA]=30410368us B[armB]=22007914us diff=-27.63% band=3.0% spread(A/B)=92508/508001us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     5223163      3715191     -1507972
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            4           +4
+    ConcurrentHashJoinBuildInsertMicroseconds               5220660      3713124     -1507536
+    ConcurrentHashJoinBuildMergeMicroseconds                      2            1           -1
+    ConcurrentHashJoinProbeMicroseconds                    13512952      6613489     -6899462
+    ConcurrentHashJoinProbeDispatchMicroseconds                   6            0           -6
+    ConcurrentHashJoinProbeLookupMicroseconds              11735578      4861658     -6873920
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=47942656, ConcurrentHashJoinAmacBuildRingGrowths=6, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S4.T1.hash verdict=TIE A[armA]=29576052us B[armB]=30021444us diff=+1.51% band=3.0% spread(A/B)=193890/97641us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL str:probe.inner_all.S4.T48 verdict=WIN A[armA]=798216us B[armB]=707686us diff=-11.34% band=3.6% spread(A/B)=19438/25576us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                     9813933     11569904     +1755971
+    ConcurrentHashJoinBuildDispatchMicroseconds              306585       328092       +21508
+    ConcurrentHashJoinBuildInsertMicroseconds               9501702     11236275     +1734573
+    ConcurrentHashJoinBuildMergeMicroseconds                   1115           20        -1096
+    ConcurrentHashJoinProbeMicroseconds                    14828339      8713915     -6114424
+    ConcurrentHashJoinProbeDispatchMicroseconds                  46       642746      +642700
+    ConcurrentHashJoinProbeLookupMicroseconds              12960792      6168460     -6792333
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=47428000, ConcurrentHashJoinAmacBuildRingGrowths=192, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S4.T96 verdict=WIN A[armA]=528928us B[armB]=426949us diff=-19.28% band=5.5% spread(A/B)=29215/17207us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    14607761     10333341     -4274420
+    ConcurrentHashJoinBuildDispatchMicroseconds              458232       498836       +40605
+    ConcurrentHashJoinBuildInsertMicroseconds              14131800      9837631     -4294170
+    ConcurrentHashJoinBuildMergeMicroseconds                   2067           30        -2036
+    ConcurrentHashJoinProbeMicroseconds                    19961883     13851106     -6110777
+    ConcurrentHashJoinProbeDispatchMicroseconds                 249      1026249     +1026000
+    ConcurrentHashJoinProbeLookupMicroseconds              17914239     10521225     -7393014
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46912260, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.inner_all.S4.T96.hash verdict=TIE A[armA]=5777584us B[armB]=5746826us diff=-0.53% band=3.0% spread(A/B)=84195/53604us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                           0            0           +0
+    ConcurrentHashJoinBuildDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinBuildInsertMicroseconds                     0            0           +0
+    ConcurrentHashJoinBuildMergeMicroseconds                      0            0           +0
+    ConcurrentHashJoinProbeMicroseconds                           0            0           +0
+    ConcurrentHashJoinProbeDispatchMicroseconds                   0            0           +0
+    ConcurrentHashJoinProbeLookupMicroseconds                     0            0           +0
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=0
+CELL str:probe.inner_all.S5.T96 verdict=WIN A[armA]=2820490us B[armB]=2236514us diff=-20.70% band=12.0% spread(A/B)=339613/162321us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                   124280624     89825926    -34454698
+    ConcurrentHashJoinBuildDispatchMicroseconds             1665974      1880227      +214253
+    ConcurrentHashJoinBuildInsertMicroseconds             122591513     87921094    -34670420
+    ConcurrentHashJoinBuildMergeMicroseconds                   2044           30        -2014
+    ConcurrentHashJoinProbeMicroseconds                    89370875     61967542    -27403332
+    ConcurrentHashJoinProbeDispatchMicroseconds                1114      3930784     +3929670
+    ConcurrentHashJoinProbeLookupMicroseconds              81189595     48833116    -32356479
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=190902738, ConcurrentHashJoinAmacBuildRingGrowths=384, ConcurrentHashJoinAmacProbeRows=768000000
+CELL str:probe.left_all.S2.T96 verdict=WIN A[armA]=326223us B[armB]=301752us diff=-7.50% band=3.0% spread(A/B)=3134/1521us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       25986        21088        -4898
+    ConcurrentHashJoinBuildDispatchMicroseconds                1542         1658         +116
+    ConcurrentHashJoinBuildInsertMicroseconds                 22312        19400        -2912
+    ConcurrentHashJoinBuildMergeMicroseconds                   1950           32        -1918
+    ConcurrentHashJoinProbeMicroseconds                    15120558     11483016     -3637542
+    ConcurrentHashJoinProbeDispatchMicroseconds                 244      1135388     +1135144
+    ConcurrentHashJoinProbeLookupMicroseconds              11434956      5712264     -5722692
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.left_all.S4.T96 verdict=WIN A[armA]=552004us B[armB]=453512us diff=-17.84% band=4.4% spread(A/B)=24351/15638us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    14222556     10195024     -4027532
+    ConcurrentHashJoinBuildDispatchMicroseconds              470755       509965       +39210
+    ConcurrentHashJoinBuildInsertMicroseconds              13732894      9686312     -4046582
+    ConcurrentHashJoinBuildMergeMicroseconds                   2150           30        -2120
+    ConcurrentHashJoinProbeMicroseconds                    22803222     16389150     -6414072
+    ConcurrentHashJoinProbeDispatchMicroseconds                 184      1064254     +1064069
+    ConcurrentHashJoinProbeLookupMicroseconds              19213976     11053456     -8160520
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46911804, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.rf_all.S2.T96 verdict=WIN A[armA]=430924us B[armB]=407156us diff=-5.52% band=3.0% spread(A/B)=3006/2362us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       48704        28940       -19764
+    ConcurrentHashJoinBuildDispatchMicroseconds                1545         1681         +136
+    ConcurrentHashJoinBuildInsertMicroseconds                 32929        26532        -6397
+    ConcurrentHashJoinBuildMergeMicroseconds                  14278          710       -13567
+    ConcurrentHashJoinProbeMicroseconds                    23030395     19573460     -3456935
+    ConcurrentHashJoinProbeDispatchMicroseconds                2988      1215804     +1212816
+    ConcurrentHashJoinProbeLookupMicroseconds              16084594      8307334     -7777261
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.rf_all.S4.T96 verdict=WIN A[armA]=3165250us B[armB]=867119us diff=-72.61% band=3.0% spread(A/B)=87115/15271us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    23137777     23545745      +407968
+    ConcurrentHashJoinBuildDispatchMicroseconds              481928       918580      +436652
+    ConcurrentHashJoinBuildInsertMicroseconds              20609836     22488860     +1879024
+    ConcurrentHashJoinBuildMergeMicroseconds                2038185        75768     -1962418
+    ConcurrentHashJoinProbeMicroseconds                    33970462     32144774     -1825689
+    ConcurrentHashJoinProbeDispatchMicroseconds                3190      1109930     +1106740
+    ConcurrentHashJoinProbeLookupMicroseconds              27180326     22182958     -4997369
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46911898, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.semi_anti.S2.T96 verdict=WIN A[armA]=294396us B[armB]=275428us diff=-6.44% band=3.0% spread(A/B)=2293/1712us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                       29278        23506        -5772
+    ConcurrentHashJoinBuildDispatchMicroseconds                1704         1710           +6
+    ConcurrentHashJoinBuildInsertMicroseconds                 25601        21739        -3862
+    ConcurrentHashJoinBuildMergeMicroseconds                   1912           28        -1884
+    ConcurrentHashJoinProbeMicroseconds                    11981154      8933614     -3047540
+    ConcurrentHashJoinProbeDispatchMicroseconds                 230      1105698     +1105467
+    ConcurrentHashJoinProbeLookupMicroseconds               9929998      5447816     -4482183
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=0, ConcurrentHashJoinAmacBuildRingGrowths=0, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.semi_anti.S2.T96.anti verdict=INVALID reasons=['below-duration-floor (arm A median 59.3 ms < 200 ms)']
+CELL str:probe.semi_anti.S4.T96 verdict=WIN A[armA]=521730us B[armB]=436750us diff=-16.29% band=5.8% spread(A/B)=30418/8700us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    14308260     10976953     -3331308
+    ConcurrentHashJoinBuildDispatchMicroseconds              463508       494704       +31195
+    ConcurrentHashJoinBuildInsertMicroseconds              13838325     10489561     -3348764
+    ConcurrentHashJoinBuildMergeMicroseconds                   2064           22        -2042
+    ConcurrentHashJoinProbeMicroseconds                    19544002     13887693     -5656310
+    ConcurrentHashJoinProbeDispatchMicroseconds                 182      1028046     +1027864
+    ConcurrentHashJoinProbeLookupMicroseconds              17456920     10543000     -6913920
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46911532, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+CELL str:probe.semi_anti.S4.T96.anti verdict=WIN A[armA]=276410us B[armB]=219726us diff=-20.51% band=10.4% spread(A/B)=28773/5344us runs=10/10
+  phase attribution (median us per arm):
+    event                                                         A            B        delta
+    ConcurrentHashJoinBuildMicroseconds                    13777000      9410171     -4366830
+    ConcurrentHashJoinBuildDispatchMicroseconds              453360       505800       +52440
+    ConcurrentHashJoinBuildInsertMicroseconds              13306058      8910570     -4395488
+    ConcurrentHashJoinBuildMergeMicroseconds                   2112           23        -2090
+    ConcurrentHashJoinProbeMicroseconds                     9891563      9421308      -470256
+    ConcurrentHashJoinProbeDispatchMicroseconds                  33       922057      +922024
+    ConcurrentHashJoinProbeLookupMicroseconds               9832908      8451294     -1381614
+    engagement[B]: ConcurrentHashJoinAmacBuildRows=46911400, ConcurrentHashJoinAmacBuildRingGrowths=256, ConcurrentHashJoinAmacProbeRows=192000000
+FLEET_AB REPORT RESULT: cells=105 win=30 tie=38 loss=20 invalid=17 insufficient=0 uncalibrated=0

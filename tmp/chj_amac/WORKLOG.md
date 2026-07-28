@@ -491,3 +491,37 @@ written (launch deferred until Units 2-3 pass local gates); harness suite
 committed with this entry. Remaining Unit 1 residue carried forward: AMAC
 force-pass success path and remote fleet mode are untestable until Unit 2 /
 Unit 4 respectively (loudly SKIPPED, fail-closed under --require flags).
+
+## 2026-07-28 — U4: fleet campaign, dispositions, report
+
+Fleet: 8× m8g.24xlarge launched per requester authorization (PREREG-003
+appendix has hosts/lscpu/shas). Remote-mode defects found and fixed during
+bring-up, each committed with evidence: the launch hang (`bash -c 'cmd &'`
+leaves the server as the ssh shell's child when `setsid` cannot fork —
+fixed by double-fork + status-file pid, f8c9ffd9e9f) and the stop race
+(`kill -0` microseconds after SIGKILL races kernel teardown of multi-GB
+servers; zombies count as alive — fixed by a 30 s death poll,
+560e954f925). Sweep attempt 1 lost to the stop race (cells salvaged via
+resume); attempt 3 completed the 106-cell plan (105 with data; lcstr S5
+OOM at the venue). Operational pitfalls recorded: python block-buffers
+redirected sweep logs (the flushed results JSONLs are the liveness signal);
+`pkill -f` over ssh matches its own remote shell (bracket-trick pattern).
+
+Results (full detail: `REPORT.md`; raws `fleet/results/*.jsonl`):
+30 WIN / 38 TIE / 20 LOSS / 17 floor-invalid. G-hash-inband GREEN 12/12
+TIE. G-ablation GREEN — the rings are exonerated (ring-OFF regresses str
+probe +27.57%, key64 S2 +5.09%, S5 +6.15%; mixed unchanged). G-force-engage
+ran with an honest prediction mismatch (forced ring at S1.T96 +1.22%,
+in-band — the ahj small-map-loss lead does not reproduce here).
+G-coverage GREEN: `0 undispositioned` (68 MEASURED / 1079 INFERRED / 297
+PARITY-ONLY / 71 EXCLUDED-INVALID / 285 NOT-CLAIMED). G-perf RED
+(must-hold, reported honestly per the mission's pre-accepted tradeoff):
+losses attributed by phase receipts + ablation to (i) a ring-independent
+build-phase gap on cheap numeric keys at T96 with the probe table resident
+(UNSETTLED mechanism; settling instrument = per-IP counters on a shard),
+(ii) route-derivation costs the zero-dispatch two-level probe does not pay
+(worst: the `hashed` family's serialized route; named fix-path = cheaper
+consistent route hash for that family), (iii) the small-map floor cost.
+Process gaps stated in `REPORT.md` §Named gaps: no U4 PREREG entry (the
+acceptance rules lived in MATRIX.md + PREREG-002c), this WORKLOG entry
+written at report time, broad `join` selector differential never run.
