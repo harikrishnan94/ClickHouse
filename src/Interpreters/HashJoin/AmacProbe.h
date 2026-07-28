@@ -77,6 +77,17 @@ constexpr bool amac_probe_supported = amac_join_supported<KeyGetter, std::remove
     && (amac_mapped_fits_word<typename std::remove_const_t<Map>::mapped_type> /// NOLINT(readability-redundant-typename)
         || amac_mapped_by_pointer<typename std::remove_const_t<Map>::mapped_type>); /// NOLINT(readability-redundant-typename)
 
+/// The find ring's collision-walk policy, selected once per `joinBlock` from the plan's
+/// wrap bit: `bare` is the steady loop's `++cell` with no mask and no bound check (licensed
+/// by an empty last pad cell in every buffer); `wrap_aware` wraps at the pad end exactly like
+/// the grower's `next`, serving the wrapped-chain plans the bare walk must refuse - so a
+/// wrapped build keeps the ring instead of falling back.
+enum class AmacWalk : bool
+{
+    bare,
+    wrap_aware,
+};
+
 /// The grower contract of the descriptor-based find ring: linear probing with a power-of-two
 /// home mask and the tail-padded buffer of `TailPaddedHashTableGrower` (the walk runs into the
 /// pad and wraps only at its end; see the grower's comment). Every cursor-capable join map is
@@ -96,7 +107,7 @@ inline constexpr bool is_tail_padded_linear_grower<TailPaddedHashTableGrower<ini
   * `selector_indexes[i]` otherwise. Internally chunked so the ring's row index fits 16 bits.
   * Increments `ConcurrentHashJoinAmacProbeRows` by `rows`, once per pass.
   */
-template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
+template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range, AmacWalk walk>
 void amacFindPass(
     KeyGetter & key_getter,
     const Map * const * slot_maps,
@@ -123,12 +134,13 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
 
 /// One `amacFindPass` instantiation; `EXTERN` is `extern` in this header and empty in
 /// `AmacProbe.cpp`, so the declarations and the definitions cannot drift apart.
-#define AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE) \
+#define AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE, WALK) \
     EXTERN template void amacFindPass< \
         AmacProbeKeyGetterFor_##TYPE<HashJoin::MAPS>, \
         AmacProbeMapFor_##TYPE<HashJoin::MAPS>, \
         NEED_FLAGS, \
-        SELECTOR_IS_RANGE>( \
+        SELECTOR_IS_RANGE, \
+        WALK>( \
         AmacProbeKeyGetterFor_##TYPE<HashJoin::MAPS> & key_getter, \
         const AmacProbeMapFor_##TYPE<HashJoin::MAPS> * const * slot_maps, \
         const SlotMapDesc * slot_descs, \
@@ -145,16 +157,26 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
 /// {range, indexes} selector. Both flag arms exist for every shape, so any (kind, strictness)
 /// resolves to a preinstantiated symbol.
 #define AMAC_FIND_PASS_INSTANTIATIONS(EXTERN, TYPE) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, true) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, false) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, true) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, false) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, true) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, false) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, true) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, true) \
-    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, false)
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, true, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, true, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, false, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, false, false, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, true, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, true, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, false, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsOne, true, false, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, true, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, true, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, false, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, false, false, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, true, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, true, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAll, true, false, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, true, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, true, AmacWalk::wrap_aware) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, false, AmacWalk::bare) \
+    AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MapsAsof, false, false, AmacWalk::wrap_aware)
 
 #define M(TYPE) AMAC_FIND_PASS_INSTANTIATIONS(extern, TYPE)
 APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)

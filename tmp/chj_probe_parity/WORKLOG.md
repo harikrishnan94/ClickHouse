@@ -287,3 +287,28 @@ Edits (all landed in working tree, building):
   sizes the ASOF ring's two-phase cost is marginal; the fleet's S4
   asof cells are the target, and an ASOF-specific engagement
   threshold is the named contingency if they stay red.
+
+## U4b — AmacWalk policy: wrap-aware ring variant (PREREG 006 commit b)
+
+- `AmacWalk {bare, wrap_aware}`: a second compile-time axis on the
+  find pass, selected once per `joinBlock` from the plan's wrap bit -
+  a wrapped-chain build keeps the ring (wrap-aware instantiation)
+  instead of disengaging, and force mode now engages on wrapped plans
+  too. The wrap-aware step recovers the pad-end bound through the
+  ring's EXISTING slot lane and the L1-resident descriptor table
+  (deviation from the DESIGN's dedicated +8 B frame lane - strictly
+  cheaper). The find-pass body moved to `AmacProbeImpl.h` so tests
+  can instantiate it over adversarial maps.
+- Cost: 80 -> 160 `amacFindPass` symbols; binary 4844.3 -> (see stat
+  above) MB-scale delta recorded at commit.
+- Gates: build rc=0; gtests 25/25 (new `AmacWrappedWalk` teeth test:
+  a degenerate-hash 100-key chain spans the whole tail pad, occupies
+  its last cell and wraps; the wrap bit fires and the wrap-aware ring
+  equals `HashMapTable::find` on 150 probes); PARITY OK 636; ORDER
+  OK; bare-anchor perturbation check PASS (`disasm_u4b.md`: bare walk
+  opcode-identical, wrap compare only in the wrap-aware sibling at 4
+  sites; honest note: `amacRun` is now outlined - a once-per-chunk
+  call and one per-admitted-row `cbz` from a skip-copy merge, the
+  per-visit steady loop untouched).
+- Coverage boundary (as pre-registered): SQL cannot reach wrapped
+  plans deterministically; ring-on-wrapped coverage is the gtest.

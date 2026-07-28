@@ -293,11 +293,7 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (amac_probe_supported<KeyGetter, Map>)
     {
         const AmacMode amac_mode = joinAmacMode();
-        /// The wrap-free guard of the ring's bare `++cell` walk (a chain through some buffer's
-        /// last pad cell - astronomically rare, adversarially constructible) is collected once
-        /// per build into the plan; it is correctness, not a threshold, so it applies under
-        /// `Force` too.
-        use_amac = amac_mode != AmacMode::Off && slot_joins[0]->amacEnabled() && !plan.chain_may_wrap
+        use_amac = amac_mode != AmacMode::Off && slot_joins[0]->amacEnabled()
             && (amac_mode == AmacMode::Force
                 || (plan.total_map_bytes > getMinBytesForPrefetchInJoin() && rows >= amac_min_rows));
     }
@@ -588,18 +584,29 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             else
                 sel_indexes = selector.getData().data();
 
-            amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range>(
-                key_getter,
-                maps_by_slot,
-                descs_data,
-                slot_ids,
-                rows,
-                range_first,
-                sel_indexes,
-                skip_data,
-                pool,
-                found_word_data,
-                found_offset_data);
+            /// The walk policy comes from the plan's wrap bit: a build where some collision
+            /// chain reached a buffer's last pad cell (astronomically rare, adversarially
+            /// constructible) selects the wrap-aware instantiation - correctness, not a
+            /// threshold, so it holds under `Force` too; every other plan keeps the bare walk.
+            auto find_pass = [&]<AmacWalk walk>()
+            {
+                amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range, walk>(
+                    key_getter,
+                    maps_by_slot,
+                    descs_data,
+                    slot_ids,
+                    rows,
+                    range_first,
+                    sel_indexes,
+                    skip_data,
+                    pool,
+                    found_word_data,
+                    found_offset_data);
+            };
+            if (plan.chain_may_wrap)
+                find_pass.template operator()<AmacWalk::wrap_aware>();
+            else
+                find_pass.template operator()<AmacWalk::bare>();
 
             if constexpr (degenerate_phase_b)
             {
