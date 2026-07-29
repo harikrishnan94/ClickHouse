@@ -206,7 +206,9 @@ ConcurrentHashJoin::ConcurrentHashJoin(
                         right_sample_block,
                         any_take_last_row_,
                         /*reserve_num_=*/0,
-                        fmt::format("concurrent{}", i));
+                        fmt::format("concurrent{}", i),
+                        /*stats_collecting_params_=*/StatsCollectingParams{},
+                        /*is_parallel_hash_slot=*/true);
                     inner_hash_join->data->setMaxJoinedBlockRows(table_join->maxJoinedBlockRows());
                     inner_hash_join->data->setMaxJoinedBlockBytes(table_join->maxJoinedBlockBytes());
                     /// Opt the per-slot maps into the AMAC build-insert ring (see `AmacRing.h`):

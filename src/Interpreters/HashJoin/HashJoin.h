@@ -118,7 +118,9 @@ public:
         bool any_take_last_row_ = false,
         size_t reserve_num_ = 0,
         const String & instance_id_ = "",
-        const StatsCollectingParams & stats_collecting_params_ = {});
+        const StatsCollectingParams & stats_collecting_params_ = {},
+        /// Set by `ConcurrentHashJoin` for its per-slot joins; see the LowCardinality map choice.
+        bool is_parallel_hash_slot = false);
 
     ~HashJoin() override;
 

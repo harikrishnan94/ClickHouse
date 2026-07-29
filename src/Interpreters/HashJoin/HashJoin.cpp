@@ -137,7 +137,8 @@ HashJoin::HashJoin(
     bool any_take_last_row_,
     size_t reserve_num_,
     const String & instance_id_,
-    const StatsCollectingParams & stats_collecting_params_)
+    const StatsCollectingParams & stats_collecting_params_,
+    bool is_parallel_hash_slot)
     : table_join(table_join_)
     , kind(table_join->kind())
     , strictness(table_join->strictness())
@@ -195,9 +196,12 @@ HashJoin::HashJoin(
     }
 
     /// Detect a single non-nullable LowCardinality key before the keys are materialized below, so it
-    /// can use a dictionary-aware map. Restricted to a single disjunct for now.
+    /// can use a dictionary-aware map. Restricted to a single disjunct, and never for a
+    /// `parallel_hash` slot: it is the one join map that is not cursor-capable, so its slots cannot
+    /// drive the AMAC find ring, and the routed probe then pays its per-row routing with nothing to
+    /// repay it. A `parallel_hash` LowCardinality key materializes and takes the string map instead.
     std::optional<Type> low_cardinality_method;
-    if (table_join->oneDisjunct() && strictness != JoinStrictness::Asof)
+    if (table_join->oneDisjunct() && !is_parallel_hash_slot && strictness != JoinStrictness::Asof)
     {
         const auto & only_clause_key_names = table_join->getOnlyClause().key_names_right;
         if (only_clause_key_names.size() == 1)
