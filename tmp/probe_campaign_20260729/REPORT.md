@@ -323,6 +323,51 @@ after the fact from the A/A that failed.
 A previous draft claimed the fix required "a harness redesign outside this run's budget". That was
 wrong, and (a) and (b) are cheap; (a) was therefore executed rather than asserted away.
 
+### 4.1 The port-swap control was run, and it refutes the fixed-offset explanation
+
+    $ python3 -u join_bench_mt.py sweep --suite synthetic --shards 1 --shard 0 \
+        --results results/aa_jbmt11_swap/results.jsonl --only "$(cat logs/aa_jbmt_regex.txt)" \
+        --algorithms parallel_hash --min-timed-runs 11 \
+        --arm aaA=<baseline>:9007 --arm aaB=<baseline>:9005      # arm->port assignment REVERSED
+    $ python3 probe_ab_report.py --results 'results/aa_jbmt11_swap/results.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control
+      probe_cost:      10 scored, 1 non-TIE, empirical noise floor = 5.22% (143,633 us)
+        FAIL D65536_K0_mb1_mp16_h1.0_bp8_pp8_T16: LOSS +5.2% (band 3.6%)
+      projection_cost: 10 scored, 0 non-TIE, empirical noise floor = 4.05% (86,396 us)
+    CHECK SUMMARY: FAIL (1 failed check(s))   → exit 1
+
+Two things follow, both of which narrow the diagnosis rather than assert one:
+
+1. **It is not a fixed per-server or per-port offset.** A fixed offset would have *inverted* with
+   the same magnitude when the arms swapped ports. Instead the magnitudes largely **collapsed**
+   (`D262144_K5…mp256`: `projection_cost` +5.13 % → +0.49 %; `D32000000_K4`: +0.87 % → −0.06 %),
+   and a different unit became the offender. So the earlier suspicion of a per-instance bias is
+   refuted, and with it the remedy that would have followed from it.
+2. **The suite is still red on a quiet host, and the offender is now the micro-unit.**
+   `D65536_K0_mb1_mp16` has an **8 ms** median query — at that duration a few per cent is a couple
+   of hundred microseconds. This sweep also ran with no fleet sweep being orchestrated from this
+   host, which the earlier 11-run control had running concurrently; that concurrency is the most
+   plausible cause of the *earlier* magnitudes, and it is a LEAD, not a settled claim.
+
+**Would fleet_ab's own 200 ms duration floor rescue the suite? Only partly — so no.** Applying that
+floor to the three A/A sweeps already collected (an analysis of existing data, offered as a proposal
+for a future run and explicitly **not** a retroactive pass for Unit 2):
+
+| A/A sweep | units dropped by a 200 ms floor | worst remaining \|delta\| among KEPT units | would G0-a pass? |
+| --- | --- | --- | --- |
+| 5 timed runs | 2 (9 ms, 73 ms) | `probe_cost` 1.94 %, `projection_cost` **4.46 %** | **no** |
+| 11 timed runs | 2 (9 ms, 74 ms) | `probe_cost` **3.86 %**, `projection_cost` **5.13 %** | **no** |
+| 11 runs, swapped ports | 2 (8 ms, 74 ms) | `probe_cost` 2.02 %, `projection_cost` 1.31 % | yes |
+
+So a duration floor rescues one sweep of three. **Unit 2 stays UNSETTLED**, and the honest
+characterization is now this: on this host the jbmt *synthetic* suite's own A/A exceeds the
+campaign's 3 % band in all three sweeps somewhere, the cause is **not** per-arm table construction
+(the parts are byte-identical), **not** a fixed per-port offset (swapping did not invert it), and
+**not** shown to be arm ordering (that test is confounded by design and was not run). Its per-unit
+noise on this venue sits around 4–5.5 %. The settling path is a quiet fleet venue — where fleet_ab's
+own A/A passes cleanly — combined with a duration floor to exclude the micro-units, plus the 11.5 h
+of sweep time 347 cells at ~2 min each require. That is a follow-up run, not a caveat on this one.
+
 Coverage attempted: 0 of 347 measured cells scored. The `--only` regex that would select exactly
 the 347 ids was built and is delivered (`logs/legacy_only_regex.txt`, 13,752 bytes, anchored
 `^(id1|…|id347)$`), so the sweep is a single command away once the venue question is settled.
