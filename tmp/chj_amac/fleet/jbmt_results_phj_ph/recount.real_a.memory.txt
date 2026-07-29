@@ -1,0 +1,35 @@
+rows=376
+statuses: {'OK': 375, 'INVALID': 1}
+tool_versions: {'jbmt-v2': 376}
+lead_arm distribution: {'baseline': 172, 'candidate': 204}
+arm -> binary sha256 prefixes: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+algorithms measured: {'parallel_hash': 376}
+
+--- candidate-centric memory verdicts (WIN = candidate better) ---
+units scored=375 win=66 tie=177 loss=132
+not scored: {'INVALID': 1}
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.034 (>1 means the candidate is slower/larger)
+
+10 biggest candidate WINS (lowest ratio):
+  0.036  tpch__nation_n_regionkey__region_r_regionkey__T96__tiera
+  0.037  job__movie_link_link_type_id__link_type_id__T96__tiera
+  0.040  tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__T96__tiera
+  0.068  job__complete_cast_movie_id__movie_link_movie_id__T96__tiera
+  0.069  tpcds__customer_address_ca_county__store_s_county__T96__tiera
+  0.070  tpcds__customer_address_ca_county__store_s_county__filtered__T96__tiera
+  0.091  tpcds__customer_address_ca_zip__store_s_zip__filtered__T96__tiera
+  0.091  tpcds__customer_address_ca_zip__store_s_zip__T96__tiera
+  0.096  job__complete_cast_status_id__comp_cast_type_id__T96__tiera
+  0.096  job__complete_cast_subject_id__comp_cast_type_id__T96__tiera
+10 biggest candidate LOSSES (highest ratio):
+  2.896  job__movie_info_idx_movie_id__complete_cast_movie_id__T16__tiera
+  1.965  tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk__T96__tiera
+  1.919  tpcds__web_returns_wr_item_sk__item_i_item_sk__T96__tiera
+  1.677  job__movie_keyword_keyword_id__keyword_id__T96__tiera
+  1.611  tpcds__web_sales_ws_web_site_sk__web_site_web_site_sk__T96__tiera
+  1.589  tpcds__inventory_inv_item_sk__item_i_item_sk__T96__tiera
+  1.536  tpcds__web_sales_ws_item_sk__item_i_item_sk__T96__tiera
+  1.501  tpcds__catalog_sales_cs_item_sk__item_i_item_sk__T96__tiera
+  1.485  tpcds__store_sales_ss_item_sk__item_i_item_sk__T96__tiera
+  1.476  tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T96__tiera

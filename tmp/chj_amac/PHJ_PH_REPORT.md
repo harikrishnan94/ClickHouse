@@ -19,12 +19,36 @@ command line that produced them:
 
 | Unit | What | Verdict |
 | --- | --- | --- |
-| 1 — preflight and candidate build | G1 binary identity, candidate build, AMAC counters | **GREEN** |
-| 2 — `fleet_ab` measured plan, 94 cells | G2 green; **G3 RED**, **G4 RED**; suite measured in full | **MEASURED, gates RED (honest)** |
-| 3 — jbmt legacy synthetic, 347 cells | G5 | *(see status below)* |
-| 4 — jbmt real suite, 376 units × 2 tiers | G6 | *(see status below)* |
-| 5 — reporting and U5 comparison | G7 | *(see status below)* |
-| 6 — teardown | G8 | *(see status below)* |
+| 1 — preflight and candidate build | G1 green; candidate built; AMAC counters proved by 2 independent origins | **GREEN** |
+| 2 — `fleet_ab` measured plan, 94 cells | G2 green; **G3 RED**, **G4 RED**; suite measured in full (93 of 94 cells have data) | **MEASURED, gates RED (honest)** |
+| 3 — jbmt legacy synthetic, 347 cells | **G5 GREEN** (347/347 OK), G7 green | **GREEN — suite complete** |
+| 4 — jbmt real suite, tier **a** | **G6 GREEN** (376/376, 1 INVALID = the pre-registered unit), G7 green | **GREEN — tier complete** |
+| 4 — jbmt real suite, tier **b** | not started | **UNSETTLED — not run** (campaign stopped on instruction; settling command below) |
+| 5 — reporting and U5 comparison | G7 green for both jbmt configurations; U5 changed-verdict list complete | **GREEN for the measured suites** |
+| 6 — teardown | **G8 GREEN** | **GREEN** |
+
+## Headline result
+
+**The candidate loses, consistently, on all three suites that were measured.** This is the
+measured truth, not a framing choice:
+
+| suite | scope | candidate WIN | TIE | candidate LOSS | INVALID | median ratio (cand/base) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fleet_ab` synthetic matrix | 93 of 94 cells | 27 | 28 | 22 | 16 | — (per-cell band) |
+| jbmt legacy synthetic | 347 of 347 | 119 | 53 | **175** | 0 | **1.057** (5.7% slower) |
+| jbmt real, tier a | 375 scored of 376 | 26 | 138 | **211** | 1 (pre-registered) | **1.071** (7.1% slower) |
+| jbmt real, tier b | — | — | — | — | — | **UNSETTLED — not run** |
+
+`fleet_ab` is the only suite where wins outnumber losses, and even there the *same 93 cells*
+went from 42 win / 9 loss under the U5 precedent's candidate to 27 win / 22 loss now. On both
+jbmt suites the candidate is slower at the median and loses 2–8× more units than it wins.
+Memory is also worse on both jbmt suites (legacy 5 win / 81 loss, tier a 66 win / 132 loss,
+median 1.034 on each).
+
+The one thing that clearly *improved* is the phase the change targets:
+`ConcurrentHashJoinProbeLookupMicroseconds` is lower on 61 of 70 `fleet_ab` probe-side cells,
+by up to −64%. The wall-clock cost moved somewhere else. **This campaign measures that
+tension and does not explain it** — see the leads.
 
 ### Authorization-required flags
 
@@ -92,6 +116,16 @@ measures.
   improvement (below) implies the cost moved to a phase other than probe lookup. The
   per-cell phase table in `fleet/report_phj_ph.txt` has the build-side and probe-total events
   needed to chase it; not chased here.
+- **LEAD (not settled), and the strongest one:** across **both** jbmt suites the candidate's
+  losses concentrate at **low thread counts** and its wins at **T96**. Legacy suite: the 10
+  worst are all `K1` at T2–T8 (up to **3.555×** slower) while the 10 best are all `T96` (down
+  to 0.574×). Tier a: the 10 best are all `T96`. This is consistent with the payload
+  commit's own mechanism — production callers now pass a fixed `max_slots = 256` instead of a
+  thread-derived count, so a 2-thread query builds 256 slot maps — and with that commit's own
+  stated follow-up ("re-validate the low-thread cells (T1/T48), which previously ran with
+  thread-derived slot counts"). **It is a lead, not a finding:** this campaign did not vary
+  the slot count, so it has not isolated the cause. Settling it needs a slot-count sweep
+  (`fleet_ab` accepts `--env-b CLICKHOUSE_JOIN_SLOTS=…`) or a third arm at `3b76b5edfb5`.
 
 ---
 
@@ -231,8 +265,43 @@ python3 tmp/chj_amac/fleet/run_sweep_stealing.py \
 | R3 | 1 cell unmeasurable in this venue | `lcstr:probe.inner_all.S5.T96` | `Code: 241 … would use 186.12 GiB … maximum: 193.71 GiB … While executing FillingRightJoinSide` on the **baseline** arm: 340M `LowCardinality(String)` build keys with two resident servers on 370 GiB. Same cell/arm/exception as U5 (`191.45 GiB`), which dispositioned it `EXCLUDED-INVALID`. Produced **no rows**, hence `cells=93` | **not** rerun, server memory limit **not** raised |
 | R4 | **G4 RED** — `cells=93 invalid=16` | — | consequence of R2 and R3; the gate exits 1 on non-zero `invalid`, which is correct behaviour | none; reported |
 
-**No cell in this campaign was rerun.** There are no rerun files in
-`fleet/results_phj_ph/`; every row of the sweep is preserved, INVALID rows included.
+| R5 | 1 real-suite unit INVALID at tier a | `tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera` | `TIMEOUT_EXCEEDED` against the harness's fixed 600 s budget. A join on `nationkey` (~25 distinct values) produces an enormous output. **Pre-registered by name** before the sweep | budget **not** raised, unit **not** retried to green |
+| R6 | jbmt legacy suite: candidate loses the suite | 175 of 347 units | not a defect — the measured result. Median 5.7% slower; worst `D8000000_K1_…T2` 3.555× | reported as the verdict |
+| R7 | jbmt real tier a: candidate loses the tier | 211 of 375 scored units | not a defect — the measured result. Median 7.1% slower | reported as the verdict |
+| R8 | `fleet_ab` ABAB leader flip never fired | all 93 cells | `run_cell` picks the leader from `cell_index % 2`; the stealing driver runs one cell per process so `cell_index` is always 0 | disclosed above; impact measured at 1 verdict of 93, **against** the candidate |
+| R9 | jbmt `selftest` red | 3 checks | every failure names `partitioned_hash`, which does not exist in these binaries; `selftest` has no `--algorithms` flag. All `parallel_hash` checks and all 4 must-fail proofs passed | reported as expected, not chased |
+
+**No cell or unit was rerun because its result was unwelcome.** There are no rerun files in
+`fleet/results_phj_ph/`, and every row of every sweep is preserved, INVALID rows included.
+
+### The one rerun in this campaign, disclosed in full
+
+The first tier-a launch was issued with the **wrong plan partitioning** and was relaunched.
+`jbmt_sweep_phj_ph.sh` derived `--shards` from the number of hosts *being launched* rather
+than the plan's shard count, so launching a 6-host subset produced `--shards 6` (and, on the
+host labelled shard 7, the out-of-range `--shard 7`). Verified from the remote process list:
+
+```
+python3 join_bench_mt.py sweep … --suite real --tier a --shards 6 --shard 0 …
+```
+
+This is a **diagnosed infrastructure fault**, which is the only basis on which the prompt
+permits a rerun — not a result I disliked (the discarded attempt's numbers were never even
+scored). Handling:
+
+- the sweeps were killed within ~2 minutes, caught by reading the remote process list rather
+  than trusting the launcher's own `launched` output;
+- **the partial rows were preserved, not deleted**, as
+  `fleet/jbmt_results_phj_ph/results.real_a_misshard6.shard<i>.jsonl` — 25 rows over 25
+  distinct unit ids, from 5 hosts. They are excluded from every count in this report because
+  they were produced under a different plan cut; the shard-7 host produced none, consistent
+  with `--shard 7` of 6 being out of range;
+- the driver was fixed so an explicit `NSHARDS` wins over the host count, and the relaunch was
+  verified to read `--shards 8 --shard 0` before being left to run.
+
+Cannot move a verdict: the discarded rows are in separate files matched by no glob this report
+uses, and the scored tier-a set is exactly the 376 planned units from the 8-way cut, which
+G6 confirms (`missing 0; extraneous 0`).
 
 ### Finding — G3/G4 cannot go green on this venue, and that is a defect in the gate, not the work
 
@@ -328,10 +397,15 @@ required, and it changes a *setting*, not a run count, validity rule or scoring 
 | The sweep completed every cell | `python3 tmp/chj_amac/fleet/run_sweep_stealing.py … -- --require-engagement` | `FLEET_STEALING RESULT: cells_run=94 cells_failed=17 … -> FAIL` | per-cell `CELL FAILED` lines in `fleet/results_phj_ph/sweep.shard*.log`; 320 invalid rows all reading `below-duration-floor (arm A …)` | **RED (G3)** — cause diagnosed (R2, R3), unreachable without a banned move |
 | Coverage and validity | `python3 tmp/chj_amac/fleet_ab.py report --results "$(ls -1 tmp/chj_amac/fleet/results_phj_ph/results.shard*.jsonl \| paste -sd,)"` | `FLEET_AB REPORT RESULT: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0 uncalibrated=0` (exit 1) | `fleet/recount_independent.py` — a second implementation that does **not** import `fleet_ab` — recomputes `cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0`, identical | **RED (G4)** — `invalid=16`, `cells=93` |
 | `parallel_hash` actually engaged on the candidate | (non-gate) `fleet/analyze_phj_ph.py` | `ConcurrentHashJoinAmacProbeRows: engaged(>0) in 82 cells; zero in 11; counter absent in 0 (of 93)` | `--require-engagement` was passed and did **not** trip (it fails closed at cell 0 if the candidate lacks the counters) | **GREEN** |
-| jbmt legacy suite: all 347 cells OK | G5 (see prereg) | *(pending)* | — | *(see status)* |
-| jbmt real suite coverage per tier | G6 (see prereg) | *(pending)* | — | *(see status)* |
-| Cross-arm A/B result | G7 (see prereg) | *(pending)* | — | *(see status)* |
-| Teardown proof | G8 (see prereg) | *(pending)* | — | *(see status)* |
+| jbmt legacy suite: all 347 cells OK | `cd tmp/chj_amac/fleet/jbmt_results_phj_ph && python3 -c "…legacy…" 'results.syn.shard*.jsonl'` (full one-liner in `PHJ_PH_PREREG.md`) | `legacy 347 missing 0 not-OK 0` (exit 0) | `report-ab` header `statuses: {'OK': 347}`; `fleet/recount_jbmt.py` reports `units with any fallback_runs > 0: none` | **GREEN (G5)** |
+| jbmt real suite coverage, tier a | `python3 join_bench_mt.py report --results 'results.real_a.shard*.jsonl' --suite real --tier a --arm baseline` | `Planned 376 units; results for 376; missing 0; extraneous 0.` / `Statuses: {'OK': 375, 'INVALID': 1}` / `- INVALID: ['tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera']` | identical with `--arm candidate`; the INVALID matches the unit pre-registered by name before the sweep | **GREEN (G6, tier a)** |
+| jbmt real suite coverage, tier b | same command with `--tier b` | **not run** | — | **UNSETTLED — not run** (settling command given above) |
+| Cross-arm A/B result, legacy synthetic | `python3 join_bench_mt.py report-ab --results 'results.syn.shard*.jsonl' --arm-a baseline --arm-b candidate --out AB_REPORT.syn.md` | `binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}` / `lead arm distribution (ABAB leader): {'candidate': 181, 'baseline': 166}` / `statuses: {'OK': 347}` | `fleet/recount_jbmt.py` (no harness import) reproduces `win=119 tie=53 loss=175` exactly | **GREEN (G7)** — 2 distinct shas, both arms lead, no `FALLBACK` |
+| Cross-arm A/B result, real tier a | `python3 join_bench_mt.py report-ab --results 'results.real_a.shard*.jsonl' --arm-a baseline --arm-b candidate --out AB_REPORT.real_a.md` | `binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}` / `lead arm distribution (ABAB leader): {'baseline': 172, 'candidate': 204}` / `statuses: {'OK': 375, 'INVALID': 1}` | `fleet/recount_jbmt.py` reproduces `win=26 tie=138 loss=211`, `fallback_runs > 0: none` | **GREEN (G7)** |
+| `parallel_hash` engaged in jbmt (no silent fallback) | `fleet/recount_jbmt.py` on both configurations | `algorithms measured: {'parallel_hash': 347}` / `{'parallel_hash': 376}`; `units with any fallback_runs > 0: none` | `report-ab` statuses lists contain no `FALLBACK` entry; `selftest` `[PASS] no spurious path events under plain hash` on both arms | **GREEN** |
+| Both arms are the intended binaries, as actually executed | (non-gate) per-shard `fleet/jbmt_prep_shard*.log` | `port 9005 pid 73844 sha256 0d32ef1c96e6d378` / `port 9006 pid 74425 sha256 06d804546e0f029b` — read from `/proc/<pid>/exe` | `binaries:` line of both `report-ab` outputs; `binary_sha256` in every JSONL row; `smoke_phjph_shard*.log` on all 8 hosts | **GREEN** (3 origins) |
+| Snapshot data intact after hydration + hardlink clone | (non-gate) `python3 join_bench_mt.py verify --tier {a,b} --binary … --port 9005 --reference /mnt/data/jbmt_server/loads.{a,b}.json` | `verify: OK` (both tiers, all 8 shards) | the shared cross-arm `(row_count, checksum)` oracle produced 0 disagreements across 723 scored units | **GREEN** |
+| Teardown proof | the four `aws ec2 describe-*` queries in `PHJ_PH_PREREG.md` Unit 6 | `instances: []` / `volumes: []` / `sgs: []` / `snapshot: "completed"` | pre-teardown the same filters returned 8 instances / 16 volumes / 1 SG (`fleet/teardown_dryrun_before.log`); the instances still resolve by tag as `terminated` × 8 | **GREEN (G8)** |
 
 ---
 
@@ -398,15 +472,156 @@ real one — `k0` reads `1.02 billion` rows on both arms on the shards checked.
 
 ---
 
-## Status of Units 3–6
+## Suite 2 — jbmt legacy synthetic (347 cells)
 
-*This section is rewritten as each unit completes; it is the honest current state, not a
-placeholder for an assumed outcome.*
+**G5 GREEN.** All 347 named legacy ids present, every one `OK`:
 
-- **Unit 3 (jbmt legacy synthetic, 347 cells)** — venue prepared (snapshot volumes attached
-  and hydrated; `keys_store` preparation is the declared multi-hour prerequisite). Not yet
-  swept.
-- **Unit 4 (jbmt real suite, tiers a and b)** — not yet swept.
-- **Unit 5** — the `fleet_ab` half is complete above (verdicts, probe-event metrics, U5
-  changed-verdict list). The jbmt half awaits Units 3–4.
-- **Unit 6 (teardown)** — pending; runs regardless of how Units 3–5 end.
+```
+$ cd tmp/chj_amac/fleet/jbmt_results_phj_ph && python3 -c "…" 'results.syn.shard*.jsonl'
+legacy 347 missing 0 not-OK 0
+[] []
+G5_EXIT=0
+```
+
+**Verdict counts, candidate-centric** (`report-ab` labels from the *reference* arm's side —
+see the orientation note below):
+
+| axis | candidate WIN | TIE | candidate LOSS | median ratio cand/base |
+| --- | --- | --- | --- | --- |
+| wall | 119 | 53 | **175** | **1.057** |
+| peak memory | 5 | 261 | **81** | **1.034** |
+
+**G7 GREEN** on all three asserted contents:
+
+```
+347 result rows (347 multi-arm); statuses: {'OK': 347}
+binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+lead arm distribution (ABAB leader): {'candidate': 181, 'baseline': 166}
+```
+Two distinct shas ✓; both arms lead a non-trivial share ✓; no `FALLBACK` ✓.
+
+**Orientation note — the trap that would have inverted this headline.** `report-ab`'s
+`win` means the **reference (baseline) arm** is better: `join_bench_mt.py:1492` is
+`return ("win" if va < vb else "loss", ratio)` with `va` = arm A, and the header says
+`ratio > 1 and 'win' mean baseline better`. Its raw line for this suite is
+`{'loss': 119, 'win': 175, 'tie': 53}` — i.e. the **baseline** won 175. Every count in this
+report is restated candidate-centrically. `fleet/recount_jbmt.py`, which does not import the
+harness, reproduces `win=119 tie=53 loss=175` exactly once the documented noise band
+(`max(0.05 × max(median), max(stdev))`) is implemented.
+
+**Structure of the extremes — both directions are large and shape-organised, not noise:**
+
+- biggest candidate **wins**, all `T96`: `D32000000_K7_mb16…T96` **0.574**,
+  `D32000000_K7_mb8…T96` 0.602, `D8000000_K7_mb16…T96` 0.637, `D32000000_K3_mb8…T96`
+  0.638 — wide keys (K7 = 64-byte string, K3 = 8-column numeric) at high thread counts run up
+  to **43% faster**;
+- biggest candidate **losses**, all `K1` at **low** thread counts: `D8000000_K1_…T2`
+  **3.555×**, `…T8` 3.513×, `…T4` 3.509×, `D32000000_K1_…T2` 3.341× — up to **3.5×
+  slower** on the narrow 2-column numeric key at T2–T8.
+
+---
+
+## Suite 3 — jbmt real suite, tier a (376 units)
+
+**G6 GREEN**, and the one INVALID is *exactly* the pre-registered unit — no unexpected INVALID
+hiding inside an expected one:
+
+```
+$ python3 join_bench_mt.py report --results 'results.real_a.shard*.jsonl' --suite real --tier a --arm baseline
+Planned 376 units; results for 376; missing 0; extraneous 0.
+Statuses: {'OK': 375, 'INVALID': 1}
+- INVALID: ['tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera']
+```
+Identical output with `--arm candidate`. The pre-registration named exactly one expected
+tier-a INVALID and named that unit. The pre-declared borderline case
+(`…supplier_s_nationkey__T96__tiera`) did **not** trip.
+
+**Verdict counts, candidate-centric:**
+
+| axis | candidate WIN | TIE | candidate LOSS | not scored | median ratio cand/base |
+| --- | --- | --- | --- | --- | --- |
+| wall | 26 | 138 | **211** | 1 INVALID | **1.071** |
+| peak memory | 66 | 177 | **132** | 1 INVALID | **1.034** |
+
+**G7 GREEN:**
+
+```
+376 result rows (376 multi-arm); statuses: {'OK': 375, 'INVALID': 1}
+binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+lead arm distribution (ABAB leader): {'baseline': 172, 'candidate': 204}
+```
+`fleet/recount_jbmt.py` independently reproduces `win=26 tie=138 loss=211`,
+`units with any fallback_runs > 0: none`, `algorithms measured: {'parallel_hash': 376}`,
+`tool_versions: {'jbmt-v2': 376}`.
+
+**Where the candidate does win here, it wins at T96** — the 10 best are all `T96`:
+`stackoverflow__badges_UserId__users_Id__T96__tiera` 0.802,
+`stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera` 0.821,
+`tpch__lineitem_l_orderkey__orders_o_orderkey__T96__tiera` 0.832,
+`tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T96__tiera` 0.842,
+`tpch__partsupp_ps_partkey__part_p_partkey__T96__tiera` 0.854. The same high-thread /
+low-thread split as the legacy suite.
+
+---
+
+## Suite 3 — jbmt real suite, tier b: **UNSETTLED — not run**
+
+Tier b was never started. The campaign was stopped on instruction while tier a was
+completing, and no tier-b unit was measured — so there is **no** tier-b verdict, not even a
+partial one. It is **not** extrapolated from tier a, and tier a's numbers are **not** a
+tier-b result: tier b is a different data scale (TPC-H SF100 / TPC-DS SF64 / CoffeeShop 1b /
+StackOverflow ×2) and the prior campaign's own INVALIDs were concentrated there.
+
+*The exact command that would settle it*, given a prepared fleet (the same 8-host venue,
+both arms resident via `jbmt_prep_phj_ph.sh`):
+
+```
+NSHARDS=8 bash tmp/chj_amac/fleet/jbmt_sweep_phj_ph.sh real_b real b
+# then, per the gate:
+python3 join_bench_mt.py report --results 'results.real_b.shard*.jsonl' --suite real --tier b --arm baseline
+python3 join_bench_mt.py report-ab --results 'results.real_b.shard*.jsonl' --arm-a baseline --arm-b candidate --out AB_REPORT.real_b.md
+```
+Pre-registered expectation for that run, unchanged and still on the record: exactly 3 INVALID
+units — `tpch__customer_c_nationkey__supplier_s_nationkey__T16__tierb`,
+`…__T96__tierb`, and
+`tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk__T16__tierb`.
+
+---
+
+## Unit 6 — teardown. **G8 GREEN.**
+
+Raw output of the G8 queries, re-run fresh after teardown:
+
+```
+$ aws ec2 describe-instances … --filters "Name=tag:RUN_TAG,Values=phj-ph-ab-20260728" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query 'Reservations[].Instances[].InstanceId' --output text
+instances: []
+$ aws ec2 describe-volumes … "Name=tag:RUN_TAG,…" "Name=status,Values=creating,available,in-use" --query 'Volumes[].VolumeId' --output text
+volumes: []
+$ aws ec2 describe-security-groups … "Name=tag:RUN_TAG,…" --query 'SecurityGroups[].GroupId' --output text
+sgs: []
+$ aws ec2 describe-snapshots --snapshot-ids snap-021cbdc2484f86607 … --query 'Snapshots[0].State'
+snapshot: "completed"
+```
+
+**The gate is shown to have had the power to fail.** Before teardown the identical filters
+returned 8 instances, 16 volumes and 1 security group
+(`fleet/teardown_dryrun_before.log`), and the instances still resolve by tag as
+`terminated` × 8, so the empty results above are a real state change and not a mis-typed
+filter:
+
+```
+$ aws ec2 describe-instances … --filters "Name=tag:RUN_TAG,Values=phj-ph-ab-20260728" --query 'Reservations[].Instances[].[InstanceId,State.Name]' --output text
+i-069d5483a4d36300d	terminated      i-065ebd96c4dd296e2	terminated
+i-0781d51e1d57c8b1a	terminated      i-0d65b4dd8f104e168	terminated
+i-0f8ece4037a96fadc	terminated      i-0cdef32c6d6060ecb	terminated
+i-0f8dadc4b4757f83d	terminated      i-01ab31f17f082596e	terminated
+```
+
+Teardown accounting (`fleet/teardown_phj_ph.log`): 8 instances terminated; 8 data volumes
+deleted (`vol-09c4e9ba1983fdccf`, `vol-0d92b3896d8ef4737`, `vol-012e93820b6d74251`,
+`vol-056bf3d5c48f8ca91`, `vol-0aeff043418eaeb06`, `vol-0b1198722222e06e4`,
+`vol-0848273a57ae77390`, `vol-007d748bef0937ddc`); the 8 root volumes went with
+`DeleteOnTermination`; security group `sg-021349461933fb060` deleted; snapshot untouched.
+The `DeleteVolume` denial the prior campaign hit did **not** occur — the script tags
+`ndc-dbg-target=true` on this run's own volumes first. **No authorization-required step was
+left undone.**

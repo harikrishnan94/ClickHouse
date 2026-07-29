@@ -782,3 +782,98 @@ re-validate the low-thread cells (T1/T48), which previously ran with thread-deri
 counts") — the candidate now pins 256 slots regardless of thread count, so a T2 query builds
 256 slot maps. Consistent with that mechanism, but this campaign has not isolated it: doing
 so needs a third arm or a slot-count sweep, neither of which is in scope. Named, not claimed.
+
+---
+
+## Unit 4 — jbmt real suite, tier a. COMPLETE. Tier b: not run.
+
+**Collected before teardown** (ordering matters — the hosts were destroyed minutes later):
+
+```
+$ bash tmp/chj_amac/fleet/jbmt_poll_phj_ph.sh real_a
+shard 0: rc=0 rows=46    shard 4: rc=0 rows=45
+shard 1: rc=0 rows=46    shard 5: rc=0 rows=45
+shard 2: rc=1 rows=47    shard 6: rc=0 rows=50
+shard 3: rc=0 rows=47    shard 7: rc=0 rows=50
+all_done=1 ; real_a rows collected: 376/376
+```
+Shard 2's `rc=1` is the sweep reporting `sweep done: 47 run, 1 not OK/FALLBACK` — the single
+expected INVALID, not a driver failure.
+
+**G6 GREEN, and the INVALID is exactly the pre-registered one:**
+
+```
+$ python3 join_bench_mt.py report --results 'results.real_a.shard*.jsonl' --suite real --tier a --arm baseline
+Planned 376 units; results for 376; missing 0; extraneous 0.
+Statuses: {'OK': 375, 'INVALID': 1}
+- INVALID: ['tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera']
+```
+Identical with `--arm candidate`. The pre-registration (committed `d47f6eb9642`, before this
+sweep) named exactly one expected tier-a INVALID and named *that* unit. The pre-declared
+borderline `…supplier_s_nationkey__T96__tiera` did **not** trip, so the near-miss I allowed
+for did not occur either.
+
+**G7 GREEN:**
+
+```
+376 result rows (376 multi-arm); statuses: {'OK': 375, 'INVALID': 1}
+binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+lead arm distribution (ABAB leader): {'baseline': 172, 'candidate': 204}
+```
+
+**Measured result (candidate-centric, independently recounted):**
+
+```
+--- candidate-centric wall verdicts (WIN = candidate better) ---
+units scored=375 win=26 tie=138 loss=211
+not scored: {'INVALID': 1}
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.071
+
+--- candidate-centric memory verdicts ---
+units scored=375 win=66 tie=177 loss=132
+median ratio candidate/baseline = 1.034
+```
+
+**Tier b — UNSETTLED, not run.** The campaign was stopped on instruction while tier a was
+finishing. No tier-b unit was measured, so there is no tier-b verdict and none is inferred
+from tier a; the settling command and the still-standing pre-registered expectation (3 INVALID
+units, named) are in the report.
+
+---
+
+## Unit 6 — teardown. G8 GREEN.
+
+```
+$ bash tmp/chj_amac/fleet/teardown_phj_ph.sh
+=== TEARDOWN phj-ph-ab-20260728 2026-07-29T00:39:04Z ===
+--- BEFORE: live inventory by RUN_TAG (this is the gate's power to fail) ---
+instances: i-069d5483a4d36300d … i-01ab31f17f082596e            (8)
+volumes:   vol-0274f5096443069ca … vol-007d748bef0937ddc        (16)
+sgs:       sg-021349461933fb060
+--- terminating instances ---  (8 x shutting-down) … all instances terminated
+--- volumes remaining after termination: 8 data clones ---
+deleted vol-09c4e9ba1983fdccf … deleted vol-007d748bef0937ddc   (8/8)
+--- deleting security groups --- deleted sg-021349461933fb060
+
+=== G8 PROOF ===
+instances by RUN_TAG (want empty): volumes by RUN_TAG (want empty): security groups by RUN_TAG (want empty): snapshot snap-021cbdc2484f86607 (want completed): "completed"
+TEARDOWN COMPLETE 2026-07-29T00:40:49Z
+TEARDOWN_EXIT=0
+```
+
+Re-run fresh afterwards, verbatim per the gate: `instances: []`, `volumes: []`, `sgs: []`,
+`snapshot: "completed"`. The 8 root volumes went with `DeleteOnTermination`; the 8 data
+clones were deleted explicitly. The `DeleteVolume` policy denial the prior campaign recorded
+did **not** occur, because the script tags `ndc-dbg-target=true` on this run's own volumes
+first. **Nothing was left running and no authorization-required step was skipped.**
+
+Also pulled off the hosts before termination: the 5 preserved
+`results.real_a_misshard6.shard*.jsonl` files (25 rows / 25 unit ids, the discarded
+wrong-partitioning attempt) and the per-shard `hydrate.log`s.
+
+## Campaign stopped on instruction — what that changed
+
+Stopped at 00:38 UTC after ~7.5 hours. Tier b was the only planned measurement not taken.
+Everything else ran to completion under the frozen protocol. No suite was thinned, no red was
+rerun, and tier b is labelled `UNSETTLED — not run` rather than inferred.

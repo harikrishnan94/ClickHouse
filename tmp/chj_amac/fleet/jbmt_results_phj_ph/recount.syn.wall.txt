@@ -1,0 +1,34 @@
+rows=347
+statuses: {'OK': 347}
+tool_versions: {'jbmt-v2': 347}
+lead_arm distribution: {'candidate': 181, 'baseline': 166}
+arm -> binary sha256 prefixes: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+algorithms measured: {'parallel_hash': 347}
+
+--- candidate-centric wall verdicts (WIN = candidate better) ---
+units scored=347 win=119 tie=53 loss=175
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.057 (>1 means the candidate is slower/larger)
+
+10 biggest candidate WINS (lowest ratio):
+  0.574  D32000000_K7_mb16_mp1_h1.0_bp8_pp8_T96
+  0.602  D32000000_K7_mb8_mp1_h1.0_bp8_pp8_T96
+  0.637  D8000000_K7_mb16_mp1_h1.0_bp8_pp8_T96
+  0.638  D32000000_K3_mb8_mp1_h1.0_bp8_pp8_T96
+  0.654  D32000000_K2_mb1_mp1_h0.05_bp8_pp8_T96
+  0.656  D128000000_K6_mb1_mp1_h1.0_bp8_pp8_T96
+  0.656  D32000000_K7_mb1_mp1_h1.0_bp8_pp8_T96
+  0.659  D32000000_K5_mb1_mp1_h0.25_bp8_pp8_T96
+  0.661  D32000000_K2_mb1_mp1_h0.25_bp8_pp8_T96
+  0.663  D32000000_K3_mb16_mp1_h1.0_bp8_pp8_T96
+10 biggest candidate LOSSES (highest ratio):
+  3.555  D8000000_K1_mb1_mp1_h1.0_bp8_pp8_T2
+  3.513  D8000000_K1_mb1_mp1_h1.0_bp8_pp8_T8
+  3.509  D8000000_K1_mb1_mp1_h1.0_bp8_pp8_T4
+  3.341  D32000000_K1_mb1_mp1_h1.0_bp8_pp8_T2
+  3.318  D32000000_K1_mb1_mp1_h0.05_bp8_pp8_T8
+  3.251  D32000000_K1_mb1_mp1_h0.25_bp8_pp8_T8
+  3.159  D32000000_K1_mb1_mp1_h1.0_bp8_pp8_T4
+  3.139  D32000000_K1_mb1_mp1_h0.5_bp8_pp8_T8
+  3.115  D32000000_K1_mb1_mp1_h0.75_bp8_pp8_T8
+  3.038  D32000000_K1_mb1_mp1_h1.0_bp8_pp8_T8_rep3

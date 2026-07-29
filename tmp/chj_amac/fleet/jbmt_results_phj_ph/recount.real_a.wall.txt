@@ -1,0 +1,35 @@
+rows=376
+statuses: {'OK': 375, 'INVALID': 1}
+tool_versions: {'jbmt-v2': 376}
+lead_arm distribution: {'baseline': 172, 'candidate': 204}
+arm -> binary sha256 prefixes: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+algorithms measured: {'parallel_hash': 376}
+
+--- candidate-centric wall verdicts (WIN = candidate better) ---
+units scored=375 win=26 tie=138 loss=211
+not scored: {'INVALID': 1}
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.071 (>1 means the candidate is slower/larger)
+
+10 biggest candidate WINS (lowest ratio):
+  0.802  stackoverflow__badges_UserId__users_Id__T96__tiera
+  0.821  stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera
+  0.832  tpch__lineitem_l_orderkey__orders_o_orderkey__T96__tiera
+  0.835  stackoverflow__votes_PostId__posts_Id__T96__tiera
+  0.842  tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T96__tiera
+  0.845  stackoverflow__comments_PostId__posts_Id__T96__tiera
+  0.854  tpch__partsupp_ps_partkey__part_p_partkey__T96__tiera
+  0.860  job__movie_companies_movie_id__title_id__T96__tiera
+  0.871  job__name_id__person_info_person_id__T96__tiera
+  0.889  job__movie_keyword_movie_id__title_id__T96__tiera
+10 biggest candidate LOSSES (highest ratio):
+  2.500  tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__T16__tiera
+  2.250  tpch__nation_n_regionkey__region_r_regionkey__T16__tiera
+  2.167  job__complete_cast_movie_id__movie_link_movie_id__T16__tiera
+  2.000  tpcds__customer_c_current_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera
+  2.000  job__movie_link_link_type_id__link_type_id__T16__tiera
+  1.921  stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera
+  1.889  tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__filtered__T16__tiera
+  1.857  tpcds__customer_address_ca_zip__store_s_zip__T16__tiera
+  1.857  job__complete_cast_subject_id__comp_cast_type_id__T16__tiera
+  1.857  job__complete_cast_status_id__comp_cast_type_id__T16__tiera
