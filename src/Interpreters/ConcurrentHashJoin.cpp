@@ -22,7 +22,9 @@
 
 #include <Interpreters/HashJoin/AddedColumns.h>
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashJoin/JoinProbeScratch.h>
 #include <Interpreters/HashJoin/JoinSlotRouting.h>
+#include <Interpreters/HashJoin/KeyGetter.h>
 #include <DataTypes/NullableUtils.h>
 #include <base/defines.h>
 #include <base/types.h>
@@ -577,10 +579,15 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block, size_t lane)
 
         scratch = acquireProbeScratch(lane);
 
-        /// Only the slot ids are derived here; the block itself is NOT scattered - the routed
-        /// probe (see `RoutedHashJoinMethods`) follows the ids per row and emits in left-row
-        /// order.
-        if (slots > 1)
+        /// At most the slot ids are derived here; the block itself is NOT scattered - the
+        /// routed probe (see `RoutedHashJoinMethods`) follows the route per row and emits in
+        /// left-row order. The hash-routed families (every cursor-capable map; the plan's
+        /// descriptors exist exactly for them) skip even the eager pass: the lookup derives
+        /// the slot from the hash it computes anyway. The pass remains for the FixedHashMap
+        /// families and for the mixed ON-expression path, whose shared filter loop consumes
+        /// a slot-ids array (see `RoutedProbeContext`).
+        const bool routes_by_hash = !routed_probe_plan.desc_by_slot.empty();
+        if (slots > 1 && (!routes_by_hash || table_join->getMixedJoinExpression()))
         {
             const size_t rows = scattered.rows();
             scratch->slot_ids.resize(rows);
@@ -708,12 +715,63 @@ static ColumnRawPtrs routeKeyColumns(const HashJoin & join, const JoinOnKeyColum
     return ColumnRawPtrs(keys.key_columns.begin(), keys.key_columns.begin() + count);
 }
 
-/// One slot id per row, shared by the build scatter and the probe dispatch.
-/// The open-addressing types route through the `JoinSlotRouting` fold (see
-/// there for why the route must stay decorrelated from the maps' own
-/// hashes). `FixedHashMap` types (`key8`/`key16`) index cells directly by
-/// the key value and have no collision chains, so the key's low bits are
-/// the natural route for them.
+/// The map-hash route pass of the cursor-capable open-addressing families: one slot id per
+/// row, `joinHashRouteSlot` over the map's own hash of the row's key - the SAME hash/key
+/// packing the per-slot inserts and the probe lookups compute, which is what makes the route
+/// a build/probe contract (a plain `String` probe column against a `LowCardinality` build
+/// side hashes the same value bytes). Returns false for the non-cursor map types
+/// (`FixedHashMap`, the dictionary-aware `LowCardinality` maps) - the caller falls back.
+static bool computeHashRouteSlotIds(
+    const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids)
+{
+    const auto route_shift = static_cast<UInt32>(32 - std::countr_zero(num_shards));
+    const auto & joined = *join.getJoinedData();
+
+    /// The key sizes exactly as the build/probe getters run on them (`createKeyGetter`): for
+    /// ASOF the trailing entry belongs to the inequality column, excluded like its column.
+    Sizes key_sizes = join.getKeySizes().at(0);
+    if (join.getTableJoin().strictness() == JoinStrictness::Asof && !key_sizes.empty())
+        key_sizes.pop_back();
+
+    bool routed = false;
+    auto compute = [&](const auto & maps)
+    {
+        switch (joined.type)
+        {
+#define M(TYPE) \
+    case HashJoin::Type::TYPE: \
+        if constexpr (requires { maps.TYPE->cursorCells(); }) \
+        { \
+            const auto & map = *maps.TYPE; \
+            using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_cvref_t<decltype(map)>>::Type; \
+            Arena pool; \
+            KeyGetter key_getter(route_columns, key_sizes, nullptr); \
+            for (size_t i = 0; i < rows; ++i) \
+            { \
+                auto && key_holder = key_getter.getKeyHolder(i, pool); \
+                const size_t hash = map.hash(keyHolderGetKey(key_holder)); \
+                slot_ids[i] = static_cast<UInt8>(joinHashRouteSlot(hash, route_shift)); \
+            } \
+            routed = true; \
+        } \
+        break;
+            APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+        }
+    };
+    std::visit(compute, joined.maps.at(0));
+    return routed;
+}
+
+/// One slot id per row, shared by the build scatter and the probe dispatch (though the probe
+/// runs this pass only for the families below and for the mixed ON-expression path - the
+/// hash-routed families derive slots inline; see `hash_routed_lookup`):
+/// - `FixedHashMap` types (`key8`/`key16`) index cells directly by the key value and have no
+///   collision chains, so the key's low bits are the natural route for them;
+/// - the cursor-capable open-addressing families route by the top bits of the maps' own hash
+///   (`computeHashRouteSlotIds`), the same word their lookups derive per row;
+/// - everything else (the range maps, the dictionary-aware `LowCardinality` maps - neither
+///   reachable under `parallel_hash` today) keeps the value-byte fold of `JoinSlotRouting`.
 static void computeDispatchSlotIds(
     const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids)
 {
@@ -732,6 +790,9 @@ static void computeDispatchSlotIds(
             slot_ids[i] = static_cast<UInt8>(data[i * width]) & mask;
         return;
     }
+
+    if (computeHashRouteSlotIds(join, route_columns, rows, num_shards, slot_ids))
+        return;
 
     JoinSlotRouting::computeJoinSlotIds(route_columns, rows, static_cast<size_t>(std::countr_zero(num_shards)), slot_ids);
 }

@@ -67,14 +67,15 @@ TEST(AmacWrappedWalk, RingMatchesMapFindOnWrappedChain)
         key_getter,
         slot_maps,
         descs,
-        /*slot_ids=*/nullptr,
+        /*route_shift=*/32,
         probe_keys.size(),
         /*range_first=*/0,
         /*selector_indexes=*/nullptr,
         /*skip_data=*/nullptr,
         pool,
         found_word.data(),
-        /*found_offset=*/nullptr);
+        /*found_offset=*/nullptr,
+        /*found_slot=*/nullptr);
 
     for (size_t i = 0; i < probe_keys.size(); ++i)
     {

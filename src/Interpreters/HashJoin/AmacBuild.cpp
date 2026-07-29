@@ -14,8 +14,12 @@ namespace
   * ref), append a duplicate to the arena list, or advance on a collision and prefetch the next
   * cell. The fused step is the load-bearing invariant - see `AmacRing.h`. Rows whose key is the
   * zero sentinel are handled synchronously through the standard `emplace` (the zero cell has no
-  * memory-dependent walk to overlap) and never occupy a ring slot. Key holders are fetched
-  * per visit WITHOUT persisting; only `cursorClaim` persists - exactly once, at the claim.
+  * memory-dependent walk to overlap) and never occupy a ring slot. The key is packed ONCE per
+  * row at admit and re-read per visit, like the find ring (see `AmacProbeImpl.h`): re-fetching
+  * it through `getKeyHolder` re-packs the wide fixed keys (keys128/keys256) from the column
+  * pointers - and recomputes the `hashed` getter's 128-bit digest - on EVERY visit. Only
+  * `cursorClaim` persists a key - exactly once, at the claim, through a holder rebuilt from
+  * the stored key (see `claimHolderOf`).
   * Ported (as ideas) from `AmacBuildInsertPolicy` of the `ahj` prototype
   * (`src/Interpreters/PartitionedHashJoin/PartitionedHashJoinBuild.cpp`).
   */
@@ -31,16 +35,27 @@ struct AmacBuildInsertPolicy
     /// keeps the by-reference run.
     static constexpr bool copy_into_frame = std::is_copy_constructible_v<KeyGetter>;
 
+    /// The key exactly as the map compares it (`keyHolderGetKey` of an lvalue holder): the
+    /// fixed keys and the `hashed` getter's digest by value, the string keys as a view into
+    /// the source column - trivially copyable across the whole AMAC getter set. The HOLDER
+    /// (`ArenaKeyHolder` for the string getters) is not storable - it carries an arena
+    /// reference - so the ring stores the key and `claimHolderOf` rebuilds the holder.
+    using KeyHolder = std::remove_reference_t<decltype(std::declval<KeyGetter &>().getKeyHolder(0uz, std::declval<Arena &>()))>;
+    using StoredKey = std::decay_t<decltype(keyHolderGetKey(std::declval<KeyHolder &>()))>;
+    static_assert(std::is_trivially_copyable_v<StoredKey>);
+
     /// The insert-ring state, one parallel array per per-row field (see `amacRun`): the cursor
     /// position (`PosT = UInt32` at the caller's dispatch when the buffer index provably fits
     /// 32 bits for the whole run, growths included - the common case, halving the position
-    /// array) and the SOURCE row index, plus the saved hash for the cells that store one. The
-    /// inactive sentinel lives in the row array, so it must be filled at construction.
+    /// array) and the SOURCE row index, plus the packed key and the saved hash for the cells
+    /// that store one. The inactive sentinel lives in the row array, so it must be filled at
+    /// construction.
     template <size_t ring_size>
     struct RingBase
     {
         std::array<PosT, ring_size> pos{};
         std::array<UInt32, ring_size> row; /// `amac_inactive_row` == inactive
+        alignas(64) std::array<StoredKey, ring_size> key{};
 
         RingBase() { row.fill(amac_inactive_row); }
         bool isActive(size_t s) const { return row[s] != amac_inactive_row; }
@@ -97,13 +112,27 @@ struct AmacBuildInsertPolicy
             all_unique &= row_kept;
     }
 
-    template <typename RingT, typename Key>
-    ALWAYS_INLINE void seed(RingT & ring, size_t s, UInt32 row, const Key & key)
+    /// The holder `cursorClaim` persists, rebuilt from the ring's stored key: for the string
+    /// getters an `ArenaKeyHolder` over the stored view (still pointing into the source
+    /// column, exactly what `getKeyHolder` returned at admit - `keyHolderPersistKey` then
+    /// copies the bytes into the map's arena); for the by-value keys the key itself (persist
+    /// is a no-op). Skipping the holder would leave string cells dangling into the block.
+    ALWAYS_INLINE auto claimHolderOf(const StoredKey & key) const
+    {
+        if constexpr (std::is_same_v<KeyHolder, ArenaKeyHolder>)
+            return ArenaKeyHolder{key, pool};
+        else
+            return key;
+    }
+
+    template <typename RingT>
+    ALWAYS_INLINE void seed(RingT & ring, size_t s, UInt32 row, const StoredKey & key)
     {
         const size_t hash = map.hash(key);
         const size_t pos = map.cursorPlace(hash);
         ring.pos[s] = static_cast<PosT>(pos);
         ring.row[s] = row;
+        ring.key[s] = key;
         if constexpr (store_hash)
             ring.hash[s] = hash;
         /// Write intent, high locality: the claim/append of a later visit mutates this line.
@@ -146,19 +175,21 @@ struct AmacBuildInsertPolicy
     ALWAYS_INLINE AmacStepResult step(RingT & ring, size_t s)
     {
         const size_t row = ring.row[s];
-        auto && key_holder = key_getter.getKeyHolder(row, pool);
-        const auto & key = keyHolderGetKey(key_holder);
+        const StoredKey & key = ring.key[s];
+        /// Only the saved-hash cells (the string keys) consume a hash per visit - as the
+        /// `cursorKeyEquals` prefilter and in `cursorClaim`'s `setHash`; every other cell
+        /// ignores both arguments, so those rings pass a literal zero instead of recomputing
+        /// (or storing) a value nothing reads.
         size_t hash = 0;
         if constexpr (store_hash)
             hash = ring.hash[s];
-        else
-            hash = map.hash(key);
         Cell * cell = cells + ring.pos[s];
         if (map.cursorCellIsEmpty(cell))
         {
             /// Claim the empty cell and write the mapped value in the SAME visit (fused): a
             /// later same-key or colliding row can never also observe this cell empty.
-            const bool needs_grow = map.cursorClaim(cell, key_holder, hash);
+            auto claim_holder = claimHolderOf(key);
+            const bool needs_grow = map.cursorClaim(cell, claim_holder, hash);
             applyRow(cell->getMapped(), /*inserted=*/true, row);
             return needs_grow ? AmacStepResult::DoneNeedsGrow : AmacStepResult::Done;
         }

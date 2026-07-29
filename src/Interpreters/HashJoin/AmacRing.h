@@ -138,9 +138,9 @@ ALWAYS_INLINE void amacDrainAndGrow(Policy & policy, Ring & ring, size_t skip)
   * row was handled synchronously and the slot stays free) and `step(ring, s) -> AmacStepResult`
   * (ONE fused read -> act). Struct-of-arrays rather than an array of slot structs so a wide
   * field cannot misalign every other field against cache lines, and each field array stays
-  * densely packed. Everything recomputable from the row index is recomputed per visit, and
-  * per-section invariants (map, key getter, skip bytes) live in the policy - measured
-  * ring-state minimalism.
+  * densely packed. The rings carry only what a visit consumes (the cursor, the row, the
+  * packed key, a saved hash where the cell compares one), and per-section invariants (map,
+  * key getter, skip bytes) live in the policy - measured ring-state minimalism.
   *
   * Steady/drain split: while rows remain and every refill succeeded, every slot is provably
   * active, so the steady phase sweeps the ring with a plain array `for` - no per-visit active

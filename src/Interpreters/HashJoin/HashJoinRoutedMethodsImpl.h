@@ -6,6 +6,8 @@
 #include <Interpreters/HashJoin/HashJoinRoutedMethods.h>
 #include <Interpreters/HashJoin/JoinProbeScratch.h>
 
+#include <bit>
+
 namespace DB
 {
 
@@ -25,8 +27,10 @@ JoinResultPtr RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockIm
 
     chassert(join_on_keys.size() == 1, "parallel_hash supports a single join clause");
 
-    /// The slot ids ride in the scratch; the per-row loops below take a raw pointer, null when
-    /// there is a single slot.
+    /// The eager slot ids ride in the scratch; the per-row loops below take a raw pointer,
+    /// null when there is a single slot AND for the hash-routed families, which derive the
+    /// slot inline from the lookup's own hash (`joinBlock` fills the array for them only when
+    /// the mixed ON-expression path below consumes it).
     const UInt8 * slot_ids = scratch.slot_ids.empty() ? nullptr : scratch.slot_ids.data();
 
     /// Slot 0 is the representative for everything the emit machinery reads through the join:
@@ -158,6 +162,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
             /// The mixed ON-condition path: the shared filter machinery of `HashJoinMethods`
             /// with the per-row map/flags selection routed by slot. Single clause, so per-row
             /// (block-keyed) flags are needed only for the flagged RIGHT/FULL shapes.
+            /// This path consumes a slot-ids ARRAY for every family - `joinBlock` fills it
+            /// eagerly whenever the join carries a mixed expression, hash-routed or not.
+            chassert(slot_ids || plan.map_by_slot.size() == 1);
             const bool mark_per_row_used = join_features.right || join_features.full;
             const RoutedProbeContext<Map> routed_ctx{
                 .slot_ids = slot_ids,
@@ -190,14 +197,16 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
             slot_joins, plan, key_getter, maps_by_slot, added_columns, selector.getIndexes(), slot_ids, scratch);
 }
 
-/// The key families served by `flatFindKey` when the ring is not engaged: cheap-key getters
-/// over cursor-capable maps (the string getters fall out via `has_cheap_key_calculation`).
-/// Unlike the ring, the flat find serves every mapped shape (ASOF included - the match is
-/// consumed in place, so the mapped value never needs to fit a word) and the wrapped-chain
-/// builds the ring must refuse.
-template <typename KeyGetter, typename Map>
-constexpr bool flat_lookup_supported
-    = join_prefetch_supported<KeyGetter, Map> && AmacResumableMap<std::remove_const_t<Map>>;
+/// The key families the routed probe routes by the maps' own hash (see `joinHashRouteSlot`):
+/// every cursor-capable open-addressing family. Their lookups hash the key anyway, so the row's
+/// slot falls out of the hash's top route bits with no separate per-row slot-ids pass, and the
+/// lookup itself is `flatFindKey` when the ring is not engaged. Unlike the ring, the flat find
+/// serves every mapped shape (ASOF included - the match is consumed in place, so the mapped
+/// value never needs to fit a word) and the wrapped-chain builds the ring must refuse.
+/// `key8`/`key16` and the range maps (`FixedHashMap` - no hash at all) keep the map-resolved
+/// `findKey` under the slot ids `joinBlock` derives eagerly (`computeDispatchSlotIds`).
+template <typename Map>
+constexpr bool hash_routed_lookup = AmacResumableMap<std::remove_const_t<Map>>;
 
 /// The flat find of the routed plain loop: address material from the once-per-build plan, the
 /// map object only for its hash/equality functors. The walk is wrap-aware - through the tail
@@ -276,12 +285,15 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// (`appendFromBlock`), after which the compiler must conservatively reload anything
     /// reachable through a captured object.
     JoinStuff::JoinUsedFlags * const * flags_data = plan.flags_by_slot.data();
-    /// Sized for every cursor-capable map type (`flat_lookup_supported` implies
-    /// cursor-capable), empty for the rest - where the flat arms are compiled out.
+    /// Sized for every cursor-capable map type (`hash_routed_lookup` implies
+    /// cursor-capable), empty for the rest - where the hash-routed arms are compiled out.
     [[maybe_unused]] const SlotMapDesc * descs_data = plan.desc_by_slot.data();
-    /// Hash provider and zero-key checker of the flat arms; stateless, so any slot's map
-    /// serves (see `map0` in `AmacProbeImpl.h`).
+    /// Hash provider and zero-key checker of the hash-routed arms; stateless, so any slot's
+    /// map serves (see `map0` in `AmacProbeImpl.h`).
     [[maybe_unused]] const Map & map0 = *maps_by_slot[0];
+    /// The hash-derived route of the cursor families (see `joinHashRouteSlot`); the slot
+    /// count is a power of two, so this is exact (32 at the single-slot plan).
+    [[maybe_unused]] const auto route_shift = static_cast<UInt32>(32 - std::countr_zero(plan.map_by_slot.size()));
 
     using MapNonConst = std::remove_const_t<Map>;
 
@@ -316,16 +328,18 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
         {
-            if constexpr (flat_lookup_supported<KeyGetter, Map>)
+            if constexpr (hash_routed_lookup<Map>)
             {
-                /// The flat find's look-ahead: the home-cell address from the descriptor, no
-                /// map-header loads on the prefetch path either.
+                /// The flat find's look-ahead: the home-cell address from the descriptor -
+                /// the hash routes AND places, so no map-header loads and no slot-ids array
+                /// on the prefetch path either.
                 const size_t ind = selectorIndexAt(selector, k);
                 auto && key_holder = key_getter.getKeyHolder(ind, pool);
                 const auto & key = keyHolderGetKey(key_holder);
-                const SlotMapDesc & desc = descs_data[slot_ids ? slot_ids[ind] : 0];
+                const size_t hash = map0.hash(key);
+                const SlotMapDesc & desc = descs_data[joinHashRouteSlot(hash, route_shift)];
                 using Cell = typename MapNonConst::cell_type;
-                __builtin_prefetch(static_cast<const Cell *>(desc.buf) + (map0.hash(key) & desc.mask));
+                __builtin_prefetch(static_cast<const Cell *>(desc.buf) + (hash & desc.mask));
             }
             else if constexpr (can_prefetch)
             {
@@ -339,7 +353,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// check compiles out); without it this is the sequential routed lookup. Everything
     /// downstream of the lookup is shared and standard.
     auto loop = [&]<bool need_filter, bool with_skip, bool precomputed>(
-        const UInt64 * found_words [[maybe_unused]], const UInt64 * found_offsets [[maybe_unused]])
+        const UInt64 * found_words [[maybe_unused]],
+        const UInt64 * found_offsets [[maybe_unused]],
+        const UInt8 * found_slots [[maybe_unused]])
     {
         if constexpr (need_filter)
         {
@@ -371,13 +387,20 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                 {
                     right_row_found = true;
                     size_t offset = 0;
+                    /// The flagged shapes read the row's route slot as the find pass derived
+                    /// it; the flagless ones never consume the flags object, so slot 0's
+                    /// reference serves as the placeholder.
+                    size_t slot = 0;
                     if constexpr (join_features.need_flags)
+                    {
                         offset = found_offsets[i];
+                        slot = found_slots[i];
+                    }
                     auto emit = [&](Mapped * mapped) ALWAYS_INLINE
                     {
                         typename KeyGetter::FindResult find_result(mapped, true, offset);
                         processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                            find_result, added_columns, *flags_data[slot_ids ? slot_ids[ind] : 0], i, ind, current_offset, dummy_known_rows);
+                            find_result, added_columns, *flags_data[slot], i, ind, current_offset, dummy_known_rows);
                     };
                     if constexpr (amac_mapped_fits_word<std::remove_const_t<Mapped>>)
                     {
@@ -400,22 +423,29 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
                 if (!skip_row)
                 {
-                    const size_t slot = slot_ids ? slot_ids[ind] : 0;
+                    size_t slot = 0;
                     auto find_result = [&]() ALWAYS_INLINE
                     {
-                        /// The trait check keeps the flat arm out of the non-cursor families' instantiations.
-                        if constexpr (flat_lookup_supported<KeyGetter, Map>)
+                        /// The trait check keeps the hash-routed arm out of the non-cursor
+                        /// families' instantiations.
+                        if constexpr (hash_routed_lookup<Map>)
                         {
                             auto && key_holder = key_getter.getKeyHolder(ind, pool);
                             const auto & key = keyHolderGetKey(key_holder);
+                            /// One hash per row: it derives the route slot AND places the
+                            /// cell - exactly the hash a map-resolved `findKey` would burn
+                            /// internally.
+                            const size_t hash = map0.hash(key);
+                            slot = joinHashRouteSlot(hash, route_shift);
                             /// The zero key lives in the dedicated zero-value cell, outside the
                             /// descriptor's buffer; the map-resolved find serves it.
                             if (unlikely(map0.isZeroKey(key)))
                                 return key_getter.findKey(*maps_by_slot[slot], ind, pool);
-                            return flatFindKey<KeyGetter, Map>(descs_data[slot], key, map0.hash(key));
+                            return flatFindKey<KeyGetter, Map>(descs_data[slot], key, hash);
                         }
                         else
                         {
+                            slot = slot_ids ? slot_ids[ind] : 0;
                             return key_getter.findKey(*maps_by_slot[slot], ind, pool);
                         }
                     }();
@@ -565,17 +595,20 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
         {
             /// Phase A: the AMAC find pass. Every row gets a result - `start` records skipped
             /// and zero-key rows synchronously, `step` records hits and misses - so the arrays
-            /// need no pre-fill and phase B needs no skip logic. The offsets are recorded (and
-            /// sized) only for the flagged shapes - they have no other consumer. The arrays
-            /// live in the lane's pooled scratch; `resize` never shrinks a `PaddedPODArray`,
-            /// so the capacity survives across blocks.
+            /// need no pre-fill and phase B needs no skip logic. The offsets and route slots
+            /// are recorded (and sized) only for the flagged shapes - they have no other
+            /// consumer. The arrays live in the lane's pooled scratch; `resize` never shrinks
+            /// a `PaddedPODArray`, so the capacity survives across blocks.
             scratch.found_word.resize(rows);
             UInt64 * found_word_data = scratch.found_word.data();
             UInt64 * found_offset_data = nullptr;
+            UInt8 * found_slot_data = nullptr;
             if constexpr (join_features.need_flags)
             {
                 scratch.found_offset.resize(rows);
                 found_offset_data = scratch.found_offset.data();
+                scratch.found_slot.resize(rows);
+                found_slot_data = scratch.found_slot.data();
             }
 
             constexpr bool selector_is_range = !std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Indexes>;
@@ -595,14 +628,15 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                     key_getter,
                     maps_by_slot,
                     descs_data,
-                    slot_ids,
+                    route_shift,
                     rows,
                     range_first,
                     sel_indexes,
                     skip_data,
                     pool,
                     found_word_data,
-                    found_offset_data);
+                    found_offset_data,
+                    found_slot_data);
             };
             if (plan.chain_may_wrap)
                 find_pass.template operator()<AmacWalk::wrap_aware>();
@@ -626,9 +660,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             else
             {
                 if (added_columns.need_filter)
-                    loop.template operator()<true, false, true>(found_word_data, found_offset_data);
+                    loop.template operator()<true, false, true>(found_word_data, found_offset_data, found_slot_data);
                 else
-                    loop.template operator()<false, false, true>(found_word_data, found_offset_data);
+                    loop.template operator()<false, false, true>(found_word_data, found_offset_data, found_slot_data);
             }
             amac_ran = true;
         }
@@ -636,22 +670,22 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
     if (!amac_ran)
     {
-        /// The cheap-key cursor-capable families run the flat find (`flat_lookup_supported`)
-        /// instead of the map-resolved `findKey`; everything else (strings below the ring gate,
-        /// `hashed`, `LowCardinality`, `key8`/`key16`) keeps the plain lookup.
+        /// The cursor-capable families run the hash-routed flat find (`hash_routed_lookup`)
+        /// instead of the map-resolved `findKey`; everything else (`LowCardinality`,
+        /// `key8`/`key16`, the range maps) keeps the plain lookup under the eager slot ids.
         if (added_columns.need_filter)
         {
             if (fast_path)
-                loop.template operator()<true, false, false>(nullptr, nullptr);
+                loop.template operator()<true, false, false>(nullptr, nullptr, nullptr);
             else
-                loop.template operator()<true, true, false>(nullptr, nullptr);
+                loop.template operator()<true, true, false>(nullptr, nullptr, nullptr);
         }
         else
         {
             if (fast_path)
-                loop.template operator()<false, false, false>(nullptr, nullptr);
+                loop.template operator()<false, false, false>(nullptr, nullptr, nullptr);
             else
-                loop.template operator()<false, true, false>(nullptr, nullptr);
+                loop.template operator()<false, true, false>(nullptr, nullptr, nullptr);
         }
     }
 

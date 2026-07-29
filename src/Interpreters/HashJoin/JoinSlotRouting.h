@@ -13,10 +13,17 @@
 namespace DB::JoinSlotRouting
 {
 
-/** Slot routing of `ConcurrentHashJoin`: one 32-bit route word per row over the prepared join
-  * key columns, deliberately independent of the CRC32C-family hashes the slot maps bucket by,
-  * so slot selection stays decorrelated from in-table cell placement. For `bits` route bits,
-  * a row goes to slot `word >> (32 - bits)` (MSB-first).
+/** The value-byte fold route of `ConcurrentHashJoin`: one 32-bit route word per row over the
+  * prepared join key columns. For `bits` route bits, a row goes to slot `word >> (32 - bits)`
+  * (MSB-first).
+  *
+  * Since the open-addressing families route by the top bits of the maps' own hash instead
+  * (see `joinHashRouteSlot` - the lookup computes that hash anyway, so their route is free,
+  * and the top route bits stay clear of the bottom placement bits), the fold serves only the
+  * map types WITHOUT a usable hash: the range maps and the dictionary-aware `LowCardinality`
+  * maps (`key8`/`key16` route by the key's low bits at the caller). For them decorrelation
+  * from cell placement is moot - `FixedHashMap` has no collision chains - but the fold's
+  * value-byte contract is exactly what a cross-representation pair needs.
   *
   * The build scatter and the probe dispatch share one fold implementation, and the word is a
   * build/probe contract: the fold chain must not change without changing both sides in

@@ -755,7 +755,9 @@ TEST(ConcurrentHashJoinProbeScratch, PoolToleratesInvalidAndOutOfRangeLanes)
 
 TEST(ConcurrentHashJoinProbeScratch, ProbeReleasesScratchOnResultDestruction)
 {
-    auto built = buildJoin<UInt64>({1, 2, 3, 4, 5, 6, 7, 8}, 1, AmacMode::Auto);
+    /// `Force` pins the AMAC find pass, whose result array is the marker below (the key64
+    /// family routes by hash, so the eager slot-ids array stays empty on this probe).
+    auto built = buildJoin<UInt64>({1, 2, 3, 4, 5, 6, 7, 8}, 1, AmacMode::Force);
 
     constexpr size_t lane = 2;
     constexpr size_t probe_rows = 6;
@@ -767,18 +769,18 @@ TEST(ConcurrentHashJoinProbeScratch, ProbeReleasesScratchOnResultDestruction)
         /// The scratch is still owned by the result here - the lane's entry is empty, so a
         /// fresh acquisition must not observe the in-flight scratch.
         auto while_alive = built.join->acquireProbeScratch(lane);
-        EXPECT_EQ(while_alive->slot_ids.size(), 0u);
+        EXPECT_EQ(while_alive->found_word.size(), 0u);
         built.join->releaseProbeScratch(std::move(while_alive), lane);
         /// The destructor parks the scratch at scope exit - under the lane, or into the pool
         /// if the release above occupied the entry; either way it is recoverable below.
     }
     EXPECT_EQ(rows.size(), probe_rows);
 
-    /// After destruction some recoverable scratch carries the probe's slot ids (sized to the
-    /// probed rows - the join has 4 slots, so the routed path filled them).
+    /// After destruction some recoverable scratch carries the find pass's per-row results
+    /// (sized to the probed rows).
     auto a = built.join->acquireProbeScratch(lane);
     auto b = built.join->acquireProbeScratch(lane);
-    const bool found_probe_scratch = (a && a->slot_ids.size() == probe_rows) || (b && b->slot_ids.size() == probe_rows);
+    const bool found_probe_scratch = (a && a->found_word.size() == probe_rows) || (b && b->found_word.size() == probe_rows);
     EXPECT_TRUE(found_probe_scratch);
 }
 

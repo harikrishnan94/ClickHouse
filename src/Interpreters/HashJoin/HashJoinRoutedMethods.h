@@ -7,7 +7,9 @@ namespace DB
 
 /** The order-preserving routed probe of `ConcurrentHashJoin` (`parallel_hash`). The left block is
   * NOT scattered: the whole block runs through one `joinBlockImpl` whose per-row lookup follows
-  * the row's slot id into that slot's hash map (`slot = slot_ids[ind]`), while the emit stays
+  * the row's route into that slot's hash map — derived inline from the lookup's own hash for the
+  * open-addressing families (see `joinHashRouteSlot`), or read from the scratch's eager
+  * `slot_ids` for the rest — while the emit stays
   * in left-row order through the standard `AddedColumns`/`HashJoinResult` machinery — built from
   * slot 0, whose shared `StoredColumnsIndex` resolves every slot's stored blocks. Used flags stay
   * per-slot with slot-local offsets, so `NotJoinedHash`/`getNonJoinedBlocks` are untouched.
@@ -26,8 +28,9 @@ class RoutedHashJoinMethods
 public:
     /// `slot_joins` are the per-slot `HashJoin`s (all sharing one `StoredColumnsIndex`);
     /// `block` wraps the ORIGINAL left block (zero-copy); the scratch's `slot_ids` carries one
-    /// slot id per source-block row (empty when there is a single slot); `join_on_keys` is the
-    /// block's prepared key columns (see `HashJoin::joinRoutedBlock`).
+    /// slot id per source-block row where the family needs an eager route (empty for the
+    /// hash-routed families and single-slot plans); `join_on_keys` is the block's prepared
+    /// key columns (see `HashJoin::joinRoutedBlock`).
     static JoinResultPtr joinBlockImpl(
         const std::vector<const HashJoin *> & slot_joins,
         const RoutedProbePlan & plan,

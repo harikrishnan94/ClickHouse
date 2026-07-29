@@ -23,11 +23,14 @@ namespace AmacProbeDetail
   * fill the per-row result arrays - the matched cell's recorded word (the mapped value by
   * value, or its address for ASOF; see `amac_mapped_fits_word` and `amac_mapped_by_pointer` in
   * `AmacProbe.h`) into `found_word` (0 = no match) and, for the flagged shapes only, its
-  * slot-local used-flags offset. Nothing is emitted here; phase B consumes the results in
-  * left-row order - the flagless word-mapped lazy shapes through the dispatch-free `word_loop`,
-  * the rest through the standard `processMatch` (see `HashJoinRoutedMethodsImpl.h`).
+  * slot-local used-flags offset and route slot. Nothing is emitted here; phase B consumes the
+  * results in left-row order - the flagless word-mapped lazy shapes through the dispatch-free
+  * `word_loop`, the rest through the standard `processMatch` (see
+  * `HashJoinRoutedMethodsImpl.h`).
   *
-  * One ring serves MANY maps - each row's route slot's. The slot's address material is resolved
+  * One ring serves MANY maps - each row's route slot's, derived at admit from the map hash the
+  * seed computes anyway (`joinHashRouteSlot`): the hash addresses the bucket AND routes, so no
+  * per-row slot-ids pass precedes the probe. The slot's address material is resolved
   * once at admit from the flat descriptor array and carried in the ring slot as the RESOLVED
   * CELL POINTER, so a steady visit dereferences nothing but the cell itself and the stored
   * probe key: the map headers, scattered across as many heap objects as there are slots, would
@@ -71,7 +74,7 @@ struct AmacFindPolicy
       * inactive sentinel (value-initialization = all-inactive), freeing `row` for the 16-bit
       * chunk-local index. The slot id stays only for `recordHit` (recovering the slot-local
       * used-flags offset through the descriptor, once per matched row); the emit side never
-      * reads it - it re-derives the slot from `slot_ids`.
+      * reads it - the flagged shapes get their per-row slot through `found_slot`.
       */
     template <size_t ring_size>
     struct RingBase
@@ -108,13 +111,14 @@ struct AmacFindPolicy
     const Map & map0;
     const Map * const * slot_maps = nullptr; /// the zero-key sentinel path only
     const SlotMapDesc * slot_descs = nullptr;
-    const UInt8 * slot_ids = nullptr; /// null at the single-slot plan
+    UInt32 route_shift = 32; /// `32 - log2(slots)`; see `joinHashRouteSlot`
     size_t selector_base = 0; /// the first row of a continuous-range selector
     const UInt64 * selector_indexes = nullptr; /// the data of an explicit-indexes selector
     const UInt8 * skip_data = nullptr; /// null on the fast path
     Arena & pool;
     UInt64 * found_word = nullptr;
     UInt64 * found_offset = nullptr; /// null unless `need_flags`
+    UInt8 * found_slot = nullptr; /// null unless `need_flags`
 
     ALWAYS_INLINE size_t indexAt(size_t i) const
     {
@@ -187,7 +191,11 @@ struct AmacFindPolicy
         }
         auto && key_holder = key_getter.getKeyHolder(ind, pool);
         const auto & key = keyHolderGetKey(key_holder);
-        const size_t slot = slot_ids ? slot_ids[ind] : 0;
+        /// One hash per row, admit-time: it addresses the bucket AND derives the route slot.
+        const size_t hash = map0.hash(key);
+        const size_t slot = joinHashRouteSlot(hash, route_shift);
+        if constexpr (need_flags)
+            found_slot[i] = static_cast<UInt8>(slot);
         if (unlikely(map0.isZeroKey(key)))
         {
             /// The zero key lives in the dedicated zero-value cell - nothing to overlap.
@@ -195,7 +203,6 @@ struct AmacFindPolicy
             record(i, map.find(key), map);
             return false;
         }
-        const size_t hash = map0.hash(key);
         ring.key[s] = key;
         const SlotMapDesc & desc = slot_descs[slot];
         const Cell * cell = static_cast<const Cell *>(desc.buf) + (hash & desc.mask);
@@ -218,11 +225,12 @@ struct AmacFindPolicy
             return AmacStepResult::Done;
         }
         const StoredKey & key = ring.key[s];
+        /// Only the saved-hash cells (the string keys) consume a hash in `keyEquals` - as the
+        /// compare prefilter; every other cell ignores the argument, so those rings pass a
+        /// literal zero instead of recomputing (or storing) a value nothing reads.
         size_t hash = 0;
         if constexpr (store_hash)
             hash = ring.hash[s];
-        else
-            hash = map0.hash(key);
         if (cell->keyEquals(key, hash, no_state))
         {
             recordHit(ring.row[s], ring.slot[s], cell);
@@ -256,7 +264,7 @@ void amacFindPass(
     KeyGetter & key_getter,
     const Map * const * slot_maps,
     const SlotMapDesc * slot_descs,
-    const UInt8 * slot_ids,
+    UInt32 route_shift,
     size_t rows,
     size_t range_first,
     const UInt64 * selector_indexes,
@@ -265,14 +273,16 @@ void amacFindPass(
     /// Written through the policy's result-array fields, which the check cannot see behind the
     /// dependent `Policy` type.
     UInt64 * found_word, /// NOLINT(readability-non-const-parameter)
-    UInt64 * found_offset) /// NOLINT(readability-non-const-parameter)
+    UInt64 * found_offset, /// NOLINT(readability-non-const-parameter)
+    UInt8 * found_slot) /// NOLINT(readability-non-const-parameter)
 {
     static_assert(amac_probe_supported<KeyGetter, Map>);
     chassert(need_flags == (found_offset != nullptr));
+    chassert(need_flags == (found_slot != nullptr));
 
     using Policy = AmacProbeDetail::AmacFindPolicy<KeyGetter, Map, need_flags, selector_is_range, walk>;
     /// The selector view and the result arrays are re-based per chunk; the row-indexed side
-    /// arrays (skip bytes, slot ids) are indexed by the source row and need no re-base.
+    /// arrays (skip bytes) are indexed by the source row and need no re-base.
     for (size_t chunk_begin = 0; chunk_begin < rows; chunk_begin += Policy::chunk_rows_max)
     {
         const size_t chunk_rows = std::min(Policy::chunk_rows_max, rows - chunk_begin);
@@ -281,13 +291,14 @@ void amacFindPass(
             .map0 = *slot_maps[0],
             .slot_maps = slot_maps,
             .slot_descs = slot_descs,
-            .slot_ids = slot_ids,
+            .route_shift = route_shift,
             .selector_base = range_first + chunk_begin,
             .selector_indexes = selector_indexes ? selector_indexes + chunk_begin : nullptr,
             .skip_data = skip_data,
             .pool = pool,
             .found_word = found_word + chunk_begin,
-            .found_offset = found_offset ? found_offset + chunk_begin : nullptr};
+            .found_offset = found_offset ? found_offset + chunk_begin : nullptr,
+            .found_slot = found_slot ? found_slot + chunk_begin : nullptr};
         amacRun(policy, chunk_rows);
     }
 

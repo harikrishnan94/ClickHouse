@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Common/PODArray.h>
+#include <base/defines.h>
 #include <base/types.h>
 
 #include <vector>
@@ -11,6 +12,26 @@ namespace DB
 namespace JoinStuff
 {
 class JoinUsedFlags;
+}
+
+/** The hash-derived slot route of the open-addressing (cursor-capable) join map families: the
+  * row's slot is the TOP bits of the map's own hash, so the lookup that computes the hash
+  * anyway routes for free, and the build scatter derives the same slot from the same hash
+  * (`computeDispatchSlotIds` - the route is a build/probe contract). The bottom bits stay the
+  * cell placement (`grower.place` is `hash & mask`).
+  *
+  * The route space is 32-bit for EVERY family: the string hash (`CRC32Hash`) returns
+  * `(res << 32) | res` - its high 32 bits are a copy of the low 32 - and the integer CRC32C
+  * hashes zero-extend a 32-bit result, so only the low 32 bits can be treated as independent.
+  * `route_shift` is `32 - log2(slots)`, giving `slot = word >> shift` MSB-first; the route
+  * bits overlap `place` only once one slot's table exceeds 2^24 cells (~4B distinct keys over
+  * 256 slots) - the same property the pre-routing two-level maps had. A single-slot plan
+  * passes `route_shift = 32`; shifting the 64-bit zero-extension keeps that case well defined
+  * (always slot 0).
+  */
+ALWAYS_INLINE inline size_t joinHashRouteSlot(size_t hash, UInt32 route_shift)
+{
+    return static_cast<size_t>(static_cast<UInt32>(hash)) >> route_shift;
 }
 
 /// Per-slot address material of the routed lookups: the cell buffer base and the home mask of
@@ -46,13 +67,19 @@ struct RoutedProbePlan
 
 /// Per-probe-stream scratch of the routed `parallel_hash` probe, pooled on the join and
 /// reused across probe blocks so the steady state allocates nothing per block:
-/// - `slot_ids` - one route slot id per source-block row;
+/// - `slot_ids` - one route slot id per source-block row, filled EAGERLY only for the map
+///   families that cannot derive the slot from the lookup's own hash (`key8`/`key16` and the
+///   range maps) and for the mixed ON-expression path (see `computeDispatchSlotIds`); the
+///   open-addressing families route inline through `joinHashRouteSlot` and leave it empty;
 /// - `found_word` - the AMAC find pass's per-row result: the matched cell's mapped value
 ///   copied by value (0 = no match; `RowRef`/`RowRefList` are 8-byte words that are never 0
 ///   for a real match, so the emit phase never dereferences the cell a second time after it
 ///   left the cache) or, for ASOF, the mapped value's address;
 /// - `found_offset` - the used-flags offset of the match (slot-local), filled only for the
-///   flagged RIGHT/FULL shapes.
+///   flagged RIGHT/FULL shapes;
+/// - `found_slot` - the row's route slot as the AMAC find pass derived it, for the emit
+///   side's per-slot used-flags selection; filled only for the flagged shapes, like
+///   `found_offset`.
 /// The arrays are resized on demand by the paths that need them; a single-slot non-AMAC probe
 /// touches none of them.
 struct JoinProbeScratch
@@ -60,6 +87,7 @@ struct JoinProbeScratch
     PaddedPODArray<UInt8> slot_ids;
     PaddedPODArray<UInt64> found_word;
     PaddedPODArray<UInt64> found_offset;
+    PaddedPODArray<UInt8> found_slot;
 };
 
 }

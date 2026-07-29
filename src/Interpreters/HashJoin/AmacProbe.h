@@ -102,8 +102,10 @@ inline constexpr bool is_tail_padded_linear_grower<TailPaddedHashTableGrower<ini
   * value for the word-sized mapped types, its address for ASOF - see `amac_mapped_by_pointer`;
   * 0 = no match; skipped and zero-key rows are recorded synchronously, so every row gets a
   * result) and, for the flagged shapes only (`need_flags`), `found_offset[i]` is the matched
-  * cell's slot-LOCAL used-flags offset (`(cell - buf) + 1`, matching `offsetInternal`; the flag
-  * structures stay per-slot, and the emit side re-derives the slot from `slot_ids[ind]`).
+  * cell's slot-LOCAL used-flags offset (`(cell - buf) + 1`, matching `offsetInternal`) and
+  * `found_slot[i]` is the row's route slot, for the emit side's per-slot flag selection.
+  * The row's slot is derived at admit from the map hash the seed computes anyway
+  * (`joinHashRouteSlot(hash, route_shift)`) - there is no separate routing pass.
   * The source row of pass position `i` is `range_first + i` when `selector_is_range`,
   * `selector_indexes[i]` otherwise. `walk` selects the collision-walk policy (see `AmacWalk`).
   * Internally chunked so the ring's row index fits 16 bits.
@@ -116,14 +118,15 @@ void amacFindPass(
     KeyGetter & key_getter,
     const Map * const * slot_maps,
     const SlotMapDesc * slot_descs,
-    const UInt8 * slot_ids,
+    UInt32 route_shift,
     size_t rows,
     size_t range_first,
     const UInt64 * selector_indexes,
     const UInt8 * skip_data,
     Arena & pool,
     UInt64 * found_word,
-    UInt64 * found_offset);
+    UInt64 * found_offset,
+    UInt8 * found_slot);
 
 /// The map behind a `HashJoin::MapsTemplate` member and its PROBE-side key getter (const mapped
 /// values, unlike the build getters of `AmacBuild.h`), spelled once for the explicit
@@ -148,14 +151,15 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
         AmacProbeKeyGetterFor_##TYPE<HashJoin::MAPS> & key_getter, \
         const AmacProbeMapFor_##TYPE<HashJoin::MAPS> * const * slot_maps, \
         const SlotMapDesc * slot_descs, \
-        const UInt8 * slot_ids, \
+        UInt32 route_shift, \
         size_t rows, \
         size_t range_first, \
         const UInt64 * selector_indexes, \
         const UInt8 * skip_data, \
         Arena & pool, \
         UInt64 * found_word, \
-        UInt64 * found_offset);
+        UInt64 * found_offset, \
+        UInt8 * found_slot);
 
 /// Both walk siblings of one shape: the walk axis is orthogonal to every other axis.
 #define AMAC_FIND_PASS_INSTANTIATION_WALKS(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE) \
