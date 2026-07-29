@@ -143,6 +143,18 @@ def load(paths):
             per_arm = {r.get("arm") or "solo": r.get("algorithms") or {}}
             shas = {name: None for name in per_arm}
         unit_status = r.get("status")
+        # A unit the harness abandoned (INVALID / ERROR / MISSING_DATA / OVER_BUDGET) carries no
+        # per-algorithm stats at all. It still has to SHOW UP as NO-VERDICT with the harness's
+        # reason - a unit that vanishes from the report is a silently dropped unit.
+        if not any(algos for algos in per_arm.values()):
+            for arm in per_arm:
+                rows.append(Row(unit=unit_id, arm=arm, role=None, run=0, events={},
+                                duration_us=None, valid=False,
+                                invalid_reason=f"jbmt unit status {unit_status}: {r.get('reason')}",
+                                row_count=None, expected_rows=None, checksum=None,
+                                algo=None, source=path, protocol="jbmt-abab", direction=None,
+                                binary_sha256=shas.get(arm), axes=r.get("meta") or {}))
+            continue
         for arm, algos in per_arm.items():
             for algo, st in algos.items():
                 events_per_run = st.get("events_per_run") or []
@@ -388,14 +400,15 @@ def check_expect_cells(cells, expect, metrics):
     return fails
 
 
-def check_unit_set(cells, spec, metrics):
+def check_unit_set(cells, spec, metrics, seen_not_scored=False):
     """Set equality, not a count: a loosened filter cannot fake this."""
     path, _, field = spec.partition(":")
     field = field or "cell_id"
     data = json.loads(pathlib.Path(path).read_text())
     want = {d[field] for d in data} if isinstance(data, list) else set(data)
-    got = {c["unit"] for c in cells
-           if all(c["metrics"][m]["verdict"] != "NO-VERDICT" for m in metrics)}
+    got = ({c["unit"] for c in cells} if seen_not_scored else
+           {c["unit"] for c in cells
+            if all(c["metrics"][m]["verdict"] != "NO-VERDICT" for m in metrics)})
     missing, extra = sorted(want - got), sorted(got - want)
     print(f"unit set from {path}:{field}: expected {len(want)}, scored {len(got)}, "
           f"missing {len(missing)}, extra {len(extra)}")
@@ -434,9 +447,16 @@ def check_aa(cells, metrics, min_cells):
     return fails
 
 
-def compare_order(cells, other_cells, metrics):
-    """G1-b: per metric, which cells' verdicts flip between block orders."""
+def compare_order(cells, other_cells, metrics, fail_on_effect=False):
+    """G1-b: per metric, which cells' verdicts flip between block orders.
+
+    Gate G1-b is specified to exit 0 and print a possibly empty list, because an
+    order effect is a finding to report per cell, not a failure. That leaves the
+    check unable to go red, so `--fail-on-order-effect` makes the flip list
+    enforceable and gives the check demonstrable power to fail.
+    """
     by_other = {c["unit"]: c for c in other_cells}
+    fails = []
     print("G1-b block-order comparison (ABBA vs BAAB):")
     for m in metrics:
         flips, common = [], 0
@@ -453,9 +473,11 @@ def compare_order(cells, other_cells, metrics):
         print(f"  {m}: {common} cells with verdicts in both orders, {len(flips)} disagree")
         for u, v1, v2, d1, d2 in flips:
             print(f"    ORDER-EFFECT {u}: ABBA {v1} ({d1:+.1f}%) vs BAAB {v2} ({d2:+.1f}%)")
+            if fail_on_effect:
+                fails.append(f"order effect on {m}: {u} ABBA {v1} vs BAAB {v2}")
         if not flips:
             print("    (empty list - no cell's verdict depends on block order)")
-    return []
+    return fails
 
 
 # ---------------------------------------------------------------- reporting
@@ -555,12 +577,20 @@ def main():
     ap.add_argument("--metric", choices=["probe_cost", "projection_cost", "both"], default="both")
     ap.add_argument("--expect-cells", type=int, help="fail unless exactly N cells have a verdict")
     ap.add_argument("--expect-unit-set", help="PATH:FIELD - fail unless the scored unit set equals it")
+    ap.add_argument("--expect-unit-set-seen", action="store_true",
+                    help="with --expect-unit-set, compare the set of units MEASURED rather than "
+                         "the set that earned a verdict; proves the sweep ran the intended units "
+                         "even where some are legitimately NO-VERDICT")
     ap.add_argument("--check-decomposition", action="store_true", help="G0-b")
     ap.add_argument("--check-path-event", action="store_true", help="G0-c")
     ap.add_argument("--aa-control", action="store_true", help="G0-a: every cell must TIE on both metrics")
     ap.add_argument("--aa-min-cells", type=int, default=8,
                     help="minimum scored cells for the A/A control to have power (default 8)")
     ap.add_argument("--compare-order", help="G1-b: second results glob to compare verdicts against")
+    ap.add_argument("--fail-on-order-effect", action="store_true",
+                    help="with --compare-order, exit non-zero if any cell's verdict flips between "
+                         "block orders (G1-b as specified only prints the list, so this is what "
+                         "gives that check power to fail)")
     ap.add_argument("--min-runs", type=int, default=MIN_RUNS)
     ap.add_argument("--band-override", type=float, default=None,
                     help="force the band to exactly this fraction. FOR GATE-POWER TESTING ONLY "
@@ -603,13 +633,14 @@ def main():
     if args.expect_cells is not None:
         fails += check_expect_cells(cells, args.expect_cells, metrics)
     if args.expect_unit_set:
-        fails += check_unit_set(cells, args.expect_unit_set, metrics)
+        fails += check_unit_set(cells, args.expect_unit_set, metrics,
+                                args.expect_unit_set_seen)
     if args.aa_control:
         fails += check_aa(cells, metrics, args.aa_min_cells)
     if args.compare_order:
         other = analyse(load(expand([args.compare_order])), arm_a, arm_b,
                         args.band_override, args.min_runs)
-        fails += compare_order(cells, other, metrics)
+        fails += compare_order(cells, other, metrics, args.fail_on_order_effect)
 
     if not args.quiet_report:
         report(cells, metrics, args.label)

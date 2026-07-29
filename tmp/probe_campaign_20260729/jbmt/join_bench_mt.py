@@ -1120,7 +1120,8 @@ def check_real_tables(target: ExecTarget, unit: dict) -> str | None:
 
 def measure_unit(arms: dict[str, ExecTarget], unit: dict, *, algorithms: tuple[str, ...] = ALGORITHMS,
                  lead_flip: bool = False, selftest_mutate_cb=None,
-                 wrong_expected: bool = False, min_timed_runs: int = 0) -> dict:
+                 wrong_expected: bool = False, min_timed_runs: int = 0,
+                 unit_time_budget_s: float = 0.0) -> dict:
     """Measure every (arm, algorithm) for one unit. With two arms the timed
     runs are interleaved strict ABAB (leading arm reversed when `lead_flip`);
     both servers must be up, and an arm switch is one client invocation. One
@@ -1169,10 +1170,24 @@ def measure_unit(arms: dict[str, ExecTarget], unit: dict, *, algorithms: tuple[s
             for name in order:
                 parts_before[name] = parts_count(arms[name], tables)
                 for w in range(warmups):
+                    t_warm = time.time()
                     got, err = _query_once(arms[name], unit, algorithm, f"{log_bases[name]}|warmup{w}")
+                    warm_s = time.time() - t_warm
                     if err:
                         failed[name] = f"warmup {w} failed: {err}"
                         break
+                    # Uniform, direction-blind time box. A unit whose single query costs
+                    # more than the budget would spend hours of a bounded run on one
+                    # unit ((warmups + runs) x arms queries), so it is dropped BEFORE any
+                    # timed run rather than half-measured. The decision uses wall clock
+                    # only - never either metric - so it cannot favour an arm, and the
+                    # unit is recorded OVER_BUDGET, i.e. NO-VERDICT with a stated reason.
+                    if unit_time_budget_s and warm_s > unit_time_budget_s:
+                        result.update(status="OVER_BUDGET",
+                                      reason=f"arm {name} warmup {w} took {warm_s:.1f}s > "
+                                             f"unit-time-budget {unit_time_budget_s}s; unit skipped "
+                                             f"before any timed run")
+                        return result
                     if expected is None:
                         expected = got
                     elif got != expected:
@@ -1309,7 +1324,8 @@ def sweep_command(args: argparse.Namespace) -> int:
         lead_flip = bool(zlib.crc32(unit["unit_id"].encode()) & 1)
         try:
             row = measure_unit(arms, unit, algorithms=algorithms, lead_flip=lead_flip,
-                               min_timed_runs=getattr(args, "min_timed_runs", 0))
+                               min_timed_runs=getattr(args, "min_timed_runs", 0),
+                               unit_time_budget_s=getattr(args, "unit_time_budget", 0.0))
         except Exception as exc:  # noqa: BLE001 - a sweep must survive one bad unit
             row = {"unit_id": unit["unit_id"], "unit": unit["unit"], "meta": unit,
                    "status": "ERROR", "reason": f"{type(exc).__name__}: {exc}"}
@@ -1795,6 +1811,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--shard", type=int, required=True)
     p.add_argument("--results", required=True)
     p.add_argument("--only", default=None, help="regex filter on unit ids (debugging/partial runs)")
+    p.add_argument("--unit-time-budget", type=float, default=0.0, metavar="SECONDS",
+                   help="skip a unit before any timed run if its first warmup exceeds SECONDS "
+                        "(status OVER_BUDGET). Uniform and wall-clock only, so it cannot favour "
+                        "an arm; keeps one pathological unit from eating a bounded run")
     p.add_argument("--min-timed-runs", type=int, default=0, metavar="N",
                    help="raise every unit's timed-run count to at least N (never lowers it); "
                         "more samples stabilize the per-arm median an A/B verdict rests on")

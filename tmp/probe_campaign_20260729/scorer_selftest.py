@@ -275,6 +275,62 @@ def main():
            verdict_of(t, "D1000000_K0_mb1_mp16_h1.0_bp8_pp8_T16", "probe_cost") == "LOSS", out)
     expect("16 ... and its checks pass on well-formed jbmt rows", rc == 0, out)
 
+    # ---- 17: --compare-order must be able to report AND enforce an order flip
+    base = {"key64:probe.flip.S3.T96": {"A": (0, 100_000, 110_000), "B": (0, 100_000, 110_000)},
+            "key64:probe.stable.S3.T96": {"A": (0, 100_000, 110_000), "B": (0, 100_000, 110_000)}}
+    f1, f2 = tmp / "order1.jsonl", tmp / "order2.jsonl"
+    write_fleet(f1, base)
+    flipped = dict(base)
+    flipped["key64:probe.flip.S3.T96"] = {"A": (0, 100_000, 110_000), "B": (0, 200_000, 210_000)}
+    write_fleet(f2, flipped)
+    rc, out = run(["--results", str(f1), "--compare-order", str(f2), "--arm-a", "armA",
+                   "--arm-b", "armB", "--metric", "both", "--quiet-report"])
+    expect("17 --compare-order prints the flipping cell", "ORDER-EFFECT" in out, out)
+    expect("17 ... and exits 0 without --fail-on-order-effect (G1-b as specified)", rc == 0, out)
+    rc, out = run(["--results", str(f1), "--compare-order", str(f2), "--arm-a", "armA",
+                   "--arm-b", "armB", "--metric", "both", "--fail-on-order-effect",
+                   "--quiet-report"])
+    expect("17 ... and --fail-on-order-effect turns it RED (gate has power)", rc != 0, out)
+    rc, out = run(["--results", str(f1), "--compare-order", str(f1), "--arm-a", "armA",
+                   "--arm-b", "armB", "--metric", "both", "--fail-on-order-effect",
+                   "--quiet-report"])
+    expect("17 ... and stays green when the two orders agree", rc == 0, out)
+
+    # ---- 18: --expect-unit-set is a SET comparison, unlike the count-only --expect-cells
+    f = tmp / "setcheck.jsonl"
+    write_fleet(f, {"key64:probe.a.S3.T96": {"A": (0, 100_000, 110_000), "B": (0, 100_000, 110_000)},
+                    "key64:probe.b.S3.T96": {"A": (0, 100_000, 110_000), "B": (0, 100_000, 110_000)}})
+    want = tmp / "want.json"
+    want.write_text(json.dumps([{"cell": "key64:probe.a.S3.T96"}, {"cell": "key64:probe.b.S3.T96"}]))
+    rc, out = run(["--results", str(f), "--arm-a", "armA", "--arm-b", "armB",
+                   "--expect-unit-set", f"{want}:cell", "--quiet-report"])
+    expect("18 exact unit set passes --expect-unit-set", rc == 0, out)
+    wrong = tmp / "wrong.json"
+    wrong.write_text(json.dumps([{"cell": "key64:probe.a.S3.T96"}, {"cell": "key64:probe.ZZZ.S3.T96"}]))
+    rc, out = run(["--results", str(f), "--arm-a", "armA", "--arm-b", "armB",
+                   "--expect-unit-set", f"{wrong}:cell", "--quiet-report"])
+    expect("18 ... same COUNT but one wrong id goes RED (a count could not catch this)",
+           rc != 0 and "MISSING" in out and "EXTRA" in out, out)
+
+    # ---- 19: a jbmt unit the harness abandoned must appear as NO-VERDICT, never vanish
+    f = tmp / "overbudget.jsonl"
+    pathlib.Path(f).write_text(json.dumps({
+        "unit_id": "tpch__pathological__T16__tiera", "unit": "query", "tool_version": "jbmt-v2",
+        "meta": {"unit_id": "tpch__pathological__T16__tiera"}, "status": "OVER_BUDGET",
+        "reason": "arm baseline warmup 0 took 538.6s > unit-time-budget 30s; unit skipped",
+        "arms": {"baseline": {"binary": "/bin/a", "port": 9005, "binary_sha256": "x",
+                              "algorithms": {}},
+                 "candidate": {"binary": "/bin/b", "port": 9006, "binary_sha256": "y",
+                               "algorithms": {}}}}) + "\n")
+    tsv = tmp / "ob.tsv"
+    rc, out = run(["--results", str(f), "--arm-a", "baseline", "--arm-b", "candidate",
+                   "--out-tsv", str(tsv)])
+    t = tsv.read_text()
+    expect("19 an OVER_BUDGET unit is present as NO-VERDICT, not dropped",
+           verdict_of(t, "tpch__pathological__T16__tiera", "probe_cost") == "NO-VERDICT", out)
+    expect("19 ... carrying the harness's own reason",
+           "OVER_BUDGET" in t and "unit-time-budget" in t, out)
+
     print(f"\nscorer_selftest: {'PASS' if not FAILURES else 'FAIL'} "
           f"({len(FAILURES)} case(s) failed)")
     for name in FAILURES:

@@ -1,0 +1,6 @@
+probe_ab_report: 8 file(s), 1880 timed-run rows, arms present [('baseline', 'A'), ('candidate', 'B')]
+arm A = 'baseline'   arm B = 'candidate'   metrics = ['probe_cost', 'projection_cost']
+unit set from reports/fleet_plan94.json:cell: expected 94, scored 94, missing 0, extra 0
+  set equality: YES
+
+CHECK SUMMARY: PASS (0 failed check(s))

@@ -1,0 +1,69 @@
+# Unit 1 — cells whose two metrics move in opposite directions (ABBA)
+
+| cell | probe_cost | projection_cost |
+| --- | --- | --- |
+| `fixstr:probe.inner_all.S3.T96` | WIN -25.8% | LOSS +31.7% |
+| `fixstr:probe.inner_all.S5.T96` | WIN -10.7% | LOSS +25.2% |
+| `k128:probe.inner_all.S2.T96` | WIN -16.5% | LOSS +24.8% |
+| `k128:probe.inner_all.S3.T96` | WIN -25.8% | LOSS +28.6% |
+| `k128:probe.inner_all.S5.T96` | WIN -14.6% | LOSS +26.6% |
+| `k256:build.inner_all.S5.T96` | WIN -18.4% | LOSS +21.9% |
+| `k256:probe.inner_all.S1.T96` | WIN -48.8% | LOSS +13.1% |
+| `k256:probe.inner_all.S2.T1` | WIN -45.8% | LOSS +3.3% |
+| `k256:probe.inner_all.S2.T48` | WIN -47.7% | LOSS +5.1% |
+| `k256:probe.inner_all.S2.T96` | WIN -58.6% | LOSS +27.9% |
+| `k256:probe.inner_all.S3.T96` | WIN -63.1% | LOSS +42.5% |
+| `k256:probe.inner_all.S4.T48` | WIN -29.9% | LOSS +5.5% |
+| `k256:probe.inner_all.S4.T96` | WIN -54.9% | LOSS +36.9% |
+| `k256:probe.inner_all.S5.T96` | WIN -36.3% | LOSS +26.6% |
+| `key32:probe.inner_all.S2.T96` | WIN -30.9% | LOSS +24.4% |
+| `key32:probe.inner_all.S3.T96` | WIN -36.7% | LOSS +30.6% |
+| `key32:probe.inner_all.S5.T96` | WIN -21.5% | LOSS +35.5% |
+| `key64:probe.any.S2.T96` | WIN -28.5% | LOSS +33.8% |
+| `key64:probe.any.S4.T96` | WIN -42.5% | LOSS +32.9% |
+| `key64:probe.inner_all.S2.T1` | WIN -30.0% | LOSS +3.7% |
+| `key64:probe.inner_all.S2.T48` | WIN -28.7% | LOSS +7.5% |
+| `key64:probe.inner_all.S2.T96` | WIN -34.1% | LOSS +29.8% |
+| `key64:probe.inner_all.S3.T96` | WIN -38.7% | LOSS +31.3% |
+| `key64:probe.inner_all.S3.T96.h50` | WIN -30.1% | LOSS +30.0% |
+| `key64:probe.inner_all.S3.T96.statson` | WIN -38.8% | LOSS +31.3% |
+| `key64:probe.inner_all.S4.T48` | WIN -24.5% | LOSS +14.2% |
+| `key64:probe.inner_all.S4.T96` | WIN -35.4% | LOSS +33.9% |
+| `key64:probe.inner_all.S5.T96` | WIN -26.2% | LOSS +33.2% |
+| `key64:probe.left_all.S2.T96` | WIN -33.2% | LOSS +25.1% |
+| `key64:probe.left_all.S3.T96.jun` | WIN -32.1% | LOSS +20.7% |
+| `key64:probe.left_all.S4.T96` | WIN -33.1% | LOSS +33.3% |
+| `key64:probe.rf_all.S2.T96` | WIN -15.9% | LOSS +23.3% |
+| `key64:probe.rf_all.S4.T96` | WIN -7.9% | LOSS +23.1% |
+| `key64:probe.semi_anti.S2.T96` | WIN -32.1% | LOSS +24.4% |
+| `key64:probe.semi_anti.S4.T96` | WIN -31.3% | LOSS +33.8% |
+| `key64:probe.semi_anti.S4.T96.anti` | LOSS +18.0% | WIN -19.0% |
+| `lcstr:probe.inner_all.S2.T96` | WIN -45.0% | LOSS +22.7% |
+| `lcstr:probe.inner_all.S3.T96` | WIN -45.9% | LOSS +29.2% |
+| `lcstr:probe.inner_all.S5.T96` | WIN -50.0% | LOSS +32.8% |
+| `mixed:build.inner_all.S5.T96` | WIN -41.4% | LOSS +13.0% |
+| `mixed:probe.inner_all.S2.T96` | WIN -43.2% | LOSS +16.8% |
+| `mixed:probe.inner_all.S3.T96` | WIN -55.3% | LOSS +20.6% |
+| `mixed:probe.inner_all.S5.T96` | WIN -51.6% | LOSS +21.0% |
+| `null64:probe.inner_all.S2.T96` | WIN -36.9% | LOSS +31.7% |
+| `null64:probe.inner_all.S3.T96` | WIN -40.1% | LOSS +33.4% |
+| `null64:probe.inner_all.S5.T96` | WIN -29.9% | LOSS +31.8% |
+| `str:build.inner_all.S5.T96` | WIN -17.9% | LOSS +23.4% |
+| `str:probe.any.S2.T96` | WIN -56.0% | LOSS +46.3% |
+| `str:probe.any.S4.T96` | WIN -56.2% | LOSS +50.6% |
+| `str:probe.inner_all.S1.T96` | WIN -32.9% | LOSS +15.2% |
+| `str:probe.inner_all.S2.T48` | WIN -55.3% | LOSS +7.1% |
+| `str:probe.inner_all.S2.T96` | WIN -48.2% | LOSS +21.8% |
+| `str:probe.inner_all.S3.T96` | WIN -48.3% | LOSS +37.3% |
+| `str:probe.inner_all.S3.T96.h50` | WIN -45.1% | LOSS +30.7% |
+| `str:probe.inner_all.S4.T48` | WIN -53.3% | LOSS +11.1% |
+| `str:probe.inner_all.S4.T96` | WIN -45.5% | LOSS +34.5% |
+| `str:probe.inner_all.S5.T96` | WIN -38.3% | LOSS +27.9% |
+| `str:probe.left_all.S2.T96` | WIN -52.2% | LOSS +30.1% |
+| `str:probe.left_all.S4.T96` | WIN -46.0% | LOSS +34.4% |
+| `str:probe.rf_all.S2.T96` | WIN -49.2% | LOSS +42.2% |
+| `str:probe.rf_all.S4.T96` | WIN -19.9% | LOSS +21.5% |
+| `str:probe.semi_anti.S2.T96` | WIN -48.5% | LOSS +23.1% |
+| `str:probe.semi_anti.S4.T96` | WIN -44.6% | LOSS +34.7% |
+
+63 cells.

@@ -1,0 +1,9 @@
+probe_ab_report: 8 file(s), 1880 timed-run rows, arms present [('baseline', 'A'), ('candidate', 'B')]
+arm A = 'baseline'   arm B = 'candidate'   metrics = ['probe_cost', 'projection_cost']
+G1-b block-order comparison (ABBA vs BAAB):
+  probe_cost: 78 cells with verdicts in both orders, 0 disagree
+    (empty list - no cell's verdict depends on block order)
+  projection_cost: 78 cells with verdicts in both orders, 0 disagree
+    (empty list - no cell's verdict depends on block order)
+
+CHECK SUMMARY: PASS (0 failed check(s))

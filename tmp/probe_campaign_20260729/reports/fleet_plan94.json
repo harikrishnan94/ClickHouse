@@ -1,0 +1,472 @@
+[
+  {
+    "cell": "key32:probe.inner_all.S2.T96",
+    "shard": 5,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key32:probe.inner_all.S3.T96",
+    "shard": 5,
+    "est_cost": 8976000000.0
+  },
+  {
+    "cell": "key32:probe.inner_all.S5.T96",
+    "shard": 5,
+    "est_cost": 76032000000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S2.T96",
+    "shard": 6,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S3.T96",
+    "shard": 2,
+    "est_cost": 8976000000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S5.T96",
+    "shard": 6,
+    "est_cost": 76032000000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S2.T96",
+    "shard": 6,
+    "est_cost": 21134300000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S3.T96",
+    "shard": 3,
+    "est_cost": 21780000000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S5.T96",
+    "shard": 4,
+    "est_cost": 95040000000.0
+  },
+  {
+    "cell": "fixstr:probe.inner_all.S2.T96",
+    "shard": 6,
+    "est_cost": 15216696000.0
+  },
+  {
+    "cell": "fixstr:probe.inner_all.S3.T96",
+    "shard": 1,
+    "est_cost": 15681600000.0
+  },
+  {
+    "cell": "fixstr:probe.inner_all.S5.T96",
+    "shard": 7,
+    "est_cost": 68428800000.0
+  },
+  {
+    "cell": "k128:probe.inner_all.S2.T96",
+    "shard": 4,
+    "est_cost": 13525952000.0
+  },
+  {
+    "cell": "k128:probe.inner_all.S3.T96",
+    "shard": 2,
+    "est_cost": 13939200000.0
+  },
+  {
+    "cell": "k128:probe.inner_all.S5.T96",
+    "shard": 7,
+    "est_cost": 60825600000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S2.T96",
+    "shard": 1,
+    "est_cost": 21979672000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S3.T96",
+    "shard": 7,
+    "est_cost": 22651200000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S5.T96",
+    "shard": 3,
+    "est_cost": 98841600000.0
+  },
+  {
+    "cell": "null64:probe.inner_all.S2.T96",
+    "shard": 4,
+    "est_cost": 10145256000.0
+  },
+  {
+    "cell": "null64:probe.inner_all.S3.T96",
+    "shard": 1,
+    "est_cost": 10842480000.0
+  },
+  {
+    "cell": "null64:probe.inner_all.S5.T96",
+    "shard": 2,
+    "est_cost": 101455200000.0
+  },
+  {
+    "cell": "lcstr:probe.inner_all.S2.T96",
+    "shard": 3,
+    "est_cost": 18609800000.000004
+  },
+  {
+    "cell": "lcstr:probe.inner_all.S3.T96",
+    "shard": 3,
+    "est_cost": 19602000000.000004
+  },
+  {
+    "cell": "lcstr:probe.inner_all.S5.T96",
+    "shard": 0,
+    "est_cost": 148104000000.00003
+  },
+  {
+    "cell": "mixed:probe.inner_all.S2.T96",
+    "shard": 2,
+    "est_cost": 23670416000.0
+  },
+  {
+    "cell": "mixed:probe.inner_all.S3.T96",
+    "shard": 3,
+    "est_cost": 24393600000.0
+  },
+  {
+    "cell": "mixed:probe.inner_all.S5.T96",
+    "shard": 1,
+    "est_cost": 106444800000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S1.T96",
+    "shard": 0,
+    "est_cost": 8448528000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S4.T96",
+    "shard": 7,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S1.T96",
+    "shard": 4,
+    "est_cost": 21121320000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S4.T96",
+    "shard": 4,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S1.T96",
+    "shard": 4,
+    "est_cost": 21966172800.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S4.T96",
+    "shard": 4,
+    "est_cost": 24710400000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S2.T1",
+    "shard": 0,
+    "est_cost": 93720000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S2.T48",
+    "shard": 3,
+    "est_cost": 4229720000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S4.T1",
+    "shard": 6,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S4.T48",
+    "shard": 2,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S2.T1",
+    "shard": 2,
+    "est_cost": 234300000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S2.T48",
+    "shard": 1,
+    "est_cost": 10574300000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S4.T1",
+    "shard": 2,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S4.T48",
+    "shard": 1,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S2.T1",
+    "shard": 0,
+    "est_cost": 243672000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S2.T48",
+    "shard": 7,
+    "est_cost": 10997272000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S4.T1",
+    "shard": 5,
+    "est_cost": 24710400000.0
+  },
+  {
+    "cell": "k256:probe.inner_all.S4.T48",
+    "shard": 6,
+    "est_cost": 24710400000.0
+  },
+  {
+    "cell": "key64:probe.left_all.S2.T96",
+    "shard": 4,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key64:probe.left_all.S4.T96",
+    "shard": 1,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.left_all.S2.T96",
+    "shard": 2,
+    "est_cost": 21134300000.0
+  },
+  {
+    "cell": "str:probe.left_all.S4.T96",
+    "shard": 3,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "key64:probe.rf_all.S2.T96",
+    "shard": 1,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key64:probe.rf_all.S4.T96",
+    "shard": 4,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.rf_all.S2.T96",
+    "shard": 7,
+    "est_cost": 21134300000.0
+  },
+  {
+    "cell": "str:probe.rf_all.S4.T96",
+    "shard": 5,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "key64:probe.any.S2.T96",
+    "shard": 2,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key64:probe.any.S4.T96",
+    "shard": 0,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.any.S2.T96",
+    "shard": 0,
+    "est_cost": 21134300000.0
+  },
+  {
+    "cell": "str:probe.any.S4.T96",
+    "shard": 5,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "key64:probe.semi_anti.S2.T96",
+    "shard": 7,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key64:probe.semi_anti.S4.T96",
+    "shard": 0,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.semi_anti.S2.T96",
+    "shard": 1,
+    "est_cost": 21134300000.0
+  },
+  {
+    "cell": "str:probe.semi_anti.S4.T96",
+    "shard": 6,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "key64:probe.semi_anti.S2.T96.anti",
+    "shard": 6,
+    "est_cost": 4229720000.0
+  },
+  {
+    "cell": "key64:probe.semi_anti.S4.T96.anti",
+    "shard": 0,
+    "est_cost": 10560000000.0
+  },
+  {
+    "cell": "str:probe.semi_anti.S2.T96.anti",
+    "shard": 7,
+    "est_cost": 10574300000.0
+  },
+  {
+    "cell": "str:probe.semi_anti.S4.T96.anti",
+    "shard": 5,
+    "est_cost": 13200000000.0
+  },
+  {
+    "cell": "key64:probe.asof.S2.T96",
+    "shard": 3,
+    "est_cost": 8453720000.0
+  },
+  {
+    "cell": "key64:probe.asof.S4.T96",
+    "shard": 5,
+    "est_cost": 19008000000.0
+  },
+  {
+    "cell": "str:probe.asof.S2.T96",
+    "shard": 5,
+    "est_cost": 21134300000.0
+  },
+  {
+    "cell": "str:probe.asof.S4.T96",
+    "shard": 6,
+    "est_cost": 23760000000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S2.T96",
+    "shard": 2,
+    "est_cost": 8580000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S3.T96",
+    "shard": 6,
+    "est_cost": 792000000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S5.T96",
+    "shard": 3,
+    "est_cost": 12672000000.0
+  },
+  {
+    "cell": "str:build.inner_all.S2.T96",
+    "shard": 3,
+    "est_cost": 21450000.0
+  },
+  {
+    "cell": "str:build.inner_all.S3.T96",
+    "shard": 4,
+    "est_cost": 990000000.0
+  },
+  {
+    "cell": "str:build.inner_all.S5.T96",
+    "shard": 7,
+    "est_cost": 15840000000.0
+  },
+  {
+    "cell": "k256:build.inner_all.S2.T96",
+    "shard": 2,
+    "est_cost": 22308000.0
+  },
+  {
+    "cell": "k256:build.inner_all.S3.T96",
+    "shard": 0,
+    "est_cost": 1029600000.0
+  },
+  {
+    "cell": "k256:build.inner_all.S5.T96",
+    "shard": 2,
+    "est_cost": 16473600000.0
+  },
+  {
+    "cell": "mixed:build.inner_all.S2.T96",
+    "shard": 2,
+    "est_cost": 24024000.0
+  },
+  {
+    "cell": "mixed:build.inner_all.S3.T96",
+    "shard": 7,
+    "est_cost": 1108800000.0
+  },
+  {
+    "cell": "mixed:build.inner_all.S5.T96",
+    "shard": 5,
+    "est_cost": 17740800000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S3.T1",
+    "shard": 3,
+    "est_cost": 792000000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S3.T48",
+    "shard": 1,
+    "est_cost": 792000000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S3.T96.dup16",
+    "shard": 7,
+    "est_cost": 2772000000.0
+  },
+  {
+    "cell": "key64:build.left_all.S3.T96.dup16",
+    "shard": 0,
+    "est_cost": 2772000000.0
+  },
+  {
+    "cell": "str:build.inner_all.S3.T96.dup16",
+    "shard": 4,
+    "est_cost": 3465000000.0
+  },
+  {
+    "cell": "str:build.left_all.S3.T96.dup16",
+    "shard": 1,
+    "est_cost": 3465000000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S3.T96.h50",
+    "shard": 5,
+    "est_cost": 6864000000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S3.T96.h05",
+    "shard": 2,
+    "est_cost": 4963200000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S3.T96.h50",
+    "shard": 6,
+    "est_cost": 16500000000.0
+  },
+  {
+    "cell": "str:probe.inner_all.S3.T96.h05",
+    "shard": 0,
+    "est_cost": 11748000000.0
+  },
+  {
+    "cell": "key64:probe.left_all.S3.T96.jun",
+    "shard": 6,
+    "est_cost": 8976000000.0
+  },
+  {
+    "cell": "key64:build.inner_all.S3.T96.statson",
+    "shard": 7,
+    "est_cost": 792000000.0
+  },
+  {
+    "cell": "key64:probe.inner_all.S3.T96.statson",
+    "shard": 3,
+    "est_cost": 8976000000.0
+  }
+]
