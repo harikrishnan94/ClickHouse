@@ -52,7 +52,19 @@ tension and does not explain it** — see the leads.
 
 ### Authorization-required flags
 
-*(none raised yet; the one candidate is volume deletion at teardown — see Unit 6)*
+**None.** Nothing was left undone for want of authority. The one anticipated obstacle — the
+`DeleteVolume` policy denial the prior campaign recorded — did not occur, because teardown
+tags `ndc-dbg-target=true` on this run's own volumes first. No untagged resource was touched,
+`snap-021cbdc2484f86607` was never modified (still `"completed"`), and nothing outside the
+granted authority was attempted.
+
+### Verification status — read first
+
+**Self-verified; independence degraded.** Two independent verifier subagents were run and
+**neither had a working shell**, so neither could execute a single gate; the gate re-runs in
+`fleet/FINAL_GATES.txt` were done by the doer. Details and the outstanding requirement are in
+*Independent verification* below. Every number in this report reproduces from the committed
+raw JSONL — but a shell-capable independent recount is still owed.
 
 ### Protocol deviation found in verification — disclosed, impact measured
 
@@ -344,10 +356,12 @@ and the reds are attributed; the gates stay red.
 
 ### Defect noted, not repaired (out of scope, as instructed)
 
-`bins/MANIFEST.tsv` — its last three lines are bare `sha256  path` pairs instead of
-six-column rows, for `clickhouse-candidate-final-d1c77571b39.bin`,
-`…-fix1-06e0bbd0aa3.bin` and `…-fix2-6598f4b872f.bin`. The baseline row and the row this
-campaign appended are well formed. Left as found.
+`bins/MANIFEST.tsv` — three rows are bare `sha256  path` pairs instead of six-column rows,
+for `clickhouse-candidate-final-d1c77571b39.bin`, `…-fix1-06e0bbd0aa3.bin` and
+`…-fix2-6598f4b872f.bin`. They are lines 9–11, not the last three lines: this campaign's
+well-formed candidate row was appended after them (the prompt's description of the defect as
+"the last three lines" was accurate before this campaign added a row). The baseline row and
+the row this campaign appended are both well formed. Left as found, per instruction.
 
 ### Driver fixes (protocol untouched)
 
@@ -411,9 +425,62 @@ required, and it changes a *setting*, not a run count, validity rule or scoring 
 
 ## Independent verification
 
-**Pass 1 (Units 1–2).** A verifier subagent that did none of the execution was given this
-prompt, the raw JSONL, the worklog and the gate outputs and asked to refute. Verdict:
-**FIX-THEN-RESHIP**, one blocking finding, three leads.
+### Verdict: **self-verified — independence degraded.** Read this before trusting anything below.
+
+Two independent verifier subagents were run. **Neither had a working `Shell` tool** — both
+were gated to read-only mode for their whole session, so neither could execute
+`sha256sum`, `git`, `python`, the harness, or `aws`. Their *independence* was real; their
+*ability to reproduce a gate* was not. Pass 2 said so itself: "I cannot be that pass", and
+returned **FIX-THEN-RESHIP** with "verification could not be executed" as blocking item 1.
+
+Consequently the gate re-runs were performed **by me, the doer** (`fleet/FINAL_GATES.txt`),
+which is **not** independent verification. Per the prompt this campaign is therefore labelled
+**"self-verified — independence degraded"**, and Units 2, 4 and 6 are **not** claimed to have
+been independently passed. **What is still owed:** one verifier pass with a working shell,
+re-running `fleet/FINAL_GATES.txt` and recomputing all three suites' counts from the raw
+JSONL with its own logic.
+
+What the two passes *could* check read-only, they checked, and it all agreed with this report:
+row counts and arm balance (930/930 fleet_ab; 347; 376), two distinct binary shas with zero
+cross-binding, all 320 invalid rows naming **arm A**, the OOM cell having zero rows, no
+duplicate attempts, `collect_hash_table_stats_during_joins = 1` on every row via the
+`.statson`-twin fingerprint, the U5 settings fingerprint genuinely differing (so the confound
+is real), `fallback_runs: 0` on both arms of every jbmt row, the lead-arm splits (181/166 and
+204/172), G2's 12 `.hash` extras, and prereg-before-sweep ordering.
+
+### Pass 2's blocking finding — refuted with live evidence
+
+Pass 2 blocked on "an uncommitted working-tree modification to `tmp/chj_amac/fleet_ab.py`",
+reasoning that if the sweep ran a dirty harness the verdicts could reflect off-protocol logic,
+and correctly noting that a committed-tree `git diff` would not reveal it. The finding is a
+misreading of the **session-start** git status quoted inside the worklog — that ` M
+fleet_ab.py` is the *pre-commit* `timed_settings` change, which became the campaign's first
+commit `635aa368fd5` exactly as the prompt required. Live:
+
+```
+$ git status --porcelain
+                                  (empty)
+$ git diff -- tmp/chj_amac/fleet_ab.py
+                                  (empty)
+$ git diff 635aa368fd5..HEAD -- tmp/chj_amac/fleet_ab.py
+                                  (empty)
+$ git show HEAD:tmp/chj_amac/fleet_ab.py | sha256sum
+415ac6e4ed6a930e68e2301495048dca083704c0974a2b74feb769dde1f2f5b4  -
+$ sha256sum tmp/chj_amac/fleet_ab.py
+415ac6e4ed6a930e68e2301495048dca083704c0974a2b74feb769dde1f2f5b4  tmp/chj_amac/fleet_ab.py
+```
+The working-tree file is byte-identical to its committed blob, and identical to the
+campaign-start commit. The frozen plan was never touched either:
+`git diff a0dfbfd965b..HEAD -- fleet/matrix.json fleet/dispositions.json` is empty and
+`git log a0dfbfd965b..HEAD -- <those files>` lists no commit.
+
+Pass 2's third item (the `MANIFEST.tsv` malformed rows are lines 9–11, not the last three,
+because this campaign's well-formed row was appended after them) is correct and immaterial;
+the description in this report is adjusted accordingly.
+
+### Pass 1 (Units 1–2)
+
+Verdict **FIX-THEN-RESHIP**, one blocking finding, three leads.
 
 **Its tooling was degraded and that is disclosed, not glossed:** the `Shell` tool was
 unavailable to it for the entire session, so it could not run `sha256sum`, `git`, `python`, or

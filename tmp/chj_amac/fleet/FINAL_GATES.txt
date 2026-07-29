@@ -1,0 +1,70 @@
+=== FINAL GATE RE-RUN 2026-07-29T00:54:30Z ===
+
+--- G1a baseline sha256 ---
+0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4  tmp/chj_amac/bins/clickhouse-baseline-a05f3ee81ff.bin
+--- G1b ancestry ---
+exit=0
+
+--- G2 (94 cells, no .hash) ---
+94 cells, 0 hash cells, exit 0
+exit=0
+--- G2 teeth: default_plan_cells() ---
+default_plan_cells() = 106
+extra beyond the 94 = 12 ; all end .hash? True
+
+--- G4 ---
+FLEET_AB REPORT RESULT: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0 uncalibrated=0
+exit=1
+--- G3 (from the preserved sweep log) ---
+FLEET_STEALING RESULT: cells_run=94 cells_failed=17 shard0=14 shard1=18 shard2=3 shard3=6 shard4=17 shard5=2 shard6=18 shard7=16 -> FAIL
+--- independent recount, no fleet_ab import ---
+all 10 runs: cells=93 win=27 tie=28 loss=22 invalid=16 insufficient=0
+
+--- G5 ---
+legacy 347 missing 0 not-OK 0
+exit=0
+--- G6 tier a (baseline arm) ---
+Planned 376 units; results for 376; missing 0; extraneous 0.
+Statuses: {'OK': 375, 'INVALID': 1}
+- INVALID: ['tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera']
+--- G6 tier a (candidate arm) ---
+Planned 376 units; results for 376; missing 0; extraneous 0.
+Statuses: {'OK': 375, 'INVALID': 1}
+- INVALID: ['tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera']
+--- G7 legacy ---
+347 result rows (347 multi-arm); statuses: {'OK': 347}
+binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+lead arm distribution (ABAB leader): {'candidate': 181, 'baseline': 166}
+
+--- G7 tier a ---
+376 result rows (376 multi-arm); statuses: {'OK': 375, 'INVALID': 1}
+- INVALID: ['tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera']
+binaries: {'baseline': ['0d32ef1c96e6'], 'candidate': ['06d804546e0f']}
+lead arm distribution (ABAB leader): {'baseline': 172, 'candidate': 204}
+
+--- independent candidate-centric recount, both suites ---
+units scored=347 win=119 tie=53 loss=175
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.057 (>1 means the candidate is slower/larger)
+units scored=347 win=5 tie=261 loss=81
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.034 (>1 means the candidate is slower/larger)
+units scored=375 win=26 tie=138 loss=211
+not scored: {'INVALID': 1}
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.071 (>1 means the candidate is slower/larger)
+units scored=375 win=66 tie=177 loss=132
+not scored: {'INVALID': 1}
+units with any fallback_runs > 0: none
+median ratio candidate/baseline = 1.034 (>1 means the candidate is slower/larger)
+--- G8 (re-run fresh) ---
+instances: []
+volumes: []
+sgs: []
+snapshot: "completed"
+--- G8 power-to-fail: same tag still resolves the terminated instances ---
+terminated	terminated	terminated	terminated	terminated	terminated	terminated	terminated
+--- harness integrity ---
+working tree: dirty files = 0
+fleet_ab.py vs campaign start: changed lines = 0
+frozen plan files changed since payload commit: 0
