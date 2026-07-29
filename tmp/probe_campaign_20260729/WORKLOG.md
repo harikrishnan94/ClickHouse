@@ -350,6 +350,106 @@ assumption-turned-finding. Revisit trigger: none — settled.
 
 ---
 
+---
+
+## Iteration 5 — measured throughput forces an honest coverage plan (AMBIGUITY CALL)
+
+**Observation (OPERATIONAL).** The first five jbmt A/A units took 18.9 s, 30.7 s, 37.7 s, 50.2 s
+and 465.9 s of wall time (`results/aa_jbmt/results.jsonl`), i.e. roughly **2 min per synthetic
+unit** on this host with two arms. 347 legacy cells at that rate is ≈ **11.5 h**. Independently,
+the prior campaign's own recorded `wall_seconds` for the real suite on ARM (orientation only) is
+6.74 h for tier a and 7.7 h for tier b **per arm-pair-equivalent**, dominated by a handful of
+units that hit the harness's hard-coded `max_execution_time = 600` and end INVALID anyway.
+
+**The call.** Units 2 and 3 cannot both reach full coverage in this run. Options considered:
+
+1. *Repurpose the 8-shard fleet for the jbmt synthetic suite after Unit 1 finishes.* Would give
+   all 347 legacy cells in ~2 h (keys_store is buildable per shard; no snapshot needed).
+   Rejected: it keeps 8× `m8g.24xlarge` burning for hours past the work they were launched for,
+   the cost gate wants teardown once the fleet's sweeps are done, and a mid-campaign pivot on
+   unattended infrastructure is exactly the kind of risk this task says to avoid taking.
+2. *Lower `max_execution_time` so pathological real units fail fast.* Rejected: it would convert
+   units that legitimately complete just under the limit into NO-VERDICT, i.e. buy coverage by
+   changing the measurement.
+3. **Chosen: keep both jbmt suites on this host, serial, in the prompt's unit order (legacy
+   first, then real tier a, then tier b), and deliver whatever completes as an EXPLICITLY
+   LABELLED, QUANTIFIED partial** with its reason and the exact list of measured unit ids.
+
+Why this best serves the Goal: the deliverable that matters is *trustworthy* verdicts plus honest
+"no result" where data is missing. A labelled partial with exact counts preserves that; a rushed
+or venue-mixed full sweep would not. `--expect-cells 347` and `--expect-cells 376` are still run
+verbatim and reported RED where coverage falls short — N is never lowered to match the outcome.
+
+Revisit trigger: if the legacy sweep turns out materially faster than 2 min/unit, it completes
+and the gate goes green on its own.
+
+**Also fixed.** jbmt progress lines are invisible in a redirected log because Python buffers
+stdout; progress is read from the results JSONL instead (`wc -l`, and `status` per unit).
+
+---
+
+---
+
+## Iteration 6 — Unit 1 ABBA scored; jbmt A/A control RED at 5 runs (correction, amended forward)
+
+### Unit 1, ABBA half: measured and scored
+
+    $ python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' \
+        --arm-a baseline --arm-b candidate --check-decomposition --check-path-event --quiet-report
+    G0-b: rows checked: 1560   violations: 0     (gather events absent on BOTH arms)
+    G0-c: timed runs checked: 1560   violations: 0
+    CHECK SUMMARY: PASS   → exit 0
+
+    $ python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' \
+        --arm-a baseline --arm-b candidate --metric both --expect-cells 94
+    coverage: 78 cells with a verdict on probe_cost+projection_cost, expected 94 (total cells seen: 94)
+    CHECK SUMMARY: FAIL (1 failed check(s))   → exit 1        ** G1 RED, as flagged in Iteration 2 **
+
+All 16 unscored cells carry the harness's own `below-duration-floor` reason (arm-A medians 23.5 –
+157.9 ms against a 200 ms floor); none was dropped and none was counted as a tie. G1 is reported
+RED with 78/94; `--expect-cells 94` was NOT lowered.
+
+Headline (ABBA, 78 scored cells): `probe_cost` win=68 tie=4 loss=6, aggregate **−35.2 %**;
+`projection_cost` win=2 tie=5 loss=71, aggregate **+26.7 %**; **63 cells move in opposite
+directions**. This is exactly the trade the campaign was told not to net out, and it is reported
+as two independent tallies.
+
+### jbmt A/A control at 5 timed runs: RED — and what was done about it
+
+    $ python3 probe_ab_report.py --results 'results/aa_jbmt/results.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control --quiet-report ; echo $?
+      probe_cost:      10 scored, 0 non-TIE, empirical noise floor = 1.94% (83,028 us)
+      projection_cost: 10 scored, 2 non-TIE, empirical noise floor = 4.46% (92,740 us)
+        FAIL D1000000_K2_mb1_mp64_h1.0_bp8_pp8_T8:   WIN  -4.1% (band 3.0%)
+        FAIL D262144_K5_mb1_mp256_h1.0_bp8_pp8_T16:  LOSS +4.5% (band 3.0%)
+    1
+
+**Diagnosis, not a guess.** The per-run values of the two offending units overlap almost
+completely between arms, e.g. for `D1000000_K2…T8`, projection per run was
+aaA `[973241, 1004246, 969358, 949893, 927510]` vs aaB `[930022, 914421, 945581, 964968, 926949]`.
+Same binary, same data, interleaved ABAB — the 4 % is the *median's own sampling error at n=5*,
+which the band (built from the same five samples' pstdev) underestimates.
+
+**Options and the call.** Widening the band to the observed A/A floor would have turned the gate
+green using the very data the gate examined — the "check weakened until it passes" move — so it
+was rejected. Instead the *measurement* was strengthened: my copy of `join_bench_mt.py` gains
+`--min-timed-runs N`, which raises each unit's timed-run count (never lowers a plan's own count),
+and the A/A control is being re-run at **11** timed runs. Cost: ~2× wall per unit, which reduces
+Unit 2/3 coverage further — accepted, because measurement validity is the MUST-HOLD and coverage
+is allowed to be a labelled partial.
+
+Refutation condition for the retry: if the 11-run A/A still shows a non-TIE cell on
+`projection_cost`, then that metric is NOT measurable to 3 % on this venue and every jbmt
+`projection_cost` verdict is reported **UNSETTLED** with that as the stated gap, while jbmt
+`probe_cost` verdicts (10/10 TIE, floor 1.94 %) stand.
+
+**Correction to Iteration 2's framing.** The 9.86 % `probe_cost` A/A floor on the fleet and the
+0.38 % `projection_cost` floor there are venue-specific: on this host the ordering is reversed
+(1.94 % vs 4.46 % at n=5). Neither venue's floor transfers to the other, and REPORT.md states
+each per suite rather than campaign-wide.
+
+---
+
 ### PRE-REGISTRATION — Unit 2 (jbmt legacy, exactly 347 cells)
 
 **Expected outcome.** Exactly the 347 `cell_id` values from `join_bench_mt_legacy_cells.json`

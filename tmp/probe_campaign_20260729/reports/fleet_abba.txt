@@ -1,0 +1,253 @@
+probe_ab_report: 8 file(s), 1880 timed-run rows, arms present [('baseline', 'A'), ('candidate', 'B')]
+arm A = 'baseline'   arm B = 'candidate'   metrics = ['probe_cost', 'projection_cost']
+
+=== Unit 1 fleet_ab ABBA (94 cells attempted): per-metric verdicts (band = max(3%, per-arm relative spread), evaluated per metric) ===
+
+probe_cost: verdicts 78   win=68 tie=4 loss=6   no-verdict=16
+  aggregate 1,791,720.4 ms -> 1,160,568.5 ms (-35.2%)
+  median per-cell delta -35.5%
+  LOSSES on probe_cost: 6
+    cell                                                 A ms       B ms    delta   band         disp A->B (ms)       lookup A->B (ms)      probe tot A->B (ms)
+    key64:build.left_all.S3.T96.dup16                   230.1      300.8   +30.7%   3.0%               0.0->0.1           230.1->300.6         4,489.9->4,990.8
+    key64:build.inner_all.S3.T96.dup16                  232.8      297.0   +27.6%   3.0%               0.0->0.1           232.8->296.9         4,541.0->5,003.6
+    key64:probe.semi_anti.S4.T96.anti                 8,565.3   10,104.1   +18.0%   3.0%              0.1->12.4      8,565.3->10,090.5        8,677.6->10,194.6
+    key64:build.inner_all.S5.T96                      6,744.2    7,412.0    +9.9%   3.0%               0.2->3.6       6,744.0->7,408.4         8,062.7->8,870.0
+    key64:probe.asof.S4.T96                          48,400.2   51,211.4    +5.8%   3.0%              0.7->14.5     48,399.4->51,196.9       52,653.3->55,994.5
+    key64:probe.inner_all.S1.T96                      2,395.7    2,531.5    +5.7%   3.0%               0.7->6.7       2,395.0->2,524.8         4,588.3->4,909.3
+  WINS on probe_cost: 68
+    k256:probe.inner_all.S3.T96                      22,740.7 ->    8,380.7   -63.1% (band 3.0%)
+    str:probe.inner_all.S2.T1                            66.9 ->       26.7   -60.0% (band 3.0%)
+    k256:probe.inner_all.S2.T96                      14,734.9 ->    6,094.3   -58.6% (band 3.0%)
+    str:probe.any.S4.T96                             26,055.6 ->   11,404.5   -56.2% (band 3.0%)
+    str:probe.any.S2.T96                             13,386.4 ->    5,894.1   -56.0% (band 3.0%)
+    mixed:probe.inner_all.S3.T96                     39,096.4 ->   17,467.5   -55.3% (band 3.0%)
+    str:probe.inner_all.S2.T48                        3,163.3 ->    1,413.9   -55.3% (band 3.0%)
+    k256:probe.inner_all.S4.T96                      22,870.1 ->   10,309.2   -54.9% (band 3.0%)
+    str:probe.inner_all.S4.T48                       12,974.7 ->    6,064.8   -53.3% (band 5.0%)
+    str:probe.left_all.S2.T96                        10,916.6 ->    5,219.7   -52.2% (band 3.0%)
+    mixed:probe.inner_all.S5.T96                    184,541.5 ->   89,253.5   -51.6% (band 3.0%)
+    str:probe.inner_all.S4.T1                        11,747.6 ->    5,832.1   -50.4% (band 3.0%)
+    lcstr:probe.inner_all.S5.T96                    209,931.4 ->  105,035.9   -50.0% (band 6.0%)
+    str:probe.rf_all.S2.T96                          15,383.0 ->    7,820.0   -49.2% (band 3.0%)
+    k256:probe.inner_all.S1.T96                       8,195.9 ->    4,200.3   -48.8% (band 3.0%)
+    str:probe.semi_anti.S2.T96                        9,609.6 ->    4,949.0   -48.5% (band 3.0%)
+    str:probe.inner_all.S3.T96                       17,465.5 ->    9,021.1   -48.3% (band 3.0%)
+    str:probe.inner_all.S2.T96                        9,637.1 ->    4,988.4   -48.2% (band 3.2%)
+    k256:probe.inner_all.S2.T48                       3,859.3 ->    2,019.6   -47.7% (band 3.0%)
+    str:probe.left_all.S4.T96                        19,313.9 ->   10,424.2   -46.0% (band 3.0%)
+    lcstr:probe.inner_all.S3.T96                     19,115.7 ->   10,340.4   -45.9% (band 3.0%)
+    k256:probe.inner_all.S2.T1                           74.1 ->       40.2   -45.8% (band 3.0%)
+    str:probe.inner_all.S4.T96                       17,968.2 ->    9,796.4   -45.5% (band 3.0%)
+    str:probe.inner_all.S3.T96.h50                   13,337.1 ->    7,326.7   -45.1% (band 3.0%)
+    lcstr:probe.inner_all.S2.T96                     11,598.7 ->    6,376.9   -45.0% (band 9.5%)
+    str:probe.semi_anti.S4.T96                       17,494.5 ->    9,686.1   -44.6% (band 3.0%)
+    mixed:probe.inner_all.S2.T96                     18,860.6 ->   10,721.8   -43.2% (band 3.0%)
+    key64:probe.any.S4.T96                           25,545.9 ->   14,678.9   -42.5% (band 3.0%)
+    mixed:build.inner_all.S5.T96                     11,992.8 ->    7,029.9   -41.4% (band 3.0%)
+    k256:probe.inner_all.S4.T1                       20,800.4 ->   12,332.4   -40.7% (band 3.0%)
+    null64:probe.inner_all.S3.T96                     9,984.3 ->    5,980.8   -40.1% (band 3.0%)
+    key64:probe.inner_all.S3.T96.statson              8,776.2 ->    5,371.0   -38.8% (band 3.0%)
+    key64:probe.inner_all.S3.T96                      8,781.6 ->    5,382.4   -38.7% (band 3.0%)
+    str:probe.inner_all.S5.T96                       82,696.7 ->   51,007.0   -38.3% (band 3.0%)
+    key64:build.inner_all.S3.T1                         115.2 ->       72.0   -37.5% (band 3.0%)
+    null64:probe.inner_all.S2.T96                     5,739.8 ->    3,623.3   -36.9% (band 4.1%)
+    key32:probe.inner_all.S3.T96                      8,346.9 ->    5,280.0   -36.7% (band 3.0%)
+    k256:probe.inner_all.S5.T96                     114,627.2 ->   73,069.4   -36.3% (band 3.0%)
+    key64:probe.inner_all.S4.T1                       9,780.5 ->    6,296.6   -35.6% (band 3.0%)
+    key64:probe.inner_all.S4.T96                     18,451.0 ->   11,923.9   -35.4% (band 3.0%)
+    key64:probe.inner_all.S2.T96                      4,950.7 ->    3,262.5   -34.1% (band 3.0%)
+    key64:probe.left_all.S2.T96                       4,720.3 ->    3,154.6   -33.2% (band 3.4%)
+    key64:probe.left_all.S4.T96                      18,058.3 ->   12,086.2   -33.1% (band 3.0%)
+    str:probe.inner_all.S1.T96                        4,105.8 ->    2,753.2   -32.9% (band 3.0%)
+    key64:probe.semi_anti.S2.T96                      4,757.6 ->    3,228.1   -32.1% (band 3.0%)
+    key64:probe.left_all.S3.T96.jun                   8,847.2 ->    6,010.7   -32.1% (band 3.0%)
+    key64:probe.semi_anti.S4.T96                     17,580.9 ->   12,077.8   -31.3% (band 3.0%)
+    key32:probe.inner_all.S2.T96                      4,300.2 ->    2,969.4   -30.9% (band 3.4%)
+    key64:probe.inner_all.S3.T96.h50                  7,399.2 ->    5,174.4   -30.1% (band 3.0%)
+    key64:probe.inner_all.S2.T1                          22.3 ->       15.6   -30.0% (band 3.0%)
+    null64:probe.inner_all.S5.T96                    88,490.8 ->   62,039.1   -29.9% (band 3.0%)
+    k256:probe.inner_all.S4.T48                      14,850.7 ->   10,416.9   -29.9% (band 7.8%)
+    key64:probe.inner_all.S2.T48                      1,365.9 ->      973.2   -28.7% (band 3.0%)
+    key64:probe.any.S2.T96                            6,813.8 ->    4,870.2   -28.5% (band 4.2%)
+    key64:probe.inner_all.S5.T96                     74,801.8 ->   55,178.9   -26.2% (band 6.9%)
+    k128:probe.inner_all.S3.T96                      13,461.9 ->    9,988.7   -25.8% (band 3.0%)
+    fixstr:probe.inner_all.S3.T96                    13,220.0 ->    9,809.9   -25.8% (band 3.0%)
+    str:probe.semi_anti.S4.T96.anti                   9,803.6 ->    7,383.0   -24.7% (band 3.0%)
+    key64:probe.inner_all.S4.T48                     11,195.8 ->    8,453.6   -24.5% (band 3.0%)
+    key32:probe.inner_all.S5.T96                     67,733.8 ->   53,145.6   -21.5% (band 8.6%)
+    str:probe.rf_all.S4.T96                          27,192.0 ->   21,780.6   -19.9% (band 3.0%)
+    k256:build.inner_all.S5.T96                       7,246.1 ->    5,915.4   -18.4% (band 3.0%)
+    str:build.inner_all.S5.T96                        5,700.8 ->    4,682.6   -17.9% (band 4.2%)
+    k128:probe.inner_all.S2.T96                       8,284.8 ->    6,918.4   -16.5% (band 3.0%)
+    key64:probe.rf_all.S2.T96                         6,458.3 ->    5,429.7   -15.9% (band 3.0%)
+    k128:probe.inner_all.S5.T96                      54,469.0 ->   46,526.5   -14.6% (band 3.0%)
+    fixstr:probe.inner_all.S5.T96                    49,348.7 ->   44,062.9   -10.7% (band 4.1%)
+    key64:probe.rf_all.S4.T96                        37,199.1 ->   34,245.1    -7.9% (band 3.0%)
+
+projection_cost: verdicts 78   win=2 tie=5 loss=71   no-verdict=16
+  aggregate 281,522.8 ms -> 356,689.1 ms (+26.7%)
+  median per-cell delta +24.4%
+  LOSSES on projection_cost: 71
+    cell                                                 A ms       B ms    delta   band         disp A->B (ms)       lookup A->B (ms)      probe tot A->B (ms)
+    str:probe.any.S4.T96                              1,384.9    2,085.5   +50.6%   3.5%               0.2->7.0     26,055.4->11,397.5       27,441.3->13,503.5
+    str:probe.any.S2.T96                              1,583.2    2,316.9   +46.3%   3.0%               0.2->6.3      13,386.2->5,887.9        14,964.5->8,218.5
+    k256:probe.inner_all.S3.T96                       2,142.2    3,053.1   +42.5%   3.0%              0.4->10.3      22,740.3->8,370.4       24,885.9->11,436.2
+    str:probe.rf_all.S2.T96                           7,045.8   10,019.7   +42.2%   3.0%               3.0->7.6      15,380.0->7,812.4       22,445.5->17,881.1
+    str:probe.inner_all.S3.T96                        2,053.0    2,817.9   +37.3%   3.0%               0.3->6.6      17,465.2->9,014.6       19,519.3->11,843.1
+    k256:probe.inner_all.S4.T96                       2,126.6    2,912.0   +36.9%   3.0%               0.4->9.2     22,869.8->10,300.0       24,992.0->13,221.3
+    key32:probe.inner_all.S5.T96                     18,825.3   25,504.9   +35.5%   3.0%              1.9->57.0     67,731.9->53,089.0       86,543.1->78,705.0
+    str:probe.semi_anti.S4.T96                        2,077.4    2,798.0   +34.7%   3.0%               0.3->6.9      17,494.2->9,679.1       19,563.9->12,482.1
+    str:probe.inner_all.S4.T96                        2,064.4    2,777.4   +34.5%   3.0%               0.3->6.8      17,967.8->9,789.5       20,038.2->12,569.1
+    str:probe.left_all.S4.T96                         3,535.3    4,750.3   +34.4%   3.0%               0.2->6.9     19,313.7->10,417.2       22,850.2->15,174.5
+    key64:probe.inner_all.S4.T96                      4,720.4    6,322.2   +33.9%   3.0%              1.3->15.1     18,449.8->11,908.9       23,175.7->18,216.7
+    key64:probe.any.S2.T96                              653.6      874.8   +33.8%   3.0%               0.3->6.5       6,813.5->4,863.7         7,467.9->5,741.9
+    key64:probe.semi_anti.S4.T96                      4,768.4    6,381.6   +33.8%   3.0%              1.0->15.2     17,579.9->12,063.0       22,344.9->18,474.5
+    null64:probe.inner_all.S3.T96                     2,572.1    3,430.8   +33.4%   3.0%               0.9->7.5       9,983.3->5,973.2        12,559.5->9,417.3
+    key64:probe.left_all.S4.T96                       5,925.4    7,898.4   +33.3%   3.0%              1.1->14.9     18,057.3->12,071.3       23,980.9->19,932.0
+    key64:probe.inner_all.S5.T96                     18,642.0   24,828.9   +33.2%   3.0%              2.3->59.5     74,799.4->55,120.3       93,386.6->79,949.8
+    key64:probe.any.S4.T96                            1,316.8    1,750.3   +32.9%   3.0%              0.7->14.6     25,545.0->14,664.5       26,861.7->16,424.4
+    lcstr:probe.inner_all.S5.T96                     15,597.6   20,712.6   +32.8%   3.0%           0.8->8,769.4    209,930.7->96,318.5     225,510.8->125,538.1
+    null64:probe.inner_all.S5.T96                    21,086.2   27,800.4   +31.8%   3.0%              3.2->67.8     88,487.7->61,971.9      109,547.6->89,816.9
+    fixstr:probe.inner_all.S3.T96                     2,344.1    3,088.0   +31.7%   3.0%               0.6->6.9      13,219.5->9,803.2       15,559.9->12,897.4
+    null64:probe.inner_all.S2.T96                     2,339.8    3,080.8   +31.7%   3.0%               0.9->7.1       5,738.9->3,616.1         8,053.1->6,705.7
+    key64:probe.inner_all.S3.T96.statson              2,428.9    3,188.8   +31.3%   3.0%               0.7->7.0       8,775.5->5,364.0        11,205.5->8,564.5
+    key64:probe.inner_all.S3.T96                      2,439.8    3,202.9   +31.3%   3.0%               0.7->6.9       8,781.0->5,375.5        11,224.9->8,583.4
+    str:probe.inner_all.S3.T96.h50                    1,093.7    1,429.1   +30.7%   3.0%               0.1->5.5      13,337.0->7,321.3        14,433.4->8,764.4
+    key32:probe.inner_all.S3.T96                      2,432.9    3,176.8   +30.6%   3.0%               0.6->6.9       8,346.3->5,273.2        10,780.9->8,452.9
+    str:probe.left_all.S2.T96                         3,738.0    4,863.9   +30.1%   3.0%               0.2->6.5      10,916.4->5,213.1       14,641.6->10,081.9
+    key64:probe.inner_all.S3.T96.h50                  1,193.9    1,551.8   +30.0%   3.0%               0.2->5.8       7,399.0->5,168.6         8,593.3->6,725.4
+    key64:probe.inner_all.S2.T96                      2,189.5    2,841.8   +29.8%   3.0%               0.6->6.6       4,950.0->3,255.9         7,134.5->6,085.1
+    lcstr:probe.inner_all.S3.T96                      2,265.2    2,926.2   +29.2%   3.0%           0.1->1,383.0      19,115.5->8,948.5       21,382.7->13,246.3
+    k128:probe.inner_all.S3.T96                       2,336.4    3,003.7   +28.6%   3.0%               0.0->8.3      13,461.9->9,980.5       15,796.2->12,992.2
+    str:probe.inner_all.S5.T96                        8,157.2   10,436.4   +27.9%   3.0%              1.3->27.7     82,695.4->50,979.3       90,859.4->61,470.6
+    k256:probe.inner_all.S2.T96                       2,150.7    2,750.5   +27.9%   3.0%               0.3->9.1      14,734.5->6,085.2        16,884.5->8,839.7
+    k128:probe.inner_all.S5.T96                       9,004.4   11,400.4   +26.6%   3.0%              0.2->35.6     54,468.7->46,490.6       63,472.9->57,939.9
+    k256:probe.inner_all.S5.T96                       8,310.0   10,519.5   +26.6%   3.0%              2.4->37.8    114,624.9->73,031.6      122,927.4->83,607.2
+    fixstr:probe.inner_all.S5.T96                     9,691.1   12,136.8   +25.2%   3.0%              3.4->29.9     49,345.3->44,033.2       59,010.9->56,207.2
+    key64:probe.left_all.S2.T96                       2,805.8    3,509.8   +25.1%   3.0%               0.5->6.8       4,719.8->3,147.8         7,535.3->6,640.3
+    fixstr:probe.inner_all.S2.T96                     2,157.5    2,696.2   +25.0%   3.0%               0.6->6.7       6,119.0->6,365.1         8,282.9->9,080.4
+    k128:probe.inner_all.S2.T96                       2,156.2    2,690.0   +24.8%   3.0%               0.0->8.2       8,284.7->6,910.0        10,429.9->9,603.1
+    key64:probe.semi_anti.S2.T96                      2,237.2    2,783.9   +24.4%   3.0%               0.5->6.7       4,757.0->3,221.3         6,994.7->6,033.4
+    key32:probe.inner_all.S2.T96                      2,190.4    2,724.1   +24.4%   3.0%               0.5->6.8       4,299.6->2,962.6         6,509.6->5,692.0
+    str:build.inner_all.S5.T96                          533.2      658.2   +23.4%   3.0%               0.1->1.7       5,700.8->4,680.9         6,236.7->5,343.1
+    key64:probe.rf_all.S2.T96                         4,452.7    5,488.4   +23.3%   3.0%               3.0->7.8       6,455.3->5,420.7       10,917.7->10,878.8
+    str:probe.semi_anti.S2.T96                        2,071.2    2,549.8   +23.1%   3.0%               0.2->6.6       9,609.4->4,942.4        11,694.5->7,509.2
+    key64:probe.rf_all.S4.T96                         8,456.8   10,409.3   +23.1%   3.0%              6.8->15.9     37,192.4->34,229.5       45,633.1->44,605.7
+    lcstr:probe.inner_all.S2.T96                      2,153.7    2,642.4   +22.7%   3.0%           0.1->1,313.2      11,598.5->5,081.4        13,752.4->9,035.6
+    k256:build.inner_all.S5.T96                         545.9      665.4   +21.9%   3.0%               0.1->2.3       7,245.9->5,913.1         7,792.6->6,588.4
+    str:probe.inner_all.S2.T96                        2,069.8    2,521.4   +21.8%   3.0%               0.2->6.6       9,636.8->4,981.9        11,697.4->7,537.1
+    str:probe.rf_all.S4.T96                           6,743.7    8,193.4   +21.5%   3.0%               3.1->7.6     27,188.9->21,772.9       33,947.8->29,975.2
+    mixed:probe.inner_all.S5.T96                      7,790.1    9,426.5   +21.0%   3.0%              0.1->29.4    184,541.4->89,224.1      192,334.6->98,669.0
+    key64:probe.left_all.S3.T96.jun                   6,186.7    7,466.1   +20.7%   3.0%               0.6->7.0       8,846.6->6,003.8       15,043.7->13,457.4
+    mixed:probe.inner_all.S3.T96                      1,943.5    2,344.0   +20.6%   3.0%               0.0->7.2     39,096.4->17,460.2       41,039.1->19,804.0
+    str:probe.asof.S4.T96                             2,005.0    2,373.2   +18.4%   3.0%               0.2->7.4     32,157.8->32,749.6       34,164.0->35,127.8
+    mixed:probe.inner_all.S2.T96                      1,979.7    2,311.6   +16.8%   3.0%               0.0->7.2     18,860.6->10,714.5       20,835.1->13,044.6
+    str:probe.inner_all.S1.T96                        2,106.1    2,425.7   +15.2%   3.0%               0.3->6.9       4,105.4->2,746.5         6,215.0->5,185.2
+    key64:probe.inner_all.S4.T48                      3,782.9    4,320.6   +14.2%   3.0%              0.2->13.1      11,195.7->8,440.7       14,976.7->12,790.1
+    k256:probe.inner_all.S1.T96                       2,094.4    2,368.7   +13.1%   3.0%               0.5->9.3       8,195.3->4,191.1        10,314.2->6,564.8
+    mixed:build.inner_all.S5.T96                        521.8      589.5   +13.0%   3.0%               0.0->1.8      11,992.7->7,028.1        12,515.6->7,631.7
+    key64:probe.asof.S4.T96                           4,254.4    4,785.2   +12.5%   3.0%              0.7->14.5     48,399.4->51,196.9       52,653.3->55,994.5
+    str:probe.asof.S2.T96                             1,962.9    2,205.1   +12.3%   3.0%               0.2->6.9     18,311.5->18,180.4       20,274.4->20,406.6
+    str:probe.inner_all.S4.T48                        1,867.8    2,075.7   +11.1%   3.0%               0.1->6.2      12,974.7->6,058.7        14,842.3->8,141.9
+    key64:build.inner_all.S5.T96                      1,330.9    1,469.5   +10.4%   3.4%               0.2->3.6       6,744.0->7,408.4         8,062.7->8,870.0
+    key64:build.left_all.S3.T96.dup16                 4,259.6    4,693.1   +10.2%   3.0%               0.0->0.1           230.1->300.6         4,489.9->4,990.8
+    key64:build.inner_all.S3.T96.dup16                4,310.2    4,703.9    +9.1%   3.0%               0.0->0.1           232.8->296.9         4,541.0->5,003.6
+    key64:probe.asof.S2.T96                           1,997.3    2,176.1    +9.0%   3.0%               0.2->6.8     16,405.0->16,679.6       18,403.2->18,868.3
+    key64:probe.inner_all.S1.T96                      2,197.9    2,377.0    +8.2%   3.0%               0.7->6.7       2,395.0->2,524.8         4,588.3->4,909.3
+    key64:probe.inner_all.S2.T48                        924.4      994.1    +7.5%   3.0%               0.0->2.8         1,365.8->970.6         2,290.1->1,964.8
+    str:probe.inner_all.S2.T48                          927.9      994.0    +7.1%   3.0%               0.0->3.0       3,163.3->1,411.0         4,091.6->2,406.5
+    k256:probe.inner_all.S4.T48                       1,884.1    1,988.5    +5.5%   3.0%               0.2->7.5     14,850.6->10,409.4       16,733.8->12,396.9
+    k256:probe.inner_all.S2.T48                         947.9      996.0    +5.1%   3.0%               0.0->3.8       3,859.3->2,015.7         4,805.1->3,017.0
+    key64:probe.inner_all.S2.T1                          18.4       19.1    +3.7%   3.0%               0.0->0.0             22.3->15.6               40.7->34.7
+    k256:probe.inner_all.S2.T1                           18.5       19.1    +3.3%   3.0%               0.0->0.1             74.1->40.1               93.0->59.5
+  WINS on projection_cost: 2
+    str:probe.semi_anti.S4.T96.anti                      58.9 ->       41.4   -29.7% (band 3.0%)
+    key64:probe.semi_anti.S4.T96.anti                   111.9 ->       90.7   -19.0% (band 3.0%)
+
+CELLS WHOSE TWO METRICS MOVE IN OPPOSITE DIRECTIONS: 63 (listed in both lists above, never netted)
+    fixstr:probe.inner_all.S3.T96                  probe_cost=WIN(-25.8%) projection_cost=LOSS(+31.7%)
+    fixstr:probe.inner_all.S5.T96                  probe_cost=WIN(-10.7%) projection_cost=LOSS(+25.2%)
+    k128:probe.inner_all.S2.T96                    probe_cost=WIN(-16.5%) projection_cost=LOSS(+24.8%)
+    k128:probe.inner_all.S3.T96                    probe_cost=WIN(-25.8%) projection_cost=LOSS(+28.6%)
+    k128:probe.inner_all.S5.T96                    probe_cost=WIN(-14.6%) projection_cost=LOSS(+26.6%)
+    k256:build.inner_all.S5.T96                    probe_cost=WIN(-18.4%) projection_cost=LOSS(+21.9%)
+    k256:probe.inner_all.S1.T96                    probe_cost=WIN(-48.8%) projection_cost=LOSS(+13.1%)
+    k256:probe.inner_all.S2.T1                     probe_cost=WIN(-45.8%) projection_cost=LOSS(+3.3%)
+    k256:probe.inner_all.S2.T48                    probe_cost=WIN(-47.7%) projection_cost=LOSS(+5.1%)
+    k256:probe.inner_all.S2.T96                    probe_cost=WIN(-58.6%) projection_cost=LOSS(+27.9%)
+    k256:probe.inner_all.S3.T96                    probe_cost=WIN(-63.1%) projection_cost=LOSS(+42.5%)
+    k256:probe.inner_all.S4.T48                    probe_cost=WIN(-29.9%) projection_cost=LOSS(+5.5%)
+    k256:probe.inner_all.S4.T96                    probe_cost=WIN(-54.9%) projection_cost=LOSS(+36.9%)
+    k256:probe.inner_all.S5.T96                    probe_cost=WIN(-36.3%) projection_cost=LOSS(+26.6%)
+    key32:probe.inner_all.S2.T96                   probe_cost=WIN(-30.9%) projection_cost=LOSS(+24.4%)
+    key32:probe.inner_all.S3.T96                   probe_cost=WIN(-36.7%) projection_cost=LOSS(+30.6%)
+    key32:probe.inner_all.S5.T96                   probe_cost=WIN(-21.5%) projection_cost=LOSS(+35.5%)
+    key64:probe.any.S2.T96                         probe_cost=WIN(-28.5%) projection_cost=LOSS(+33.8%)
+    key64:probe.any.S4.T96                         probe_cost=WIN(-42.5%) projection_cost=LOSS(+32.9%)
+    key64:probe.inner_all.S2.T1                    probe_cost=WIN(-30.0%) projection_cost=LOSS(+3.7%)
+    key64:probe.inner_all.S2.T48                   probe_cost=WIN(-28.7%) projection_cost=LOSS(+7.5%)
+    key64:probe.inner_all.S2.T96                   probe_cost=WIN(-34.1%) projection_cost=LOSS(+29.8%)
+    key64:probe.inner_all.S3.T96                   probe_cost=WIN(-38.7%) projection_cost=LOSS(+31.3%)
+    key64:probe.inner_all.S3.T96.h50               probe_cost=WIN(-30.1%) projection_cost=LOSS(+30.0%)
+    key64:probe.inner_all.S3.T96.statson           probe_cost=WIN(-38.8%) projection_cost=LOSS(+31.3%)
+    key64:probe.inner_all.S4.T48                   probe_cost=WIN(-24.5%) projection_cost=LOSS(+14.2%)
+    key64:probe.inner_all.S4.T96                   probe_cost=WIN(-35.4%) projection_cost=LOSS(+33.9%)
+    key64:probe.inner_all.S5.T96                   probe_cost=WIN(-26.2%) projection_cost=LOSS(+33.2%)
+    key64:probe.left_all.S2.T96                    probe_cost=WIN(-33.2%) projection_cost=LOSS(+25.1%)
+    key64:probe.left_all.S3.T96.jun                probe_cost=WIN(-32.1%) projection_cost=LOSS(+20.7%)
+    key64:probe.left_all.S4.T96                    probe_cost=WIN(-33.1%) projection_cost=LOSS(+33.3%)
+    key64:probe.rf_all.S2.T96                      probe_cost=WIN(-15.9%) projection_cost=LOSS(+23.3%)
+    key64:probe.rf_all.S4.T96                      probe_cost=WIN(-7.9%) projection_cost=LOSS(+23.1%)
+    key64:probe.semi_anti.S2.T96                   probe_cost=WIN(-32.1%) projection_cost=LOSS(+24.4%)
+    key64:probe.semi_anti.S4.T96                   probe_cost=WIN(-31.3%) projection_cost=LOSS(+33.8%)
+    key64:probe.semi_anti.S4.T96.anti              probe_cost=LOSS(+18.0%) projection_cost=WIN(-19.0%)
+    lcstr:probe.inner_all.S2.T96                   probe_cost=WIN(-45.0%) projection_cost=LOSS(+22.7%)
+    lcstr:probe.inner_all.S3.T96                   probe_cost=WIN(-45.9%) projection_cost=LOSS(+29.2%)
+    lcstr:probe.inner_all.S5.T96                   probe_cost=WIN(-50.0%) projection_cost=LOSS(+32.8%)
+    mixed:build.inner_all.S5.T96                   probe_cost=WIN(-41.4%) projection_cost=LOSS(+13.0%)
+    mixed:probe.inner_all.S2.T96                   probe_cost=WIN(-43.2%) projection_cost=LOSS(+16.8%)
+    mixed:probe.inner_all.S3.T96                   probe_cost=WIN(-55.3%) projection_cost=LOSS(+20.6%)
+    mixed:probe.inner_all.S5.T96                   probe_cost=WIN(-51.6%) projection_cost=LOSS(+21.0%)
+    null64:probe.inner_all.S2.T96                  probe_cost=WIN(-36.9%) projection_cost=LOSS(+31.7%)
+    null64:probe.inner_all.S3.T96                  probe_cost=WIN(-40.1%) projection_cost=LOSS(+33.4%)
+    null64:probe.inner_all.S5.T96                  probe_cost=WIN(-29.9%) projection_cost=LOSS(+31.8%)
+    str:build.inner_all.S5.T96                     probe_cost=WIN(-17.9%) projection_cost=LOSS(+23.4%)
+    str:probe.any.S2.T96                           probe_cost=WIN(-56.0%) projection_cost=LOSS(+46.3%)
+    str:probe.any.S4.T96                           probe_cost=WIN(-56.2%) projection_cost=LOSS(+50.6%)
+    str:probe.inner_all.S1.T96                     probe_cost=WIN(-32.9%) projection_cost=LOSS(+15.2%)
+    str:probe.inner_all.S2.T48                     probe_cost=WIN(-55.3%) projection_cost=LOSS(+7.1%)
+    str:probe.inner_all.S2.T96                     probe_cost=WIN(-48.2%) projection_cost=LOSS(+21.8%)
+    str:probe.inner_all.S3.T96                     probe_cost=WIN(-48.3%) projection_cost=LOSS(+37.3%)
+    str:probe.inner_all.S3.T96.h50                 probe_cost=WIN(-45.1%) projection_cost=LOSS(+30.7%)
+    str:probe.inner_all.S4.T48                     probe_cost=WIN(-53.3%) projection_cost=LOSS(+11.1%)
+    str:probe.inner_all.S4.T96                     probe_cost=WIN(-45.5%) projection_cost=LOSS(+34.5%)
+    str:probe.inner_all.S5.T96                     probe_cost=WIN(-38.3%) projection_cost=LOSS(+27.9%)
+    str:probe.left_all.S2.T96                      probe_cost=WIN(-52.2%) projection_cost=LOSS(+30.1%)
+    str:probe.left_all.S4.T96                      probe_cost=WIN(-46.0%) projection_cost=LOSS(+34.4%)
+    str:probe.rf_all.S2.T96                        probe_cost=WIN(-49.2%) projection_cost=LOSS(+42.2%)
+    str:probe.rf_all.S4.T96                        probe_cost=WIN(-19.9%) projection_cost=LOSS(+21.5%)
+    str:probe.semi_anti.S2.T96                     probe_cost=WIN(-48.5%) projection_cost=LOSS(+23.1%)
+    str:probe.semi_anti.S4.T96                     probe_cost=WIN(-44.6%) projection_cost=LOSS(+34.7%)
+
+NO-VERDICT CELLS: 16
+    k256:build.inner_all.S2.T96                    {'probe_cost': 'harness voided: below-duration-floor (arm A median 41.1 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 41.1 ms < 200 ms)'}
+    k256:build.inner_all.S3.T96                    {'probe_cost': 'harness voided: below-duration-floor (arm A median 74.3 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 74.3 ms < 200 ms)'}
+    key64:build.inner_all.S2.T96                   {'probe_cost': 'harness voided: below-duration-floor (arm A median 23.5 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 23.5 ms < 200 ms)'}
+    key64:build.inner_all.S3.T48                   {'probe_cost': 'harness voided: below-duration-floor (arm A median 58.3 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 58.3 ms < 200 ms)'}
+    key64:build.inner_all.S3.T96                   {'probe_cost': 'harness voided: below-duration-floor (arm A median 65.5 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 65.5 ms < 200 ms)'}
+    key64:build.inner_all.S3.T96.statson           {'probe_cost': 'harness voided: below-duration-floor (arm A median 65.0 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 65.0 ms < 200 ms)'}
+    key64:probe.inner_all.S3.T96.h05               {'probe_cost': 'harness voided: below-duration-floor (arm A median 122.4 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 122.4 ms < 200 ms)'}
+    key64:probe.semi_anti.S2.T96.anti              {'probe_cost': 'harness voided: below-duration-floor (arm A median 36.5 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 36.5 ms < 200 ms)'}
+    mixed:build.inner_all.S2.T96                   {'probe_cost': 'harness voided: below-duration-floor (arm A median 38.6 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 38.6 ms < 200 ms)'}
+    mixed:build.inner_all.S3.T96                   {'probe_cost': 'harness voided: below-duration-floor (arm A median 84.4 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 84.4 ms < 200 ms)'}
+    str:build.inner_all.S2.T96                     {'probe_cost': 'harness voided: below-duration-floor (arm A median 28.8 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 28.8 ms < 200 ms)'}
+    str:build.inner_all.S3.T96                     {'probe_cost': 'harness voided: below-duration-floor (arm A median 55.3 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 55.3 ms < 200 ms)'}
+    str:build.inner_all.S3.T96.dup16               {'probe_cost': 'harness voided: below-duration-floor (arm A median 126.2 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 126.2 ms < 200 ms)'}
+    str:build.left_all.S3.T96.dup16                {'probe_cost': 'harness voided: below-duration-floor (arm A median 126.8 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 126.8 ms < 200 ms)'}
+    str:probe.inner_all.S3.T96.h05                 {'probe_cost': 'harness voided: below-duration-floor (arm A median 157.9 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 157.9 ms < 200 ms)'}
+    str:probe.semi_anti.S2.T96.anti                {'probe_cost': 'harness voided: below-duration-floor (arm A median 65.9 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 65.9 ms < 200 ms)'}
+
+per-cell TSV written to reports/fleet_abba.tsv
+machine-readable report written to reports/fleet_abba.json
+
+CHECK SUMMARY: PASS (0 failed check(s))

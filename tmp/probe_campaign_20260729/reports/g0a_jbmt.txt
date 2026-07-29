@@ -1,0 +1,11 @@
+probe_ab_report: 1 file(s), 100 timed-run rows, arms present [('aaA', None), ('aaB', None)]
+arm A = 'aaA'   arm B = 'aaB'   metrics = ['probe_cost', 'projection_cost']
+G0-a A/A control:
+  probe_cost: 10 scored, 0 non-TIE, empirical noise floor = 1.94% (83,028 us largest |delta|)
+  projection_cost: 10 scored, 2 non-TIE, empirical noise floor = 4.46% (92,740 us largest |delta|)
+    FAIL D1000000_K2_mb1_mp64_h1.0_bp8_pp8_T8: WIN -4.1% (band 3.0%)
+    FAIL D262144_K5_mb1_mp256_h1.0_bp8_pp8_T16: LOSS +4.5% (band 3.0%)
+
+CHECK SUMMARY: FAIL (2 failed check(s))
+  FAILED: A/A projection_cost D1000000_K2_mb1_mp64_h1.0_bp8_pp8_T8: WIN
+  FAILED: A/A projection_cost D262144_K5_mb1_mp256_h1.0_bp8_pp8_T16: LOSS

@@ -1,0 +1,22 @@
+probe_ab_report: 8 file(s), 1880 timed-run rows, arms present [('baseline', 'A'), ('candidate', 'B')]
+arm A = 'baseline'   arm B = 'candidate'   metrics = ['probe_cost', 'projection_cost']
+coverage: 78 cells with a verdict on probe_cost+projection_cost, expected 94   (total cells seen: 94)
+    NO-VERDICT k256:build.inner_all.S2.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 41.1 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 41.1 ms < 200 ms)'}
+    NO-VERDICT k256:build.inner_all.S3.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 74.3 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 74.3 ms < 200 ms)'}
+    NO-VERDICT key64:build.inner_all.S2.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 23.5 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 23.5 ms < 200 ms)'}
+    NO-VERDICT key64:build.inner_all.S3.T48: {'probe_cost': 'harness voided: below-duration-floor (arm A median 58.3 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 58.3 ms < 200 ms)'}
+    NO-VERDICT key64:build.inner_all.S3.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 65.5 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 65.5 ms < 200 ms)'}
+    NO-VERDICT key64:build.inner_all.S3.T96.statson: {'probe_cost': 'harness voided: below-duration-floor (arm A median 65.0 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 65.0 ms < 200 ms)'}
+    NO-VERDICT key64:probe.inner_all.S3.T96.h05: {'probe_cost': 'harness voided: below-duration-floor (arm A median 122.4 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 122.4 ms < 200 ms)'}
+    NO-VERDICT key64:probe.semi_anti.S2.T96.anti: {'probe_cost': 'harness voided: below-duration-floor (arm A median 36.5 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 36.5 ms < 200 ms)'}
+    NO-VERDICT mixed:build.inner_all.S2.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 38.6 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 38.6 ms < 200 ms)'}
+    NO-VERDICT mixed:build.inner_all.S3.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 84.4 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 84.4 ms < 200 ms)'}
+    NO-VERDICT str:build.inner_all.S2.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 28.8 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 28.8 ms < 200 ms)'}
+    NO-VERDICT str:build.inner_all.S3.T96: {'probe_cost': 'harness voided: below-duration-floor (arm A median 55.3 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 55.3 ms < 200 ms)'}
+    NO-VERDICT str:build.inner_all.S3.T96.dup16: {'probe_cost': 'harness voided: below-duration-floor (arm A median 126.2 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 126.2 ms < 200 ms)'}
+    NO-VERDICT str:build.left_all.S3.T96.dup16: {'probe_cost': 'harness voided: below-duration-floor (arm A median 126.8 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 126.8 ms < 200 ms)'}
+    NO-VERDICT str:probe.inner_all.S3.T96.h05: {'probe_cost': 'harness voided: below-duration-floor (arm A median 157.9 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 157.9 ms < 200 ms)'}
+    NO-VERDICT str:probe.semi_anti.S2.T96.anti: {'probe_cost': 'harness voided: below-duration-floor (arm A median 65.9 ms < 200 ms)', 'projection_cost': 'harness voided: below-duration-floor (arm A median 65.9 ms < 200 ms)'}
+
+CHECK SUMMARY: FAIL (1 failed check(s))
+  FAILED: --expect-cells 94 but 78 cells have a verdict on all of ('probe_cost', 'projection_cost')
