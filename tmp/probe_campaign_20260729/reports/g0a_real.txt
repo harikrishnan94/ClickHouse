@@ -1,0 +1,28 @@
+probe_ab_report: 1 file(s), 220 timed-run rows, arms present [('aaA', None), ('aaB', None)]
+arm A = 'aaA'   arm B = 'aaB'   metrics = ['probe_cost', 'projection_cost']
+G0-a A/A control:
+  probe_cost: 10 scored, 0 non-TIE, empirical noise floor = 1.13% (41,086 us largest |delta|)
+  projection_cost: 10 scored, 0 non-TIE, empirical noise floor = 1.97% (107,927 us largest |delta|)
+
+=== G0-a jbmt real-suite A/A, 11 runs: per-metric verdicts (band = max(3%, per-arm relative spread), evaluated per metric) ===
+
+probe_cost: verdicts 10   win=0 tie=10 loss=0   no-verdict=0
+  aggregate 15,599.2 ms -> 15,665.5 ms (+0.4%)
+  median per-cell delta +0.5%
+  LOSSES on probe_cost: 0
+  WINS on probe_cost: 0
+
+projection_cost: verdicts 10   win=0 tie=10 loss=0   no-verdict=0
+  aggregate 42,214.1 ms -> 42,344.0 ms (+0.3%)
+  median per-cell delta +0.3%
+  LOSSES on projection_cost: 0
+  WINS on projection_cost: 0
+
+CELLS WHOSE TWO METRICS MOVE IN OPPOSITE DIRECTIONS: 0 (listed in both lists above, never netted)
+
+NO-VERDICT CELLS: 0
+
+per-cell TSV written to reports/aa_real.tsv
+machine-readable report written to reports/aa_real.json
+
+CHECK SUMMARY: PASS (0 failed check(s))

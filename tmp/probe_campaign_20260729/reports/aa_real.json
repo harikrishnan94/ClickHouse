@@ -1,0 +1,575 @@
+{
+ "label": "G0-a jbmt real-suite A/A, 11 runs",
+ "arm_a": "aaA",
+ "arm_b": "aaB",
+ "metrics": [
+  "probe_cost",
+  "projection_cost"
+ ],
+ "files": [
+  "results/aa_real/results.jsonl"
+ ],
+ "cells": [
+  {
+   "unit": "coffeeshop__fact_sales_location_id__dim_locations_location_id__T16__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "coffeeshop__fact_sales_location_id__dim_locations_location_id__T16__tiera",
+    "spec_id": "coffeeshop__fact_sales_location_id__dim_locations_location_id",
+    "dataset": "coffeeshop",
+    "tier": "a",
+    "threads": 16,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-coffeeshop",
+    "cost": 500001000.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 5772262,
+     "median_b": 5799388,
+     "delta_us": 27126,
+     "delta_pct": 0.46993708878772306,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.11205411152626882,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 17923499,
+     "median_b": 17939691,
+     "delta_us": 16192,
+     "delta_pct": 0.09033950346413945,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.4114480179513024,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 400,
+    "lookup_a": 5771862,
+    "probe_total_a": 23694599,
+    "wall_a": 3635000,
+    "dispatch_b": 363,
+    "lookup_b": 5798855,
+    "probe_total_b": 23741637,
+    "wall_b": 3650000
+   }
+  },
+  {
+   "unit": "coffeeshop__fact_sales_location_id__dim_locations_location_id__T96__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "coffeeshop__fact_sales_location_id__dim_locations_location_id__T96__tiera",
+    "spec_id": "coffeeshop__fact_sales_location_id__dim_locations_location_id",
+    "dataset": "coffeeshop",
+    "tier": "a",
+    "threads": 96,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-coffeeshop",
+    "cost": 500001000.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 7074439,
+     "median_b": 7115525,
+     "delta_us": 41086,
+     "delta_pct": 0.5807668989724839,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.5020470858726158,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 20800662,
+     "median_b": 20908589,
+     "delta_us": 107927,
+     "delta_pct": 0.5188632938701663,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.41374432970386205,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 9332,
+    "lookup_a": 7065353,
+    "probe_total_a": 27876249,
+    "wall_a": 842000,
+    "dispatch_b": 10612,
+    "lookup_b": 7104561,
+    "probe_total_b": 28019192,
+    "wall_b": 849000
+   }
+  },
+  {
+   "unit": "job__cast_info_movie_id__complete_cast_movie_id__T16__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "job__cast_info_movie_id__complete_cast_movie_id__T16__tiera",
+    "spec_id": "job__cast_info_movie_id__complete_cast_movie_id",
+    "dataset": "job",
+    "tier": "a",
+    "threads": 16,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-job",
+    "cost": 36379430.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 463927,
+     "median_b": 465136,
+     "delta_us": 1209,
+     "delta_pct": 0.2606013446080957,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.7252210554910921,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 555685,
+     "median_b": 558211,
+     "delta_us": 2526,
+     "delta_pct": 0.4545740842383725,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.28964851199424485,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 13,
+    "lookup_a": 463909,
+    "probe_total_a": 1019701,
+    "wall_a": 109000,
+    "dispatch_b": 14,
+    "lookup_b": 465136,
+    "probe_total_b": 1023000,
+    "wall_b": 110000
+   }
+  },
+  {
+   "unit": "job__cast_info_movie_id__complete_cast_movie_id__T96__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "job__cast_info_movie_id__complete_cast_movie_id__T96__tiera",
+    "spec_id": "job__cast_info_movie_id__complete_cast_movie_id",
+    "dataset": "job",
+    "tier": "a",
+    "threads": 96,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-job",
+    "cost": 36379430.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 511439,
+     "median_b": 515790,
+     "delta_us": 4351,
+     "delta_pct": 0.8507368425168984,
+     "band_pct": 3.0,
+     "rel_spread_pct": 1.5878797484485334,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 768035,
+     "median_b": 769246,
+     "delta_us": 1211,
+     "delta_pct": 0.1576751059522027,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.8620318233010476,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 48,
+    "lookup_a": 511385,
+    "probe_total_a": 1278290,
+    "wall_a": 46000,
+    "dispatch_b": 48,
+    "lookup_b": 515761,
+    "probe_total_b": 1283534,
+    "wall_b": 46000
+   }
+  },
+  {
+   "unit": "stackoverflow__badges_UserId__users_Id__T16__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "stackoverflow__badges_UserId__users_Id__T16__tiera",
+    "spec_id": "stackoverflow__badges_UserId__users_Id",
+    "dataset": "stackoverflow",
+    "tier": "a",
+    "threads": 16,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-stackoverflow",
+    "cost": 73770000.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 620178,
+     "median_b": 622356,
+     "delta_us": 2178,
+     "delta_pct": 0.35118949720886583,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.9458411209184644,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 733886,
+     "median_b": 736963,
+     "delta_us": 3077,
+     "delta_pct": 0.41927492825861234,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.5555060299405259,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 0,
+    "lookup_a": 620178,
+    "probe_total_a": 1352674,
+    "wall_a": 241000,
+    "dispatch_b": 0,
+    "lookup_b": 622346,
+    "probe_total_b": 1357051,
+    "wall_b": 242000
+   }
+  },
+  {
+   "unit": "stackoverflow__badges_UserId__users_Id__T96__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "stackoverflow__badges_UserId__users_Id__T96__tiera",
+    "spec_id": "stackoverflow__badges_UserId__users_Id",
+    "dataset": "stackoverflow",
+    "tier": "a",
+    "threads": 96,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-stackoverflow",
+    "cost": 73770000.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 1028959,
+     "median_b": 1018523,
+     "delta_us": -10436,
+     "delta_pct": -1.0142289440104026,
+     "band_pct": 3.0,
+     "rel_spread_pct": 2.8156771407569092,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 961291,
+     "median_b": 963584,
+     "delta_us": 2293,
+     "delta_pct": 0.23853338895298096,
+     "band_pct": 3.0,
+     "rel_spread_pct": 1.2132416558835613,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 42,
+    "lookup_a": 1028920,
+    "probe_total_a": 1991002,
+    "wall_a": 191000,
+    "dispatch_b": 32,
+    "lookup_b": 1018516,
+    "probe_total_b": 1980004,
+    "wall_b": 189000
+   }
+  },
+  {
+   "unit": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T16__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T16__tiera",
+    "spec_id": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk",
+    "dataset": "tpcds",
+    "tier": "a",
+    "threads": 16,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-tpcds",
+    "cost": 4600030.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 26216,
+     "median_b": 26393,
+     "delta_us": 177,
+     "delta_pct": 0.675160207506866,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.5128621162315857,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 116100,
+     "median_b": 116527,
+     "delta_us": 427,
+     "delta_pct": 0.36778639104220495,
+     "band_pct": 3.0,
+     "rel_spread_pct": 1.0383031166066852,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 1,
+    "lookup_a": 26215,
+    "probe_total_a": 142322,
+    "wall_a": 28000,
+    "dispatch_b": 0,
+    "lookup_b": 26393,
+    "probe_total_b": 143067,
+    "wall_b": 28000
+   }
+  },
+  {
+   "unit": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera",
+    "spec_id": "tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk",
+    "dataset": "tpcds",
+    "tier": "a",
+    "threads": 96,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-tpcds",
+    "cost": 4600030.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 31058,
+     "median_b": 31082,
+     "delta_us": 24,
+     "delta_pct": 0.07727477622512718,
+     "band_pct": 3.0,
+     "rel_spread_pct": 2.5104627058747915,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 182661,
+     "median_b": 179063,
+     "delta_us": -3598,
+     "delta_pct": -1.9697691351739013,
+     "band_pct": 3.519210893126886,
+     "rel_spread_pct": 3.519210893126886,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 4,
+    "lookup_a": 31054,
+    "probe_total_a": 214409,
+    "wall_a": 24000,
+    "dispatch_b": 4,
+    "lookup_b": 31077,
+    "probe_total_b": 210258,
+    "wall_b": 25000
+   }
+  },
+  {
+   "unit": "tpch__customer_c_nationkey__nation_n_nationkey__T16__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "tpch__customer_c_nationkey__nation_n_nationkey__T16__tiera",
+    "spec_id": "tpch__customer_c_nationkey__nation_n_nationkey",
+    "dataset": "tpch",
+    "tier": "a",
+    "threads": 16,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-tpch",
+    "cost": 6000025.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 34608,
+     "median_b": 34869,
+     "delta_us": 261,
+     "delta_pct": 0.7541608876560333,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.445432819296312,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 72064,
+     "median_b": 72599,
+     "delta_us": 535,
+     "delta_pct": 0.742395648312611,
+     "band_pct": 3.0,
+     "rel_spread_pct": 0.9943861129934953,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 1,
+    "lookup_a": 34607,
+    "probe_total_a": 106672,
+    "wall_a": 27000,
+    "dispatch_b": 1,
+    "lookup_b": 34869,
+    "probe_total_b": 107410,
+    "wall_b": 28000
+   }
+  },
+  {
+   "unit": "tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera",
+   "axes": {
+    "unit": "query",
+    "unit_id": "tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera",
+    "spec_id": "tpch__customer_c_nationkey__nation_n_nationkey",
+    "dataset": "tpch",
+    "tier": "a",
+    "threads": 96,
+    "kind": "INNER",
+    "runs": 5,
+    "group": "real-tpch",
+    "cost": 6000025.0,
+    "shard": 0
+   },
+   "n_rows": {
+    "A": 11,
+    "B": 11
+   },
+   "n_invalid": 0,
+   "blockers": [],
+   "metrics": {
+    "probe_cost": {
+     "verdict": "TIE",
+     "median_a": 36067,
+     "median_b": 36476,
+     "delta_us": 409,
+     "delta_pct": 1.1340006099758781,
+     "band_pct": 3.0,
+     "rel_spread_pct": 2.4989849228283347,
+     "n_a": 11,
+     "n_b": 11
+    },
+    "projection_cost": {
+     "verdict": "TIE",
+     "median_a": 100168,
+     "median_b": 99529,
+     "delta_us": -639,
+     "delta_pct": -0.6379282804887788,
+     "band_pct": 4.900040395258208,
+     "rel_spread_pct": 4.900040395258208,
+     "n_a": 11,
+     "n_b": 11
+    }
+   },
+   "raw": {
+    "dispatch_a": 1,
+    "lookup_a": 36065,
+    "probe_total_a": 136235,
+    "wall_a": 23000,
+    "dispatch_b": 1,
+    "lookup_b": 36448,
+    "probe_total_b": 136286,
+    "wall_b": 24000
+   }
+  }
+ ],
+ "failures": []
+}

@@ -450,6 +450,75 @@ each per suite rather than campaign-wide.
 
 ---
 
+---
+
+## Iteration 7 — the jbmt A/A splits by SUITE: synthetic RED, real GREEN (with a mechanism)
+
+**11-run synthetic A/A — still RED, now on both metrics:**
+
+    $ python3 probe_ab_report.py --results 'results/aa_jbmt11/results.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control ; echo $?
+      probe_cost:      10 scored, 1 non-TIE, empirical noise floor = 3.86% (478,191 us)
+        FAIL D32000000_K6_mb16_mp1_h1.0_bp8_pp8_T96: LOSS +3.9% (band 3.0%)
+      projection_cost: 10 scored, 1 non-TIE, empirical noise floor = 5.73% (73,566 us)
+        FAIL D262144_K5_mb1_mp256_h1.0_bp8_pp8_T16: LOSS +5.1% (band 4.5%)
+    CHECK SUMMARY: FAIL (2 failed check(s))
+    1
+
+**Hypothesis tested and REFUTED.** Suspecting jbmt's strict ABAB interleave gives the
+first-of-pair arm a cache advantage, per-unit deltas were grouped by `lead_arm`:
+
+    5 runs : lead=aaA n=4 mean probe -0.35% / proj +0.84%;  lead=aaB n=6 mean probe -0.01% / proj +0.51%
+    11 runs: lead=aaA n=4 mean probe +0.97% / proj +2.25%;  lead=aaB n=6 mean probe +1.58% / proj +0.31%
+
+The deltas do not track the lead arm, so it is not an order effect. Host contention was also
+checked and dismissed: the only foreign process is another session's idle server (pid 3801718,
+~0 % current), and the 15-min load of 14.7 was this A/A's own two servers.
+
+**Real-suite A/A — GREEN:**
+
+    $ python3 probe_ab_report.py --results 'results/aa_real/results.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control ; echo $?
+      probe_cost:      10 scored, 0 non-TIE, empirical noise floor = 1.13% (41,086 us)
+      projection_cost: 10 scored, 0 non-TIE, empirical noise floor = 1.97% (107,927 us)
+    CHECK SUMMARY: PASS (0 failed check(s))
+    0
+
+10 units spanning all five datasets × both thread ladders (T16, T96).
+
+**Mechanism (the reason the two suites differ).** In the **real** suite both arms read the SAME
+bytes: the arm roots are hardlink clones, so the two servers share inodes and page cache, and a
+unit is a pure query against identical persistent tables. In the **synthetic** suite every cell
+is materialized per arm — `prepare_cell` fills each server's own `bench.build_t` / `bench.probe_t`
+— so the two arms measure *different physical table instances*, differing in part layout and fill
+interleaving. That is a per-cell, per-arm construction difference no number of timed runs can
+average away, which is why 11 runs did not fix it while it never appears in the real suite.
+(fleet_ab also rebuilds tables per arm, but absorbs this with four counterbalanced
+ABBA/BAAB blocks per cell; jbmt has no such counterbalancing.)
+
+**Consequences, applied as pre-registered.**
+
+- **Unit 3 (real, tiers a and b): venue VALID.** Measured sweep started at 11 timed runs,
+  arm A = baseline on port 9005, arm B = `phj-ph` HEAD on port 9006. Real units run ~3 s each, so
+  full 376-unit tier-a coverage is feasible after all.
+- **Unit 2 (synthetic legacy): NO RESULT on validity grounds.** G0-a is red on the only venue
+  available to it, at both 5 and 11 timed runs, so no `probe_cost` or `projection_cost` verdict
+  from the legacy suite can be trusted at the declared band. Per the campaign's own rule — a red
+  gate stops the unit — Unit 2 verdicts are reported **UNSETTLED**, with the A/A output above as
+  the evidence and the measured venue floors (3.86 % / 5.73 %) stated. What would settle it:
+  (a) running the synthetic suite on the 8-shard fleet, whose A/A passed, or (b) counterbalancing
+  jbmt's synthetic cells the way fleet_ab does (four blocks per cell, arm order mirrored) so that
+  per-arm table construction cancels, or (c) a band pre-registered from a frozen per-shape A/A
+  on this venue. None of these is reachable inside this run's remaining budget alongside Units 1
+  and 3, and (c) would not be honest applied after the fact to this A/A.
+
+**A note on what the A/A validated for Unit 3.** The real A/A compared two baseline servers on
+ports 9005 and 9007; the measured run compares 9005 against 9006. Same construction (a hardlink
+clone of the same root, started by the same script), so the channel is the same, but this is a
+same-construction argument rather than a same-instance one, and it is recorded as such.
+
+---
+
 ### PRE-REGISTRATION — Unit 2 (jbmt legacy, exactly 347 cells)
 
 **Expected outcome.** Exactly the 347 `cell_id` values from `join_bench_mt_legacy_cells.json`

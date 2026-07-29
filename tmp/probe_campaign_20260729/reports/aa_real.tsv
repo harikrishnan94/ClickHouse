@@ -1,0 +1,11 @@
+unit	probe_cost_verdict	probe_cost_median_a_us	probe_cost_median_b_us	probe_cost_delta_us	probe_cost_delta_pct	probe_cost_band_pct	probe_cost_reason	projection_cost_verdict	projection_cost_median_a_us	projection_cost_median_b_us	projection_cost_delta_us	projection_cost_delta_pct	projection_cost_band_pct	projection_cost_reason	dispatch_a_us	dispatch_b_us	lookup_a_us	lookup_b_us	probe_total_a_us	probe_total_b_us	wall_a_us	wall_b_us
+coffeeshop__fact_sales_location_id__dim_locations_location_id__T16__tiera	TIE	5772262	5799388	27126	0.470	3.000		TIE	17923499	17939691	16192	0.090	3.000		400	363	5771862	5798855	23694599	23741637	3635000	3650000
+coffeeshop__fact_sales_location_id__dim_locations_location_id__T96__tiera	TIE	7074439	7115525	41086	0.581	3.000		TIE	20800662	20908589	107927	0.519	3.000		9332	10612	7065353	7104561	27876249	28019192	842000	849000
+job__cast_info_movie_id__complete_cast_movie_id__T16__tiera	TIE	463927	465136	1209	0.261	3.000		TIE	555685	558211	2526	0.455	3.000		13	14	463909	465136	1019701	1023000	109000	110000
+job__cast_info_movie_id__complete_cast_movie_id__T96__tiera	TIE	511439	515790	4351	0.851	3.000		TIE	768035	769246	1211	0.158	3.000		48	48	511385	515761	1278290	1283534	46000	46000
+stackoverflow__badges_UserId__users_Id__T16__tiera	TIE	620178	622356	2178	0.351	3.000		TIE	733886	736963	3077	0.419	3.000		0	0	620178	622346	1352674	1357051	241000	242000
+stackoverflow__badges_UserId__users_Id__T96__tiera	TIE	1028959	1018523	-10436	-1.014	3.000		TIE	961291	963584	2293	0.239	3.000		42	32	1028920	1018516	1991002	1980004	191000	189000
+tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T16__tiera	TIE	26216	26393	177	0.675	3.000		TIE	116100	116527	427	0.368	3.000		1	0	26215	26393	142322	143067	28000	28000
+tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera	TIE	31058	31082	24	0.077	3.000		TIE	182661	179063	-3598	-1.970	3.519		4	4	31054	31077	214409	210258	24000	25000
+tpch__customer_c_nationkey__nation_n_nationkey__T16__tiera	TIE	34608	34869	261	0.754	3.000		TIE	72064	72599	535	0.742	3.000		1	1	34607	34869	106672	107410	27000	28000
+tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera	TIE	36067	36476	409	1.134	3.000		TIE	100168	99529	-639	-0.638	4.900		1	1	36065	36448	136235	136286	23000	24000
