@@ -59,10 +59,9 @@ struct AmacFindPolicy
     static constexpr HashTableNoState no_state{};
 
     /// The key exactly as the map compares it (`keyHolderGetKey` of an lvalue holder, matching
-    /// the call sites): the fixed keys by value, the string keys as a view into the probe
-    /// column - trivially copyable across the whole AMAC getter set (the serialized getter is
-    /// excluded by the gate, and the arena-backed string holder persists nothing on the find
-    /// path).
+    /// the call sites): the fixed keys by value, the `hashed` getter's 128-bit digest by value,
+    /// the string keys as a view into the probe column - trivially copyable across the whole
+    /// AMAC getter set (the arena-backed string holder persists nothing on the find path).
     using KeyHolder = std::remove_reference_t<decltype(std::declval<KeyGetter &>().getKeyHolder(0uz, std::declval<Arena &>()))>;
     using StoredKey = std::decay_t<decltype(keyHolderGetKey(std::declval<KeyHolder &>()))>;
     static_assert(std::is_trivially_copyable_v<StoredKey>);

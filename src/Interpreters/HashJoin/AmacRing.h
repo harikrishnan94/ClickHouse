@@ -58,12 +58,13 @@ enum class AmacStepResult : UInt8
     DoneNeedsGrow /// the row completed by a claim that overflowed the grower; drain + grow
 };
 
-/// The compile-time gate of the AMAC path. Excluded getters keep the plain loop: the
-/// LowCardinality getter deduplicates lookups per dictionary index through its own cache (a ring
-/// would fight it - the same reason it disables the look-ahead prefetch), and the `hashed`
-/// fallback recomputes a 128-bit serialized-key hash on every key-holder fetch, far too
-/// expensive per visit. `FixedHashMap` types (`key8`/`key16` and the range maps) have no
-/// collision chain to pipeline and no cursor API.
+/// The compile-time gate of the AMAC path. The LowCardinality getter keeps the plain loop: it
+/// deduplicates lookups per dictionary index through its own cache, which a ring would bypass
+/// rather than accelerate (the same reason it disables the look-ahead prefetch). The `hashed`
+/// getter's 128-bit key is expensive to compute but the ring packs it ONCE per row at admit and
+/// re-reads it per visit, so the cost is paid on the plain loop too and is no reason to opt out.
+/// `FixedHashMap` types (`key8`/`key16` and the range maps) have no collision chain to pipeline
+/// and no cursor API.
 template <typename Map>
 concept AmacResumableMap = requires(std::remove_const_t<Map> & map, const std::remove_const_t<Map> & const_map, size_t place)
 {
@@ -78,14 +79,8 @@ inline constexpr bool is_low_cardinality_join_key_getter = false;
 template <typename BaseMethod, typename Mapped>
 inline constexpr bool is_low_cardinality_join_key_getter<LowCardinalityKeyGetterForJoin<BaseMethod, Mapped>> = true;
 
-template <typename T>
-inline constexpr bool is_hashed_join_key_getter = false;
-template <typename Value, typename Mapped, bool use_cache, bool need_offset>
-inline constexpr bool is_hashed_join_key_getter<ColumnsHashing::HashMethodHashed<Value, Mapped, use_cache, need_offset>> = true;
-
 template <typename KeyGetter, typename Map>
-constexpr bool amac_join_supported
-    = AmacResumableMap<Map> && !is_low_cardinality_join_key_getter<KeyGetter> && !is_hashed_join_key_getter<KeyGetter>;
+constexpr bool amac_join_supported = AmacResumableMap<Map> && !is_low_cardinality_join_key_getter<KeyGetter>;
 
 /** Growth cancellation: collect the other in-flight rows, deactivate them, let the policy grow
   * the map (the just-claimed row of slot `skip` is fully inserted and gets rehashed by the

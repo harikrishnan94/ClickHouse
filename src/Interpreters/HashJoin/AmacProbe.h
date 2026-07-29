@@ -127,7 +127,7 @@ void amacFindPass(
 
 /// The map behind a `HashJoin::MapsTemplate` member and its PROBE-side key getter (const mapped
 /// values, unlike the build getters of `AmacBuild.h`), spelled once for the explicit
-/// instantiations. The families are the build ring's 8 (`APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS`).
+/// instantiations. The families are the build ring's 9 (`APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS`).
 #define M(TYPE) \
     template <typename Maps> \
     using AmacProbeMapFor_##TYPE = std::remove_reference_t<decltype(*std::declval<Maps &>().TYPE)>; \
@@ -162,7 +162,7 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
     AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE, AmacWalk::bare) \
     AMAC_FIND_PASS_INSTANTIATION(EXTERN, TYPE, MAPS, NEED_FLAGS, SELECTOR_IS_RANGE, AmacWalk::wrap_aware)
 
-/// All 160 instantiations: 8 families x {`MapsOne`, `MapsAll` (both flag arms each), `MapsAsof`
+/// All 180 instantiations: 9 families x {`MapsOne`, `MapsAll` (both flag arms each), `MapsAsof`
 /// (flagless)} x {range, indexes} selector x {bare, wrap-aware} walk. Any reachable
 /// (kind, strictness) resolves to a preinstantiated symbol.
 #define AMAC_FIND_PASS_INSTANTIATIONS(EXTERN, TYPE) \

@@ -47,11 +47,11 @@ AmacBuildInsertResult amacBuildInsert(
     bool any_take_last_row,
     Arena & pool);
 
-/// The 8 cursor-capable join map families: every chained member of `HashJoin::MapsTemplate`.
-/// `key8`/`key16` and the range maps (`FixedHashMap`, no cursor API), `hashed` and the
-/// LowCardinality families (excluded getters) keep the sequential loop - see
-/// `amac_join_supported`. ASOF maps are excluded at the call site (their mapped insert appends
-/// to a per-key sorted lookup, not a one-cell fused action).
+/// The 9 cursor-capable join map families: every chained member of `HashJoin::MapsTemplate`.
+/// `key8`/`key16` and the range maps (`FixedHashMap`, no cursor API) and the LowCardinality
+/// families (excluded getter) keep the sequential loop - see `amac_join_supported`. ASOF maps are
+/// excluded at the call site (their mapped insert appends to a per-key sorted lookup, not a
+/// one-cell fused action).
 #define APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M) \
     M(key32) \
     M(key64) \
@@ -60,7 +60,8 @@ AmacBuildInsertResult amacBuildInsert(
     M(keys32) \
     M(keys64) \
     M(keys128) \
-    M(keys256)
+    M(keys256) \
+    M(hashed)
 
 /// The map behind a `HashJoin::MapsTemplate` member and its build-side key getter, spelled once
 /// for the explicit instantiations (mirrors how `insertFromBlockImpl` derives the getter).
@@ -89,7 +90,7 @@ APPLY_FOR_AMAC_BUILD_JOIN_VARIANTS(M)
         bool any_take_last_row, \
         Arena & pool);
 
-/// All 32 instantiations: 8 families x {`RowRef`, `RowRefList`} mapped x {range, indexes}
+/// All 36 instantiations: 9 families x {`RowRef`, `RowRefList`} mapped x {range, indexes}
 /// selector. `keys32`/`keys64` (and `key_fixed_string`) share a map type with their single-key
 /// siblings but use a different key getter, so each is a distinct instantiation.
 #define AMAC_BUILD_INSERT_INSTANTIATIONS(EXTERN, TYPE) \

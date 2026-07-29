@@ -282,11 +282,11 @@ public:
     {
         /// NOLINTBEGIN(bugprone-macro-parentheses)
         using MappedType = Mapped;
-        /// The eight maps `key32`..`keys256` are rebound through `WithJoinCursor` (same cells
+        /// The nine maps `key32`..`hashed` are rebound through `WithJoinCursor` (same cells
         /// and hash, tail-padded grower) so the `parallel_hash` AMAC rings can drive their
-        /// cursor API; `hash` uses them through the unchanged public interface. The remaining
-        /// open-addressing maps (`hashed`, the low-cardinality strings) are not ring targets
-        /// and stay standard.
+        /// cursor API; `hash` uses them through the unchanged public interface. The
+        /// low-cardinality strings are not ring targets and stay standard: their key getter
+        /// memoises `findKey` per dictionary index, which the ring would bypass.
         std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
         std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>      key32;
@@ -297,7 +297,7 @@ public:
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>::Type>      keys64;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt128, Mapped, UInt128HashCRC32>>::Type>      keys128;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt256, Mapped, UInt256HashCRC32>>::Type>      keys256;
-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>>         hashed;
+        std::shared_ptr<typename WithJoinCursor<HashMap<UInt128, Mapped, UInt128TrivialHash>>::Type> hashed;
         std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_string;
         std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_fixed_string;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>>          range8_key32;
