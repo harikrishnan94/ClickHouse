@@ -561,7 +561,9 @@ is the accepted delivery in that case.
 real-suite units is the ONLY correctness oracle since `expected_rows_closed_form` is null there.
 If the harness turns out not to enforce cross-arm equality on this configuration, every
 real-suite verdict is reported UNSETTLED — the code path was read (`join_bench_mt.py:1160-1204`)
-and does enforce it; it is re-confirmed empirically from the delivered JSONL.
+and does enforce it. CORRECTION (Iteration 11): the JSONL field is a COPY of the shared reference
+(`join_bench_mt.py:1221`), so a scorer-side cross-arm comparison of it cannot fail; the oracle is
+established by that code path plus `status: OK` per unit, not by the JSONL field.
 
 ---
 

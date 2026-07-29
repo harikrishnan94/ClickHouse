@@ -66,6 +66,38 @@ metric: `max(3%, that metric's own per-arm relative spread)`; anything inside th
    report does not imply any per-side breakdown. `PartitionedHashJoinBuildMicroseconds` is absent
    too, confirming `partitioned_hash` exists on neither binary.
 3. **ARM only.** Everything here is `aarch64`. AMD/x86 is out of scope and was not measured.
+5. **The two counters that compose `probe_cost` do not bracket the same code on the two arms**, by
+   the arms' own registered descriptions in `src/Common/ProfileEvents.cpp`:
+
+       a05f3ee81ff  Lookup:   "time spent in HashJoin::joinScatteredBlock (the hash-map lookup …)"
+       fa5667f2da7  Lookup:   "time spent in HashJoin::joinRoutedBlock (the routed hash-map lookup -
+                               per-row findKey in the row's slot map or the AMAC find pass …)"
+       a05f3ee81ff  Dispatch: "dispatching (scattering) the left block across shards"
+       fa5667f2da7  Dispatch: "preparing the key columns and deriving the per-row slot ids …
+                               the block itself is not scattered"
+
+   This is precisely why the campaign verdicts the **sum** and not the parts: key preparation moved
+   out of the baseline's lookup into the candidate's dispatch, and both live inside `probe_cost`, so
+   the sum is comparable while `dispatch` and `lookup` individually are **not**. The raw dispatch
+   and lookup columns are published for re-derivation, not for arm-to-arm comparison on their own —
+   note baseline dispatch medians of 0.0–0.2 ms against candidate values two to three orders of
+   magnitude larger. The top regressions were checked against this: they are not reattribution,
+   because the measured probe total rose too.
+6. **The cross-arm correctness oracle is established by the harness's code path, not by the JSONL
+   field.** `_collect_algorithm_stats` writes the *shared* reference into both arms
+   (`join_bench_mt.py:1221`), so a scorer-side comparison of the two arms' recorded
+   `(row_count, checksum)` **cannot** fail — the file is structurally incapable of expressing
+   disagreement, and this campaign does not claim it as evidence. The real oracle is
+   `measure_unit`'s `got != expected` check (`join_bench_mt.py:1191-1206`), which compares every
+   warmup and every timed run of every arm against the first successful result and marks the arm
+   `INVALID` on any mismatch. `status: OK` on all 368 scored tier-a units is therefore sound
+   evidence that the oracle held — and it is the only oracle available, since
+   `expected_rows_closed_form` is null for real-suite units. Six scored units join to **zero** rows,
+   so their oracle is `(0, 0)`: `job__movie_info_info_type_id__…filtered__{T16,T96}`,
+   `job__person_info_info_type_id__…filtered__{T16,T96}`,
+   `tpch__orders_o_custkey__customer_c_custkey__left_anti__{T16,T96}`. Four of them are counted as
+   `probe_cost` losses. Scoring a materialization residual on a query that materializes nothing is
+   defensible but is flagged here rather than left implicit.
 4. **`system.build_options` GIT_HASH is stale on an incremental build** and must not be used to
    identify a binary. Arm B's server reported HEAD's *parent* `b425c810895`. Arm B's identity is
    instead established by four origins that would fail differently: its sha256; the presence of
@@ -396,51 +428,104 @@ measured channel would have surfaced as a non-TIE cell; none did.
 
 ### Tier a — complete, 376 units attempted, 368 scored
 
+The tables below are **generated from `reports/jbmt_real_a.tsv`** by
+`make_report_tables.py`, not transcribed. Two earlier hand-written tables in this report were wrong
+(a cell id that never existed in the plan, and a T16/T96 pair swapped), both caught by verifiers;
+generating them removes that failure mode. Reproduce with:
+
+    python3 make_report_tables.py reports/jbmt_real_a.tsv "Unit 3 tier a" --top 8
+
 | | `probe_cost` | `projection_cost` |
 | --- | --- | --- |
 | verdicts | 368 | 368 |
 | **WIN / TIE / LOSS** | **161 / 51 / 156** | **43 / 127 / 198** |
-| aggregate | 230,542 ms → 210,259 ms (**−8.8 %**) | 2,284,640 ms → 2,347,582 ms (**+2.8 %**) |
-| median per-cell delta | **+0.4 %** | **+4.5 %** |
+| aggregate | 230,541.8 ms → 210,259.1 ms (**−8.8 %**) | 2,284,639.8 ms → 2,347,582.1 ms (**+2.8 %**) |
+| median per-unit delta | **+0.4 %** | **+4.5 %** |
 | noise floor (G0-a, measured pair) | 1.24 % | 1.59 % |
 
-**Real queries tell a different story from the synthetic microbenchmarks, and it is much less
-favourable.** On the fleet's synthetic cells `probe_cost` improved in 68 of 78 cells at −35.2 %
-aggregate; on real queries the wins and losses are nearly balanced by count (161 vs 156), the median
-unit moves +0.4 % — i.e. nowhere — and the −8.8 % aggregate is carried by a minority of large units
-rather than by a broad improvement. `projection_cost` regresses on real queries too (198 losses
-against 43 wins, median +4.5 %), but its aggregate regression is much smaller (+2.8 %) than on the
-synthetic cells (+26.7 %), because on real data the residual is a far larger share of a much bigger
-probe total. **142 units move in opposite directions on the two metrics.**
+**Recorded, never a verdict.** Wall clock and the probe total do not decide anything here — the two
+metrics above do — but leaving them out of the report would make the `probe_cost` line read far
+better than the measurement supports, so they are stated:
 
-Worst `probe_cost` regressions (full list of all 156 in `reports/jbmt_real_a_losses_probe.md`):
+| measured quantity (same 368 units, median per arm) | arm A | arm B | delta |
+| --- | --- | --- | --- |
+| `ConcurrentHashJoinProbeMicroseconds` — the probe total the two metrics sum to | 2,515,295.9 ms | 2,557,844.4 ms | **+1.69 %** |
+| wall clock (`query_duration_ms`) | 120,936.0 ms | 126,330.0 ms | **+4.46 %** |
 
-| unit | delta | band |
-| --- | --- | --- |
-| `tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__…T16` | **+211.7 %** | 5.0 % |
-| `job__movie_keyword_movie_id__title_id__filtered__T96__tiera` | +156.8 % | 17.3 % |
-| `tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__…T96` | +129.6 % | 19.8 % |
-| `stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera` | +128.0 % | 19.4 % |
-| `job__movie_keyword_movie_id__title_id__T96__tiera` | +105.2 % | 9.4 % |
-| `job__movie_keyword_movie_id__movie_companies_movie_id__T96__tiera` | +94.5 % | 8.8 % |
-| `stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera` | +91.3 % | 3.1 % |
-| `job__movie_companies_movie_id__title_id__T96__tiera` | +66.8 % | 6.4 % |
+Per-unit wall clock: **287 of 368 units slower**, 39 faster, 42 equal.
 
-Worst `projection_cost` regressions (full list of all 198 in
-`reports/jbmt_real_a_losses_projection.md`):
+**Where the −8.8 % `probe_cost` aggregate comes from — it is not a broad improvement.**
 
-| unit | delta | band |
-| --- | --- | --- |
-| `stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera` | +57.9 % | 3.0 % |
-| `tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__…` | +56.0 % | 19.2 % |
-| `tpcds__customer_address_ca_state__store_s_state__filtered__T16__tiera` | +48.2 % | 5.8 % |
-| `tpcds__customer_address_ca_state__store_s_state__T16__tiera` | +37.4 % | 8.8 % |
-| `job__movie_companies_movie_id__title_id__filtered__T96__tiera` | +37.3 % | 6.9 % |
-| `tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__…` | +36.6 % | 3.0 % |
-| `tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__…` | +35.4 % | 3.0 % |
-| `tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__…` | +35.2 % | 3.0 % |
+| improving units | their d(`probe_cost`) | share of the net | their d(probe total) | their d(wall) |
+| --- | --- | --- | --- | --- |
+| top 5 | −10,499.7 ms | 51.8 % | **+3,413.9 ms** | **+646 ms** |
+| top 20 | −20,636.9 ms | 101.7 % | **+4,794.8 ms** | **+1,108 ms** |
+
+The twenty largest `probe_cost` improvements account for more than the entire net improvement, and
+those same units got **slower** on the probe total and on wall clock. Read plainly: on real queries
+`phj-ph` HEAD moves time out of dispatch+lookup in a handful of units while the queries themselves
+finish later. The `probe_cost` win is real as a phase measurement and is not a measurement artifact
+— see the per-run separation evidence in §6 — but it does not translate into a faster probe phase
+overall, and this report does not present it as if it did.
+
+**Two breakdowns that sharpen the picture.** Excluding units whose `probe_cost` median is under
+50 ms on either arm (where a few percent is a few hundred microseconds) leaves 225 units and a
+*better* `probe_cost` ratio — 117 WIN / 28 TIE / 80 LOSS at −8.9 % aggregate — so the improvement is
+concentrated in substantial units and the small units contribute most of the loss count. Cutting the
+other way, by shape: the `filtered` variants regress hard and systematically.
+
+| subset | units | `probe_cost` WIN | `probe_cost` LOSS |
+| --- | --- | --- | --- |
+| `__filtered__` shapes | 72 | 11 | **56** |
+| all other shapes | 296 | 150 | 100 |
+| `probe_cost` median ≥ 50 ms on both arms | 225 | 117 | 80 |
+| `probe_cost` median < 50 ms on either arm | 143 | 44 | 76 |
+
+`projection_cost` regresses on real queries as well (198 losses against 43 wins, median +4.5 %), but
+its aggregate regression is far smaller than on the synthetic cells (+2.8 % vs +26.7 %) because on
+real data the residual is a much larger share of a much bigger probe total. **142 units move in
+opposite directions on the two metrics.**
+
+Worst `probe_cost` regressions (all 156 in `reports/jbmt_real_a_losses_probe.md`; full generated
+tables with raw components in `reports/section5_tier_a.md`):
+
+| unit | probe A (ms) | probe B (ms) | delta | band | dispatch A→B | lookup A→B | probe total A→B |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T96__tiera` | 20.9 | 65.0 | **+211.7 %** | 5.0 % | 0.0 → 0.1 | 20.9 → 65.0 | 487.8 → 530.1 |
+| `job__movie_keyword_movie_id__title_id__filtered__T96__tiera` | 37.2 | 95.4 | **+156.8 %** | 17.3 % | 0.0 → 0.2 | 37.2 → 95.2 | 67.5 → 126.8 |
+| `tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T16__tiera` | 7.5 | 17.3 | **+129.6 %** | 19.8 % | 0.0 → 0.1 | 7.5 → 17.2 | 392.8 → 440.6 |
+| `stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera` | 764.1 | 1,741.7 | **+128.0 %** | 19.4 % | 0.0 → 0.3 | 764.1 → 1,741.5 | 1,572.4 → 2,715.6 |
+| `job__movie_keyword_movie_id__title_id__T96__tiera` | 66.0 | 135.4 | **+105.2 %** | 9.4 % | 0.0 → 0.2 | 66.0 → 135.2 | 178.5 → 250.5 |
+| `job__movie_keyword_movie_id__movie_companies_movie_id__T96__tiera` | 70.6 | 137.3 | **+94.5 %** | 8.8 % | 0.0 → 0.2 | 70.6 → 137.0 | 943.8 → 1,056.7 |
+| `stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera` | 147.2 | 281.5 | **+91.3 %** | 3.1 % | 0.0 → 0.2 | 147.2 → 281.3 | 673.9 → 1,110.6 |
+| `job__movie_companies_movie_id__title_id__T96__tiera` | 79.7 | 133.0 | **+66.8 %** | 6.4 % | 0.0 → 0.2 | 79.7 → 132.8 | 166.4 → 225.2 |
+
+Worst `projection_cost` regressions (all 198 in `reports/jbmt_real_a_losses_projection.md`):
+
+| unit | proj A (ms) | proj B (ms) | delta | band | dispatch A→B | lookup A→B | probe total A→B |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera` | 525.6 | 829.8 | **+57.9 %** | 3.0 % | 0.0 → 0.2 | 147.2 → 281.3 | 673.9 → 1,110.6 |
+| `tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__T96__tiera` | 0.1 | 0.1 | **+56.0 %** | 19.2 % | 0.0 → 0.0 | 0.1 → 0.1 | 0.2 → 0.2 |
+| `tpcds__customer_address_ca_state__store_s_state__filtered__T16__tiera` | 6.7 | 9.9 | **+48.2 %** | 5.8 % | 0.0 → 0.0 | 0.9 → 1.2 | 7.6 → 11.2 |
+| `tpcds__customer_address_ca_state__store_s_state__T16__tiera` | 12.3 | 17.0 | **+37.4 %** | 8.8 % | 0.0 → 0.0 | 1.0 → 1.5 | 13.4 → 18.4 |
+| `job__movie_companies_movie_id__title_id__filtered__T96__tiera` | 28.8 | 39.5 | **+37.3 %** | 6.9 % | 0.0 → 0.2 | 41.4 → 53.6 | 70.0 → 92.9 |
+| `tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T16__tiera` | 1,605.7 | 2,192.7 | **+36.6 %** | 3.0 % | 0.0 → 1.2 | 273.6 → 215.6 | 1,879.3 → 2,409.5 |
+
+The second row is a caution worth stating: some real-suite units are tiny in absolute terms (0.1 ms
+of projection), so their relative verdicts rest on tens of microseconds. 12 scored units have a
+`probe_cost` median under 1 ms and 55 under 10 ms. Their verdicts follow the campaign's band rule
+correctly, but they should not be read as engineering-significant.
 
 Opposite-direction units: all 142 in `reports/jbmt_real_a_opposed.md`.
+
+**What the A/A control does and does not bound.** The measured-pair A/A is 10 plain-`INNER` units
+whose `probe_cost` spans 26 ms – 7.1 s. The sweep contains 185 distinct join shapes, including 72
+`filtered` variants and 8 non-`INNER` units, and 94 scored units sit below the A/A's smallest probe
+scale. So the 1.24 % / 1.59 % floors bound *the two-instance channel on plain INNER joins at that
+scale* — which is what closes the same-instance question — and they do **not** bound the `filtered`
+shapes that carry 56 of the 156 `probe_cost` losses, nor the sub-26 ms units. For those, the
+protection is the per-unit band `max(3 %, that unit's own spread)`, not the A/A. Stated because the
+floors' prominence in §2 could otherwise imply more than they cover.
 
 **Coverage, exactly and printed: 376 attempted, 368 scored, 8 NO-VERDICT.** `--expect-cells 376`
 exits 1, so **G3 for tier a is RED at 368/376** and N was not lowered. Every gap is one unit skipped
@@ -459,9 +544,18 @@ recorded:
 | `tpcds__store_sales_ss_item_sk__web_sales_ws_item_sk__T16__tiera` | arm baseline warmup 0 took 75.x s |
 
 These are the same units the prior campaign documented as inherently exceeding the harness's
-hard-coded `max_execution_time = 600`; they would have produced no verdict in any case. The skip
-rule fired on **arm baseline for 4 of them and arm candidate for the other 4**, which is direct
-evidence that it is direction-blind in practice and not only in principle.
+hard-coded `max_execution_time = 600`; they would have produced no verdict in any case.
+
+**Why these exclusions cannot have flattered arm B.** An earlier draft argued this from the 4/4
+split of arms named in the reasons. That argument is wrong and is withdrawn: the arm named is always
+the `crc32(unit_id)`-chosen **lead** arm, in 8 of 8 cases, so the split says nothing except that the
+hash came out even. The correct argument is structural: the rule reads only the lead arm's warmup
+wall clock, before any timed run exists, and which arm leads is a hash of the unit id — so the
+exclusion cannot correlate with the *direction* of the effect. Confirmed independently from both
+servers' own `system.query_log`, which shows the non-leading arm never ran those queries at all
+(port 9005: 4 units, baseline only; port 9006: 4 units, candidate only). The one boundary case
+(`store_sales × catalog_sales T96`, candidate 35.9 s against a 30 s budget) would, had the hash
+fallen the other way, most likely have *added* an arm-B regression rather than removed one.
 
 ### Tier b — see §5.2
 

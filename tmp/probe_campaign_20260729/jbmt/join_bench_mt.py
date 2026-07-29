@@ -1173,21 +1173,26 @@ def measure_unit(arms: dict[str, ExecTarget], unit: dict, *, algorithms: tuple[s
                     t_warm = time.time()
                     got, err = _query_once(arms[name], unit, algorithm, f"{log_bases[name]}|warmup{w}")
                     warm_s = time.time() - t_warm
-                    if err:
-                        failed[name] = f"warmup {w} failed: {err}"
-                        break
-                    # Uniform, direction-blind time box. A unit whose single query costs
-                    # more than the budget would spend hours of a bounded run on one
-                    # unit ((warmups + runs) x arms queries), so it is dropped BEFORE any
-                    # timed run rather than half-measured. The decision uses wall clock
-                    # only - never either metric - so it cannot favour an arm, and the
-                    # unit is recorded OVER_BUDGET, i.e. NO-VERDICT with a stated reason.
+                    # Uniform, direction-blind time box: a unit whose single query costs more
+                    # than the budget would spend hours of a bounded run on one unit
+                    # ((warmups + runs) x arms queries), so it is dropped BEFORE any timed run
+                    # rather than half-measured. The decision uses wall clock only - never either
+                    # metric - so it cannot favour an arm, and the unit is recorded OVER_BUDGET,
+                    # i.e. NO-VERDICT with a stated reason.
+                    # The budget is checked BEFORE the error branch: a warmup that fails by
+                    # exhausting `max_execution_time` is the most expensive case there is, and
+                    # letting it fall through to `break` would charge the run the full timeout on
+                    # every arm before abandoning the unit anyway.
                     if unit_time_budget_s and warm_s > unit_time_budget_s:
                         result.update(status="OVER_BUDGET",
                                       reason=f"arm {name} warmup {w} took {warm_s:.1f}s > "
-                                             f"unit-time-budget {unit_time_budget_s}s; unit skipped "
-                                             f"before any timed run")
+                                             f"unit-time-budget {unit_time_budget_s}s"
+                                             + (f" (and failed: {err[:120]})" if err else "")
+                                             + "; unit skipped before any timed run")
                         return result
+                    if err:
+                        failed[name] = f"warmup {w} failed: {err}"
+                        break
                     if expected is None:
                         expected = got
                     elif got != expected:
