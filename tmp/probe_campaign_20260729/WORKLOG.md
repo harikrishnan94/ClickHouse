@@ -562,3 +562,112 @@ real-suite units is the ONLY correctness oracle since `expected_rows_closed_form
 If the harness turns out not to enforce cross-arm equality on this configuration, every
 real-suite verdict is reported UNSETTLED — the code path was read (`join_bench_mt.py:1160-1204`)
 and does enforce it; it is re-confirmed empirically from the delivered JSONL.
+
+---
+
+## Iteration 8 — one pathological unit nearly ate the run (fixed with a uniform time box)
+
+**Symptom.** Tier a stalled at 30/376 for ~40 minutes. Diagnosis from the server, not a guess:
+unit 31 is `tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera`, whose single query takes
+~540 s (`system.query_log`: `query_duration_ms 538586`). At 2 warmups + 11 timed runs × 2 arms that
+is **26 queries ≈ 3.9 h for one unit**, and it is one of the units the prior campaign documented as
+exceeding the harness's hard-coded `max_execution_time = 600` — so it would have yielded no verdict
+anyway.
+
+**Fix.** `--unit-time-budget SECONDS` in the campaign's jbmt copy: if a unit's FIRST warmup exceeds
+the budget, the unit is recorded `OVER_BUDGET` and skipped **before any timed run**. Set to 30 s.
+Properties that make this a scheduling rule rather than a thumb on the scale: the decision reads
+**wall clock only, never either metric**; it is applied uniformly to every unit; it happens before
+any timed measurement; and the unit is reported as NO-VERDICT with its reason rather than dropped.
+Empirically it fired on arm baseline for 4 units and arm candidate for 4 — direction-blind in fact.
+
+**Scorer gap this exposed.** A unit the harness abandons carries no per-algorithm stats at all, so
+the scorer would have skipped it entirely and it would have *vanished* from the report. Fixed: such
+units now surface as NO-VERDICT carrying the harness's reason, with self-test case 19.
+
+**Result.** Unit 31 skipped after 570.7 s instead of ~4 h; tier a completed 376/376 attempted,
+368 scored, 8 `OVER_BUDGET`.
+
+---
+
+## Iteration 9 — independent verification, and the four defects it found
+
+A fresh subagent verifier with shell access was given only the prompt, the scorer and the evidence,
+with a mandate to refute. Verdict **FIX-THEN-RESHIP**, four blocking findings. A first verifier
+attempt had no shell in this host and produced a static-only review; it is not counted as
+verification, though its two leads were carried forward and closed.
+
+What it could not break, each re-derived independently of my scorer: every gate exit code, every
+noise floor to the digit, the decomposition identity and non-negativity over all 3,760 fleet rows,
+event-key presence symmetry, the gather events' absence from both binaries *and* both commits'
+sources, all 16 NO-VERDICT cells having zero valid rows, pre-registration commits predating every
+measured sweep with an append-only `WORKLOG.md`, the measured cell set equalling the regenerated
+94-cell plan, and every loss row in every table. It also chased and dismissed a suspicion that the
+fleet numbers came from this host (the `host` field records the driver; 3.52 h of cell time inside a
+38.4 min window implies 5.5× parallelism).
+
+**What it broke, and what I did:**
+
+1. **B4 — a fabricated sentence in REPORT.md.** I had written that the two `projection_cost` winners
+   were `str:probe.inner_all.S2.T1` (−5.0 %) and `k128:probe.inner_all.S4.T96` (−3.2 %). Both ids
+   and both numbers were wrong and the second cell **is not in the 94-cell plan at all**. The actual
+   winners are `str:probe.semi_anti.S4.T96.anti` (−29.7 %) and
+   `key64:probe.semi_anti.S4.T96.anti` (−19.0 %) — and the latter is the campaign's one cell that
+   wins `projection_cost` while losing `probe_cost`, which is exactly the kind of cell the report
+   exists to surface. Corrected from the scorer's own TSV. This is the failure mode the prompt warns
+   about, caught by the gate I did not run: I wrote prose without re-deriving it.
+2. **B1 — my stated mechanism for the red synthetic A/A was false.** I claimed the arms measure
+   different physical tables. The verifier showed the parts are **byte-identical** across arms
+   (`hash_of_all_files` equal on separate data roots and UUIDs; `diff -r` clean over 578 MB), because
+   `prepare_cell` ends in `OPTIMIZE … FINAL` and no fill uses `rand()`. Claim withdrawn; cause
+   recorded as unlocated.
+3. **B3 — my order-effect "refutation" had no power.** I compared signed group means, which cancel
+   opposite-signed deviations. On magnitudes the groups separate (p ≈ 0.033), and the test is
+   confounded because `lead_flip = crc32(unit_id) & 1` fixes the lead arm per unit. Downgraded from
+   "refuted" to "not tested".
+4. **B2 — a cheap checkable-but-unrun avenue existed.** Swapping the arm→port assignment needs no
+   code change. I **ran it** (Iteration 10).
+
+Non-blocking, all addressed: `--compare-order` could not fail while its exit code was cited as
+evidence (added `--fail-on-order-effect`; G1-b re-run with enforcement, still green);
+`--expect-cells` is count-only and the verifier satisfied it with 94 fabricated ids (added
+`--expect-unit-set-seen`; ran real set equality for both orders — `missing 0, extra 0`); G0-b's
+gather-symmetry half is vacuous on fleet_ab's fixed 7-event map (the binary grep is the load-bearing
+origin — and the jbmt real suite, which records the FULL event map, later supplied a
+**non-vacuous** second origin over 8,096 rows); the A/A control covered one cell shape; and the
+floor-voided cells lean slightly worse than the scored set (both now disclosed in REPORT.md §3).
+
+---
+
+## Iteration 10 — the port-swap control, and validating the exact measured channel
+
+**Goal.** Execute B2, and close the "same-construction, not same-instance" caveat I had recorded
+against Unit 3's venue.
+
+**A/A on the exact measured pair.** `jbmt_aa_measured_pair.sh` stops arm B's server, starts the
+**baseline** binary on arm B's own port and data root (9006, root `b/`), verifies both ports'
+running binaries by hashing `/proc/<pid>/exe`, runs the 10-unit real A/A on the **measured pair**,
+and restores the candidate on the way out.
+
+    probe_cost:      10 scored, 0 non-TIE, empirical noise floor = 1.24% (25,560 us)
+    projection_cost: 10 scored, 0 non-TIE, empirical noise floor = 1.59% (51,165 us)
+    CHECK SUMMARY: PASS   → exit 0
+
+So Unit 3's channel is validated on the instances it actually used, not by analogy.
+
+**Port-swap synthetic A/A.** Arms reversed (`aaA=<baseline>:9007`, `aaB=<baseline>:9005`), quiet
+host, 11 runs:
+
+    probe_cost:      10 scored, 1 non-TIE, floor 5.22%   FAIL D65536_K0_mb1_mp16…: LOSS +5.2% (band 3.6%)
+    projection_cost: 10 scored, 0 non-TIE, floor 4.05%
+    CHECK SUMMARY: FAIL (1)   → exit 1
+
+The deltas **collapsed rather than inverted** (`D262144_K5…mp256` projection +5.13 % → +0.49 %), so
+a fixed per-server/per-port offset is **refuted**. Still red, now on the micro-unit whose median
+query is 8 ms. Applying fleet_ab's own 200 ms floor to all three synthetic A/A sweeps rescues only
+one of the three, so it is offered as a proposal for a follow-up run, not as a retroactive pass.
+Unit 2 stays UNSETTLED with a sharper characterization (REPORT.md §4.1).
+
+**Plan change.** Tier b started at 22:59:47Z after the controls, so nothing contended with it. It is
+running at roughly 40 s/unit — heavier than tier a — so it is expected to be delivered as an
+explicitly labelled, quantified partial, which this task names as acceptable.

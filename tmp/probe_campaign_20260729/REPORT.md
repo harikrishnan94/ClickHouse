@@ -573,4 +573,57 @@ Every invocation is copy-paste re-runnable from the campaign directory
 | **Scorer power** — a genuine LOSS is reported on each metric independently, and every check can fail | `python3 scorer_selftest.py` | `scorer_selftest: PASS (0 case(s) failed)` — 33 assertions **→ exit 0** | Verifier read the self-test for tricks (it drives the real scorer as a subprocess and asserts on its TSV), ran it, and built its own from-scratch fixtures reaching the same conclusion | **GREEN** |
 | **Cost gate** — tag-filtered EC2 inventory empty after the fleet | `RUN_TAG=fleet-ab-202607291848 fleet/teardown.sh` then the independent query in §8 | `instances by RUN_TAG (want empty): <empty>` · `volumes … <empty>` · `sgs … <empty>` · `TEARDOWN COMPLETE 2026-07-29T20:19:38Z` **→ exit 0** | Independent `aws ec2 describe-instances/volumes/security-groups` by tag value returned empty, and the only running instance in the region is this orchestration host | **GREEN (two origins)** |
 | **G2** legacy coverage, 347 cells with set equality | `python3 probe_ab_report.py --results 'results/jbmt_legacy/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 347 --expect-unit-set jbmt/join_bench_mt_legacy_cells.json:cell_id` | **NOT RUN** — no measured legacy sweep exists, because G0-a is red for this suite and a red gate stops the unit | The 347-id anchored `--only` regex is built and delivered (`logs/legacy_only_regex.txt`, 13,752 bytes); `join_bench_mt_legacy_cells.json` verified to hold exactly 347 unique `cell_id`s | **UNSETTLED / NO RESULT** — gap and settling evidence in §4 |
-| **G3** real coverage, 376 units per tier | `python3 probe_ab_report.py --results 'results/jbmt_real_a/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` (and tier b) | see §5 | see §5 | see §5 |
+| **G3** real coverage, tier a | `python3 probe_ab_report.py --results 'results/jbmt_real_a/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` | `coverage: 368 cells with a verdict …, expected 376 (total cells seen: 376)` · `FAIL (1)` **→ exit 1** | All 8 gaps are `OVER_BUDGET` with the harness's recorded reason, and the rule fired on arm baseline for 4 and arm candidate for 4 — direction-blind in practice; the same units are the ones the prior campaign documented as exceeding `max_execution_time = 600` | **RED — 368/376, quantified, N not lowered** |
+| **G3** real coverage, tier b | `python3 probe_ab_report.py --results 'results/jbmt_real_b/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` | see §5.2 | see §5.2 | **labelled partial — see §5.2** |
+| **G0-a** on the exact measured channel (9005 vs 9006, baseline on both) | `python3 probe_ab_report.py --results 'results/aa_real_pair/results.jsonl' --arm-a aaA --arm-b aaB --metric both --aa-control` | `probe_cost: 10 scored, 0 non-TIE, floor 1.24%` · `projection_cost: 10 scored, 0 non-TIE, floor 1.59%` · `PASS` **→ exit 0** | Each port's running binary hashed from `/proc/<pid>/exe`, both `0d32ef1c96e6…`; candidate restored afterwards | **GREEN** |
+| **B2 port-swap control** (verifier-mandated) | `--arm aaA=<baseline>:9007 --arm aaB=<baseline>:9005` then `--aa-control` | `probe_cost: 1 non-TIE, floor 5.22%` · `projection_cost: 0 non-TIE, floor 4.05%` · `FAIL (1)` **→ exit 1** | Deltas collapse rather than invert vs the unswapped control, refuting a fixed per-port offset | **RED — reported; sharpens Unit 2's UNSETTLED** |
+
+---
+
+## 8. Cost gate — raw proof that every fleet this task launched is gone
+
+One fleet was launched: `RUN_TAG=fleet-ab-202607291848`, 8× `m8g.24xlarge` in `ap-south-2`, up
+2026-07-29T18:48Z, torn down 20:19:38Z. Teardown used the guard pattern that fires only for a tag
+this run's own launch created (the pre-existing tag is captured first and refused), so no other
+campaign's fleet could be affected. A 10 h watchdog was armed at launch as a second safety net.
+
+Origin 1 — `fleet/teardown.sh`, which re-queries the inventory after deleting and exits non-zero if
+anything remains (`logs/fleet_teardown.log`):
+
+    === TEARDOWN fleet-ab-202607291848 2026-07-29T20:18:15Z  ===
+    --- BEFORE: live inventory by RUN_TAG (this is the proof's power to fail) ---
+    instances: i-06d6419c2203bed10 i-09363263dcdb1e4e8 i-06199c22ca3aafe91 i-0b20d193b78a04feb
+               i-0851bfb86daf48124 i-04673930737530300 i-0339fd309c7c61258 i-0827ec518b92989b4
+    volumes:   vol-08b109a338f307933 vol-0373b1d7c68aa9476 vol-0b4689a47d970c4cf vol-06e795a6433cd7b19
+               vol-0cf785a5205f33c61 vol-0a46cc464fcf93782 vol-0b22ce18f416b2649 vol-0ee9e8fef49fcd944
+    sgs:       sg-03356cc73c56a7f2e
+    --- terminating instances ---
+    all instances terminated
+    no volumes to delete
+    deleted sg-03356cc73c56a7f2e
+
+    === PROOF ===
+    instances by RUN_TAG (want empty): <empty>
+    volumes by RUN_TAG   (want empty): <empty>
+    sgs by RUN_TAG       (want empty): <empty>
+    TEARDOWN COMPLETE 2026-07-29T20:19:38Z
+
+Origin 2 — an independent tag-filtered query, run separately from the teardown script:
+
+    $ export AWS_PROFILE=Dev_AWS_Admin AWS_REGION=ap-south-2; TAG=fleet-ab-202607291848
+    $ aws ec2 describe-instances --region ap-south-2 --filters "Name=tag-value,Values=$TAG" \
+        --query 'Reservations[].Instances[?State.Name!=`terminated`].[InstanceId,State.Name]' --output text
+    (empty)
+    $ aws ec2 describe-volumes --region ap-south-2 --filters "Name=tag-value,Values=$TAG" \
+        --query 'Volumes[].[VolumeId,State]' --output text
+    (empty)
+    $ aws ec2 describe-security-groups --region ap-south-2 --filters "Name=tag-value,Values=$TAG" \
+        --query 'SecurityGroups[].[GroupId]' --output text
+    (empty)
+    $ aws ec2 describe-instances --region ap-south-2 \
+        --filters 'Name=instance-state-name,Values=pending,running' \
+        --query 'Reservations[].Instances[].[InstanceId,InstanceType]' --output text
+    i-00c8778b1ae41598f     m8g.24xlarge        # this orchestration host, pre-existing, not launched here
+
+No EBS volume was ever created from snapshot `snap-021cbdc2484f86607`, because the real-suite data
+was already present locally; so there is no volume to account for either.
