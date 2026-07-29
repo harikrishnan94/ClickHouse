@@ -1,0 +1,26 @@
+=== swap the BASELINE binary onto arm B's own server (port 9006) 2026-07-29T22:25:11Z
+stopped pid 3925269
+arm aaB6 up: pid=4130833 tcp=9006 http=8126 root=/mnt/data/probe_camp_jbmt/b/data
+port 9005 now runs sha256: 0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4
+port 9006 now runs sha256: 0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4
+=== A/A on the measured pair (aaA=9005, aaB=9006), same assignment as the measured run
+arms: aaA=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin:9005 sha=0d32ef1c96e6, aaB=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin:9006 sha=0d32ef1c96e6
+algorithms: parallel_hash
+shard 0/1: 10 units, 0 done, 10 to run
+[1/10] tpch__customer_c_nationkey__nation_n_nationkey__T16__tiera: OK (3.1s)
+[2/10] tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera: OK (2.9s)
+[3/10] tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T16__tiera: OK (3.0s)
+[4/10] tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera: OK (2.9s)
+[5/10] job__cast_info_movie_id__complete_cast_movie_id__T16__tiera: OK (5.0s)
+[6/10] job__cast_info_movie_id__complete_cast_movie_id__T96__tiera: OK (3.4s)
+[7/10] coffeeshop__fact_sales_location_id__dim_locations_location_id__T16__tiera: OK (96.4s)
+[8/10] coffeeshop__fact_sales_location_id__dim_locations_location_id__T96__tiera: OK (24.1s)
+[9/10] stackoverflow__badges_UserId__users_Id__T16__tiera: OK (8.6s)
+[10/10] stackoverflow__badges_UserId__users_Id__T96__tiera: OK (7.2s)
+sweep done: 10 run, 0 not OK/FALLBACK
+=== done 2026-07-29T22:28:51Z
+=== restoring the candidate on 9006 2026-07-29T22:28:51Z
+stopped pid 4130833
+arm armB up: pid=4135791 tcp=9006 http=8126 root=/mnt/data/probe_camp_jbmt/b/data
+restored 9006 GIT_HASH b425c8108950255b36642f9af9d0d9eec23619ab
+EXIT=0

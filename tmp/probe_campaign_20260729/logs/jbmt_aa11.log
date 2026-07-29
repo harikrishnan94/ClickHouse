@@ -1,0 +1,15 @@
+arms: aaA=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin:9005 sha=0d32ef1c96e6, aaB=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin:9007 sha=0d32ef1c96e6
+algorithms: parallel_hash
+shard 0/1: 10 units, 0 done, 10 to run
+[1/10] D1000000_K2_mb1_mp64_h1.0_bp8_pp8_T8: OK (46.7s)
+[2/10] D262144_K5_mb1_mp256_h1.0_bp8_pp8_T16: OK (55.4s)
+[3/10] D32000000_K4_mb1_mp1_h1.0_bp8_pp8_T16: OK (36.4s)
+[4/10] D32000000_K6_mb16_mp1_h1.0_bp8_pp8_T96: OK (504.5s)
+[5/10] D32000000_K8_mb1_mp1_h1.0_bp8_pp8_T16: OK (20.8s)
+[6/10] D32000000_K9_mb16_mp1_h1.0_bp8_pp8_T96: OK (436.5s)
+[7/10] D65536_K0_mb1_mp16_h1.0_bp8_pp8_T16: OK (5.4s)
+[8/10] D8000000_K1_mb1_mp1_h1.0_bp8_pp8_T16: OK (8.7s)
+[9/10] D8000000_K3_mb16_mp1_h1.0_bp8_pp8_T96: OK (176.5s)
+[10/10] D8000000_K7_mb16_mp1_h1.0_bp8_pp8_T96: OK (174.7s)
+sweep done: 10 run, 0 not OK/FALLBACK
+EXIT=0

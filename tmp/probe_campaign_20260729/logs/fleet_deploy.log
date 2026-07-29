@@ -1,0 +1,21 @@
+hashing local binaries (multi-GB; once, not per shard)
+  A 0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4 /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin
+  B 83de808547081e3a073772efe71fa3401e4a4889a4c720eeca9a1dc716f9e2b4 /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-phjph-fa5667f2da7.bin
+Warning: Permanently added '172.31.3.240' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.7.120' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.8.161' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.5.185' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.11.41' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.3.17' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.7.40' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.4.245' (ED25519) to the list of known hosts.
+shard 4 (172.31.11.41): deployed, shas verified, events present
+shard 0 (172.31.7.40): deployed, shas verified, events present
+shard 3 (172.31.3.17): deployed, shas verified, events present
+shard 2 (172.31.8.161): deployed, shas verified, events present
+shard 5 (172.31.3.240): deployed, shas verified, events present
+shard 1 (172.31.4.245): deployed, shas verified, events present
+shard 6 (172.31.5.185): deployed, shas verified, events present
+shard 7 (172.31.7.120): deployed, shas verified, events present
+DEPLOY OK: 8 shards; digests in fleet/logs/deploy.shard*.log
+next: fleet/sweep.sh <results-dir>

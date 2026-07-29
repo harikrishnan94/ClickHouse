@@ -1,0 +1,49 @@
+=== clone real-suite data root for arm A 2026-07-29T19:01:01Z
+cloned /mnt/data/jbmt_server/data -> /mnt/data/probe_camp_jbmt/a/data (hardlinks: shared inodes, shared page cache, zero data bytes)
+392G	/mnt/data/probe_camp_jbmt/a/data
+=== start arm A on the clone 2026-07-29T19:01:01Z
+arm armA up: pid=3913857 tcp=9005 http=8125 root=/mnt/data/probe_camp_jbmt/a/data
+=== prepare-keys (synthetic suite) 2026-07-29T19:01:02Z
+preparing keys_store for K0
+  K0: 1024000000 rows
+preparing keys_store for K1
+  K1: 256000000 rows
+preparing keys_store for K10
+  K10: 256000000 rows
+preparing keys_store for K2
+  K2: 256000000 rows
+preparing keys_store for K3
+  K3: 256000000 rows
+preparing keys_store for K4
+  K4: 256000000 rows
+preparing keys_store for K5
+  K5: 256000000 rows
+preparing keys_store for K6
+  K6: 256000000 rows
+preparing keys_store for K7
+  K7: 1024000000 rows
+preparing keys_store for K8
+  K8: 256000000 rows
+preparing keys_store for K9
+  K9: 256000000 rows
+preparing keys_store for KF2
+  KF2: 1352 rows
+=== verify real-suite fingerprints, both tiers 2026-07-29T19:16:55Z
+verify: OK
+verify: OK
+=== stop arm A so its root is quiescent for cloning 2026-07-29T19:17:09Z
+stopped pid 3913857
+=== clone arm A -> arm B (identical bytes, incl. keys_store) 2026-07-29T19:17:16Z
+cloned /mnt/data/probe_camp_jbmt/a/data -> /mnt/data/probe_camp_jbmt/b/data (hardlinks: shared inodes, shared page cache, zero data bytes)
+=== start both arms 2026-07-29T19:17:16Z
+arm armA up: pid=3924839 tcp=9005 http=8125 root=/mnt/data/probe_camp_jbmt/a/data
+arm armB up: pid=3925269 tcp=9006 http=8126 root=/mnt/data/probe_camp_jbmt/b/data
+=== both arms up: confirm identity and algorithm availability 2026-07-29T19:17:17Z
+--- port 9005
+a05f3ee81ff8411759637fa367aad62e72726e71
+1024000000
+--- port 9006
+b425c8108950255b36642f9af9d0d9eec23619ab
+1024000000
+=== READY 2026-07-29T19:17:18Z
+EXIT=0

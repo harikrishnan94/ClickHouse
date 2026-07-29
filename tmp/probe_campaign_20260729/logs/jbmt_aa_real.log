@@ -1,0 +1,15 @@
+arms: aaA=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin:9005 sha=0d32ef1c96e6, aaB=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin:9007 sha=0d32ef1c96e6
+algorithms: parallel_hash
+shard 0/1: 10 units, 0 done, 10 to run
+[1/10] tpch__customer_c_nationkey__nation_n_nationkey__T16__tiera: OK (3.1s)
+[2/10] tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera: OK (2.9s)
+[3/10] tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T16__tiera: OK (3.0s)
+[4/10] tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera: OK (2.9s)
+[5/10] job__cast_info_movie_id__complete_cast_movie_id__T16__tiera: OK (5.1s)
+[6/10] job__cast_info_movie_id__complete_cast_movie_id__T96__tiera: OK (3.5s)
+[7/10] coffeeshop__fact_sales_location_id__dim_locations_location_id__T16__tiera: OK (99.8s)
+[8/10] coffeeshop__fact_sales_location_id__dim_locations_location_id__T96__tiera: OK (24.2s)
+[9/10] stackoverflow__badges_UserId__users_Id__T16__tiera: OK (8.9s)
+[10/10] stackoverflow__badges_UserId__users_Id__T96__tiera: OK (7.2s)
+sweep done: 10 run, 0 not OK/FALLBACK
+EXIT=0

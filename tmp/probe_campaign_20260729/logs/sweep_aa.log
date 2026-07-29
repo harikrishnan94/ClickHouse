@@ -1,0 +1,14 @@
+stealing sweep: 10 cells planned, 0 already complete, 10 queued (costliest first) across 8 shards
+shard 7: key32:probe.inner_all.S2.T96 OK (59s, 2 left)
+shard 2: str:probe.inner_all.S2.T96 OK (61s, 1 left)
+shard 4: fixstr:probe.inner_all.S2.T96 OK (61s, 0 left)
+shard 6: null64:probe.inner_all.S2.T96 OK (62s, 0 left)
+shard 5: k128:probe.inner_all.S2.T96 OK (66s, 0 left)
+shard 0: mixed:probe.inner_all.S2.T96 OK (67s, 0 left)
+shard 1: k256:probe.inner_all.S2.T96 OK (73s, 0 left)
+shard 3: lcstr:probe.inner_all.S2.T96 OK (90s, 0 left)
+shard 2: key64:build.inner_all.S2.T96 FAILED rc=1 (50s, 0 left)
+shard 7: key64:probe.inner_all.S2.T96 OK (60s, 0 left)
+FLEET_STEALING RESULT: cells_run=10 cells_failed=1 shard0=1 shard1=1 shard2=2 shard3=1 shard4=1 shard5=1 shard6=1 shard7=2 -> FAIL
+  FAILED key64:build.inner_all.S2.T96 on shard 2 rc=1
+EXIT=1

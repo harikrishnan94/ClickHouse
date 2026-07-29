@@ -1,0 +1,53 @@
+=== preflight 2026-07-29T18:48:04Z
+pre-existing run_tag: fleet-ab-202607291540 (never torn down by this script)
+=== launch 2026-07-29T18:48:04Z
+type=m8g.24xlarge arch=arm64 vcpus=96 shards=8 run_tag=fleet-ab-202607291848
+quota=1152.0 running_vcpus=96 need=768
+ami=ami-0feea81f640baa6fb sg=sg-03356cc73c56a7f2e vpc=vpc-0dbe56e29f84d24a3
+shard 0: i-06199c22ca3aafe91 in subnet-07fde41a9bd25176e
+shard 1: i-0b20d193b78a04feb in subnet-07fde41a9bd25176e
+shard 2: i-0851bfb86daf48124 in subnet-07fde41a9bd25176e
+shard 3: i-04673930737530300 in subnet-07fde41a9bd25176e
+shard 4: i-0827ec518b92989b4 in subnet-07fde41a9bd25176e
+shard 5: i-09363263dcdb1e4e8 in subnet-07fde41a9bd25176e
+shard 6: i-06d6419c2203bed10 in subnet-07fde41a9bd25176e
+shard 7: i-0339fd309c7c61258 in subnet-07fde41a9bd25176e
+0	i-0339fd309c7c61258	172.31.7.40	ap-south-2a
+1	i-04673930737530300	172.31.4.245	ap-south-2a
+2	i-06199c22ca3aafe91	172.31.8.161	ap-south-2a
+3	i-06d6419c2203bed10	172.31.3.17	ap-south-2a
+4	i-0827ec518b92989b4	172.31.11.41	ap-south-2a
+5	i-0851bfb86daf48124	172.31.3.240	ap-south-2a
+6	i-09363263dcdb1e4e8	172.31.5.185	ap-south-2a
+7	i-0b20d193b78a04feb	172.31.7.120	ap-south-2a
+FLEET LAUNCHED: 8 shards; SG sg-03356cc73c56a7f2e; RUN_TAG fleet-ab-202607291848
+next: fleet/deploy.sh <baseline-binary> <candidate-binary>
+our RUN_TAG: fleet-ab-202607291848
+watchdog armed for fleet-ab-202607291848 (10h)
+=== deploy 2026-07-29T18:48:36Z
+hashing local binaries (multi-GB; once, not per shard)
+  A 0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4 /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin
+  B 83de808547081e3a073772efe71fa3401e4a4889a4c720eeca9a1dc716f9e2b4 /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-phjph-fa5667f2da7.bin
+Warning: Permanently added '172.31.3.240' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.7.120' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.8.161' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.5.185' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.11.41' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.3.17' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.7.40' (ED25519) to the list of known hosts.
+Warning: Permanently added '172.31.4.245' (ED25519) to the list of known hosts.
+shard 4 (172.31.11.41): deployed, shas verified, events present
+shard 0 (172.31.7.40): deployed, shas verified, events present
+shard 3 (172.31.3.17): deployed, shas verified, events present
+shard 2 (172.31.8.161): deployed, shas verified, events present
+shard 5 (172.31.3.240): deployed, shas verified, events present
+shard 1 (172.31.4.245): deployed, shas verified, events present
+shard 6 (172.31.5.185): deployed, shas verified, events present
+shard 7 (172.31.7.120): deployed, shas verified, events present
+DEPLOY OK: 8 shards; digests in fleet/logs/deploy.shard*.log
+next: fleet/sweep.sh <results-dir>
+=== deployed 2026-07-29T18:50:05Z
+A	0d32ef1c96e6d378aa20d3ab3063b1dfede0753c075ee94781ba5ec2779d88f4	/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-baseline-a05f3ee81ff.bin
+B	83de808547081e3a073772efe71fa3401e4a4889a4c720eeca9a1dc716f9e2b4	/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/bins/clickhouse-phjph-fa5667f2da7.bin
+=== READY: fleet fleet-ab-202607291848 is up with both arms deployed
+EXIT=0

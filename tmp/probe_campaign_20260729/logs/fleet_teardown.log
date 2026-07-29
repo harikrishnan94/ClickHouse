@@ -1,0 +1,24 @@
+=== TEARDOWN fleet-ab-202607291848 2026-07-29T20:18:15Z  ===
+--- BEFORE: live inventory by RUN_TAG (this is the proof's power to fail) ---
+instances: i-06d6419c2203bed10	i-09363263dcdb1e4e8	i-06199c22ca3aafe91	i-0b20d193b78a04feb	i-0851bfb86daf48124	i-04673930737530300	i-0339fd309c7c61258	i-0827ec518b92989b4
+volumes:   vol-08b109a338f307933	vol-0373b1d7c68aa9476	vol-0b4689a47d970c4cf	vol-06e795a6433cd7b19	vol-0cf785a5205f33c61	vol-0a46cc464fcf93782	vol-0b22ce18f416b2649	vol-0ee9e8fef49fcd944
+sgs:       sg-03356cc73c56a7f2e
+--- terminating instances ---
+i-04673930737530300	shutting-down
+i-0b20d193b78a04feb	shutting-down
+i-0339fd309c7c61258	shutting-down
+i-0827ec518b92989b4	shutting-down
+i-06d6419c2203bed10	shutting-down
+i-06199c22ca3aafe91	shutting-down
+i-0851bfb86daf48124	shutting-down
+i-09363263dcdb1e4e8	shutting-down
+all instances terminated
+no volumes to delete
+--- deleting security groups ---
+deleted sg-03356cc73c56a7f2e
+
+=== PROOF ===
+instances by RUN_TAG (want empty): <empty>
+volumes by RUN_TAG   (want empty): <empty>
+sgs by RUN_TAG       (want empty): <empty>
+TEARDOWN COMPLETE 2026-07-29T20:19:38Z

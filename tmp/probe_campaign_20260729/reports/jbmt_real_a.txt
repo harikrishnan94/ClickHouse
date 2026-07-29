@@ -1,0 +1,735 @@
+probe_ab_report: 1 file(s), 8112 timed-run rows, arms present [('baseline', None), ('candidate', None)]
+arm A = 'baseline'   arm B = 'candidate'   metrics = ['probe_cost', 'projection_cost']
+
+=== Unit 3 jbmt real tier a (376 units attempted): per-metric verdicts (band = max(3%, per-arm relative spread), evaluated per metric) ===
+
+probe_cost: verdicts 368   win=161 tie=51 loss=156   no-verdict=8
+  aggregate 230,541.8 ms -> 210,259.1 ms (-8.8%)
+  median per-cell delta +0.4%
+  LOSSES on probe_cost: 156
+    cell                                                 A ms       B ms    delta   band         disp A->B (ms)       lookup A->B (ms)      probe tot A->B (ms)
+    tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T96__tiera       20.9       65.0  +211.7%   5.0%               0.0->0.1             20.9->65.0             487.8->530.1
+    job__movie_keyword_movie_id__title_id__filtered__T96__tiera       37.2       95.4  +156.8%  17.3%               0.0->0.2             37.2->95.2              67.5->126.8
+    tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T16__tiera        7.5       17.3  +129.6%  19.8%               0.0->0.1              7.5->17.2             392.8->440.6
+    stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera      764.1    1,741.7  +128.0%  19.4%               0.0->0.3         764.1->1,741.5         1,572.4->2,715.6
+    job__movie_keyword_movie_id__title_id__T96__tiera       66.0      135.4  +105.2%   9.4%               0.0->0.2            66.0->135.2             178.5->250.5
+    job__movie_keyword_movie_id__movie_companies_movie_id__T96__tiera       70.6      137.3   +94.5%   8.8%               0.0->0.2            70.6->137.0           943.8->1,056.7
+    stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera      147.2      281.5   +91.3%   3.1%               0.0->0.2           147.2->281.3           673.9->1,110.6
+    job__movie_companies_movie_id__title_id__T96__tiera       79.7      133.0   +66.8%   6.4%               0.0->0.2            79.7->132.8             166.4->225.2
+    job__name_id__person_info_person_id__T96__tiera      285.7      476.3   +66.7%   5.3%               0.0->0.5           285.7->475.9             790.2->995.4
+    job__movie_info_idx_info_type_id__info_type_id__filtered__T16__tiera        2.1        3.2   +52.6%   3.0%               0.0->0.0               2.1->3.2                 2.4->3.5
+    job__movie_info_info_type_id__info_type_id__filtered__T16__tiera       25.3       38.4   +51.7%   3.0%               0.0->0.8             25.3->37.6               31.7->45.7
+    tpcds__catalog_sales_cs_item_sk__store_returns_sr_item_sk__T96__tiera      553.0      820.3   +48.3%   4.7%               0.6->6.8           552.5->813.4     141,121.3->140,804.7
+    job__movie_keyword_movie_id__movie_link_movie_id__T16__tiera       11.6       17.2   +48.2%   3.7%               0.0->0.1             11.6->17.1               26.0->31.4
+    job__movie_info_idx_info_type_id__info_type_id__filtered__T96__tiera        2.5        3.6   +47.5%   3.0%               0.0->0.1               2.5->3.5                 2.9->4.0
+    job__complete_cast_subject_id__comp_cast_type_id__T16__tiera        0.8        1.2   +46.5%  20.5%               0.0->0.0               0.8->1.2                 2.7->3.6
+    job__name_id__person_info_person_id__T16__tiera       61.6       89.7   +45.7%   5.7%               0.0->0.5             61.6->89.3             311.7->402.5
+    job__movie_info_info_type_id__info_type_id__filtered__T96__tiera       26.8       38.9   +45.4%   3.0%               0.0->1.0             26.8->37.9               34.2->46.2
+    tpcds__customer_address_ca_state__store_s_state__T16__tiera        1.0        1.5   +45.3%   8.5%               0.0->0.0               1.0->1.5               13.4->18.4
+    tpcds__customer_c_current_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera        7.9       11.0   +39.1%  10.7%               0.0->0.1              7.9->11.0               52.7->59.6
+    stackoverflow__comments_PostId__posts_Id__T96__tiera    3,376.8    4,637.6   +37.3%   5.1%               0.0->3.1       3,376.8->4,634.4         5,189.3->6,790.1
+    job__person_info_info_type_id__info_type_id__filtered__T96__tiera        6.7        9.3   +37.3%   3.0%               0.0->0.4               6.7->8.8                9.7->12.3
+    job__movie_info_idx_movie_id__movie_link_movie_id__T16__tiera        5.4        7.4   +36.2%   4.0%               0.0->0.1               5.4->7.3               12.8->14.8
+    tpcds__inventory_inv_date_sk__date_dim_d_date_sk__filtered__T16__tiera       74.2      100.9   +35.9%   3.0%               0.0->1.0             74.2->99.8             159.5->187.0
+    tpcds__customer_address_ca_county__store_s_county__filtered__T16__tiera        1.3        1.8   +35.1%   9.4%               0.0->0.0               1.3->1.8                 3.2->3.9
+    job__person_info_info_type_id__info_type_id__filtered__T16__tiera        6.1        8.2   +34.0%   3.0%               0.0->0.1               6.1->8.1                8.3->10.8
+    job__movie_keyword_keyword_id__keyword_id__filtered__T16__tiera       10.7       14.4   +34.0%   3.0%               0.0->0.1             10.7->14.3               12.4->16.2
+    tpcds__customer_address_ca_state__store_s_state__filtered__T16__tiera        0.9        1.2   +32.7%   7.2%               0.0->0.0               0.9->1.2                7.6->11.2
+    job__movie_info_movie_id__movie_link_movie_id__T96__tiera       65.9       86.5   +31.3%   3.0%               0.0->1.0             65.9->85.6             169.0->185.4
+    tpcds__store_sales_ss_item_sk__web_sales_ws_item_sk__T96__tiera    1,118.7    1,467.5   +31.2%   3.0%              1.9->18.4       1,116.7->1,449.1     693,559.7->690,989.0
+    job__movie_companies_movie_id__title_id__filtered__T96__tiera       41.4       53.8   +29.9%  19.9%               0.0->0.2             41.4->53.6               70.0->92.9
+    job__movie_companies_movie_id__movie_link_movie_id__T16__tiera       10.7       13.9   +29.7%   3.0%               0.0->0.1             10.7->13.8               25.3->28.6
+    coffeeshop__fact_sales_product_name__dim_products_name__T96__tiera   10,067.3   13,023.9   +29.4%   3.0%            12.8->101.3     10,054.5->12,917.6       44,807.2->47,100.3
+    job__movie_info_movie_id__movie_link_movie_id__T16__tiera       68.4       88.2   +29.0%   3.0%               0.0->1.1             68.4->87.1             160.2->179.3
+    tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__T96__tiera        0.1        0.1   +27.9%  13.9%               0.0->0.0               0.1->0.1                 0.2->0.2
+    job__movie_companies_company_type_id__company_type_id__filtered__T16__tiera        8.8       11.3   +27.9%   3.6%               0.0->0.1              8.8->11.2               25.6->31.1
+    job__movie_keyword_keyword_id__keyword_id__filtered__T96__tiera       13.7       17.4   +27.4%   3.0%               0.0->0.2             13.7->17.2               16.4->19.9
+    tpcds__catalog_sales_cs_sold_date_sk__date_dim_d_date_sk__filtered__T16__tiera      140.8      179.4   +27.4%   3.0%               0.0->1.8           140.8->177.6             310.6->356.7
+    job__title_id__movie_link_movie_id__T16__tiera       10.7       13.7   +27.4%   3.0%               0.0->0.1             10.7->13.6               24.1->27.3
+    job__movie_companies_movie_id__movie_link_movie_id__T96__tiera       12.8       16.2   +26.5%   3.0%               0.0->0.2             12.8->16.0               28.8->31.6
+    job__title_id__movie_link_movie_id__T96__tiera       12.3       15.5   +26.2%   3.0%               0.0->0.2             12.3->15.3               26.8->29.7
+    job__movie_info_idx_movie_id__movie_link_linked_movie_id__T16__tiera        7.6        9.6   +25.9%   3.1%               0.0->0.1               7.6->9.5               19.2->21.6
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__filtered__T16__tiera        2.4        3.0   +25.5%   3.0%               0.0->0.0               2.4->2.9                 3.9->4.8
+    job__movie_info_idx_movie_id__movie_link_movie_id__T96__tiera        6.6        8.3   +25.1%   3.2%               0.0->0.1               6.6->8.2               14.8->16.1
+    job__cast_info_person_id__person_info_person_id__T96__tiera      782.9      971.7   +24.1%   3.0%               0.3->3.9           782.6->967.7       21,946.1->21,839.7
+    tpcds__customer_address_ca_county__store_s_county__T16__tiera        1.3        1.6   +23.6%   5.9%               0.0->0.0               1.3->1.6                 3.7->4.2
+    tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__filtered__T16__tiera        2.4        3.0   +23.4%   3.0%               0.0->0.0               2.4->2.9                 4.0->4.8
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__filtered__T16__tiera      243.0      299.2   +23.1%   3.0%               0.0->3.0           243.0->296.2             484.1->565.7
+    tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk__filtered__T16__tiera       18.8       23.2   +23.0%   3.0%               0.0->0.2             18.8->23.0               36.8->43.8
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__filtered__T16__tiera      126.1      154.8   +22.8%   3.0%               0.0->1.5           126.1->153.3             250.5->293.6
+    tpcds__inventory_inv_date_sk__date_dim_d_date_sk__filtered__T96__tiera       96.4      118.3   +22.7%   3.1%               0.0->1.3            96.4->117.1             204.8->224.1
+    tpcds__catalog_sales_cs_ship_date_sk__date_dim_d_date_sk__filtered__T16__tiera      171.1      208.3   +21.8%   3.0%               0.0->1.7           171.1->206.6             336.5->377.8
+    tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk__filtered__T16__tiera       52.9       64.3   +21.6%   3.0%               0.0->0.4             52.9->63.9              92.6->107.5
+    job__movie_keyword_movie_id__aka_title_movie_id__T96__tiera       34.7       42.1   +21.3%   3.0%               0.0->0.3             34.7->41.9             209.0->221.5
+    tpcds__web_sales_ws_item_sk__item_i_item_sk__filtered__T16__tiera       66.5       80.6   +21.0%   3.0%               0.0->0.8             66.5->79.7             130.3->151.0
+    job__movie_info_idx_movie_id__movie_link_linked_movie_id__T96__tiera        8.4       10.1   +21.0%   3.9%               0.0->0.1              8.4->10.0               20.8->22.5
+    job__movie_keyword_movie_id__movie_link_movie_id__T96__tiera       17.4       21.0   +20.8%   6.9%               0.0->0.2             17.4->20.7               33.8->35.8
+    job__movie_companies_movie_id__movie_link_linked_movie_id__T16__tiera       19.1       23.0   +20.8%   3.0%               0.0->0.1             19.1->22.9               48.1->52.9
+    tpcds__catalog_sales_cs_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera      168.7      203.7   +20.7%   4.1%               0.1->2.7           168.6->201.0             422.6->456.6
+    job__movie_companies_company_type_id__company_type_id__filtered__T96__tiera        9.9       11.9   +20.6%   4.9%               0.0->0.2              9.9->11.7               29.3->30.9
+    tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__filtered__T16__tiera      127.4      152.9   +20.0%   3.0%               0.0->0.9           127.4->151.8             221.9->249.4
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__filtered__T16__tiera       13.1       15.7   +20.0%   3.0%               0.0->0.1             13.1->15.6               22.3->25.5
+    job__movie_keyword_movie_id__complete_cast_movie_id__T16__tiera       24.5       29.4   +19.8%   3.3%               0.0->0.1             24.5->29.3               68.2->75.9
+    coffeeshop__fact_sales_product_name__dim_products_name__T16__tiera    8,668.9   10,361.6   +19.5%   3.0%              0.4->74.8      8,668.5->10,285.2       37,126.8->38,797.2
+    tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__filtered__T16__tiera      130.1      154.9   +19.1%   3.0%               0.0->0.9           130.1->153.9             225.9->252.7
+    job__movie_keyword_movie_id__complete_cast_movie_id__T96__tiera       30.3       35.9   +18.8%   5.1%               0.0->0.2             30.2->35.7               81.1->88.7
+    tpcds__store_returns_sr_item_sk__item_i_item_sk__filtered__T16__tiera       29.4       34.9   +18.7%   3.0%               0.0->0.3             29.4->34.6               56.0->64.8
+    tpcds__catalog_sales_cs_ship_date_sk__date_dim_d_date_sk__filtered__T96__tiera      196.9      233.4   +18.6%   3.0%               0.0->2.2           196.8->231.2             443.6->477.6
+    tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk__filtered__T16__tiera      532.0      630.3   +18.5%   3.0%               0.0->3.5           532.0->626.9             889.7->997.5
+    job__cast_info_movie_id__movie_link_linked_movie_id__T16__tiera      305.6      361.5   +18.3%   3.0%               0.0->1.7           305.6->359.7             673.1->732.0
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__filtered__T96__tiera       14.0       16.6   +18.0%   3.0%               0.0->0.1             14.0->16.4               25.2->27.2
+    job__title_id__movie_link_linked_movie_id__T16__tiera       19.2       22.7   +17.8%   3.0%               0.0->0.1             19.2->22.5               40.5->44.2
+    job__movie_keyword_movie_id__movie_info_idx_movie_id__T96__tiera       44.4       52.3   +17.8%   7.0%               0.0->0.3             44.4->52.1             285.1->297.4
+    job__complete_cast_movie_id__movie_link_movie_id__T16__tiera        0.7        0.9   +17.5%   5.5%               0.0->0.0               0.7->0.9                 1.5->1.6
+    job__movie_keyword_movie_id__movie_companies_movie_id__T16__tiera       41.2       48.4   +17.4%   5.0%               0.0->0.2             41.2->48.2             657.0->736.9
+    tpcds__catalog_sales_cs_item_sk__store_returns_sr_item_sk__T16__tiera      369.5      433.9   +17.4%   3.0%               0.0->4.3           369.5->429.5       85,886.1->86,237.5
+    tpcds__store_sales_ss_store_sk__store_s_store_sk__T96__tiera      638.4      748.9   +17.3%   3.0%               0.4->6.1           637.9->742.7         3,415.5->3,330.7
+    tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__filtered__T96__tiera      140.9      165.1   +17.1%   3.0%               0.0->1.0           140.9->164.0             298.1->316.9
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__filtered__T16__tiera       15.8       18.5   +16.9%   3.0%               0.0->0.2             15.8->18.3               29.6->34.2
+    job__cast_info_movie_id__movie_info_movie_id__T96__tiera    1,540.9    1,798.2   +16.7%   5.7%               0.1->4.7       1,540.8->1,793.5       89,959.4->92,941.0
+    tpcds__customer_address_ca_state__store_s_state__filtered__T96__tiera        1.2        1.4   +16.7%  12.4%               0.0->0.0               1.2->1.3                9.6->12.2
+    job__title_id__movie_link_linked_movie_id__T96__tiera       20.5       23.8   +16.2%   3.0%               0.0->0.2             20.5->23.6               42.5->45.7
+    tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera      144.6      167.5   +15.9%   3.3%               0.1->1.3           144.5->166.2             311.4->329.4
+    tpcds__web_returns_wr_item_sk__item_i_item_sk__filtered__T16__tiera        8.0        9.2   +15.8%   3.0%               0.0->0.1               8.0->9.2               14.5->16.7
+    job__movie_keyword_movie_id__title_id__filtered__T16__tiera       25.3       29.3   +15.8%   3.0%               0.0->0.1             25.3->29.2               50.2->57.5
+    job__cast_info_movie_id__movie_link_linked_movie_id__T96__tiera      343.8      396.9   +15.4%   3.0%               0.1->2.1           343.8->394.8             866.8->904.8
+    tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk__filtered__T96__tiera       56.8       65.5   +15.4%   3.0%               0.0->0.4             56.8->65.1             117.7->124.8
+    tpcds__web_returns_wr_refunded_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera       60.4       69.7   +15.4%   4.6%               0.0->0.2             60.4->69.4             285.6->312.4
+    tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera      583.7      672.8   +15.3%   3.0%               0.2->5.5           583.5->667.2         1,251.0->1,317.4
+    job__movie_companies_movie_id__movie_link_linked_movie_id__T96__tiera       20.8       23.9   +15.3%   3.0%               0.0->0.2             20.8->23.7               51.3->55.0
+    tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk__filtered__T96__tiera       20.2       23.2   +14.6%   3.0%               0.0->0.3             20.2->23.0               44.4->46.6
+    coffeeshop__fact_sales_product_id__dim_products_product_id__T96__tiera    8,216.6    9,370.5   +14.0%   3.0%             11.2->96.8       8,201.0->9,270.8       55,516.3->56,422.5
+    job__movie_info_idx_movie_id__complete_cast_movie_id__T16__tiera       10.5       11.9   +13.1%   3.1%               0.0->0.1             10.5->11.8               27.2->30.5
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__filtered__T96__tiera      161.0      182.1   +13.1%   3.0%               0.1->2.5           161.0->179.7             391.3->399.9
+    job__movie_keyword_movie_id__title_id__T16__tiera       37.9       42.7   +12.5%   7.5%               0.0->0.1             37.9->42.5             120.4->141.4
+    tpcds__web_returns_wr_returning_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera       60.6       68.1   +12.2%   4.4%               0.0->0.2             60.6->67.8             279.2->314.3
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__filtered__T96__tiera      313.4      351.3   +12.1%   3.0%               0.2->4.9           313.1->346.3             770.2->781.3
+    job__movie_companies_company_id__company_name_id__filtered__T16__tiera       24.6       27.5   +12.0%   3.0%               0.0->0.1             24.6->27.4               32.8->36.9
+    tpcds__inventory_inv_item_sk__item_i_item_sk__filtered__T16__tiera      188.3      210.7   +11.9%   3.0%               0.0->1.1           188.3->209.6             296.7->335.3
+    tpch__supplier_s_nationkey__nation_n_nationkey__T96__tiera        2.5        2.8   +11.5%   4.4%               0.0->0.1               2.5->2.7                 7.8->8.2
+    job__movie_companies_company_id__company_name_id__filtered__T96__tiera       26.4       29.4   +11.5%   3.0%               0.0->0.2             26.4->29.2               36.6->40.3
+    tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__filtered__T96__tiera        3.9        4.3   +11.4%   3.4%               0.0->0.1               3.9->4.2                 7.0->7.3
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__filtered__T96__tiera        3.9        4.3   +11.1%   4.4%               0.0->0.1               3.8->4.1                 7.0->7.4
+    tpcds__web_sales_ws_web_page_sk__web_page_wp_web_page_sk__T16__tiera      130.5      144.8   +11.0%   3.0%               0.0->1.0           130.5->143.7             355.7->384.7
+    tpcds__store_returns_sr_item_sk__item_i_item_sk__filtered__T96__tiera       32.8       36.3   +10.7%   3.0%               0.0->0.4             32.7->35.9               72.8->76.2
+    job__movie_companies_company_type_id__company_type_id__T16__tiera       13.2       14.6   +10.5%   3.0%               0.0->0.1             13.2->14.4               43.5->46.1
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__filtered__T96__tiera       17.2       18.9   +10.2%   3.0%               0.0->0.2             17.2->18.7               34.9->37.3
+    tpcds__web_sales_ws_promo_sk__promotion_p_promo_sk__T16__tiera      128.6      141.5   +10.0%   3.0%               0.0->1.0           128.6->140.6             590.4->620.3
+    tpcds__store_returns_sr_store_sk__store_s_store_sk__T96__tiera       68.0       74.7    +9.9%   5.2%               0.0->0.6             68.0->74.2             343.4->342.2
+    tpcds__web_sales_ws_item_sk__item_i_item_sk__filtered__T96__tiera       85.8       94.2    +9.9%   5.9%               0.1->1.2             85.7->93.0             199.5->204.2
+    job__cast_info_person_id__name_id__T96__tiera       555.1      609.6    +9.8%   3.0%               0.1->2.3           555.1->607.3         2,128.0->2,328.3
+    tpcds__customer_c_current_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera        6.9        7.5    +9.4%   7.8%               0.0->0.1               6.9->7.4               42.8->52.3
+    tpcds__inventory_inv_item_sk__item_i_item_sk__filtered__T96__tiera      220.9      240.9    +9.1%   3.0%               0.1->1.7           220.9->239.1             444.0->462.5
+    tpcds__catalog_sales_cs_promo_sk__promotion_p_promo_sk__T16__tiera      259.8      282.4    +8.7%   3.0%               0.0->1.9           259.8->280.6         1,189.4->1,232.1
+    tpcds__web_returns_wr_item_sk__item_i_item_sk__filtered__T96__tiera        9.4       10.2    +8.7%   3.0%               0.0->0.1              9.4->10.1               17.6->18.8
+    tpcds__customer_c_current_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera        6.9        7.5    +8.4%   3.0%               0.0->0.1               6.9->7.4               16.9->18.1
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__T96__tiera      805.3      868.9    +7.9%   3.0%               0.3->6.1           805.0->862.6         4,159.6->4,003.8
+    tpcds__catalog_sales_cs_bill_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera      603.5      649.3    +7.6%   3.0%               0.0->2.2           603.5->647.0         1,398.1->1,482.4
+    tpcds__store_sales_ss_promo_sk__promotion_p_promo_sk__T16__tiera      536.8      576.9    +7.5%   3.0%               0.0->3.9           536.8->572.9         2,303.5->2,402.0
+    tpch__partsupp_ps_partkey__part_p_partkey__filtered__T16__tiera      169.5      181.8    +7.2%   3.0%               0.0->1.0           169.5->180.8             189.0->203.9
+    job__movie_companies_company_type_id__company_type_id__T96__tiera       15.8       16.9    +7.2%   3.0%               0.0->0.3             15.8->16.7               53.6->52.9
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__T96__tiera      405.8      434.2    +7.0%   3.0%               0.2->3.0           405.5->431.2         2,079.0->2,008.9
+    tpcds__web_sales_ws_item_sk__item_i_item_sk__T96__tiera      208.9      223.1    +6.8%   5.5%               0.1->1.6           208.8->221.6         1,035.1->1,012.7
+    tpcds__web_returns_wr_web_page_sk__web_page_wp_web_page_sk__T16__tiera       13.8       14.7    +6.7%   3.0%               0.0->0.1             13.8->14.6               35.3->37.0
+    tpcds__web_sales_ws_ship_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera      302.3      322.3    +6.6%   3.0%               0.0->1.1           302.3->321.2             697.8->742.9
+    job__movie_info_idx_movie_id__complete_cast_movie_id__T96__tiera       11.4       12.1    +6.4%   3.7%               0.0->0.1             11.4->12.1               30.1->30.8
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__T16__tiera       39.1       41.6    +6.4%   4.1%               0.0->0.2             39.1->41.3             123.6->149.6
+    tpcds__store_sales_ss_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera    1,209.1    1,285.7    +6.3%   3.0%               0.0->4.5       1,209.0->1,281.4         2,741.9->2,901.0
+    tpcds__customer_c_current_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera        7.3        7.8    +6.3%   3.0%               0.0->0.1               7.3->7.7               17.9->18.9
+    job__title_kind_id__kind_type_id__T96__tiera         14.9       15.8    +6.2%   3.0%               0.0->0.2             14.9->15.6               46.9->47.5
+    stackoverflow__votes_PostId__posts_Id__T96__tiera    4,144.4    4,383.9    +5.8%   4.9%               0.0->6.3       4,144.4->4,377.7         7,838.2->8,266.3
+    tpcds__web_returns_wr_item_sk__item_i_item_sk__T16__tiera       20.3       21.5    +5.7%   3.0%               0.0->0.1             20.3->21.4               62.6->77.0
+    tpcds__web_returns_wr_reason_sk__reason_r_reason_sk__T96__tiera       15.2       16.1    +5.7%   3.0%               0.0->0.3             15.2->15.9             111.4->107.0
+    tpcds__web_sales_ws_ship_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera      339.3      357.3    +5.3%   3.0%               0.1->1.6           339.2->355.8             948.8->946.3
+    tpcds__catalog_sales_cs_bill_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera      671.1      706.2    +5.2%   3.0%               0.2->3.0           670.9->703.1         1,860.0->1,850.9
+    tpcds__store_sales_ss_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera    1,326.3    1,394.2    +5.1%   3.0%               0.3->6.1       1,326.1->1,388.0         3,611.4->3,570.7
+    tpcds__catalog_sales_cs_catalog_page_sk__catalog_page_cp_catalog_page_sk__T16__tiera      413.5      434.2    +5.0%   3.0%               0.0->2.2           413.5->432.0             965.1->992.0
+    tpcds__web_sales_ws_warehouse_sk__warehouse_w_warehouse_sk__T16__tiera      126.7      133.0    +5.0%   3.0%               0.0->1.2           126.7->131.8             646.3->668.8
+    tpcds__web_sales_ws_ship_mode_sk__ship_mode_sm_ship_mode_sk__T16__tiera      126.5      132.7    +4.9%   3.0%               0.0->1.1           126.5->131.6             514.3->522.2
+    tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera       31.1       32.5    +4.6%   3.0%               0.0->0.5             31.1->32.0             209.6->198.1
+    job__cast_info_person_id__aka_name_person_id__T96__tiera      420.9      440.1    +4.6%   3.0%               0.1->2.5           420.9->437.7         1,860.8->1,940.9
+    tpcds__web_sales_ws_warehouse_sk__warehouse_w_warehouse_sk__T96__tiera      157.0      163.8    +4.3%   3.0%               0.1->1.6           156.8->162.2             901.3->892.9
+    tpcds__inventory_inv_warehouse_sk__warehouse_w_warehouse_sk__T96__tiera      213.0      222.2    +4.3%   3.0%               0.1->2.1           212.9->220.1         1,065.6->1,045.2
+    tpcds__catalog_sales_cs_ship_mode_sk__ship_mode_sm_ship_mode_sk__T96__tiera      326.7      340.7    +4.3%   3.0%               0.4->3.3           326.2->337.5         1,979.0->1,731.9
+    tpcds__store_returns_sr_reason_sk__reason_r_reason_sk__T16__tiera       52.0       54.2    +4.2%   3.0%               0.0->0.4             52.0->53.8             253.5->267.3
+    tpcds__catalog_sales_cs_warehouse_sk__warehouse_w_warehouse_sk__T16__tiera      255.1      265.4    +4.0%   3.0%               0.0->2.3           255.1->263.1         1,283.1->1,303.7
+    tpcds__catalog_sales_cs_warehouse_sk__warehouse_w_warehouse_sk__T96__tiera      310.0      322.4    +4.0%   3.0%               0.2->3.2           309.9->319.4         1,737.7->1,751.6
+    tpcds__web_sales_ws_web_site_sk__web_site_web_site_sk__T16__tiera      127.3      132.4    +4.0%   3.0%               0.0->1.2           127.3->131.2             714.6->787.6
+    tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera       36.7       38.1    +4.0%   3.0%               0.0->0.4             36.7->37.7             135.3->127.1
+    tpcds__inventory_inv_warehouse_sk__warehouse_w_warehouse_sk__T16__tiera      180.5      187.5    +3.9%   3.0%               0.0->1.4           180.5->186.3             799.2->813.1
+    tpcds__catalog_sales_cs_catalog_page_sk__catalog_page_cp_catalog_page_sk__T96__tiera      491.6      510.2    +3.8%   3.0%               0.4->3.2           491.3->507.0         1,447.3->1,403.4
+    job__cast_info_role_id__role_type_id__T16__tiera      194.8      201.8    +3.6%   3.0%               0.0->1.6           194.8->200.2             608.7->625.0
+    tpcds__catalog_sales_cs_ship_mode_sk__ship_mode_sm_ship_mode_sk__T16__tiera      253.3      262.0    +3.5%   3.0%               0.0->2.0           253.2->260.0         1,022.9->1,028.0
+    tpcds__web_sales_ws_ship_mode_sk__ship_mode_sm_ship_mode_sk__T96__tiera      162.8      168.4    +3.5%   3.0%               0.2->1.6           162.5->166.8           1,002.0->875.4
+    tpcds__store_returns_sr_store_sk__store_s_store_sk__filtered__T16__tiera       93.1       96.3    +3.4%   3.0%               0.0->0.4             93.1->95.9             210.1->216.4
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__T96__tiera       48.0       49.6    +3.3%   3.0%               0.0->0.3             48.0->49.3             208.1->198.0
+    tpcds__catalog_sales_cs_call_center_sk__call_center_cc_call_center_sk__T16__tiera      254.3      262.3    +3.1%   3.0%               0.0->2.4           254.3->260.0         1,409.6->1,428.1
+  WINS on probe_cost: 161
+    tpcds__customer_address_ca_zip__store_s_zip__T16__tiera        6.6 ->        4.0   -39.8% (band 3.0%)
+    tpch__lineitem_l_partkey__part_p_partkey__T16__tiera    5,309.5 ->    3,274.1   -38.3% (band 3.0%)
+    tpch__lineitem_l_partkey__partsupp_ps_partkey__composite__T16__tiera    5,426.3 ->    3,393.7   -37.5% (band 3.0%)
+    tpch__orders_o_custkey__customer_c_custkey__T16__tiera    1,277.7 ->      816.8   -36.1% (band 3.0%)
+    tpch__orders_o_custkey__customer_c_custkey__left__T16__tiera    1,317.9 ->      846.9   -35.7% (band 3.0%)
+    tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk__T16__tiera       35.7 ->       23.0   -35.6% (band 3.0%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__T16__tiera    4,605.5 ->    2,968.5   -35.5% (band 3.4%)
+    tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk__T16__tiera       71.7 ->       46.3   -35.4% (band 3.0%)
+    tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk__T16__tiera      343.3 ->      222.1   -35.3% (band 3.0%)
+    tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk__T16__tiera       35.4 ->       23.0   -35.1% (band 3.0%)
+    tpch__partsupp_ps_partkey__part_p_partkey__T16__tiera      497.5 ->      323.2   -35.0% (band 4.4%)
+    tpch__lineitem_l_partkey__part_p_partkey__T96__tiera    6,969.0 ->    4,529.2   -35.0% (band 3.0%)
+    tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk__T16__tiera      341.6 ->      223.2   -34.7% (band 3.0%)
+    tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk__T96__tiera        8.2 ->        5.4   -34.5% (band 3.2%)
+    tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk__T16__tiera      682.8 ->      450.4   -34.0% (band 3.0%)
+    tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk__T16__tiera      683.8 ->      453.1   -33.7% (band 3.0%)
+    tpcds__inventory_inv_item_sk__catalog_sales_cs_item_sk__T96__tiera    1,777.0 ->    1,198.1   -32.6% (band 3.0%)
+    tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk__T16__tiera    1,344.0 ->      906.4   -32.6% (band 3.0%)
+    job__movie_info_movie_id__movie_keyword_movie_id__T96__tiera      487.9 ->      332.6   -31.8% (band 3.0%)
+    tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk__T16__tiera        7.8 ->        5.3   -31.7% (band 3.0%)
+    tpch__partsupp_ps_suppkey__supplier_s_suppkey__T96__tiera      644.0 ->      453.4   -29.6% (band 3.0%)
+    job__cast_info_movie_id__movie_keyword_movie_id__T96__tiera      908.2 ->      642.7   -29.2% (band 3.0%)
+    stackoverflow__comments_UserId__users_Id__T16__tiera    1,403.9 ->    1,010.3   -28.0% (band 3.0%)
+    tpch__orders_o_custkey__customer_c_custkey__left__T96__tiera    2,327.0 ->    1,679.1   -27.8% (band 3.0%)
+    tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk__T96__tiera       89.4 ->       64.5   -27.8% (band 3.0%)
+    tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk__T96__tiera       44.4 ->       32.3   -27.4% (band 3.0%)
+    stackoverflow__posts_OwnerUserId__users_Id__T16__tiera    1,093.7 ->      795.5   -27.3% (band 3.0%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__left_semi__T96__tiera    4,630.6 ->    3,369.8   -27.2% (band 3.0%)
+    job__movie_keyword_keyword_id__keyword_id__T16__tiera       37.7 ->       27.5   -27.1% (band 3.6%)
+    tpcds__customer_address_ca_zip__store_s_zip__filtered__T16__tiera        6.6 ->        4.9   -26.8% (band 3.0%)
+    tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk__T96__tiera       43.9 ->       32.2   -26.6% (band 3.0%)
+    tpch__lineitem_l_partkey__partsupp_ps_partkey__composite__T96__tiera    8,860.0 ->    6,505.1   -26.6% (band 3.0%)
+    tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk__T96__tiera      450.4 ->      331.0   -26.5% (band 3.0%)
+    job__movie_link_link_type_id__link_type_id__T96__tiera        0.2 ->        0.2   -26.1% (band 16.7%)
+    tpcds__inventory_inv_item_sk__item_i_item_sk__T16__tiera      394.3 ->      291.7   -26.0% (band 3.0%)
+    tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk__T96__tiera      897.1 ->      664.1   -26.0% (band 3.0%)
+    tpch__orders_o_custkey__customer_c_custkey__T96__tiera    2,147.5 ->    1,595.9   -25.7% (band 3.0%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__left_semi__T16__tiera    3,091.3 ->    2,309.5   -25.3% (band 3.0%)
+    job__movie_keyword_keyword_id__keyword_id__T96__tiera       42.9 ->       32.1   -25.3% (band 5.6%)
+    tpcds__customer_address_ca_zip__store_s_zip__T96__tiera        5.4 ->        4.1   -25.1% (band 3.0%)
+    job__cast_info_person_role_id__char_name_id__T96__tiera      363.1 ->      273.2   -24.8% (band 3.0%)
+    tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk__T16__tiera      392.7 ->      295.7   -24.7% (band 3.0%)
+    tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk__T16__tiera      783.9 ->      593.0   -24.3% (band 3.0%)
+    tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__T96__tiera      326.8 ->      248.0   -24.1% (band 8.8%)
+    tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk__T96__tiera      405.8 ->      309.9   -23.6% (band 3.0%)
+    tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk__T96__tiera      405.0 ->      309.5   -23.6% (band 3.0%)
+    job__movie_info_movie_id__movie_info_idx_movie_id__T96__tiera      319.2 ->      244.8   -23.3% (band 3.0%)
+    job__cast_info_movie_id__movie_keyword_movie_id__T16__tiera      629.3 ->      483.6   -23.2% (band 3.0%)
+    stackoverflow__badges_UserId__users_Id__T16__tiera      620.8 ->      477.2   -23.1% (band 3.0%)
+    job__cast_info_movie_id__movie_info_idx_movie_id__T16__tiera      579.1 ->      445.5   -23.1% (band 3.0%)
+    tpch__lineitem_l_suppkey__supplier_s_suppkey__T16__tiera    2,749.8 ->    2,121.7   -22.8% (band 3.0%)
+    tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__T96__tiera      315.6 ->      243.6   -22.8% (band 9.8%)
+    job__movie_info_movie_id__movie_keyword_movie_id__T16__tiera      247.3 ->      191.1   -22.7% (band 3.0%)
+    job__cast_info_person_role_id__char_name_id__T16__tiera      230.6 ->      178.9   -22.4% (band 3.0%)
+    job__movie_companies_company_id__company_name_id__T16__tiera       25.9 ->       20.1   -22.3% (band 5.5%)
+    job__movie_companies_company_id__company_name_id__T96__tiera       33.7 ->       26.2   -22.3% (band 3.4%)
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__T96__tiera        7.7 ->        5.9   -22.2% (band 12.5%)
+    tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__T16__tiera      559.3 ->      435.2   -22.2% (band 3.0%)
+    tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk__T16__tiera      555.7 ->      432.6   -22.2% (band 3.0%)
+    tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera    1,159.8 ->      908.1   -21.7% (band 3.0%)
+    tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera    2,334.7 ->    1,829.6   -21.6% (band 3.0%)
+    tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk__T96__tiera       61.1 ->       48.3   -20.9% (band 14.2%)
+    tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T16__tiera      273.6 ->      216.8   -20.8% (band 3.0%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__T16__tiera    1,087.3 ->      862.1   -20.7% (band 3.0%)
+    job__movie_info_movie_id__movie_info_idx_movie_id__T16__tiera      216.5 ->      171.9   -20.6% (band 3.0%)
+    tpch__lineitem_l_suppkey__supplier_s_suppkey__T96__tiera    4,109.5 ->    3,264.6   -20.6% (band 3.0%)
+    stackoverflow__votes_PostId__posts_Id__T16__tiera    3,132.5 ->    2,490.7   -20.5% (band 3.0%)
+    tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk__T96__tiera    1,667.4 ->    1,330.6   -20.2% (band 3.0%)
+    job__cast_info_movie_id__movie_info_idx_movie_id__T96__tiera      689.6 ->      551.3   -20.1% (band 3.0%)
+    job__cast_info_movie_id__title_id__T96__tiera       849.3 ->      679.0   -20.0% (band 3.0%)
+    tpcds__catalog_sales_cs_ship_date_sk__date_dim_d_date_sk__T96__tiera      616.7 ->      498.8   -19.1% (band 9.2%)
+    job__person_info_person_id__aka_name_person_id__T16__tiera       34.4 ->       27.9   -18.9% (band 3.0%)
+    job__movie_info_movie_id__aka_title_movie_id__T16__tiera      198.0 ->      161.4   -18.5% (band 3.0%)
+    tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__T96__tiera        7.8 ->        6.4   -18.0% (band 11.2%)
+    tpcds__store_sales_ss_item_sk__store_returns_sr_item_sk__composite__T16__tiera    1,993.8 ->    1,639.7   -17.8% (band 3.0%)
+    job__person_info_person_id__aka_name_person_id__T96__tiera       58.8 ->       48.4   -17.6% (band 3.0%)
+    tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T96__tiera      424.3 ->      349.8   -17.6% (band 3.1%)
+    job__movie_info_movie_id__title_id__T16__tiera      189.7 ->      157.3   -17.1% (band 3.0%)
+    job__title_id__complete_cast_movie_id__T16__tiera       29.3 ->       24.3   -17.1% (band 3.0%)
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__T96__tiera       30.0 ->       25.0   -16.7% (band 10.0%)
+    tpcds__catalog_sales_cs_item_sk__catalog_returns_cr_item_sk__composite__T16__tiera      964.2 ->      803.6   -16.7% (band 3.0%)
+    job__cast_info_movie_id__complete_cast_movie_id__T16__tiera      464.8 ->      387.6   -16.6% (band 3.0%)
+    job__title_id__aka_title_movie_id__T16__tiera        33.7 ->       28.1   -16.5% (band 3.0%)
+    tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera      679.7 ->      567.9   -16.5% (band 3.0%)
+    tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera      205.4 ->      172.1   -16.2% (band 3.0%)
+    job__movie_info_movie_id__title_id__T96__tiera      383.5 ->      322.4   -15.9% (band 4.6%)
+    stackoverflow__comments_UserId__users_Id__T96__tiera    1,518.6 ->    1,277.3   -15.9% (band 3.9%)
+    tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk__T16__tiera    1,425.1 ->    1,199.7   -15.8% (band 3.0%)
+    job__cast_info_person_id__name_id__T16__tiera       302.4 ->      254.9   -15.7% (band 3.0%)
+    tpcds__inventory_inv_item_sk__item_i_item_sk__T96__tiera      443.9 ->      374.6   -15.6% (band 3.0%)
+    job__movie_companies_movie_id__movie_info_idx_movie_id__T16__tiera       37.3 ->       31.5   -15.5% (band 3.0%)
+    job__cast_info_movie_id__title_id__filtered__T16__tiera      479.1 ->      405.8   -15.3% (band 3.0%)
+    job__title_id__complete_cast_movie_id__T96__tiera       31.1 ->       26.3   -15.2% (band 3.0%)
+    tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk__T96__tiera      131.4 ->      111.6   -15.1% (band 10.8%)
+    job__movie_info_movie_id__movie_companies_movie_id__T16__tiera      216.4 ->      184.3   -14.8% (band 3.0%)
+    tpch__orders_o_custkey__customer_c_custkey__filtered__T16__tiera      854.1 ->      727.5   -14.8% (band 3.0%)
+    tpch__nation_n_regionkey__region_r_regionkey__T96__tiera        0.0 ->        0.0   -14.8% (band 14.2%)
+    tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera    1,313.1 ->    1,119.3   -14.8% (band 3.0%)
+    job__cast_info_movie_id__movie_info_movie_id__T16__tiera      752.4 ->      641.9   -14.7% (band 3.0%)
+    tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk__T96__tiera      804.9 ->      687.8   -14.6% (band 3.0%)
+    stackoverflow__comments_PostId__posts_Id__T16__tiera    1,589.7 ->    1,359.6   -14.5% (band 3.0%)
+    job__movie_companies_movie_id__movie_info_idx_movie_id__T96__tiera       47.4 ->       40.7   -14.1% (band 3.0%)
+    tpch__partsupp_ps_suppkey__supplier_s_suppkey__T16__tiera      312.8 ->      268.8   -14.1% (band 5.3%)
+    tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk__T96__tiera      792.7 ->      681.0   -14.1% (band 3.0%)
+    job__cast_info_movie_id__title_id__filtered__T96__tiera      673.2 ->      579.4   -13.9% (band 5.2%)
+    job__movie_info_movie_id__movie_companies_movie_id__T96__tiera      437.2 ->      376.4   -13.9% (band 4.9%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__left_semi__T16__tiera      869.1 ->      748.5   -13.9% (band 3.0%)
+    job__name_id__aka_name_person_id__T96__tiera         86.5 ->       74.5   -13.9% (band 3.0%)
+    stackoverflow__posts_OwnerUserId__users_Id__T96__tiera    1,389.1 ->    1,197.5   -13.8% (band 4.5%)
+    coffeeshop__fact_sales_location_id__dim_locations_location_id__T16__tiera    5,769.6 ->    4,981.9   -13.7% (band 3.0%)
+    tpch__nation_n_regionkey__region_r_regionkey__T16__tiera        0.0 ->        0.0   -13.6% (band 6.5%)
+    job__movie_info_movie_id__aka_title_movie_id__T96__tiera      241.1 ->      208.3   -13.6% (band 3.0%)
+    job__cast_info_movie_id__complete_cast_movie_id__T96__tiera      511.4 ->      442.2   -13.5% (band 3.0%)
+    job__title_id__movie_info_idx_movie_id__T16__tiera       37.5 ->       32.4   -13.5% (band 3.0%)
+    tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__T16__tiera      236.2 ->      205.2   -13.1% (band 6.2%)
+    job__movie_companies_movie_id__aka_title_movie_id__T16__tiera       32.7 ->       28.4   -13.0% (band 3.0%)
+    tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__T96__tiera      851.3 ->      740.4   -13.0% (band 3.0%)
+    job__title_id__aka_title_movie_id__T96__tiera        35.5 ->       30.9   -12.9% (band 3.0%)
+    tpch__orders_o_custkey__customer_c_custkey__filtered__T96__tiera    1,361.0 ->    1,194.9   -12.2% (band 3.0%)
+    job__movie_info_movie_id__title_id__filtered__T16__tiera      175.6 ->      154.2   -12.2% (band 3.0%)
+    job__name_id__aka_name_person_id__T16__tiera         59.0 ->       51.8   -12.1% (band 3.0%)
+    tpcds__customer_address_ca_zip__store_s_zip__filtered__T96__tiera        5.5 ->        4.9   -11.9% (band 4.5%)
+    tpcds__web_sales_ws_item_sk__web_returns_wr_item_sk__composite__T16__tiera      443.4 ->      391.4   -11.7% (band 3.0%)
+    tpcds__catalog_sales_cs_sold_date_sk__date_dim_d_date_sk__T16__tiera      456.3 ->      403.1   -11.7% (band 6.3%)
+    tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__T16__tiera      234.8 ->      207.9   -11.5% (band 6.0%)
+    tpcds__store_sales_ss_item_sk__store_returns_sr_item_sk__composite__T96__tiera    4,191.7 ->    3,713.6   -11.4% (band 3.0%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__T96__tiera    6,778.5 ->    6,042.3   -10.9% (band 3.0%)
+    coffeeshop__fact_sales_location_id__dim_locations_location_id__T96__tiera    7,067.3 ->    6,304.9   -10.8% (band 3.0%)
+    job__movie_info_movie_id__complete_cast_movie_id__T16__tiera      159.6 ->      142.5   -10.7% (band 3.0%)
+    tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk__T96__tiera    1,558.0 ->    1,391.8   -10.7% (band 3.0%)
+    tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk__T96__tiera      836.3 ->      747.2   -10.7% (band 3.0%)
+    job__movie_companies_movie_id__aka_title_movie_id__T96__tiera       37.4 ->       33.5   -10.4% (band 3.0%)
+    job__cast_info_movie_id__movie_companies_movie_id__T96__tiera      771.4 ->      692.6   -10.2% (band 3.0%)
+    tpcds__store_sales_ss_store_sk__store_s_store_sk__T16__tiera      524.7 ->      471.5   -10.1% (band 3.0%)
+    job__movie_info_info_type_id__info_type_id__T16__tiera       84.0 ->       75.7    -9.9% (band 3.0%)
+    tpcds__catalog_sales_cs_item_sk__catalog_returns_cr_item_sk__composite__T96__tiera    1,981.3 ->    1,786.1    -9.9% (band 3.0%)
+    job__title_id__movie_info_idx_movie_id__T96__tiera       42.9 ->       38.8    -9.7% (band 3.0%)
+    tpch__lineitem_l_partkey__part_p_partkey__filtered__T16__tiera    2,643.4 ->    2,394.2    -9.4% (band 3.0%)
+    tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera      130.4 ->      118.1    -9.4% (band 3.0%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__T96__tiera    1,654.5 ->    1,500.0    -9.3% (band 3.0%)
+    job__person_info_info_type_id__info_type_id__T16__tiera       19.0 ->       17.2    -9.3% (band 3.0%)
+    tpcds__store_returns_sr_store_sk__store_s_store_sk__T16__tiera       52.3 ->       47.4    -9.3% (band 3.0%)
+    stackoverflow__badges_UserId__users_Id__T96__tiera    1,027.0 ->      934.2    -9.0% (band 4.1%)
+    tpcds__web_sales_ws_item_sk__web_returns_wr_item_sk__composite__T96__tiera      887.5 ->      808.3    -8.9% (band 3.0%)
+    job__cast_info_movie_id__title_id__T16__tiera       484.8 ->      441.9    -8.8% (band 3.0%)
+    job__movie_companies_movie_id__title_id__T16__tiera       32.3 ->       29.4    -8.8% (band 5.2%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__left_semi__T96__tiera    1,459.3 ->    1,332.1    -8.7% (band 3.0%)
+    job__movie_companies_movie_id__complete_cast_movie_id__T16__tiera       27.0 ->       24.6    -8.7% (band 3.0%)
+    job__movie_info_movie_id__title_id__filtered__T96__tiera      282.8 ->      258.9    -8.5% (band 3.0%)
+    tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk__T96__tiera    1,220.2 ->    1,118.2    -8.4% (band 5.4%)
+    job__movie_companies_movie_id__title_id__filtered__T16__tiera       28.6 ->       26.4    -7.9% (band 3.0%)
+    job__movie_info_idx_info_type_id__info_type_id__T16__tiera        7.4 ->        6.9    -7.5% (band 4.2%)
+    tpch__lineitem_l_partkey__part_p_partkey__filtered__T96__tiera    2,857.6 ->    2,650.4    -7.3% (band 3.0%)
+    job__movie_companies_movie_id__complete_cast_movie_id__T96__tiera       29.3 ->       27.2    -7.3% (band 3.0%)
+    job__person_info_info_type_id__info_type_id__T96__tiera       19.4 ->       18.3    -5.9% (band 3.0%)
+    tpcds__inventory_inv_date_sk__date_dim_d_date_sk__T16__tiera      198.7 ->      188.2    -5.3% (band 4.7%)
+    tpcds__web_returns_wr_refunded_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera       30.9 ->       29.5    -4.5% (band 3.0%)
+    job__cast_info_movie_id__movie_companies_movie_id__T16__tiera      489.1 ->      467.4    -4.5% (band 3.0%)
+    tpcds__web_returns_wr_returning_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera       30.7 ->       29.3    -4.4% (band 3.0%)
+    job__movie_info_movie_id__complete_cast_movie_id__T96__tiera      176.9 ->      169.1    -4.4% (band 3.0%)
+    job__cast_info_person_id__aka_name_person_id__T16__tiera      256.3 ->      247.9    -3.3% (band 3.0%)
+
+projection_cost: verdicts 368   win=43 tie=127 loss=198   no-verdict=8
+  aggregate 2,284,639.8 ms -> 2,347,582.1 ms (+2.8%)
+  median per-cell delta +4.5%
+  LOSSES on projection_cost: 198
+    cell                                                 A ms       B ms    delta   band         disp A->B (ms)       lookup A->B (ms)      probe tot A->B (ms)
+    stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera      525.6      829.8   +57.9%   3.0%               0.0->0.2           147.2->281.3           673.9->1,110.6
+    tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__T96__tiera        0.1        0.1   +56.0%  19.2%               0.0->0.0               0.1->0.1                 0.2->0.2
+    tpcds__customer_address_ca_state__store_s_state__filtered__T16__tiera        6.7        9.9   +48.2%   5.8%               0.0->0.0               0.9->1.2                7.6->11.2
+    tpcds__customer_address_ca_state__store_s_state__T16__tiera       12.3       17.0   +37.4%   8.8%               0.0->0.0               1.0->1.5               13.4->18.4
+    job__movie_companies_movie_id__title_id__filtered__T96__tiera       28.8       39.5   +37.3%   6.9%               0.0->0.2             41.4->53.6               70.0->92.9
+    tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T16__tiera    1,605.7    2,192.7   +36.6%   3.0%               0.0->1.2           273.6->215.6         1,879.3->2,409.5
+    tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__T16__tiera    3,246.1    4,395.9   +35.4%   3.0%               0.0->2.4           559.3->432.8         3,806.1->4,835.7
+    tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera      579.8      783.6   +35.2%   3.0%               0.0->0.5           130.4->117.6             710.0->903.5
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__T16__tiera    6,277.4    8,441.9   +34.5%   3.0%               0.0->4.9         1,087.2->857.2         7,366.3->9,306.8
+    tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk__T16__tiera    3,223.1    4,326.9   +34.2%   3.0%               0.0->2.3           555.7->430.2         3,778.8->4,756.8
+    tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera    5,606.7    7,525.8   +34.2%   3.0%               0.0->4.7       1,313.1->1,114.6         6,921.3->8,648.0
+    stackoverflow__comments_UserId__users_Id__T16__tiera    6,523.8    8,732.0   +33.8%   3.0%               0.0->2.7       1,403.9->1,007.6         7,927.7->9,722.5
+    tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera    2,937.4    3,923.3   +33.6%   3.0%               0.0->2.5           679.7->565.4         3,615.8->4,493.9
+    tpcds__web_returns_wr_refunded_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera      149.1      198.6   +33.2%   3.0%               0.0->0.1             30.9->29.3             180.0->227.8
+    tpcds__web_returns_wr_returning_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera      149.2      198.6   +33.2%   3.0%               0.0->0.2             30.7->29.2             179.9->227.6
+    stackoverflow__posts_OwnerUserId__users_Id__T16__tiera    5,352.8    7,050.0   +31.7%   3.0%               0.0->2.4         1,093.7->793.1         6,442.8->7,858.8
+    tpch__lineitem_l_suppkey__supplier_s_suppkey__T16__tiera   16,413.5   21,569.0   +31.4%   3.0%              0.0->11.6       2,749.7->2,109.9       19,162.6->23,708.5
+    tpcds__web_returns_wr_item_sk__item_i_item_sk__T16__tiera       42.3       55.5   +31.2%   6.0%               0.0->0.1             20.3->21.4               62.6->77.0
+    job__complete_cast_subject_id__comp_cast_type_id__T16__tiera        1.8        2.4   +31.0%  11.5%               0.0->0.0               0.8->1.2                 2.7->3.6
+    tpch__partsupp_ps_suppkey__supplier_s_suppkey__T16__tiera      744.4      971.3   +30.5%   3.0%               0.0->1.2           312.8->267.5         1,057.0->1,234.8
+    tpch__lineitem_l_partkey__part_p_partkey__T16__tiera   36,154.1   47,077.1   +30.2%   3.0%              0.0->12.7       5,309.5->3,261.1       41,478.6->50,347.4
+    tpcds__customer_address_ca_state__store_s_state__filtered__T96__tiera        8.4       10.9   +29.1%   8.1%               0.0->0.0               1.2->1.3                9.6->12.2
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__T16__tiera       84.5      108.1   +28.0%   5.4%               0.0->0.2             39.1->41.3             123.6->149.6
+    job__cast_info_movie_id__title_id__T16__tiera     2,677.7    3,422.5   +27.8%   3.0%               0.0->2.1           484.8->439.8         3,160.9->3,865.0
+    job__movie_companies_movie_id__title_id__T16__tiera       55.1       70.3   +27.5%   4.6%               0.0->0.2             32.3->29.3               87.1->99.7
+    tpch__orders_o_custkey__customer_c_custkey__T16__tiera    4,353.1    5,539.9   +27.3%   3.0%               0.0->3.4         1,277.7->813.5         5,631.1->6,355.5
+    tpch__orders_o_custkey__customer_c_custkey__left__T16__tiera    4,517.7    5,726.6   +26.8%   3.0%               0.0->3.5         1,317.8->843.3         5,838.0->6,572.6
+    tpcds__customer_c_current_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera       35.8       45.1   +25.9%   3.0%               0.0->0.1               6.9->7.4               42.8->52.3
+    job__name_id__person_info_person_id__T16__tiera      249.7      313.3   +25.5%   3.0%               0.0->0.5             61.6->89.3             311.7->402.5
+    job__movie_companies_movie_id__movie_info_idx_movie_id__T16__tiera      103.3      128.6   +24.5%   3.0%               0.0->0.2             37.3->31.3             140.1->160.2
+    job__person_info_person_id__aka_name_person_id__T16__tiera       97.3      121.1   +24.5%   3.0%               0.0->0.7             34.4->27.2             131.8->149.1
+    job__cast_info_movie_id__title_id__filtered__T16__tiera      791.9      980.1   +23.8%   3.0%               0.0->1.8           479.1->404.0         1,271.5->1,387.1
+    tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk__T16__tiera       26.1       32.3   +23.6%   3.0%               0.0->0.1               7.8->5.2               34.1->37.7
+    job__movie_info_movie_id__movie_keyword_movie_id__T16__tiera    1,278.3    1,574.0   +23.1%   3.0%               0.0->2.1           247.3->188.9         1,526.4->1,764.9
+    tpch__orders_o_custkey__customer_c_custkey__filtered__T16__tiera      941.9    1,151.9   +22.3%   3.0%               0.0->3.0           854.1->724.6         1,797.2->1,876.6
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__T16__tiera        8.9       10.8   +22.1%   8.6%               0.0->0.1               5.7->5.2               14.4->15.5
+    tpcds__store_sales_ss_item_sk__store_returns_sr_item_sk__composite__T96__tiera      201.4      245.8   +22.1%   3.0%               0.0->3.4       4,191.7->3,710.2         4,391.9->3,959.8
+    tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk__T16__tiera      118.0      144.1   +22.1%   3.0%               0.0->0.2             35.7->22.9             153.9->166.9
+    tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk__T16__tiera    2,218.0    2,704.0   +21.9%   3.0%               0.0->2.5           682.8->448.1         2,902.3->3,152.7
+    tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk__T16__tiera      234.4      285.2   +21.7%   3.0%               0.0->0.3             71.7->46.0             306.2->331.4
+    tpcds__catalog_sales_cs_item_sk__catalog_returns_cr_item_sk__composite__T96__tiera       96.5      117.4   +21.6%   3.0%               0.0->1.7       1,981.3->1,784.3         2,078.2->1,903.5
+    tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk__T16__tiera      117.1      142.3   +21.5%   3.0%               0.0->0.2             35.4->22.8             152.4->165.2
+    job__movie_keyword_movie_id__title_id__T16__tiera       82.2       99.7   +21.3%   4.2%               0.0->0.1             37.9->42.5             120.4->141.4
+    tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk__T16__tiera      333.1      403.8   +21.2%   3.0%               0.0->1.1           392.7->294.6             725.6->699.2
+    tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk__T16__tiera    1,120.0    1,356.2   +21.1%   3.0%               0.0->1.2           341.6->222.0         1,462.7->1,582.4
+    job__cast_info_movie_id__movie_companies_movie_id__T16__tiera    6,992.4    8,464.0   +21.0%   3.0%               0.0->2.4           489.1->465.0         7,480.8->8,934.5
+    tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk__T16__tiera    4,330.8    5,209.3   +20.3%   3.0%               0.0->4.6         1,344.0->901.5         5,675.2->6,113.0
+    job__movie_keyword_movie_id__aka_title_movie_id__T16__tiera      110.0      132.2   +20.1%   5.1%               0.0->0.1             30.7->32.4             140.9->164.0
+    tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk__T16__tiera    1,129.4    1,356.4   +20.1%   3.0%               0.0->1.2           343.3->221.0         1,472.8->1,578.3
+    tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk__T16__tiera    2,236.3    2,677.5   +19.7%   3.0%               0.0->2.5           683.8->450.5         2,920.5->3,130.6
+    tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk__T16__tiera      661.7      787.1   +18.9%   3.0%               0.0->2.2           783.9->590.9         1,445.2->1,380.1
+    stackoverflow__comments_PostId__posts_Id__T96__tiera    1,811.4    2,152.5   +18.8%   3.0%               0.0->3.1       3,376.8->4,634.4         5,189.3->6,790.1
+    stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera      815.9      967.7   +18.6%   3.0%               0.0->0.3         764.1->1,741.5         1,572.4->2,715.6
+    tpcds__store_returns_sr_item_sk__item_i_item_sk__T16__tiera      167.4      198.2   +18.4%   3.0%               0.0->0.4             73.3->74.4             240.6->273.1
+    job__movie_info_movie_id__title_id__T16__tiera      339.1      401.1   +18.3%   3.0%               0.0->1.4           189.7->155.8             528.9->557.8
+    job__movie_info_movie_id__movie_info_idx_movie_id__T16__tiera      608.6      719.2   +18.2%   3.0%               0.0->1.5           216.5->170.4             824.6->890.6
+    job__movie_companies_company_id__company_name_id__T16__tiera       94.1      111.2   +18.1%   3.5%               0.0->0.2             25.9->19.9             119.8->132.1
+    tpch__lineitem_l_suppkey__supplier_s_suppkey__T96__tiera   21,367.6   25,238.3   +18.1%   3.0%              0.2->15.5       4,109.3->3,249.0       25,468.9->28,526.9
+    job__movie_info_movie_id__movie_companies_movie_id__T16__tiera    1,825.9    2,148.0   +17.6%   3.0%               0.0->1.8           216.4->182.4         2,042.3->2,332.4
+    tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__T96__tiera    4,334.6    5,093.6   +17.5%   3.0%               0.1->3.4           851.2->737.1         5,164.4->5,828.5
+    job__movie_companies_company_type_id__company_type_id__filtered__T16__tiera       16.9       19.9   +17.4%   6.6%               0.0->0.1              8.8->11.2               25.6->31.1
+    tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__T16__tiera        8.7       10.2   +17.2%   4.0%               0.0->0.1               5.2->4.9               13.9->15.1
+    tpcds__inventory_inv_item_sk__item_i_item_sk__T16__tiera      602.7      705.2   +17.0%   3.0%               0.0->1.4           394.3->290.5             997.5->995.9
+    job__cast_info_person_role_id__char_name_id__T16__tiera      657.3      769.0   +17.0%   3.0%               0.0->1.8           230.6->177.1             887.8->947.6
+    tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk__T96__tiera    4,330.1    5,059.1   +16.8%   3.0%               0.1->3.4           836.2->743.9         5,165.3->5,809.2
+    job__title_id__movie_info_idx_movie_id__T16__tiera       63.3       73.9   +16.7%   3.0%               0.0->0.2             37.5->32.3             100.7->106.4
+    job__person_info_info_type_id__info_type_id__filtered__T16__tiera        2.2        2.6   +16.7%   3.0%               0.0->0.1               6.1->8.1                8.3->10.8
+    tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk__T16__tiera    1,187.0    1,384.4   +16.6%   3.0%               0.0->4.3       1,425.1->1,195.5         2,614.2->2,581.8
+    job__cast_info_person_id__name_id__T16__tiera       979.5    1,142.1   +16.6%   3.0%               0.0->1.9           302.4->253.0         1,282.8->1,396.0
+    job__movie_companies_movie_id__title_id__filtered__T16__tiera       22.2       25.8   +16.2%   3.0%               0.0->0.1             28.6->26.2               50.8->52.3
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__T96__tiera    8,457.0    9,796.0   +15.8%   3.0%               0.3->6.8       1,654.3->1,493.4       10,109.1->11,296.1
+    job__cast_info_movie_id__movie_info_movie_id__T16__tiera   56,676.2   65,503.9   +15.6%   3.0%               0.0->3.7           752.4->638.2       57,430.4->66,149.3
+    job__movie_info_movie_id__title_id__filtered__T16__tiera      168.1      193.8   +15.3%   3.0%               0.0->1.3           175.6->152.9             343.8->348.2
+    tpcds__inventory_inv_item_sk__item_i_item_sk__filtered__T16__tiera      108.5      125.0   +15.2%   3.0%               0.0->1.1           188.3->209.6             296.7->335.3
+    job__movie_companies_company_id__company_name_id__filtered__T16__tiera        8.2        9.5   +15.1%   3.0%               0.0->0.1             24.6->27.4               32.8->36.9
+    tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk__T96__tiera      863.7      992.3   +14.9%   3.0%               0.0->2.6           897.0->661.5         1,762.9->1,656.4
+    job__movie_info_info_type_id__info_type_id__filtered__T16__tiera        6.3        7.3   +14.8%   3.0%               0.0->0.8             25.3->37.6               31.7->45.7
+    tpcds__web_sales_ws_item_sk__item_i_item_sk__T16__tiera      418.1      479.6   +14.7%   3.0%               0.0->1.1           174.7->172.5             592.8->652.9
+    tpcds__catalog_returns_cr_returned_date_sk__date_dim_d_date_sk__filtered__T16__tiera       18.0       20.6   +14.7%   4.7%               0.0->0.2             18.8->23.0               36.8->43.8
+    tpcds__web_sales_ws_item_sk__web_returns_wr_item_sk__composite__T96__tiera       48.5       55.6   +14.5%   3.7%               0.0->0.9           887.5->807.3             935.6->862.8
+    stackoverflow__badges_UserId__users_Id__T96__tiera      957.1    1,095.5   +14.5%   3.0%               0.0->2.3         1,027.0->932.0         1,985.8->2,029.7
+    tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera      828.3      946.7   +14.3%   3.0%               0.0->0.6           205.4->171.5         1,034.2->1,120.7
+    job__movie_keyword_movie_id__movie_info_idx_movie_id__T16__tiera      174.1      198.9   +14.3%   3.0%               0.0->0.1             34.7->35.5             208.7->235.4
+    tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk__T96__tiera      434.5      496.4   +14.2%   3.0%               0.0->1.3           450.4->329.7             890.4->828.9
+    tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera    8,105.1    9,259.1   +14.2%   3.0%               0.2->6.4       2,334.4->1,823.2       10,436.6->11,088.5
+    job__cast_info_movie_id__movie_info_idx_movie_id__T16__tiera    2,868.8    3,275.1   +14.2%   3.0%               0.0->2.0           579.1->443.5         3,448.4->3,719.0
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__filtered__T16__tiera       13.8       15.7   +14.0%   3.0%               0.0->0.2             15.8->18.3               29.6->34.2
+    tpcds__customer_c_first_sales_date_sk__date_dim_d_date_sk__filtered__T16__tiera        1.6        1.8   +13.8%   4.4%               0.0->0.0               2.4->2.9                 4.0->4.8
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__T16__tiera      831.7      946.5   +13.8%   3.0%               0.0->2.1           342.3->339.6         1,174.1->1,287.8
+    tpch__partsupp_ps_partkey__part_p_partkey__T96__tiera      842.8      958.6   +13.7%   3.0%               0.0->1.4         1,012.2->966.7         1,857.2->1,953.4
+    tpcds__web_returns_wr_item_sk__item_i_item_sk__filtered__T16__tiera        6.6        7.5   +13.7%   5.3%               0.0->0.1               8.0->9.2               14.5->16.7
+    tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T96__tiera    2,277.3    2,588.3   +13.7%   3.0%               0.1->1.7           424.3->348.0         2,703.9->2,940.5
+    tpch__partsupp_ps_partkey__part_p_partkey__filtered__T16__tiera       19.5       22.1   +13.3%   3.0%               0.0->1.0           169.5->180.8             189.0->203.9
+    tpcds__store_returns_sr_item_sk__item_i_item_sk__filtered__T16__tiera       26.6       30.1   +13.1%   3.0%               0.0->0.3             29.4->34.6               56.0->64.8
+    job__movie_keyword_movie_id__title_id__filtered__T16__tiera       24.8       28.0   +12.9%   3.0%               0.0->0.1             25.3->29.2               50.2->57.5
+    tpcds__customer_address_ca_county__store_s_county__filtered__T16__tiera        1.9        2.1   +12.9%   3.0%               0.0->0.0               1.3->1.8                 3.2->3.9
+    tpcds__web_returns_wr_returning_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera      218.9      247.1   +12.9%   3.0%               0.0->0.2             60.6->67.8             279.2->314.3
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__T16__tiera    1,662.4    1,876.5   +12.9%   3.0%               0.0->4.3           676.2->668.9         2,340.2->2,551.8
+    tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera    4,236.5    4,772.4   +12.7%   3.0%               0.1->3.2         1,159.7->904.8         5,381.0->5,676.9
+    tpcds__web_returns_wr_reason_sk__reason_r_reason_sk__T16__tiera       48.2       54.3   +12.6%   6.7%               0.0->0.1             13.3->13.5               61.4->67.9
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__filtered__T16__tiera        1.6        1.8   +12.5%   4.2%               0.0->0.0               2.4->2.9                 3.9->4.8
+    tpch__lineitem_l_partkey__part_p_partkey__filtered__T16__tiera      265.4      297.7   +12.2%   3.0%               0.0->7.8       2,643.4->2,386.7         2,909.3->2,691.2
+    job__cast_info_movie_id__movie_keyword_movie_id__T16__tiera    3,189.9    3,578.6   +12.2%   3.0%               0.0->2.4           629.3->481.2         3,818.8->4,062.8
+    job__cast_info_movie_id__title_id__filtered__T96__tiera    1,352.8    1,515.0   +12.0%   3.0%               0.1->2.3           673.2->577.1         2,023.4->2,081.4
+    job__movie_info_movie_id__title_id__filtered__T96__tiera      322.7      361.0   +11.9%   3.0%               0.1->1.4           282.7->257.4             604.7->620.2
+    job__movie_keyword_movie_id__movie_companies_movie_id__T16__tiera      615.9      687.8   +11.7%   3.0%               0.0->0.2             41.2->48.2             657.0->736.9
+    tpcds__web_sales_ws_web_site_sk__web_site_web_site_sk__T16__tiera      587.1      655.5   +11.6%   3.0%               0.0->1.2           127.3->131.2             714.6->787.6
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__filtered__T16__tiera      124.4      138.9   +11.6%   3.0%               0.0->1.5           126.1->153.3             250.5->293.6
+    job__movie_companies_movie_id__aka_title_movie_id__T16__tiera       73.6       82.1   +11.5%   3.0%               0.0->0.2             32.7->28.3             106.4->110.5
+    job__movie_info_movie_id__aka_title_movie_id__T16__tiera      443.7      494.2   +11.4%   3.0%               0.0->1.5           198.0->159.8             641.3->655.3
+    tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk__T96__tiera      299.2      332.9   +11.2%   5.9%               0.0->0.5             89.4->64.1             388.6->400.5
+    job__movie_info_idx_movie_id__complete_cast_movie_id__T16__tiera       16.7       18.5   +11.1%   3.0%               0.0->0.1             10.5->11.8               27.2->30.5
+    job__movie_info_movie_id__title_id__T96__tiera      583.0      647.0   +11.0%   3.0%               0.1->1.5           383.4->320.9             965.5->969.3
+    tpch__partsupp_ps_suppkey__supplier_s_suppkey__T96__tiera    1,311.7    1,453.4   +10.8%   3.0%               0.0->1.7           644.0->451.8         1,963.5->1,912.9
+    tpcds__web_sales_ws_item_sk__item_i_item_sk__filtered__T16__tiera       63.8       70.4   +10.4%   3.0%               0.0->0.8             66.5->79.7             130.3->151.0
+    job__name_id__aka_name_person_id__T16__tiera         90.9      100.3   +10.3%   3.0%               0.0->0.4             59.0->51.4             149.8->152.4
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__filtered__T16__tiera      241.1      265.6   +10.2%   3.0%               0.0->3.0           243.0->296.2             484.1->565.7
+    tpch__orders_o_custkey__customer_c_custkey__filtered__T96__tiera    1,510.6    1,663.2   +10.1%   3.0%               0.4->4.2       1,360.6->1,190.5         2,869.3->2,870.7
+    job__movie_keyword_keyword_id__keyword_id__T16__tiera       78.3       86.1   +10.0%   3.0%               0.0->0.1             37.7->27.4             116.3->113.5
+    job__movie_info_movie_id__movie_info_idx_movie_id__T96__tiera      942.7    1,037.1   +10.0%   3.0%               0.1->1.7           319.1->243.0         1,261.5->1,280.9
+    job__cast_info_person_id__aka_name_person_id__T16__tiera      848.7      930.3    +9.6%   3.0%               0.0->1.9           256.3->245.9         1,105.2->1,178.1
+    stackoverflow__comments_UserId__users_Id__T96__tiera    8,613.0    9,424.0    +9.4%   3.0%               0.0->3.0       1,518.5->1,274.3       10,139.3->10,707.6
+    job__person_info_person_id__aka_name_person_id__T96__tiera      153.9      168.4    +9.4%   3.0%               0.0->0.8             58.8->47.6             212.6->216.4
+    tpcds__customer_c_current_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera       44.6       48.8    +9.4%   3.0%               0.0->0.1              7.9->11.0               52.7->59.6
+    tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk__T96__tiera      141.8      155.1    +9.4%   3.0%               0.0->0.3             44.4->31.9             186.8->186.8
+    tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__T16__tiera      385.2      420.9    +9.3%   3.0%               0.0->0.1              7.5->17.2             392.8->440.6
+    job__movie_companies_company_id__company_name_id__T96__tiera      107.3      117.1    +9.2%   3.0%               0.0->0.3             33.6->25.9             141.3->143.7
+    job__cast_info_person_id__name_id__T96__tiera     1,582.3    1,720.7    +8.8%   3.0%               0.1->2.3           555.1->607.3         2,128.0->2,328.3
+    tpch__orders_o_custkey__customer_c_custkey__T96__tiera    7,225.8    7,853.2    +8.7%   3.0%               0.2->4.4       2,147.3->1,590.1         9,373.3->9,465.2
+    job__movie_companies_movie_id__movie_info_idx_movie_id__T96__tiera      140.6      152.5    +8.5%   3.0%               0.0->0.3             47.4->40.4             188.6->194.6
+    tpcds__customer_address_ca_zip__store_s_zip__filtered__T16__tiera        2.3        2.5    +8.5%   7.5%               0.0->0.0               6.6->4.8                 8.9->7.3
+    job__name_id__aka_name_person_id__T96__tiera        140.8      152.7    +8.4%   3.0%               0.0->0.5             86.5->74.0             228.2->228.9
+    stackoverflow__votes_PostId__posts_Id__T96__tiera    3,604.6    3,908.5    +8.4%   3.0%               0.0->6.3       4,144.4->4,377.7         7,838.2->8,266.3
+    job__cast_info_movie_id__movie_info_idx_movie_id__T96__tiera    3,324.5    3,604.2    +8.4%   3.0%               0.1->2.6           689.5->548.7         4,020.1->4,156.0
+    stackoverflow__posts_OwnerUserId__users_Id__T96__tiera    7,567.1    8,200.1    +8.4%   3.0%               0.0->2.6       1,389.1->1,194.9         8,958.7->9,391.9
+    tpch__lineitem_l_orderkey__orders_o_orderkey__T96__tiera    4,126.4    4,468.3    +8.3%   3.0%              0.3->16.4       6,775.1->6,024.1       10,892.7->10,528.1
+    job__title_id__aka_title_movie_id__T16__tiera        40.7       44.0    +8.1%   3.0%               0.0->0.2             33.7->28.0               74.5->72.0
+    tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk__T96__tiera    1,460.4    1,577.3    +8.0%   4.4%               0.1->1.7           404.9->307.8         1,864.6->1,875.1
+    tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk__T96__tiera       29.9       32.2    +8.0%   3.0%               0.0->0.1               8.2->5.3               38.1->37.6
+    tpch__orders_o_custkey__customer_c_custkey__left__T96__tiera    7,474.1    8,069.6    +8.0%   3.0%               0.4->4.6       2,326.6->1,674.4         9,775.6->9,784.8
+    tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk__filtered__T16__tiera       39.9       43.1    +7.9%   3.0%               0.0->0.4             52.9->63.9              92.6->107.5
+    tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk__T96__tiera    2,903.8    3,128.8    +7.8%   3.0%               0.1->3.5           792.6->677.6         3,699.8->3,809.9
+    job__cast_info_person_role_id__char_name_id__T96__tiera      972.7    1,047.1    +7.7%   3.0%               0.1->2.1           363.1->271.1         1,335.6->1,316.7
+    tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk__T96__tiera      143.4      154.4    +7.7%   3.0%               0.0->0.3             43.9->31.9             186.6->187.6
+    tpch__lineitem_l_partkey__part_p_partkey__filtered__T96__tiera      518.2      557.3    +7.5%   3.0%              0.2->12.7       2,857.4->2,637.6         3,376.4->3,206.2
+    job__movie_info_idx_info_type_id__info_type_id__T16__tiera       15.7       16.9    +7.4%   3.0%               0.0->0.1               7.4->6.8               23.1->23.6
+    tpcds__customer_c_current_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera        9.9       10.6    +7.4%   3.0%               0.0->0.1               6.9->7.4               16.9->18.1
+    tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk__T96__tiera    2,907.3    3,120.6    +7.3%   3.0%               0.1->3.6           804.7->684.1         3,693.0->3,805.7
+    tpcds__web_returns_wr_refunded_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera      226.2      242.8    +7.3%   3.0%               0.0->0.2             60.4->69.4             285.6->312.4
+    tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk__T96__tiera    1,480.8    1,588.1    +7.2%   3.0%               0.1->1.7           405.7->308.2         1,888.5->1,903.8
+    tpch__partsupp_ps_partkey__part_p_partkey__T16__tiera      597.5      639.1    +7.0%   3.0%               0.0->1.3           497.5->321.9           1,093.1->958.6
+    tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk__T96__tiera    1,525.1    1,630.0    +6.9%   3.0%               0.1->5.2       1,667.4->1,325.4         3,194.0->2,959.6
+    job__movie_info_movie_id__complete_cast_movie_id__T16__tiera      236.0      252.1    +6.8%   3.0%               0.0->1.4           159.6->141.2             395.7->394.9
+    job__title_id__movie_info_idx_movie_id__T96__tiera       79.5       84.9    +6.8%   3.0%               0.0->0.3             42.9->38.5             122.0->124.0
+    job__movie_companies_movie_id__complete_cast_movie_id__T16__tiera       38.5       41.1    +6.8%   3.0%               0.0->0.2             27.0->24.5               65.4->65.7
+    tpch__partsupp_ps_partkey__part_p_partkey__filtered__T96__tiera       31.0       33.1    +6.7%   4.1%               0.0->1.1           190.2->212.8             220.9->246.9
+    tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk__T96__tiera    5,638.6    6,016.7    +6.7%   3.0%               0.3->6.9       1,557.8->1,384.9         7,205.4->7,397.5
+    job__movie_keyword_movie_id__complete_cast_movie_id__T16__tiera       43.7       46.6    +6.6%   3.0%               0.0->0.1             24.5->29.3               68.2->75.9
+    job__cast_info_movie_id__complete_cast_movie_id__T96__tiera      767.6      815.3    +6.2%   3.0%               0.0->2.4           511.3->439.7         1,282.0->1,254.9
+    tpcds__customer_address_ca_county__store_s_county__T16__tiera        2.4        2.5    +6.1%   5.1%               0.0->0.0               1.3->1.6                 3.7->4.2
+    tpcds__web_sales_ws_web_page_sk__web_page_wp_web_page_sk__T16__tiera      225.4      239.1    +6.1%   3.0%               0.0->1.0           130.5->143.7             355.7->384.7
+    tpch__supplier_s_nationkey__nation_n_nationkey__T16__tiera        4.9        5.2    +6.1%   3.0%               0.0->0.1               2.6->2.7                 7.5->7.9
+    stackoverflow__comments_PostId__posts_Id__T16__tiera    1,535.0    1,624.1    +5.8%   3.0%               0.0->2.2       1,589.7->1,357.7         3,120.1->2,985.8
+    tpcds__store_returns_sr_reason_sk__reason_r_reason_sk__T16__tiera      201.5      213.0    +5.7%   3.2%               0.0->0.4             52.0->53.8             253.5->267.3
+    tpcds__web_returns_wr_item_sk__item_i_item_sk__filtered__T96__tiera        8.2        8.7    +5.7%   3.4%               0.0->0.1              9.4->10.1               17.6->18.8
+    job__movie_info_movie_id__movie_companies_movie_id__T96__tiera    3,354.8    3,542.9    +5.6%   3.0%               0.1->2.0           437.1->374.4         3,791.4->3,913.3
+    tpcds__web_sales_ws_ship_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera      395.6      417.6    +5.6%   3.0%               0.0->1.1           302.3->321.2             697.8->742.9
+    job__movie_keyword_movie_id__movie_companies_movie_id__T96__tiera      875.3      922.6    +5.4%   3.0%               0.0->0.2            70.6->137.0           943.8->1,056.7
+    stackoverflow__badges_UserId__users_Id__T16__tiera      737.5      777.3    +5.4%   3.0%               0.0->1.5           620.8->475.6         1,357.5->1,254.5
+    tpch__lineitem_l_partkey__part_p_partkey__T96__tiera   53,819.0   56,705.1    +5.4%   3.0%              0.1->13.1       6,968.9->4,516.3       60,801.1->61,265.8
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__filtered__T16__tiera        9.2        9.7    +5.4%   3.7%               0.0->0.1             13.1->15.6               22.3->25.5
+    job__movie_companies_company_id__company_name_id__filtered__T96__tiera       10.2       10.7    +5.3%   3.0%               0.0->0.2             26.4->29.2               36.6->40.3
+    job__movie_info_movie_id__aka_title_movie_id__T96__tiera      664.8      699.7    +5.2%   3.0%               0.1->1.7           241.0->206.6             905.8->909.9
+    job__movie_keyword_movie_id__title_id__filtered__T96__tiera       30.3       31.9    +5.2%   3.5%               0.0->0.2             37.2->95.2              67.5->126.8
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__T16__tiera       32.3       33.9    +5.2%   3.0%               0.0->0.1             23.6->22.1               55.8->56.7
+    tpcds__catalog_sales_cs_bill_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera      794.6      835.3    +5.1%   3.0%               0.0->2.2           603.5->647.0         1,398.1->1,482.4
+    tpcds__store_sales_ss_hdemo_sk__household_demographics_hd_demo_sk__T16__tiera    1,534.2    1,611.7    +5.0%   3.0%               0.0->4.5       1,209.0->1,281.4         2,741.9->2,901.0
+    job__movie_companies_movie_id__complete_cast_movie_id__T96__tiera       44.6       46.9    +5.0%   3.0%               0.0->0.3             29.3->26.9               73.8->74.0
+    job__cast_info_movie_id__movie_keyword_movie_id__T96__tiera    5,021.2    5,269.2    +4.9%   3.0%               0.1->2.7           908.1->640.1         5,934.6->5,918.1
+    tpcds__store_returns_sr_returned_date_sk__date_dim_d_date_sk__T16__tiera      131.3      137.7    +4.9%   3.0%               0.0->0.5             94.2->89.8             224.9->225.2
+    job__cast_info_person_id__aka_name_person_id__T96__tiera    1,434.8    1,499.6    +4.5%   3.0%               0.1->2.5           420.9->437.7         1,860.8->1,940.9
+    job__movie_companies_movie_id__title_id__T96__tiera       88.3       92.1    +4.4%   3.0%               0.0->0.2            79.7->132.8             166.4->225.2
+    tpcds__catalog_returns_cr_item_sk__item_i_item_sk__filtered__T96__tiera       17.7       18.5    +4.3%   3.0%               0.0->0.2             17.2->18.7               34.9->37.3
+    job__title_id__complete_cast_movie_id__T16__tiera       26.3       27.4    +4.1%   3.0%               0.0->0.1             29.3->24.2               55.7->51.8
+    job__title_id__aka_title_movie_id__T96__tiera        46.0       47.8    +3.9%   3.0%               0.0->0.2             35.5->30.7               81.4->78.6
+    job__cast_info_movie_id__title_id__T96__tiera     4,246.8    4,409.4    +3.8%   3.0%               0.1->2.4           849.3->676.6         5,092.5->5,085.5
+    job__cast_info_movie_id__movie_companies_movie_id__T96__tiera   10,059.2   10,441.8    +3.8%   3.0%               0.1->2.6           771.3->690.0       10,832.0->11,134.4
+    tpcds__web_sales_ws_promo_sk__promotion_p_promo_sk__T16__tiera      461.6      478.8    +3.7%   3.0%               0.0->1.0           128.6->140.6             590.4->620.3
+    tpcds__catalog_sales_cs_sold_date_sk__date_dim_d_date_sk__filtered__T16__tiera      170.0      176.3    +3.7%   3.0%               0.0->1.8           140.8->177.6             310.6->356.7
+    job__movie_companies_company_type_id__company_type_id__T16__tiera       30.4       31.5    +3.7%   3.0%               0.0->0.1             13.2->14.4               43.5->46.1
+    tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T16__tiera      116.4      120.6    +3.6%   3.0%               0.0->0.3             26.3->26.4             142.8->147.4
+    tpch__lineitem_l_orderkey__orders_o_orderkey__T16__tiera    3,376.7    3,493.3    +3.5%   3.0%              0.0->11.0       4,605.5->2,957.5         7,978.5->6,464.6
+    job__movie_info_idx_movie_id__movie_link_linked_movie_id__T16__tiera       11.6       12.0    +3.3%   3.0%               0.0->0.1               7.6->9.5               19.2->21.6
+    job__name_id__person_info_person_id__T96__tiera      504.5      521.2    +3.3%   3.0%               0.0->0.5           285.7->475.9             790.2->995.4
+    tpcds__store_sales_ss_promo_sk__promotion_p_promo_sk__T16__tiera    1,766.5    1,823.9    +3.3%   3.0%               0.0->3.9           536.8->572.9         2,303.5->2,402.0
+    job__cast_info_movie_id__movie_info_movie_id__T96__tiera   88,359.5   91,197.9    +3.2%   3.0%               0.1->4.7       1,540.8->1,793.5       89,959.4->92,941.0
+    job__movie_companies_movie_id__aka_title_movie_id__T96__tiera       93.0       96.0    +3.2%   3.0%               0.0->0.2             37.3->33.2             129.3->129.4
+    tpcds__web_sales_ws_warehouse_sk__warehouse_w_warehouse_sk__T16__tiera      519.3      535.9    +3.2%   3.0%               0.0->1.2           126.7->131.8             646.3->668.8
+  WINS on projection_cost: 43
+    tpch__lineitem_l_orderkey__orders_o_orderkey__left_semi__T96__tiera       72.2 ->       41.5   -42.5% (band 3.0%)
+    job__movie_link_link_type_id__link_type_id__T96__tiera        0.6 ->        0.4   -42.2% (band 21.8%)
+    tpch__orders_o_custkey__customer_c_custkey__left_anti__T96__tiera       32.5 ->       25.5   -21.6% (band 3.3%)
+    tpch__lineitem_l_partkey__partsupp_ps_partkey__composite__T96__tiera       49.0 ->       38.6   -21.2% (band 3.0%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__left_semi__T16__tiera       48.3 ->       38.9   -19.5% (band 3.0%)
+    tpch__lineitem_l_partkey__partsupp_ps_partkey__composite__T16__tiera       36.8 ->       29.9   -18.8% (band 3.0%)
+    tpch__nation_n_regionkey__region_r_regionkey__T96__tiera        0.0 ->        0.0   -18.8% (band 6.8%)
+    tpcds__web_sales_ws_ship_mode_sk__ship_mode_sm_ship_mode_sk__T96__tiera      839.0 ->      704.5   -16.0% (band 3.0%)
+    tpcds__catalog_sales_cs_ship_mode_sk__ship_mode_sm_ship_mode_sk__T96__tiera    1,653.1 ->    1,391.5   -15.8% (band 3.0%)
+    tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera       99.2 ->       87.3   -12.0% (band 4.9%)
+    job__movie_info_idx_info_type_id__info_type_id__filtered__T96__tiera        0.4 ->        0.4    -8.9% (band 4.6%)
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__T96__tiera       40.8 ->       37.4    -8.3% (band 6.1%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__left_semi__T96__tiera      761.3 ->      698.9    -8.2% (band 3.0%)
+    job__movie_keyword_keyword_id__keyword_id__filtered__T96__tiera        2.7 ->        2.5    -7.9% (band 3.0%)
+    job__complete_cast_movie_id__movie_link_movie_id__T96__tiera        0.9 ->        0.8    -7.6% (band 4.3%)
+    tpch__orders_o_custkey__customer_c_custkey__left_anti__T16__tiera       20.0 ->       18.5    -7.6% (band 3.0%)
+    job__movie_keyword_movie_id__movie_link_movie_id__T96__tiera       16.2 ->       15.0    -7.4% (band 3.2%)
+    tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera      178.6 ->      165.7    -7.2% (band 3.0%)
+    tpcds__store_sales_ss_store_sk__store_s_store_sk__T96__tiera    2,775.3 ->    2,581.4    -7.0% (band 3.0%)
+    tpcds__catalog_sales_cs_catalog_page_sk__catalog_page_cp_catalog_page_sk__T96__tiera      959.6 ->      893.3    -6.9% (band 3.0%)
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__T96__tiera    3,352.3 ->    3,129.7    -6.6% (band 3.0%)
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__T96__tiera    1,673.8 ->    1,574.7    -5.9% (band 3.0%)
+    tpcds__catalog_sales_cs_call_center_sk__call_center_cc_call_center_sk__T96__tiera    1,911.6 ->    1,800.7    -5.8% (band 3.0%)
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__filtered__T96__tiera      456.3 ->      430.4    -5.7% (band 3.0%)
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__filtered__T96__tiera        3.2 ->        3.0    -5.2% (band 5.0%)
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__filtered__T96__tiera      229.1 ->      217.9    -4.9% (band 3.0%)
+    tpcds__store_sales_ss_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera    2,287.7 ->    2,180.3    -4.7% (band 3.0%)
+    tpcds__store_sales_ss_store_sk__store_s_store_sk__filtered__T96__tiera    1,529.3 ->    1,457.8    -4.7% (band 3.0%)
+    tpcds__store_returns_sr_store_sk__store_s_store_sk__filtered__T96__tiera      147.7 ->      141.5    -4.2% (band 3.0%)
+    job__movie_companies_movie_id__movie_link_movie_id__T96__tiera       16.1 ->       15.4    -4.1% (band 3.0%)
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__T96__tiera       11.3 ->       10.8    -4.1% (band 3.9%)
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__filtered__T96__tiera       11.1 ->       10.7    -4.1% (band 4.0%)
+    job__movie_info_movie_id__movie_link_movie_id__T96__tiera      103.2 ->       99.1    -4.0% (band 3.0%)
+    tpcds__catalog_sales_cs_item_sk__catalog_returns_cr_item_sk__composite__T16__tiera       48.8 ->       46.9    -3.9% (band 3.0%)
+    tpcds__inventory_inv_item_sk__item_i_item_sk__T96__tiera    1,224.0 ->    1,177.0    -3.8% (band 3.0%)
+    tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera      168.6 ->      162.2    -3.8% (band 3.5%)
+    tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera      667.3 ->      642.3    -3.7% (band 3.0%)
+    tpcds__web_sales_ws_web_site_sk__web_site_web_site_sk__T96__tiera    1,182.3 ->    1,140.3    -3.6% (band 3.0%)
+    tpcds__catalog_sales_cs_bill_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera    1,190.9 ->    1,148.9    -3.5% (band 3.0%)
+    tpcds__inventory_inv_warehouse_sk__warehouse_w_warehouse_sk__T96__tiera      852.6 ->      823.0    -3.5% (band 3.0%)
+    tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__filtered__T96__tiera      157.9 ->      152.6    -3.4% (band 3.0%)
+    job__cast_info_movie_id__movie_link_linked_movie_id__T96__tiera      524.7 ->      507.6    -3.2% (band 3.0%)
+    tpcds__store_sales_ss_item_sk__store_returns_sr_item_sk__composite__T16__tiera       97.7 ->       94.6    -3.2% (band 3.0%)
+
+CELLS WHOSE TWO METRICS MOVE IN OPPOSITE DIRECTIONS: 142 (listed in both lists above, never netted)
+    job__cast_info_movie_id__complete_cast_movie_id__T96__tiera probe_cost=WIN(-13.5%) projection_cost=LOSS(+6.2%)
+    job__cast_info_movie_id__movie_companies_movie_id__T16__tiera probe_cost=WIN(-4.5%) projection_cost=LOSS(+21.0%)
+    job__cast_info_movie_id__movie_companies_movie_id__T96__tiera probe_cost=WIN(-10.2%) projection_cost=LOSS(+3.8%)
+    job__cast_info_movie_id__movie_info_idx_movie_id__T16__tiera probe_cost=WIN(-23.1%) projection_cost=LOSS(+14.2%)
+    job__cast_info_movie_id__movie_info_idx_movie_id__T96__tiera probe_cost=WIN(-20.1%) projection_cost=LOSS(+8.4%)
+    job__cast_info_movie_id__movie_info_movie_id__T16__tiera probe_cost=WIN(-14.7%) projection_cost=LOSS(+15.6%)
+    job__cast_info_movie_id__movie_keyword_movie_id__T16__tiera probe_cost=WIN(-23.2%) projection_cost=LOSS(+12.2%)
+    job__cast_info_movie_id__movie_keyword_movie_id__T96__tiera probe_cost=WIN(-29.2%) projection_cost=LOSS(+4.9%)
+    job__cast_info_movie_id__movie_link_linked_movie_id__T96__tiera probe_cost=LOSS(+15.4%) projection_cost=WIN(-3.2%)
+    job__cast_info_movie_id__title_id__T16__tiera  probe_cost=WIN(-8.8%) projection_cost=LOSS(+27.8%)
+    job__cast_info_movie_id__title_id__T96__tiera  probe_cost=WIN(-20.0%) projection_cost=LOSS(+3.8%)
+    job__cast_info_movie_id__title_id__filtered__T16__tiera probe_cost=WIN(-15.3%) projection_cost=LOSS(+23.8%)
+    job__cast_info_movie_id__title_id__filtered__T96__tiera probe_cost=WIN(-13.9%) projection_cost=LOSS(+12.0%)
+    job__cast_info_person_id__aka_name_person_id__T16__tiera probe_cost=WIN(-3.3%) projection_cost=LOSS(+9.6%)
+    job__cast_info_person_id__name_id__T16__tiera  probe_cost=WIN(-15.7%) projection_cost=LOSS(+16.6%)
+    job__cast_info_person_role_id__char_name_id__T16__tiera probe_cost=WIN(-22.4%) projection_cost=LOSS(+17.0%)
+    job__cast_info_person_role_id__char_name_id__T96__tiera probe_cost=WIN(-24.8%) projection_cost=LOSS(+7.7%)
+    job__movie_companies_company_id__company_name_id__T16__tiera probe_cost=WIN(-22.3%) projection_cost=LOSS(+18.1%)
+    job__movie_companies_company_id__company_name_id__T96__tiera probe_cost=WIN(-22.3%) projection_cost=LOSS(+9.2%)
+    job__movie_companies_movie_id__aka_title_movie_id__T16__tiera probe_cost=WIN(-13.0%) projection_cost=LOSS(+11.5%)
+    job__movie_companies_movie_id__aka_title_movie_id__T96__tiera probe_cost=WIN(-10.4%) projection_cost=LOSS(+3.2%)
+    job__movie_companies_movie_id__complete_cast_movie_id__T16__tiera probe_cost=WIN(-8.7%) projection_cost=LOSS(+6.8%)
+    job__movie_companies_movie_id__complete_cast_movie_id__T96__tiera probe_cost=WIN(-7.3%) projection_cost=LOSS(+5.0%)
+    job__movie_companies_movie_id__movie_info_idx_movie_id__T16__tiera probe_cost=WIN(-15.5%) projection_cost=LOSS(+24.5%)
+    job__movie_companies_movie_id__movie_info_idx_movie_id__T96__tiera probe_cost=WIN(-14.1%) projection_cost=LOSS(+8.5%)
+    job__movie_companies_movie_id__movie_link_movie_id__T96__tiera probe_cost=LOSS(+26.5%) projection_cost=WIN(-4.1%)
+    job__movie_companies_movie_id__title_id__T16__tiera probe_cost=WIN(-8.8%) projection_cost=LOSS(+27.5%)
+    job__movie_companies_movie_id__title_id__filtered__T16__tiera probe_cost=WIN(-7.9%) projection_cost=LOSS(+16.2%)
+    job__movie_info_idx_info_type_id__info_type_id__T16__tiera probe_cost=WIN(-7.5%) projection_cost=LOSS(+7.4%)
+    job__movie_info_idx_info_type_id__info_type_id__filtered__T96__tiera probe_cost=LOSS(+47.5%) projection_cost=WIN(-8.9%)
+    job__movie_info_movie_id__aka_title_movie_id__T16__tiera probe_cost=WIN(-18.5%) projection_cost=LOSS(+11.4%)
+    job__movie_info_movie_id__aka_title_movie_id__T96__tiera probe_cost=WIN(-13.6%) projection_cost=LOSS(+5.2%)
+    job__movie_info_movie_id__complete_cast_movie_id__T16__tiera probe_cost=WIN(-10.7%) projection_cost=LOSS(+6.8%)
+    job__movie_info_movie_id__movie_companies_movie_id__T16__tiera probe_cost=WIN(-14.8%) projection_cost=LOSS(+17.6%)
+    job__movie_info_movie_id__movie_companies_movie_id__T96__tiera probe_cost=WIN(-13.9%) projection_cost=LOSS(+5.6%)
+    job__movie_info_movie_id__movie_info_idx_movie_id__T16__tiera probe_cost=WIN(-20.6%) projection_cost=LOSS(+18.2%)
+    job__movie_info_movie_id__movie_info_idx_movie_id__T96__tiera probe_cost=WIN(-23.3%) projection_cost=LOSS(+10.0%)
+    job__movie_info_movie_id__movie_keyword_movie_id__T16__tiera probe_cost=WIN(-22.7%) projection_cost=LOSS(+23.1%)
+    job__movie_info_movie_id__movie_link_movie_id__T96__tiera probe_cost=LOSS(+31.3%) projection_cost=WIN(-4.0%)
+    job__movie_info_movie_id__title_id__T16__tiera probe_cost=WIN(-17.1%) projection_cost=LOSS(+18.3%)
+    job__movie_info_movie_id__title_id__T96__tiera probe_cost=WIN(-15.9%) projection_cost=LOSS(+11.0%)
+    job__movie_info_movie_id__title_id__filtered__T16__tiera probe_cost=WIN(-12.2%) projection_cost=LOSS(+15.3%)
+    job__movie_info_movie_id__title_id__filtered__T96__tiera probe_cost=WIN(-8.5%) projection_cost=LOSS(+11.9%)
+    job__movie_keyword_keyword_id__keyword_id__T16__tiera probe_cost=WIN(-27.1%) projection_cost=LOSS(+10.0%)
+    job__movie_keyword_keyword_id__keyword_id__filtered__T96__tiera probe_cost=LOSS(+27.4%) projection_cost=WIN(-7.9%)
+    job__movie_keyword_movie_id__movie_link_movie_id__T96__tiera probe_cost=LOSS(+20.8%) projection_cost=WIN(-7.4%)
+    job__name_id__aka_name_person_id__T16__tiera   probe_cost=WIN(-12.1%) projection_cost=LOSS(+10.3%)
+    job__name_id__aka_name_person_id__T96__tiera   probe_cost=WIN(-13.9%) projection_cost=LOSS(+8.4%)
+    job__person_info_person_id__aka_name_person_id__T16__tiera probe_cost=WIN(-18.9%) projection_cost=LOSS(+24.5%)
+    job__person_info_person_id__aka_name_person_id__T96__tiera probe_cost=WIN(-17.6%) projection_cost=LOSS(+9.4%)
+    job__title_id__aka_title_movie_id__T16__tiera  probe_cost=WIN(-16.5%) projection_cost=LOSS(+8.1%)
+    job__title_id__aka_title_movie_id__T96__tiera  probe_cost=WIN(-12.9%) projection_cost=LOSS(+3.9%)
+    job__title_id__complete_cast_movie_id__T16__tiera probe_cost=WIN(-17.1%) projection_cost=LOSS(+4.1%)
+    job__title_id__movie_info_idx_movie_id__T16__tiera probe_cost=WIN(-13.5%) projection_cost=LOSS(+16.7%)
+    job__title_id__movie_info_idx_movie_id__T96__tiera probe_cost=WIN(-9.7%) projection_cost=LOSS(+6.8%)
+    stackoverflow__badges_UserId__users_Id__T16__tiera probe_cost=WIN(-23.1%) projection_cost=LOSS(+5.4%)
+    stackoverflow__badges_UserId__users_Id__T96__tiera probe_cost=WIN(-9.0%) projection_cost=LOSS(+14.5%)
+    stackoverflow__comments_PostId__posts_Id__T16__tiera probe_cost=WIN(-14.5%) projection_cost=LOSS(+5.8%)
+    stackoverflow__comments_UserId__users_Id__T16__tiera probe_cost=WIN(-28.0%) projection_cost=LOSS(+33.8%)
+    stackoverflow__comments_UserId__users_Id__T96__tiera probe_cost=WIN(-15.9%) projection_cost=LOSS(+9.4%)
+    stackoverflow__posts_OwnerUserId__users_Id__T16__tiera probe_cost=WIN(-27.3%) projection_cost=LOSS(+31.7%)
+    stackoverflow__posts_OwnerUserId__users_Id__T96__tiera probe_cost=WIN(-13.8%) projection_cost=LOSS(+8.4%)
+    tpcds__catalog_returns_cr_call_center_sk__call_center_cc_call_center_sk__T96__tiera probe_cost=LOSS(+4.6%) projection_cost=WIN(-7.2%)
+    tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-35.4%) projection_cost=LOSS(+21.7%)
+    tpcds__catalog_returns_cr_returning_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-27.8%) projection_cost=LOSS(+11.2%)
+    tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-33.7%) projection_cost=LOSS(+19.7%)
+    tpcds__catalog_sales_cs_bill_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-14.1%) projection_cost=LOSS(+7.8%)
+    tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera probe_cost=WIN(-16.5%) projection_cost=LOSS(+33.6%)
+    tpcds__catalog_sales_cs_bill_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera probe_cost=WIN(-21.7%) projection_cost=LOSS(+12.7%)
+    tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk__T16__tiera probe_cost=WIN(-22.2%) projection_cost=LOSS(+34.2%)
+    tpcds__catalog_sales_cs_bill_customer_sk__customer_c_customer_sk__T96__tiera probe_cost=WIN(-10.7%) projection_cost=LOSS(+16.8%)
+    tpcds__catalog_sales_cs_bill_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera probe_cost=LOSS(+5.2%) projection_cost=WIN(-3.5%)
+    tpcds__catalog_sales_cs_catalog_page_sk__catalog_page_cp_catalog_page_sk__T96__tiera probe_cost=LOSS(+3.8%) projection_cost=WIN(-6.9%)
+    tpcds__catalog_sales_cs_item_sk__catalog_returns_cr_item_sk__composite__T96__tiera probe_cost=WIN(-9.9%) projection_cost=LOSS(+21.6%)
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__T96__tiera probe_cost=LOSS(+7.0%) projection_cost=WIN(-5.9%)
+    tpcds__catalog_sales_cs_item_sk__item_i_item_sk__filtered__T96__tiera probe_cost=LOSS(+13.1%) projection_cost=WIN(-4.9%)
+    tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-34.0%) projection_cost=LOSS(+21.9%)
+    tpcds__catalog_sales_cs_ship_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-14.6%) projection_cost=LOSS(+7.3%)
+    tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__T16__tiera probe_cost=WIN(-22.2%) projection_cost=LOSS(+35.4%)
+    tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__T96__tiera probe_cost=WIN(-13.0%) projection_cost=LOSS(+17.5%)
+    tpcds__catalog_sales_cs_ship_mode_sk__ship_mode_sm_ship_mode_sk__T96__tiera probe_cost=LOSS(+4.3%) projection_cost=WIN(-15.8%)
+    tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk__T16__tiera probe_cost=WIN(-24.3%) projection_cost=LOSS(+18.9%)
+    tpcds__catalog_sales_cs_sold_time_sk__time_dim_t_time_sk__T96__tiera probe_cost=WIN(-26.0%) projection_cost=LOSS(+14.9%)
+    tpcds__customer_address_ca_zip__store_s_zip__filtered__T16__tiera probe_cost=WIN(-26.8%) projection_cost=LOSS(+8.5%)
+    tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-31.7%) projection_cost=LOSS(+23.6%)
+    tpcds__customer_c_current_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-34.5%) projection_cost=LOSS(+8.0%)
+    tpcds__customer_c_first_shipto_date_sk__date_dim_d_date_sk__filtered__T96__tiera probe_cost=LOSS(+11.1%) projection_cost=WIN(-5.2%)
+    tpcds__inventory_inv_item_sk__item_i_item_sk__T16__tiera probe_cost=WIN(-26.0%) projection_cost=LOSS(+17.0%)
+    tpcds__inventory_inv_warehouse_sk__warehouse_w_warehouse_sk__T96__tiera probe_cost=LOSS(+4.3%) projection_cost=WIN(-3.5%)
+    tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera probe_cost=WIN(-9.4%) projection_cost=LOSS(+35.2%)
+    tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera probe_cost=WIN(-16.2%) projection_cost=LOSS(+14.3%)
+    tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-32.6%) projection_cost=LOSS(+20.3%)
+    tpcds__store_sales_ss_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-10.7%) projection_cost=LOSS(+6.7%)
+    tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera probe_cost=WIN(-14.8%) projection_cost=LOSS(+34.2%)
+    tpcds__store_sales_ss_cdemo_sk__customer_demographics_cd_demo_sk__T96__tiera probe_cost=WIN(-21.6%) projection_cost=LOSS(+14.2%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__T16__tiera probe_cost=WIN(-20.7%) projection_cost=LOSS(+34.5%)
+    tpcds__store_sales_ss_customer_sk__customer_c_customer_sk__T96__tiera probe_cost=WIN(-9.3%) projection_cost=LOSS(+15.8%)
+    tpcds__store_sales_ss_hdemo_sk__household_demographics_hd_demo_sk__T96__tiera probe_cost=LOSS(+5.1%) projection_cost=WIN(-4.7%)
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__T96__tiera probe_cost=LOSS(+7.9%) projection_cost=WIN(-6.6%)
+    tpcds__store_sales_ss_item_sk__item_i_item_sk__filtered__T96__tiera probe_cost=LOSS(+12.1%) projection_cost=WIN(-5.7%)
+    tpcds__store_sales_ss_item_sk__store_returns_sr_item_sk__composite__T96__tiera probe_cost=WIN(-11.4%) projection_cost=LOSS(+22.1%)
+    tpcds__store_sales_ss_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera probe_cost=LOSS(+15.3%) projection_cost=WIN(-3.7%)
+    tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk__T16__tiera probe_cost=WIN(-15.8%) projection_cost=LOSS(+16.6%)
+    tpcds__store_sales_ss_sold_time_sk__time_dim_t_time_sk__T96__tiera probe_cost=WIN(-20.2%) projection_cost=LOSS(+6.9%)
+    tpcds__store_sales_ss_store_sk__store_s_store_sk__T96__tiera probe_cost=LOSS(+17.3%) projection_cost=WIN(-7.0%)
+    tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-35.6%) projection_cost=LOSS(+22.1%)
+    tpcds__web_returns_wr_refunded_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-26.6%) projection_cost=LOSS(+7.7%)
+    tpcds__web_returns_wr_refunded_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera probe_cost=WIN(-4.5%) projection_cost=LOSS(+33.2%)
+    tpcds__web_returns_wr_returned_date_sk__date_dim_d_date_sk__filtered__T96__tiera probe_cost=LOSS(+18.0%) projection_cost=WIN(-4.1%)
+    tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-35.1%) projection_cost=LOSS(+21.5%)
+    tpcds__web_returns_wr_returning_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-27.4%) projection_cost=LOSS(+9.4%)
+    tpcds__web_returns_wr_returning_cdemo_sk__customer_demographics_cd_demo_sk__T16__tiera probe_cost=WIN(-4.4%) projection_cost=LOSS(+33.2%)
+    tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-34.7%) projection_cost=LOSS(+21.1%)
+    tpcds__web_sales_ws_bill_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-23.6%) projection_cost=LOSS(+8.0%)
+    tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T16__tiera probe_cost=WIN(-20.8%) projection_cost=LOSS(+36.6%)
+    tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__T96__tiera probe_cost=WIN(-17.6%) projection_cost=LOSS(+13.7%)
+    tpcds__web_sales_ws_item_sk__web_returns_wr_item_sk__composite__T96__tiera probe_cost=WIN(-8.9%) projection_cost=LOSS(+14.5%)
+    tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk__T16__tiera probe_cost=WIN(-35.3%) projection_cost=LOSS(+20.1%)
+    tpcds__web_sales_ws_ship_addr_sk__customer_address_ca_address_sk__T96__tiera probe_cost=WIN(-23.6%) projection_cost=LOSS(+7.2%)
+    tpcds__web_sales_ws_ship_date_sk__date_dim_d_date_sk__filtered__T96__tiera probe_cost=LOSS(+17.1%) projection_cost=WIN(-3.4%)
+    tpcds__web_sales_ws_ship_mode_sk__ship_mode_sm_ship_mode_sk__T96__tiera probe_cost=LOSS(+3.5%) projection_cost=WIN(-16.0%)
+    tpcds__web_sales_ws_sold_date_sk__date_dim_d_date_sk__filtered__T96__tiera probe_cost=LOSS(+15.9%) projection_cost=WIN(-3.8%)
+    tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk__T16__tiera probe_cost=WIN(-24.7%) projection_cost=LOSS(+21.2%)
+    tpcds__web_sales_ws_sold_time_sk__time_dim_t_time_sk__T96__tiera probe_cost=WIN(-26.5%) projection_cost=LOSS(+14.2%)
+    tpch__customer_c_nationkey__nation_n_nationkey__T96__tiera probe_cost=LOSS(+4.0%) projection_cost=WIN(-12.0%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__T16__tiera probe_cost=WIN(-35.5%) projection_cost=LOSS(+3.5%)
+    tpch__lineitem_l_orderkey__orders_o_orderkey__T96__tiera probe_cost=WIN(-10.9%) projection_cost=LOSS(+8.3%)
+    tpch__lineitem_l_partkey__part_p_partkey__T16__tiera probe_cost=WIN(-38.3%) projection_cost=LOSS(+30.2%)
+    tpch__lineitem_l_partkey__part_p_partkey__T96__tiera probe_cost=WIN(-35.0%) projection_cost=LOSS(+5.4%)
+    tpch__lineitem_l_partkey__part_p_partkey__filtered__T16__tiera probe_cost=WIN(-9.4%) projection_cost=LOSS(+12.2%)
+    tpch__lineitem_l_partkey__part_p_partkey__filtered__T96__tiera probe_cost=WIN(-7.3%) projection_cost=LOSS(+7.5%)
+    tpch__lineitem_l_suppkey__supplier_s_suppkey__T16__tiera probe_cost=WIN(-22.8%) projection_cost=LOSS(+31.4%)
+    tpch__lineitem_l_suppkey__supplier_s_suppkey__T96__tiera probe_cost=WIN(-20.6%) projection_cost=LOSS(+18.1%)
+    tpch__orders_o_custkey__customer_c_custkey__T16__tiera probe_cost=WIN(-36.1%) projection_cost=LOSS(+27.3%)
+    tpch__orders_o_custkey__customer_c_custkey__T96__tiera probe_cost=WIN(-25.7%) projection_cost=LOSS(+8.7%)
+    tpch__orders_o_custkey__customer_c_custkey__filtered__T16__tiera probe_cost=WIN(-14.8%) projection_cost=LOSS(+22.3%)
+    tpch__orders_o_custkey__customer_c_custkey__filtered__T96__tiera probe_cost=WIN(-12.2%) projection_cost=LOSS(+10.1%)
+    tpch__orders_o_custkey__customer_c_custkey__left__T16__tiera probe_cost=WIN(-35.7%) projection_cost=LOSS(+26.8%)
+    tpch__orders_o_custkey__customer_c_custkey__left__T96__tiera probe_cost=WIN(-27.8%) projection_cost=LOSS(+8.0%)
+    tpch__partsupp_ps_partkey__part_p_partkey__T16__tiera probe_cost=WIN(-35.0%) projection_cost=LOSS(+7.0%)
+    tpch__partsupp_ps_suppkey__supplier_s_suppkey__T16__tiera probe_cost=WIN(-14.1%) projection_cost=LOSS(+30.5%)
+    tpch__partsupp_ps_suppkey__supplier_s_suppkey__T96__tiera probe_cost=WIN(-29.6%) projection_cost=LOSS(+10.8%)
+
+NO-VERDICT CELLS: 8
+    tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk__T16__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 206.0s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 206.0s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk__T96__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 63.6s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 63.6s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpcds__inventory_inv_item_sk__catalog_sales_cs_item_sk__T16__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 54.4s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 54.4s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpcds__store_sales_ss_item_sk__catalog_sales_cs_item_sk__T16__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 149.5s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 149.5s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpcds__store_sales_ss_item_sk__catalog_sales_cs_item_sk__T96__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 36.0s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 36.0s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpcds__store_sales_ss_item_sk__web_sales_ws_item_sk__T16__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 75.0s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm baseline warmup 0 took 75.0s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 570.2s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 570.2s > unit-time-budget 30.0s; unit skipped before any timed run'}
+    tpch__customer_c_nationkey__supplier_s_nationkey__T96__tiera {'probe_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 137.1s > unit-time-budget 30.0s; unit skipped before any timed run', 'projection_cost': 'harness voided: jbmt unit status OVER_BUDGET: arm candidate warmup 0 took 137.1s > unit-time-budget 30.0s; unit skipped before any timed run'}
+
+per-cell TSV written to reports/jbmt_real_a.tsv
+machine-readable report written to reports/jbmt_real_a.json
+
+CHECK SUMMARY: PASS (0 failed check(s))

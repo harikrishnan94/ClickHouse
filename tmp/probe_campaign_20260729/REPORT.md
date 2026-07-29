@@ -331,10 +331,201 @@ the 347 ids was built and is delivered (`logs/legacy_only_regex.txt`, 13,752 byt
 
 ## 5. Suite 3 — jbmt real (Unit 3)
 
-*(filled in below once the tier sweeps complete — see §5.1)*
+Real queries over the five loaded datasets (TPC-H, TPC-DS, JOB, StackOverflow, coffeeshop) on
+MergeTree, 11 timed runs per arm per unit (raised from the harness default of 5 — see §4.2), strict
+ABAB interleave with the lead arm flipped by `crc32(unit_id) & 1`, arm A = baseline on port 9005,
+arm B = `phj-ph` HEAD on port 9006.
+
+**Venue validity for this suite is established on the exact channel used**, not by analogy:
+
+    $ python3 probe_ab_report.py --results 'results/aa_real_pair/results.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control
+      probe_cost:      10 scored, 0 non-TIE, empirical noise floor = 1.24% (25,560 us)
+      projection_cost: 10 scored, 0 non-TIE, empirical noise floor = 1.59% (51,165 us)
+    CHECK SUMMARY: PASS   → exit 0
+
+That control ran the **baseline binary on both ports 9005 and 9006** — i.e. on arm B's own server
+instance and data root, with the candidate temporarily swapped out and then restored — with each
+port's running binary confirmed by hashing `/proc/<pid>/exe`. A per-instance or per-port bias in the
+measured channel would have surfaced as a non-TIE cell; none did.
+
+### Tier a — complete, 376 units attempted, 368 scored
+
+| | `probe_cost` | `projection_cost` |
+| --- | --- | --- |
+| verdicts | 368 | 368 |
+| **WIN / TIE / LOSS** | **161 / 51 / 156** | **43 / 127 / 198** |
+| aggregate | 230,542 ms → 210,259 ms (**−8.8 %**) | 2,284,640 ms → 2,347,582 ms (**+2.8 %**) |
+| median per-cell delta | **+0.4 %** | **+4.5 %** |
+| noise floor (G0-a, measured pair) | 1.24 % | 1.59 % |
+
+**Real queries tell a different story from the synthetic microbenchmarks, and it is much less
+favourable.** On the fleet's synthetic cells `probe_cost` improved in 68 of 78 cells at −35.2 %
+aggregate; on real queries the wins and losses are nearly balanced by count (161 vs 156), the median
+unit moves +0.4 % — i.e. nowhere — and the −8.8 % aggregate is carried by a minority of large units
+rather than by a broad improvement. `projection_cost` regresses on real queries too (198 losses
+against 43 wins, median +4.5 %), but its aggregate regression is much smaller (+2.8 %) than on the
+synthetic cells (+26.7 %), because on real data the residual is a far larger share of a much bigger
+probe total. **142 units move in opposite directions on the two metrics.**
+
+Worst `probe_cost` regressions (full list of all 156 in `reports/jbmt_real_a_losses_probe.md`):
+
+| unit | delta | band |
+| --- | --- | --- |
+| `tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__…T16` | **+211.7 %** | 5.0 % |
+| `job__movie_keyword_movie_id__title_id__filtered__T96__tiera` | +156.8 % | 17.3 % |
+| `tpcds__customer_c_customer_sk__catalog_returns_cr_returning_customer_sk__…T96` | +129.6 % | 19.8 % |
+| `stackoverflow__postlinks_RelatedPostId__posts_Id__T96__tiera` | +128.0 % | 19.4 % |
+| `job__movie_keyword_movie_id__title_id__T96__tiera` | +105.2 % | 9.4 % |
+| `job__movie_keyword_movie_id__movie_companies_movie_id__T96__tiera` | +94.5 % | 8.8 % |
+| `stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera` | +91.3 % | 3.1 % |
+| `job__movie_companies_movie_id__title_id__T96__tiera` | +66.8 % | 6.4 % |
+
+Worst `projection_cost` regressions (full list of all 198 in
+`reports/jbmt_real_a_losses_projection.md`):
+
+| unit | delta | band |
+| --- | --- | --- |
+| `stackoverflow__postlinks_RelatedPostId__posts_Id__T16__tiera` | +57.9 % | 3.0 % |
+| `tpcds__household_demographics_hd_income_band_sk__income_band_ib_income_band_sk__…` | +56.0 % | 19.2 % |
+| `tpcds__customer_address_ca_state__store_s_state__filtered__T16__tiera` | +48.2 % | 5.8 % |
+| `tpcds__customer_address_ca_state__store_s_state__T16__tiera` | +37.4 % | 8.8 % |
+| `job__movie_companies_movie_id__title_id__filtered__T96__tiera` | +37.3 % | 6.9 % |
+| `tpcds__web_sales_ws_bill_customer_sk__customer_c_customer_sk__…` | +36.6 % | 3.0 % |
+| `tpcds__catalog_sales_cs_ship_customer_sk__customer_c_customer_sk__…` | +35.4 % | 3.0 % |
+| `tpcds__store_returns_sr_cdemo_sk__customer_demographics_cd_demo_sk__…` | +35.2 % | 3.0 % |
+
+Opposite-direction units: all 142 in `reports/jbmt_real_a_opposed.md`.
+
+**Coverage, exactly and printed: 376 attempted, 368 scored, 8 NO-VERDICT.** `--expect-cells 376`
+exits 1, so **G3 for tier a is RED at 368/376** and N was not lowered. Every gap is one unit skipped
+before any timed run by the per-unit time budget described in §4.2, with the harness's own reason
+recorded:
+
+| unit | reason (`OVER_BUDGET`, first warmup vs 30 s budget) |
+| --- | --- |
+| `tpch__customer_c_nationkey__supplier_s_nationkey__T16__tiera` | arm candidate warmup 0 took 5xx s |
+| `tpch__customer_c_nationkey__supplier_s_nationkey__T96__tiera` | arm candidate warmup 0 took 1xx s |
+| `tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk__T16__tiera` | arm baseline warmup 0 took 206.0 s |
+| `tpcds__catalog_sales_cs_bill_customer_sk__store_returns_sr_customer_sk__T96__tiera` | arm baseline warmup 0 took 63.x s |
+| `tpcds__inventory_inv_item_sk__catalog_sales_cs_item_sk__T16__tiera` | arm baseline warmup 0 took 54.x s |
+| `tpcds__store_sales_ss_item_sk__catalog_sales_cs_item_sk__T16__tiera` | arm candidate warmup 0 took 1xx s |
+| `tpcds__store_sales_ss_item_sk__catalog_sales_cs_item_sk__T96__tiera` | arm candidate warmup 0 took 3xx s |
+| `tpcds__store_sales_ss_item_sk__web_sales_ws_item_sk__T16__tiera` | arm baseline warmup 0 took 75.x s |
+
+These are the same units the prior campaign documented as inherently exceeding the harness's
+hard-coded `max_execution_time = 600`; they would have produced no verdict in any case. The skip
+rule fired on **arm baseline for 4 of them and arm candidate for the other 4**, which is direct
+evidence that it is direction-blind in practice and not only in principle.
+
+### Tier b — see §5.2
+
+### 5.1 Decomposition and algorithm gates on the real suite (a second, non-vacuous origin)
+
+    $ python3 probe_ab_report.py --results 'results/jbmt_real_a/results.jsonl' \
+        --arm-a baseline --arm-b candidate --check-decomposition --check-path-event
+      gather events absent on both arms => projection_cost is an unsplit residual
+      rows checked: 8096   violations: 0
+      timed runs checked: 8096   violations: 0
+    CHECK SUMMARY: PASS   → exit 0
+
+This matters beyond repeating Unit 1's result: jbmt records the **full** ProfileEvents map of every
+timed run, whereas fleet_ab records a fixed 7-event subset. So on this suite the absence of
+`HashJoinResultBuildOutputMicroseconds` / `HashJoinResultFilterLeftMicroseconds` is genuine runtime
+evidence rather than a tautology of the harness's schema — which closes the "vacuous check" concern
+the independent verifier raised about G0-b on fleet_ab input.
+
+### 4.2 Deviation: 11 timed runs and a per-unit time budget (jbmt only)
+
+Two changes were made to the campaign's own copy of `join_bench_mt.py`; neither touches how a
+measured query runs, and both are disclosed here and in `WORKLOG.md`:
+
+- `--min-timed-runs 11` raises each unit's timed-run count from the plan's 5. This was a response to
+  the synthetic A/A being red at n=5 with heavily overlapping per-run distributions: the fix was
+  more samples, not a wider band.
+- `--unit-time-budget 30` skips a unit **before any timed run** if its first warmup exceeds 30 s,
+  recording `OVER_BUDGET`. Without it, one tier-a unit (`tpch__customer × supplier` on
+  `nationkey`, ~540 s per query) would have consumed ~4 h of a bounded run across its
+  26 queries. The decision reads **wall clock only, never either metric**, so it cannot favour an
+  arm — borne out by it firing on both arms roughly evenly.
+
+---
+
+## 6. Independent verification (doer ≠ grader)
+
+Two refute passes were attempted before consolidation.
+
+**Pass 1** (fresh subagent, `verifier` type) could not execute commands in this host — its shell
+was refused — so it delivered a static review only. Its two usable leads (that `--expect-cells` is
+count-only, and that an absent dispatch/lookup key is read as 0 µs) were both carried into pass 2
+and are both now closed. That pass's verdict is not counted as verification, because a verifier
+that cannot run the gates cannot verify them.
+
+**Pass 2** (fresh subagent with shell, given only the prompt, the scorer and the evidence) ran a
+full refutation. Verdict: **FIX-THEN-RESHIP**, with four blocking findings. **All four are fixed
+and re-verified**; the fixes are in the commit "Fix defects the independent verifier found".
+
+| # | Blocking finding | Status |
+| --- | --- | --- |
+| B1 | The stated mechanism for the red synthetic A/A was false: the two arms' `bench.*` parts are **byte-identical** (`hash_of_all_files` equal on separate data roots; `diff -r` clean over 578 MB). The real-vs-synthetic discriminator collapsed with it. | **Fixed** — claim withdrawn in §4, cause recorded as unlocated, raw refutation quoted. |
+| B2 | A cheap checkable-but-unrun avenue existed for the UNSETTLED Unit 2: swap the arm→port assignment (no code change, ~25 min) to test whether the offset is a fixed per-server bias. Also: a duration floor would void one offender (8 ms median query). The claim that fixing it needed a harness redesign was unsupported. | **Fixed** — the port-swap control was **run**; see §4.1. |
+| B3 | The order-effect "refutation" used signed group means, which cancel; on magnitudes the groups separate (p ≈ 0.033) and the hypothesis is confounded by `lead_flip = crc32(unit_id) & 1`. | **Fixed** — downgraded to "not tested" in §4 with the magnitudes and the confound stated. |
+| B4 | `REPORT.md` named two `projection_cost` winners with wrong ids and wrong percentages, one of them a cell that **never existed in the plan**, while the real winners (both `.anti` shapes) went unmentioned — including the one cell that wins on `projection_cost` and loses on `probe_cost`. | **Fixed** — replaced with the scorer's actual output in §3. |
+
+Non-blocking findings, all now addressed in this report or the scorer: `--compare-order` could not
+go red while its exit code was cited as evidence (added `--fail-on-order-effect`, re-ran G1-b with
+enforcement — still green); `--expect-cells` is count-only (added `--expect-unit-set-seen`, ran set
+equality for both orders — green); "the cost gate" was cited loosely (now names the teardown log
+and the independent inventory query); G0-b's gather-symmetry check is **vacuous on fleet_ab input**
+because that harness writes a fixed 7-event map, so the binary-level grep is the real evidence for
+assumption 2 (stated in §1 and in `WORKLOG.md`); the A/A control covers one cell shape (§3 caveat
+2); and the floor-voided cells lean slightly worse than the scored set (§3 caveat 1).
+
+What pass 2 tried and could **not** refute, each re-derived independently of the scorer: every gate
+exit code; every noise-floor figure to the digit; the decomposition identity and non-negativity
+over all 3,760 rows with its own Python; no arm asymmetry in event-key presence; the gather events
+absent from both binaries and from both commits' sources; all 16 NO-VERDICT cells having **zero**
+valid rows with harness-owned reasons; pre-registration commits predating every measured sweep with
+an append-only `WORKLOG.md`; the measured cell set equalling the regenerated 94-cell
+`parallel_hash` plan and matching neither `hash_inband` nor `all`; `cell_axes.algo` =
+`parallel_hash` on all 1,880 rows per sweep; every loss row in every report table verifying
+numerically; and its own from-scratch fixtures confirming the two metrics are verdicted
+independently. It also chased and dismissed a suspicion that the fleet numbers came from this host
+(the `host` field records the driver, not the shard; 3.52 h of cell time in a 38.4 min window
+implies 5.5× parallelism, impossible on one machine).
+
+**Limits of the verification, stated plainly.** The fleet was already torn down when pass 2 ran, so
+Unit 1 rests on the delivered JSONL: pass 2 attacked it for internal consistency and found nothing
+inconsistent, but it could not re-measure a cell and so cannot exclude fabricated JSONL on evidence
+alone. `/mnt/data/fleet_ab/fleet_ab.py` is not under version control at that path, so it could only
+be shown to predate the campaign by mtime rather than proven unmodified.
+
+Independence: **not degraded** — pass 2 was a fresh context that had not done the work, was given
+the prompt plus the artifacts, and produced findings that changed this report. Unit 0 and Unit 1
+were not self-passed.
 
 ---
 
 ## 7. Evidence matrix
 
-*(see §7 table below)*
+Every invocation is copy-paste re-runnable from the campaign directory
+`/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/`. `→ exit N` is the recorded exit code.
+
+| Criterion | Gate invocation (command) | Result (raw) | Non-gate sources (origins) | Verdict |
+| --- | --- | --- | --- | --- |
+| **G0-a** A/A control, fleet venue: identical binary both arms, ≥8 cells, every cell TIE on both metrics | `python3 probe_ab_report.py --results 'results/aa_fleet/results.shard*.jsonl' --arm-a aaA --arm-b aaB --metric both --aa-control` | `probe_cost: 9 scored, 0 non-TIE, floor 9.86% (707,280 us)` · `projection_cost: 9 scored, 0 non-TIE, floor 0.38% (8,894 us)` · `CHECK SUMMARY: PASS` **→ exit 0** | Both arms' `binary_sha256` and `proc_exe_sha256` = `0d32ef1c96e6…` on all 180 rows; `fleet/deployed.tsv`; verifier pass 2 re-ran it and reproduced every figure | **GREEN** |
+| **G0-a power** — the control can go red | `python3 probe_ab_report.py --results 'results/aa_fleet/results.shard*.jsonl' --arm-a aaA --arm-b aaB --metric both --aa-control --band-override 0` | verifier pass 2: 18 failed checks, all 9 cells non-TIE on both metrics **→ exit 1** | `scorer_selftest.py` case 5 | **GREEN** |
+| **G0-a** A/A control, jbmt **synthetic** venue | `python3 probe_ab_report.py --results 'results/aa_jbmt11/results.jsonl' --arm-a aaA --arm-b aaB --metric both --aa-control` | `probe_cost: 1 non-TIE, floor 3.86%` · `projection_cost: 1 non-TIE, floor 5.73%` · `CHECK SUMMARY: FAIL (2)` **→ exit 1** | Same result at 5 runs (`results/aa_jbmt/`, exit 1), an independent sweep: sign agrees 8/10 units, r = +0.872 | **RED — reported as RED**; Unit 2 UNSETTLED |
+| **G0-a** A/A control, jbmt **real** venue | `python3 probe_ab_report.py --results 'results/aa_real/results.jsonl' --arm-a aaA --arm-b aaB --metric both --aa-control` | `probe_cost: 10 scored, 0 non-TIE, floor 1.13%` · `projection_cost: 10 scored, 0 non-TIE, floor 1.97%` · `PASS` **→ exit 0** | 10 units × 5 datasets × 2 thread ladders; port-swap control §4.1 | **GREEN** |
+| **G0-b** decomposition: `probe_cost + projection_cost == ConcurrentHashJoinProbeMicroseconds`, residual ≥ 0, gather events absent-or-identical on both arms | `python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' --arm-a baseline --arm-b candidate --check-decomposition` (and the BAAB glob) | `rows checked: 1560   violations: 0` · `gather events absent on both arms => projection_cost is an unsplit residual` **→ exit 0** (both sweeps) | `strings -a` on both binaries: both gather events `0` occurrences; `git grep` at both commits finds neither event in `src/`; verifier pass 2's own Python over all 3,760 rows: 0 identity violations, 0 negative residuals, 0 rows missing a key, no arm asymmetry | **GREEN** (note: the gather-symmetry half is vacuous on fleet_ab's fixed 7-event map — the binary grep is the load-bearing origin) |
+| **G0-c** only `parallel_hash` ran | `python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' --arm-a baseline --arm-b candidate --check-path-event` (and BAAB) | `timed runs checked: 1560   violations: 0` **→ exit 0** (both sweeps) | `cell_axes.algo` = `parallel_hash` on all 1,880 rows/sweep; 0 `.hash` ids; 0 `Partitioned*` events anywhere; measured set ≠ `hash_inband`, ≠ `all`; `PartitionedHashJoinBuildMicroseconds` absent from both binaries | **GREEN** |
+| **G1** fleet_ab coverage, ABBA | `python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 94` | `coverage: 78 cells with a verdict …, expected 94 (total cells seen: 94)` · `CHECK SUMMARY: FAIL (1)` **→ exit 1** | All 16 gaps carry the harness's own `below-duration-floor` reason (`fleet_ab.py:420,1379-1390`, pre-dating the campaign); verifier: all 16 have **zero** valid rows | **RED — 78/94, quantified, N not lowered** |
+| **G1** fleet_ab coverage, BAAB | same with `results/fleet_baab/results.shard*.jsonl` | `coverage: 78 … expected 94` · `FAIL (1)` **→ exit 1** | same 16 cells as ABBA | **RED — 78/94** |
+| **G1-set** the measured cells really are the 94-cell plan (closes `--expect-cells` being count-only) | `python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-unit-set reports/fleet_plan94.json:cell --expect-unit-set-seen` (and BAAB) | `expected 94, scored 94, missing 0, extra 0` · `set equality: YES` **→ exit 0** (both) | Verifier regenerated the plan from the harness itself: `n = 94`, equal to both measured sets, unequal to `hash_inband` (12) and `all` (106) | **GREEN** |
+| **G1-b** block-order effect | `python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' --compare-order 'results/fleet_baab/results.shard*.jsonl' --arm-a baseline --arm-b candidate --metric both` | `probe_cost: 78 cells …, 0 disagree` · `projection_cost: 78 cells …, 0 disagree` · `(empty list …)` **→ exit 0** | Tally identity across orders (68/4/6 and 2/5/71 both), aggregates −35.2 % / +26.7 % vs −35.2 % / +26.6 % | **GREEN** |
+| **G1-b power** — it can go red | same plus `--fail-on-order-effect` | on real data **→ exit 0** (still green); on a fixture with a forced flip **→ exit 1** | `scorer_selftest.py` case 17; the verifier proved the un-enforced form could not fail | **GREEN** |
+| **Regression gate** — no win reported without beating the band on THAT metric; every loss listed with raw components | `python3 probe_ab_report.py --results 'results/fleet_abba/results.shard*.jsonl' --arm-a baseline --arm-b candidate --metric both --out-tsv reports/fleet_abba.tsv` | 6 `probe_cost` losses and 71 `projection_cost` losses listed with dispatch / lookup / probe-total; 63 opposite-direction cells listed in both | Verifier re-derived all tallies and verified all 26 in-report loss rows and all 71 rows of `reports/fleet_abba_losses_projection.md` (0 failures), including the BAAB cross-check column | **GREEN** |
+| **Scorer power** — a genuine LOSS is reported on each metric independently, and every check can fail | `python3 scorer_selftest.py` | `scorer_selftest: PASS (0 case(s) failed)` — 33 assertions **→ exit 0** | Verifier read the self-test for tricks (it drives the real scorer as a subprocess and asserts on its TSV), ran it, and built its own from-scratch fixtures reaching the same conclusion | **GREEN** |
+| **Cost gate** — tag-filtered EC2 inventory empty after the fleet | `RUN_TAG=fleet-ab-202607291848 fleet/teardown.sh` then the independent query in §8 | `instances by RUN_TAG (want empty): <empty>` · `volumes … <empty>` · `sgs … <empty>` · `TEARDOWN COMPLETE 2026-07-29T20:19:38Z` **→ exit 0** | Independent `aws ec2 describe-instances/volumes/security-groups` by tag value returned empty, and the only running instance in the region is this orchestration host | **GREEN (two origins)** |
+| **G2** legacy coverage, 347 cells with set equality | `python3 probe_ab_report.py --results 'results/jbmt_legacy/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 347 --expect-unit-set jbmt/join_bench_mt_legacy_cells.json:cell_id` | **NOT RUN** — no measured legacy sweep exists, because G0-a is red for this suite and a red gate stops the unit | The 347-id anchored `--only` regex is built and delivered (`logs/legacy_only_regex.txt`, 13,752 bytes); `join_bench_mt_legacy_cells.json` verified to hold exactly 347 unique `cell_id`s | **UNSETTLED / NO RESULT** — gap and settling evidence in §4 |
+| **G3** real coverage, 376 units per tier | `python3 probe_ab_report.py --results 'results/jbmt_real_a/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` (and tier b) | see §5 | see §5 | see §5 |
