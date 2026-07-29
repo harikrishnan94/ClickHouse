@@ -289,6 +289,67 @@ explicitly not authorized by this task. Another session's ClickHouse server (pid
 mine. Host load at setup was 0.24. The jbmt A/A control measures this venue's actual noise floor,
 and jbmt verdicts are reported against that floor.
 
+---
+
+## Iteration 4 — arm B identity scare: `system.build_options` GIT_HASH is STALE (resolved)
+
+**Goal.** Confirm each jbmt server really runs the binary its arm claims.
+
+**What happened.** The per-port identity check in `jbmt_aa.sh` returned:
+
+    port 9005 GIT_HASH: a05f3ee81ff8411759637fa367aad62e72726e71   <- baseline, as expected
+    port 9006 GIT_HASH: b425c8108950255b36642f9af9d0d9eec23619ab   <- b425c810895 = HEAD's PARENT
+    port 9007 GIT_HASH: a05f3ee81ff8411759637fa367aad62e72726e71   <- baseline, as expected
+
+Arm B claimed to be `phj-ph` HEAD `fa5667f2da7` but reported its parent. Either the staged
+binary was the wrong commit — which would invalidate Unit 1, already sweeping — or the embedded
+hash was stale. Not something to reason away, so:
+
+**Evidence gathered.**
+
+1. The staged arm-B binary is byte-identical to the 14:18 build, and distinct from the parent:
+
+       $ sha256sum build/reldeb/programs/clickhouse tmp/chj_amac/bins/clickhouse-hashroute-t12.bin \
+             tmp/chj_amac/bins/clickhouse-parent-b425c810895.bin
+       83de808547081e3a073772efe71fa3401e4a4889a4c720eeca9a1dc716f9e2b4  build/reldeb/programs/clickhouse
+       83de808547081e3a073772efe71fa3401e4a4889a4c720eeca9a1dc716f9e2b4  tmp/chj_amac/bins/clickhouse-hashroute-t12.bin
+       3e688a0aa3b0a7e0f9095ca39f0690efd3144253d9e76c42733ae9df10eaf770  tmp/chj_amac/bins/clickhouse-parent-b425c810895.bin
+
+2. HEAD `fa5667f2da7` introduces `joinHashRouteSlot`, the `found_slot` member and `route_shift`
+   in `src/Interpreters/HashJoin/JoinProbeScratch.h` (confirmed by
+   `git diff b425c810895..fa5667f2da7`). Searching all three binaries for those markers:
+
+       === clickhouse-phjph-fa5667f2da7.bin
+          joinHashRouteSlot    : 1
+          found_slot           : 1
+          route_shift          : 1
+       === clickhouse-parent-b425c810895.bin
+          joinHashRouteSlot    : 0
+          found_slot           : 0
+          route_shift          : 0
+       === clickhouse-baseline-a05f3ee81ff.bin
+          joinHashRouteSlot    : 0
+          found_slot           : 0
+          route_shift          : 0
+
+3. `git status` clean (working tree content == HEAD commit content) **and** `ninja clickhouse`
+   → `no work to do` (every output newer than its inputs) ⇒ the binary was built from the
+   content that is now HEAD.
+
+**Conclusion (MATERIAL, three independent origins that would fail differently).** Arm B *is*
+`phj-ph` HEAD `fa5667f2da7`, sha256 `83de8085…`. `system.build_options` GIT_HASH is baked at
+**cmake-configure time**, so on an incremental build it reports whatever commit was checked out
+when cmake last ran — here the parent, because the binary was compiled from the working tree one
+minute before that tree was committed as `fa5667f2da7`. **GIT_HASH is therefore not a valid way
+to identify an incrementally built ClickHouse binary**, and this campaign does not use it as one;
+the marker grep plus sha256 is the identity evidence. Recorded in REPORT.md as a HIGH-IMPACT
+assumption-turned-finding. Revisit trigger: none — settled.
+
+**Plan change.** None: the deployed arm B (`deployed.tsv` B = `83de8085…`, verified by
+`deploy.sh` against the local hash) is the intended binary, so the running ABBA sweep is valid.
+
+---
+
 ### PRE-REGISTRATION — Unit 2 (jbmt legacy, exactly 347 cells)
 
 **Expected outcome.** Exactly the 347 `cell_id` values from `join_bench_mt_legacy_cells.json`
