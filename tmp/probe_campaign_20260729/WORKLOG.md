@@ -189,3 +189,146 @@ cell; verdict flips between block orders (reported per cell, not averaged away).
 `fleet_launch_deploy.sh` at 2026-07-29T18:48Z with a 10 h teardown watchdog armed. fleet_ab's
 own README requires acceptance numbers to come from a fleet, so no fleet_ab number in this
 campaign comes from this orchestration host.
+
+---
+
+## Iteration 2 — Unit 0 gates on the fleet A/A: ALL GREEN
+
+**Goal.** Run G0-a/b/c for real, on the fleet, with the baseline binary on BOTH arms.
+
+**What was done.** `fleet/sweep.sh results/aa_fleet --arm-b <baseline> --name-a aaA --name-b aaB
+--cells <10 cells> --runs 10` with `REMOTE_BIN_B=/home/ubuntu/chj/clickhouse-a` exported, so both
+arms execute the same deployed file. 10 cells, one probe cell per family (all 9 families) plus
+one build cell, S2/S3 at T96. `--aa` was not used: it is mutually exclusive with the stealing
+driver's mandatory `--arm-b`, and pointing arm B's remote path at arm A's binary achieves the
+same thing while keeping the driver intact.
+
+**How verified.**
+
+    $ python3 probe_ab_report.py --results 'results/aa_fleet/results.shard*.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control
+    G0-a A/A control:
+      probe_cost: 9 scored, 0 non-TIE, empirical noise floor = 9.86% (707,280 us largest |delta|)
+      projection_cost: 9 scored, 0 non-TIE, empirical noise floor = 0.38% (8,894 us largest |delta|)
+    probe_cost: verdicts 9   win=0 tie=9 loss=0   no-verdict=1
+    projection_cost: verdicts 9   win=0 tie=9 loss=0   no-verdict=1
+    CHECK SUMMARY: PASS (0 failed check(s))   → exit 0
+
+    $ python3 probe_ab_report.py --results 'results/aa_fleet/results.shard*.jsonl' \
+        --arm-a aaA --arm-b aaB --check-decomposition --quiet-report
+    G0-b decomposition:
+      arm aaA/A: gather events present = <none>
+      arm aaB/B: gather events present = <none>
+      gather events absent on both arms => projection_cost is an unsplit residual
+      rows checked: 180   violations: 0
+    CHECK SUMMARY: PASS   → exit 0
+
+    $ python3 probe_ab_report.py --results 'results/aa_fleet/results.shard*.jsonl' \
+        --arm-a aaA --arm-b aaB --check-path-event --quiet-report
+    G0-c only-parallel_hash:
+      timed runs checked: 180   violations: 0
+    CHECK SUMMARY: PASS   → exit 0
+
+**Result.** G0-a, G0-b, G0-c all green with ≥8 scored cells, so the A/A control has power.
+Empirical noise floors, per metric, from identical binaries:
+
+| metric | noise floor (largest \|delta\| across 9 A/A cells) |
+| --- | --- |
+| `probe_cost` | **9.86 %** (707,280 µs) |
+| `projection_cost` | **0.38 %** (8,894 µs) |
+
+Contrary to the prompt's expectation, the **residual is the QUIETER metric here**, not the
+noisier one: `projection_cost` tracks output row count, which is fixed per cell, while
+`probe_cost` carries the scheduling variance of 96 probe threads. Recorded as a finding, not a
+correction to anything measured.
+
+**The one NO-VERDICT cell is honest, not inconvenient.** `key64:build.inner_all.S2.T96` was
+voided by the harness itself: median 24.5 ms < the 200 ms floor
+(`invalid_reason = below-duration-floor (arm A median 24.5 ms < 200 ms)`), printed with that
+reason rather than dropped or counted as a tie.
+
+**Consequence for Gate G1 — flagged now, before the measured sweep is scored.** Small build
+cells sit under the 200 ms floor, so `--expect-cells 94` is very likely to come back RED on the
+full plan. That will be reported as RED with the exact scored count and the per-cell reasons.
+The N in `--expect-cells 94` will NOT be lowered to match whatever is observed: that is the
+"check weakened until it passes" move. Coverage will instead be delivered as an exact, printed,
+quantified partial (94 attempted / N scored / M floor-voided with reasons).
+
+---
+
+## Iteration 3 — local jbmt for Units 2 and 3
+
+**Finding that changes the wiring (MATERIAL, from code).** In jbmt an arm is
+`NAME=BINARY:PORT`, and `ExecTarget.client_argv` (`join_bench_mt.py:132-137`) uses `BINARY`
+only as a **client**: `[binary, "client", "--port", port]`. The code under measurement is
+therefore whatever **server** listens on `PORT`, and `binary_sha256`
+(`join_bench_mt.py:257,1137`) hashes the *client* path. So the recorded arm hash identifies the
+measured code only because the caller pairs each client with a server running the same file.
+That pairing is verified independently per port via `system.build_options` GIT_HASH rather than
+trusted.
+
+Consequences:
+- Measured run: server 9005 = baseline, server 9006 = `phj-ph` HEAD, arms paired accordingly.
+- The jbmt A/A control needs a THIRD server running the baseline (port 9007), because two arms
+  on the same port would not exercise the interleave.
+
+**Data setup (`jbmt_setup.sh`).** `/mnt/data/jbmt_server/data` already holds the real-suite
+databases for both tiers (392 GB), so no EBS volume is created from
+`snap-021cbdc2484f86607`. Arm roots are `cp -al` hardlink clones (`join_bench_mt_servers.sh
+clone`): zero data bytes, and — the reason it matters — **byte-identical data on both arms**,
+which is what lets jbmt's cross-arm `(row_count, checksum)` oracle hold. `keys_store` is filled
+ONCE on arm A and arm B is cloned from arm A afterwards, so the synthetic suite's keys are
+identical too rather than independently regenerated. Servers are `setsid`-detached by the
+harness's own script.
+
+**Venue deviation, documented.** The jbmt suites run on this 96-core Graviton4 orchestration
+host, not on a fleet: the vCPU quota admits only ONE 8-shard `m8g.24xlarge` fleet at a time,
+that fleet is committed to fleet_ab's acceptance sweeps, and launching a second fleet is
+explicitly not authorized by this task. Another session's ClickHouse server (pid 3801718, port
+9000, `tmp/two_level_removal/srv2`) is running on this host and was NOT touched — it is not
+mine. Host load at setup was 0.24. The jbmt A/A control measures this venue's actual noise floor,
+and jbmt verdicts are reported against that floor.
+
+### PRE-REGISTRATION — Unit 2 (jbmt legacy, exactly 347 cells)
+
+**Expected outcome.** Exactly the 347 `cell_id` values from `join_bench_mt_legacy_cells.json`
+are measured — no more, no fewer — with verdicts on both metrics, after a green jbmt A/A control.
+
+**Exact invocations that will prove it.**
+
+    # jbmt A/A control first (10 units, one per key family K0..K9, servers 9005 and 9007 both baseline)
+    python3 probe_ab_report.py --results 'results/aa_jbmt/results.jsonl' \
+        --arm-a aaA --arm-b aaB --metric both --aa-control
+    # G2 coverage: set equality, not a count
+    python3 probe_ab_report.py --results 'results/jbmt_legacy/results.jsonl' \
+        --arm-a baseline --arm-b candidate --metric both \
+        --expect-cells 347 \
+        --expect-unit-set jbmt/join_bench_mt_legacy_cells.json:cell_id
+
+The `--only` regex is built as `^(id1|id2|...|id347)$` from the JSON itself (13,752 bytes,
+`logs/legacy_only_regex.txt`), anchored so it cannot match a superset, rather than trusting a
+group label.
+
+**What would refute it.** A scored unit set that is not exactly the 347 ids (either direction);
+any unit whose arms disagree on `(row_count, checksum)`; a run where
+`ConcurrentHashJoinBuildMicroseconds` is 0 (a fallback to another algorithm).
+
+### PRE-REGISTRATION — Unit 3 (jbmt real, 376 units per tier, tiers a and b)
+
+**Expected outcome.** 376 units per tier with verdicts on both metrics. Tier b is heavier and may
+exhaust the run's time; a completed tier a plus an explicitly labelled, quantified partial tier b
+is the accepted delivery in that case.
+
+**Exact invocations that will prove it.**
+
+    python3 probe_ab_report.py --results 'results/jbmt_real_a/results.jsonl' \
+        --arm-a baseline --arm-b candidate --metric both --expect-cells 376
+    python3 probe_ab_report.py --results 'results/jbmt_real_b/results.jsonl' \
+        --arm-a baseline --arm-b candidate --metric both --expect-cells 376
+
+**What would refute it.** Fewer than 376 scored units without a stated, quantified reason;
+`verify` failing for a tier (data not trustworthy); cross-arm checksum disagreement, which for
+real-suite units is the ONLY correctness oracle since `expected_rows_closed_form` is null there.
+If the harness turns out not to enforce cross-arm equality on this configuration, every
+real-suite verdict is reported UNSETTLED — the code path was read (`join_bench_mt.py:1160-1204`)
+and does enforce it; it is re-confirmed empirically from the delivered JSONL.
