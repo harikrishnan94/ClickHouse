@@ -949,6 +949,25 @@ Origin 2 — an independent tag-filtered query, run separately from the teardown
 No EBS volume was ever created from snapshot `snap-021cbdc2484f86607`, because the real-suite data
 was already present locally; so there is no volume to account for either.
 
+Origin 3 — re-checked once more at the end of the run, hours after teardown:
+
+    === resources tagged fleet-ab-202607291848 (want 0 each)      2026-07-30T02:47Z
+    instances(non-terminated): 0
+    volumes:                   0
+    security-groups:           0
+
+The region contains 23 other instances, **all in state `stopped`** and all pre-existing (`rf-node-*`,
+`rf-builder`, two personal dev VMs); the only `running` instance is `i-00c8778b1ae41598f`, this
+orchestration host, which this campaign did not launch and must not terminate. The launch's 10 h
+teardown watchdog is still pending and is harmless: it re-checks the tag and would find nothing.
+
+**Local processes left behind, deliberately.** Three `setsid`-detached ClickHouse servers started by
+this campaign are still running on this host — ports 9005 (baseline), 9006 (`phj-ph` HEAD) and 9007
+(baseline) on hardlink clones of the real-suite data under `/mnt/data/probe_camp_jbmt/`. They cost
+nothing beyond idle memory, they hold no cloud resource, and they are left up so a reviewer can
+re-run the jbmt gates or the A/A controls without rebuilding 392 GB of data roots. Stop them with
+`jbmt/join_bench_mt_servers.sh stop /mnt/data/probe_camp_jbmt/{a,b,c}/scratch`.
+
 ---
 
 ## 9. Definition-of-done audit
