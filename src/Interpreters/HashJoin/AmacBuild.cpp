@@ -257,7 +257,7 @@ AmacBuildInsertResult amacBuildInsert(
     };
     /// The 8-byte narrow ring slot when the cell index provably fits 32 bits for the whole run,
     /// growths included: the buffer is within 2^32 cells now and the final fill stays within
-    /// 2^30 keys, which growth doubling cannot take past 2^31 cells (plus the constant tail pad).
+    /// 2^30 keys, which growth doubling cannot take past 2^31 cells.
     if (map.getBufferSizeInCells() <= (1uz << 32) && map.size() + rows <= (1uz << 30))
         run_ring.template operator()<UInt32>();
     else

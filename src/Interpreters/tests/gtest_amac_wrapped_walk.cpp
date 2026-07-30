@@ -11,11 +11,9 @@ using namespace DB;
 namespace
 {
 
-/// Sends every key to one home cell near the end of the power-of-two region, so a modest
-/// insert count builds a collision chain that runs through the whole tail pad, occupies its
-/// last cell and wraps to the buffer's start - the layout the wrap-aware walk exists for (see
-/// `AmacWalk`). Unreachable through the production hash functions or SQL, which is why this
-/// test instantiates the find pass directly (see `AmacProbeImpl.h`).
+/// Sends every key to one home cell near the end of the buffer, forcing the standard linear
+/// probe to wrap. Unreachable through the production hash functions or SQL, which is why this
+/// test instantiates the find pass directly.
 struct DegenerateHash
 {
     size_t operator()(UInt64) const { return 250; }
@@ -28,8 +26,8 @@ using WrappedKeyGetter = KeyGetterForType<HashJoin::Type::key64, const WrappedMa
 
 TEST(AmacWrappedWalk, RingMatchesMapFindOnWrappedChain)
 {
-    /// 100 keys, one home cell: the chain covers cells 250..319 (the pad ends the buffer at
-    /// 256 + 64 cells) and wraps into 0..29. Load factor stays below growth.
+    /// 100 keys, one home cell: the chain covers cells 250..255 and wraps into 0..93. Load
+    /// factor stays below growth.
     WrappedMap map;
     constexpr UInt64 n_keys = 100;
     for (UInt64 key = 1; key <= n_keys; ++key)
@@ -40,10 +38,7 @@ TEST(AmacWrappedWalk, RingMatchesMapFindOnWrappedChain)
         ASSERT_TRUE(inserted);
         it->getMapped() = RowRef(0, key);
     }
-    ASSERT_EQ(map.getBufferSizeInCells(), 256 + WrappedMap::grower_type::tail_pad);
-
-    /// The plan's wrap bit fires: the buffer's last pad cell is occupied.
-    ASSERT_FALSE(map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1));
+    ASSERT_EQ(map.getBufferSizeInCells(), 256);
 
     /// Probe every built key plus misses that walk the full wrapped chain to its empty end.
     std::vector<UInt64> probe_keys;
@@ -59,11 +54,11 @@ TEST(AmacWrappedWalk, RingMatchesMapFindOnWrappedChain)
     auto key_getter = createKeyGetter<WrappedKeyGetter, false>(key_columns, key_sizes);
 
     const WrappedMap * slot_maps[1]{&map};
-    const SlotMapDesc descs[1]{{map.cursorCells(), map.cursorMask()}};
+    const SlotMapDesc descs[1]{{map.cursorCells(), map.getBufferSizeInCells() - 1}};
     std::vector<UInt64> found_word(probe_keys.size());
 
     Arena pool;
-    amacFindPass<WrappedKeyGetter, WrappedMap, /*need_flags=*/false, /*selector_is_range=*/true, AmacWalk::wrap_aware>(
+    amacFindPass<WrappedKeyGetter, WrappedMap, /*need_flags=*/false, /*selector_is_range=*/true>(
         key_getter,
         slot_maps,
         descs,

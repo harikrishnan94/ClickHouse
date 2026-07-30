@@ -209,20 +209,18 @@ template <typename Map>
 constexpr bool hash_routed_lookup = AmacResumableMap<std::remove_const_t<Map>>;
 
 /// The flat find of the routed plain loop: address material from the once-per-build plan, the
-/// map object only for its hash/equality functors. The walk is wrap-aware - through the tail
-/// pad, wrapping at its end, exactly `HashMapTable::find` under `TailPaddedHashTableGrower` -
-/// so it doubles as the fallback for wrapped-chain builds. The offset is the slot-local
-/// used-flags offset (`offsetInternal` semantics).
+/// map object only for its hash/equality functors. The walk matches the standard grower's
+/// masked linear probing. The offset is the slot-local used-flags offset
+/// (`offsetInternal` semantics).
 template <typename KeyGetter, typename Map, typename KeyType>
 ALWAYS_INLINE typename KeyGetter::FindResult flatFindKey(const SlotMapDesc & desc, const KeyType & key, size_t hash)
 {
     using Cell = typename std::remove_const_t<Map>::cell_type;
     using Mapped = typename std::remove_const_t<Map>::mapped_type;
     static constexpr HashTableNoState no_state{};
-    static constexpr size_t tail_pad = std::remove_const_t<Map>::grower_type::tail_pad;
 
     const Cell * buf = static_cast<const Cell *>(desc.buf);
-    const Cell * pad_end = buf + desc.mask + 1 + tail_pad;
+    const Cell * end = buf + desc.mask + 1;
     const Cell * cell = buf + (hash & desc.mask);
     while (!cell->isZero(no_state))
     {
@@ -233,8 +231,7 @@ ALWAYS_INLINE typename KeyGetter::FindResult flatFindKey(const SlotMapDesc & des
             auto * mapped = const_cast<Mapped *>(&cell->getMapped());
             return typename KeyGetter::FindResult(mapped, true, static_cast<size_t>(cell - buf) + 1);
         }
-        ++cell;
-        if (unlikely(cell == pad_end))
+        if (unlikely(++cell == end))
             cell = buf;
     }
     return typename KeyGetter::FindResult(nullptr, false, 0);
@@ -619,29 +616,19 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
             else
                 sel_indexes = selector.getData().data();
 
-            /// Correctness, not a threshold: a wrapped plan (see `chain_may_wrap`) must take
-            /// the wrap-aware walk even under `Force`; every other plan keeps the bare walk
-            /// (see `AmacWalk`).
-            auto find_pass = [&]<AmacWalk walk>()
-            {
-                amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range, walk>(
-                    key_getter,
-                    maps_by_slot,
-                    descs_data,
-                    route_shift,
-                    rows,
-                    range_first,
-                    sel_indexes,
-                    skip_data,
-                    pool,
-                    found_word_data,
-                    found_offset_data,
-                    found_slot_data);
-            };
-            if (plan.chain_may_wrap)
-                find_pass.template operator()<AmacWalk::wrap_aware>();
-            else
-                find_pass.template operator()<AmacWalk::bare>();
+            amacFindPass<KeyGetter, MapNonConst, join_features.need_flags, selector_is_range>(
+                key_getter,
+                maps_by_slot,
+                descs_data,
+                route_shift,
+                rows,
+                range_first,
+                sel_indexes,
+                skip_data,
+                pool,
+                found_word_data,
+                found_offset_data,
+                found_slot_data);
 
             if constexpr (degenerate_phase_b)
             {

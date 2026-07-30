@@ -285,11 +285,11 @@ public:
     {
         /// NOLINTBEGIN(bugprone-macro-parentheses)
         using MappedType = Mapped;
-        /// The nine maps `key32`..`hashed` are rebound through `WithJoinCursor` (same cells
-        /// and hash, tail-padded grower) so the `parallel_hash` AMAC rings can drive their
-        /// cursor API; `hash` uses them through the unchanged public interface. The
-        /// low-cardinality strings are not ring targets and stay standard: their key getter
-        /// memoises `findKey` per dictionary index, which the ring would bypass.
+        /// The nine maps `key32`..`hashed` are rebound through `WithJoinCursor` so the
+        /// `parallel_hash` AMAC rings can drive their cursor API; `hash` uses them through the
+        /// unchanged public interface. The low-cardinality strings are not ring targets and
+        /// stay standard: their key getter memoises `findKey` per dictionary index, which the
+        /// ring would bypass.
         std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
         std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>      key32;

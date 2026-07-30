@@ -34,10 +34,8 @@ ALWAYS_INLINE inline size_t joinHashRouteSlot(size_t hash, UInt32 route_shift)
     return static_cast<size_t>(static_cast<UInt32>(hash)) >> route_shift;
 }
 
-/// Per-slot address material of the routed lookups: the cell buffer base and the home mask of
-/// the power-of-two region (NOT `bufSize - 1`; the buffers are tail-padded - see
-/// `TailPaddedHashTableGrower`). At most 256 slots x 16 bytes, so the whole array stays
-/// cache-resident under the find loops.
+/// Per-slot address material of the routed lookups: the cell buffer base and mask. At most
+/// 256 slots x 16 bytes, so the whole array stays cache-resident under the find loops.
 struct SlotMapDesc
 {
     const void * buf;
@@ -52,9 +50,7 @@ struct SlotMapDesc
 ///   rest);
 /// - `flags_by_slot` - the per-slot used-flags structures (RIGHT/FULL shapes);
 /// - `total_map_bytes` - aggregate map buffer bytes, the software-prefetch/AMAC size gate;
-/// - `avg_joined_bytes_per_row` - the whole-join output-splitting estimate;
-/// - `chain_may_wrap` - some slot's collision chain reached its buffer's last pad cell, so
-///   walks licensed to skip the wrap check must not run.
+/// - `avg_joined_bytes_per_row` - the whole-join output-splitting estimate.
 struct RoutedProbePlan
 {
     std::vector<const void *> map_by_slot;
@@ -62,7 +58,6 @@ struct RoutedProbePlan
     std::vector<JoinStuff::JoinUsedFlags *> flags_by_slot;
     size_t total_map_bytes = 0;
     size_t avg_joined_bytes_per_row = 0;
-    bool chain_may_wrap = false;
 };
 
 /// Per-probe-stream scratch of the routed `parallel_hash` probe, pooled on the join and

@@ -34,18 +34,15 @@ namespace AmacProbeDetail
   * once at admit from the flat descriptor array and carried in the ring slot as the RESOLVED
   * CELL POINTER, so a steady visit dereferences nothing but the cell itself and the stored
   * probe key: the map headers, scattered across as many heap objects as there are slots, would
-  * otherwise sit on the address chain of every visit. The collision walk is `++cell` under the
-  * `walk` policy selected from the plan's wrap bit (see `AmacWalk`): bare - no mask, no bound
-  * check - for the plans where no chain reached a buffer's last pad cell, so every walk
-  * terminates at an empty cell in the tail-padded buffer (`TailPaddedHashTableGrower`);
-  * wrap-aware, wrapping at the pad end like the grower's `next`, for the rare builds where
-  * one did. The key is packed ONCE at admit and read per visit: re-fetching it through
+  * otherwise sit on the address chain of every visit. The collision walk advances linearly
+  * and wraps at the standard power-of-two buffer boundary. The key is packed ONCE at admit
+  * and read per visit: re-fetching it through
   * `getKeyHolder` re-packs the wide fixed keys (keys128/keys256) from the column pointers on
   * EVERY visit - measured on the `ahj` prototype as the dominant per-visit cost of the
   * wide-key ring. Ported (as ideas) from `RoutedAmacFindPolicy` of the `ahj` prototype
   * (`src/Interpreters/PartitionedHashJoin/PartitionedHashJoinProbeImpl.h`).
   */
-template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range, AmacWalk walk>
+template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
 struct AmacFindPolicy
 {
     using Cell = Map::cell_type;
@@ -53,11 +50,9 @@ struct AmacFindPolicy
     static constexpr bool may_grow = false;
     static constexpr bool copy_into_frame = true; /// results live in the arrays; no state survives the run
 
-    /// The slot-register walk below is `HashMapTable::find` only under the contract of the
-    /// tail-padded linear grower - the home cell is `hash & mask`, the walk `++pos` into the
-    /// pad - and stateless cells, whose zero-check and key-compare read nothing through the map
-    /// object. Every map the AMAC gate admits satisfies both.
-    static_assert(is_tail_padded_linear_grower<typename Map::grower_type>);
+    /// The slot-register walk below relies on linear probing and stateless cells, whose
+    /// zero-check and key-compare read nothing through the map object.
+    static_assert(Map::grower_type::performs_linear_probing_with_single_step);
     static_assert(std::is_same_v<typename Cell::State, HashTableNoState>);
     static constexpr HashTableNoState no_state{};
 
@@ -196,7 +191,7 @@ struct AmacFindPolicy
         const size_t slot = joinHashRouteSlot(hash, route_shift);
         if constexpr (need_flags)
             found_slot[i] = static_cast<UInt8>(slot);
-        if (unlikely(map0.isZeroKey(key)))
+        if (map0.isZeroKey(key)) [[unlikely]]
         {
             /// The zero key lives in the dedicated zero-value cell - nothing to overlap.
             const Map & map = *slot_maps[slot];
@@ -236,21 +231,10 @@ struct AmacFindPolicy
             recordHit(ring.row[s], ring.slot[s], cell);
             return AmacStepResult::Done;
         }
-        ++cell;
-        if constexpr (walk == AmacWalk::wrap_aware)
-        {
-            /// A wrapped-chain plan (some chain reached a buffer's last pad cell): the walk
-            /// wraps exactly where the grower's `next` does. The slot lane recovers the
-            /// bounds from the cache-resident descriptor table.
-            const SlotMapDesc & desc = slot_descs[ring.slot[s]];
-            const Cell * pad_end
-                = static_cast<const Cell *>(desc.buf) + desc.mask + 1 + Map::grower_type::tail_pad;
-            if (unlikely(cell == pad_end))
-                cell = static_cast<const Cell *>(desc.buf);
-        }
-        /// else: no wrap and no bound check - the buffer is tail-padded and the plan verified
-        /// no chain reached its last cell, so an empty cell terminates the walk at or before
-        /// it (see `TailPaddedHashTableGrower`).
+        const SlotMapDesc & desc = slot_descs[ring.slot[s]];
+        const Cell * buf = static_cast<const Cell *>(desc.buf);
+        if (++cell == buf + desc.mask + 1) [[unlikely]]
+            cell = buf;
         ring.cell[s] = cell;
         prefetchCell(cell);
         return AmacStepResult::Advance;
@@ -259,7 +243,7 @@ struct AmacFindPolicy
 
 }
 
-template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range, AmacWalk walk>
+template <typename KeyGetter, typename Map, bool need_flags, bool selector_is_range>
 void amacFindPass(
     KeyGetter & key_getter,
     const Map * const * slot_maps,
@@ -280,7 +264,7 @@ void amacFindPass(
     chassert(need_flags == (found_offset != nullptr));
     chassert(need_flags == (found_slot != nullptr));
 
-    using Policy = AmacProbeDetail::AmacFindPolicy<KeyGetter, Map, need_flags, selector_is_range, walk>;
+    using Policy = AmacProbeDetail::AmacFindPolicy<KeyGetter, Map, need_flags, selector_is_range>;
     /// The selector view and the result arrays are re-based per chunk; the row-indexed side
     /// arrays (skip bytes) are indexed by the source row and need no re-base.
     for (size_t chunk_begin = 0; chunk_begin < rows; chunk_begin += Policy::chunk_rows_max)

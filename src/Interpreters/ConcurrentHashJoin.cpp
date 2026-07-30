@@ -267,18 +267,15 @@ void ConcurrentHashJoin::collectRoutedProbePlan()
     {
         switch (type)
         {
-/// The descriptor and the wrap bit exist only for the cursor-capable (tail-padded
-/// open-addressing) map types; the rest keep map-resolved lookups.
+/// The descriptor exists only for the cursor-capable open-addressing map types; the rest keep
+/// map-resolved lookups.
 #define M(NAME) \
     case HashJoin::Type::NAME: { \
         const auto & map = *maps.NAME; \
         plan.map_by_slot.push_back(&map); \
         plan.total_map_bytes += map.getBufferSizeInBytes(); \
         if constexpr (requires { map.cursorCells(); }) \
-        { \
-            plan.desc_by_slot.push_back({map.cursorCells(), map.cursorMask()}); \
-            plan.chain_may_wrap |= !map.cursorCellIsEmpty(map.cursorCells() + map.getBufferSizeInCells() - 1); \
-        } \
+            plan.desc_by_slot.push_back({map.cursorCells(), map.getBufferSizeInCells() - 1}); \
         break; \
     }
             APPLY_FOR_JOIN_VARIANTS(M)
