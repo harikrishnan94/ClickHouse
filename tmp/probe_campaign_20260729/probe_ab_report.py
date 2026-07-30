@@ -544,6 +544,17 @@ def report(cells, metrics, label):
         print(f"    {c['unit']:<46} {reasons}")
 
 
+def tsv_safe(v):
+    """A harness reason can quote a server exception, which brings newlines and tabs with it.
+
+    Left raw, one such reason silently splits a row across lines and every column after it
+    is misread, so the TSV has to flatten whitespace rather than trust the source string.
+    """
+    if v is None:
+        return ""
+    return " ".join(str(v).split())
+
+
 def write_tsv(cells, metrics, path):
     cols = ["unit"]
     for m in metrics:
@@ -563,7 +574,7 @@ def write_tsv(cells, metrics, path):
             w = c["raw"]
             vals += [w.get(k) for k in ("dispatch_a", "dispatch_b", "lookup_a", "lookup_b",
                                         "probe_total_a", "probe_total_b", "wall_a", "wall_b")]
-            fh.write("\t".join("" if v is None else str(v) for v in vals) + "\n")
+            fh.write("\t".join(tsv_safe(v) for v in vals) + "\n")
     print(f"\nper-cell TSV written to {path}")
 
 

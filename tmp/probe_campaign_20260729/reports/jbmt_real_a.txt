@@ -1,7 +1,7 @@
 probe_ab_report: 1 file(s), 8112 timed-run rows, arms present [('baseline', None), ('candidate', None)]
 arm A = 'baseline'   arm B = 'candidate'   metrics = ['probe_cost', 'projection_cost']
 
-=== Unit 3 jbmt real tier a (376 units attempted): per-metric verdicts (band = max(3%, per-arm relative spread), evaluated per metric) ===
+=== Unit 3 jbmt real tier a: per-metric verdicts (band = max(3%, per-arm relative spread), evaluated per metric) ===
 
 probe_cost: verdicts 368   win=161 tie=51 loss=156   no-verdict=8
   aggregate 230,541.8 ms -> 210,259.1 ms (-8.8%)

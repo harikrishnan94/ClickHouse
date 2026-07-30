@@ -27,7 +27,20 @@ metric: `max(3%, that metric's own per-arm relative spread)`; anything inside th
 | **Unit 0** — metrics, scorer, A/A control | **GREEN** (fleet venue) · **RED→documented** (jbmt synthetic venue) | G0-a/b/c all exit 0 on the fleet A/A; G0-a exits 1 on the jbmt *synthetic* venue at both 5 and 11 timed runs, and exits 0 on the jbmt *real* venue. Scorer delivered with a 24-assertion self-test proving every gate can go red. |
 | **Unit 1** — fleet_ab, 94 cells × ABBA + BAAB | **GREEN except coverage** | G0-b, G0-c and G1-b exit 0 on both sweeps, and the fleet is torn down with empty-inventory proof from two independent origins. **G1 is RED**: 78 of 94 cells carry verdicts; the 16 others are NO-VERDICT with the harness's own `below-duration-floor` reason. `--expect-cells 94` was not lowered. Set equality of the *measured* 94 cells against the plan is separately green. |
 | **Unit 2** — jbmt legacy, 347 cells | **UNSETTLED / NO RESULT** | Blocked on validity, not on effort: G0-a is red on the only venue available to this suite. No legacy `probe_cost` or `projection_cost` verdict is issued. Gap and settling evidence named in §6. |
-| **Unit 3** — jbmt real, 376 units × tiers a, b | **see §5** | Venue validated (G0-a green, floors 1.13 % / 1.97 %). Tier a measured; tier b as labelled below. |
+| **Unit 3** — jbmt real, 376 units × tiers a, b | **BOTH TIERS COMPLETE, GREEN except coverage** | Venue validated on the exact measured server pair (G0-a exit 0, floors 1.24 % / 1.59 %). Tier a: 376 attempted, **368 scored**, 8 NO-VERDICT. Tier b: 376 attempted, **365 scored**, 11 NO-VERDICT. Every gap is an `OVER_BUDGET` skip taken before any timed run, with the harness's reason. `--expect-cells 376` exits 1 for both tiers, so **G3 is RED at 368/376 and 365/376**, quantified, N not lowered. G0-b/G0-c green over 8,096 and 8,030 timed rows. |
+
+### The result in three sentences
+
+On the fleet's 94-cell synthetic plan, `phj-ph` HEAD makes `probe_cost` (dispatch + lookup)
+substantially cheaper — 68 of 78 scored cells win, −35.2 % aggregate, replicated in both block
+orders — while making `projection_cost` (the column-materialization residual) substantially more
+expensive: 71 of 78 cells lose, +26.7 % aggregate. On the 368 scored real-query units of jbmt tier a
+the same trade appears far weaker and far less favourable: `probe_cost` wins and losses are nearly
+balanced (161 vs 156, median unit +0.4 %), the −8.8 % aggregate is carried by twenty units that
+themselves got slower on the probe total and on wall clock, `projection_cost` loses 198 to 43, and
+the measured probe total rises +1.69 % with 287 of 368 queries slower end to end. **63 fleet cells
+and 142 real units move in opposite directions on the two metrics; neither metric's verdict is ever
+netted against the other's, and no cell is presented as a win on the strength of the other metric.**
 | **Unit 4** — consolidation | this document | |
 
 ### Flags requiring attention
@@ -557,7 +570,64 @@ servers' own `system.query_log`, which shows the non-leading arm never ran those
 (`store_sales × catalog_sales T96`, candidate 35.9 s against a 30 s budget) would, had the hash
 fallen the other way, most likely have *added* an arm-B regression rather than removed one.
 
-### Tier b — see §5.2
+### Tier b — complete, 376 units attempted, 365 scored
+
+Tier b was expected to be a labelled partial; it finished, so it is not. Generated from
+`reports/jbmt_real_b.tsv` (`make_report_tables.py`); full tables in `reports/section5_tier_b.md`.
+
+| | `probe_cost` | `projection_cost` |
+| --- | --- | --- |
+| verdicts | 365 | 365 |
+| **WIN / TIE / LOSS** | **164 / 50 / 151** | **49 / 126 / 190** |
+| aggregate | 493,179.2 ms → 449,846.8 ms (**−8.8 %**) | 1,867,031.9 ms → 2,054,156.9 ms (**+10.0 %**) |
+| median per-unit delta | **−0.4 %** | **+4.0 %** |
+
+| measured quantity — recorded, never a verdict | arm A | arm B | delta |
+| --- | --- | --- | --- |
+| `ConcurrentHashJoinProbeMicroseconds` | 2,359,996.8 ms | 2,504,216.7 ms | **+6.11 %** |
+| wall clock (`query_duration_ms`) | 139,824.0 ms | 151,024.0 ms | **+8.01 %** |
+
+Per-unit wall clock: **273 of 365 units slower**, 50 faster, 42 equal. The twenty largest
+`probe_cost` improvements again account for more than the whole net improvement (101.1 %) while
+those same units are **+73,052.7 ms on the probe total** and **+4,988 ms on wall clock**.
+
+Tier b replicates tier a's shape independently — `probe_cost` near-balanced by count with a −8.8 %
+aggregate, `projection_cost` losing about four to one — and it is **worse on the residual**:
++10.0 % against tier a's +2.8 %, with the probe total up 6.11 % against 1.69 %. Tier b is the
+heavier data (double-size StackOverflow, larger TPC-DS), so the direction of that difference is what
+one would expect if the regression scales with materialized output.
+
+**Coverage: 376 attempted, 365 scored, 11 NO-VERDICT** — `--expect-cells 376` exits 1, so **G3 for
+tier b is RED at 365/376**, quantified, N not lowered. All 11 gaps are `OVER_BUDGET` skips before any
+timed run; the full list with reasons is in `reports/section5_tier_b.md`. Two of them are the same
+`store_returns` pair that tier a also skipped, and several are TPC-DS `store_sales × {catalog,web}_sales`
+item-key joins that the prior campaign likewise documented as exceeding `max_execution_time = 600`.
+
+One tier-b unit (`tpch__customer_c_nationkey__supplier_s_nationkey__T16__tierb`) was first recorded
+`INVALID` after 1,200.8 s — 600 s on each arm — because the original time box was checked *after* the
+error branch, so a warmup that fails by exhausting `max_execution_time` escaped it. That was fixed
+(the budget is now checked before the error branch) and the unit re-ran as `OVER_BUDGET` at 600.6 s,
+i.e. one timeout instead of two. Both rows are in the results file; the scorer keeps the last
+attempt per unit id. The pre-fix file is preserved as `results/jbmt_real_b/results.pre_timebox_fix.bak`.
+
+### 5.2 Both tiers side by side
+
+| | fleet_ab synthetic (78 cells) | real tier a (368 units) | real tier b (365 units) |
+| --- | --- | --- | --- |
+| `probe_cost` W/T/L | 68 / 4 / 6 | 161 / 51 / 156 | 164 / 50 / 151 |
+| `probe_cost` aggregate | **−35.2 %** | −8.8 % | −8.8 % |
+| `probe_cost` median unit | −35.5 % | +0.4 % | −0.4 % |
+| `projection_cost` W/T/L | 2 / 5 / 71 | 43 / 127 / 198 | 49 / 126 / 190 |
+| `projection_cost` aggregate | **+26.7 %** | +2.8 % | **+10.0 %** |
+| probe total (recorded) | not aggregated¹ | +1.69 % | +6.11 % |
+| wall clock (recorded) | not aggregated¹ | +4.46 % | +8.01 % |
+| opposite-direction cells | 63 | 142 | see `reports/section5_tier_b.md` |
+
+¹ fleet_ab's JSONL carries `duration_us` per run and the probe total per run, so these are
+computable there too; they are not aggregated in this report for the fleet suite because that
+suite's cells are synthetic shapes whose wall time is dominated by table fills rather than by the
+join, which would make a wall-clock aggregate misleading rather than informative. The per-cell
+probe-total columns are published for every fleet cell in `reports/fleet_abba.tsv`.
 
 ### 5.1 Decomposition and algorithm gates on the real suite (a second, non-vacuous origin)
 
@@ -668,7 +738,8 @@ Every invocation is copy-paste re-runnable from the campaign directory
 | **Cost gate** — tag-filtered EC2 inventory empty after the fleet | `RUN_TAG=fleet-ab-202607291848 fleet/teardown.sh` then the independent query in §8 | `instances by RUN_TAG (want empty): <empty>` · `volumes … <empty>` · `sgs … <empty>` · `TEARDOWN COMPLETE 2026-07-29T20:19:38Z` **→ exit 0** | Independent `aws ec2 describe-instances/volumes/security-groups` by tag value returned empty, and the only running instance in the region is this orchestration host | **GREEN (two origins)** |
 | **G2** legacy coverage, 347 cells with set equality | `python3 probe_ab_report.py --results 'results/jbmt_legacy/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 347 --expect-unit-set jbmt/join_bench_mt_legacy_cells.json:cell_id` | **NOT RUN** — no measured legacy sweep exists, because G0-a is red for this suite and a red gate stops the unit | The 347-id anchored `--only` regex is built and delivered (`logs/legacy_only_regex.txt`, 13,752 bytes); `join_bench_mt_legacy_cells.json` verified to hold exactly 347 unique `cell_id`s | **UNSETTLED / NO RESULT** — gap and settling evidence in §4 |
 | **G3** real coverage, tier a | `python3 probe_ab_report.py --results 'results/jbmt_real_a/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` | `coverage: 368 cells with a verdict …, expected 376 (total cells seen: 376)` · `FAIL (1)` **→ exit 1** | All 8 gaps are `OVER_BUDGET` with the harness's recorded reason, and the rule fired on arm baseline for 4 and arm candidate for 4 — direction-blind in practice; the same units are the ones the prior campaign documented as exceeding `max_execution_time = 600` | **RED — 368/376, quantified, N not lowered** |
-| **G3** real coverage, tier b | `python3 probe_ab_report.py --results 'results/jbmt_real_b/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` | see §5.2 | see §5.2 | **labelled partial — see §5.2** |
+| **G3** real coverage, tier b | `python3 probe_ab_report.py --results 'results/jbmt_real_b/results.jsonl' --arm-a baseline --arm-b candidate --metric both --expect-cells 376` | `coverage: 365 cells with a verdict …, expected 376 (total cells seen: 376)` · `FAIL (1)` **→ exit 1** | All 11 gaps are `OVER_BUDGET` before any timed run; several are the same units tier a skipped and the prior campaign documented as exceeding `max_execution_time = 600` | **RED — 365/376, quantified, N not lowered** |
+| **G0-b / G0-c** on real tier b | `python3 probe_ab_report.py --results 'results/jbmt_real_b/results.jsonl' --arm-a baseline --arm-b candidate --check-decomposition --check-path-event` | `rows checked: 8030   violations: 0` · `timed runs checked: 8030   violations: 0` · `PASS` **→ exit 0** | Full ProfileEvents map recorded per run, so gather-event absence is non-vacuous here too | **GREEN** |
 | **G0-a** on the exact measured channel (9005 vs 9006, baseline on both) | `python3 probe_ab_report.py --results 'results/aa_real_pair/results.jsonl' --arm-a aaA --arm-b aaB --metric both --aa-control` | `probe_cost: 10 scored, 0 non-TIE, floor 1.24%` · `projection_cost: 10 scored, 0 non-TIE, floor 1.59%` · `PASS` **→ exit 0** | Each port's running binary hashed from `/proc/<pid>/exe`, both `0d32ef1c96e6…`; candidate restored afterwards | **GREEN** |
 | **B2 port-swap control** (verifier-mandated) | `--arm aaA=<baseline>:9007 --arm aaB=<baseline>:9005` then `--aa-control` | `probe_cost: 1 non-TIE, floor 5.22%` · `projection_cost: 0 non-TIE, floor 4.05%` · `FAIL (1)` **→ exit 1** | Deltas collapse rather than invert vs the unswapped control, refuting a fixed per-port offset | **RED — reported; sharpens Unit 2's UNSETTLED** |
 

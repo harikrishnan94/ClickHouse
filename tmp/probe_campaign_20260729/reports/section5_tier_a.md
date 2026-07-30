@@ -1,4 +1,4 @@
-### Unit 3 tier a (jbmt real, tier a) — complete: generated from `reports/jbmt_real_a.tsv`
+### Unit 3 tier a (jbmt real) — complete: generated from `reports/jbmt_real_a.tsv`
 
 Units in file: 376 · scored: 368 · NO-VERDICT: 8
 
