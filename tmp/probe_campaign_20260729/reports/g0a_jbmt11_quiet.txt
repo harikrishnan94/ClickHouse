@@ -1,0 +1,31 @@
+probe_ab_report: 1 file(s), 220 timed-run rows, arms present [('aaA', None), ('aaB', None)]
+arm A = 'aaA'   arm B = 'aaB'   metrics = ['probe_cost', 'projection_cost']
+G0-a A/A control:
+  probe_cost: 10 scored, 1 non-TIE, empirical noise floor = 5.01% (314,223 us largest |delta|)
+    FAIL D65536_K0_mb1_mp16_h1.0_bp8_pp8_T16: LOSS +5.0% (band 4.6%)
+  projection_cost: 10 scored, 0 non-TIE, empirical noise floor = 2.70% (69,728 us largest |delta|)
+
+=== G0-a jbmt synthetic A/A, unswapped, quiet host: per-metric verdicts (band = max(3%, per-arm relative spread), evaluated per metric) ===
+
+probe_cost: verdicts 10   win=0 tie=9 loss=1   no-verdict=0
+  aggregate 43,225.7 ms -> 43,548.3 ms (+0.7%)
+  median per-cell delta +0.4%
+  LOSSES on probe_cost: 1
+    cell                                                 A ms       B ms    delta   band         disp A->B (ms)       lookup A->B (ms)      probe tot A->B (ms)
+    D65536_K0_mb1_mp16_h1.0_bp8_pp8_T16                  10.5       11.0    +5.0%   4.6%               0.0->0.0             10.5->11.0               18.6->19.5
+  WINS on probe_cost: 0
+
+projection_cost: verdicts 10   win=0 tie=10 loss=0   no-verdict=0
+  aggregate 61,131.8 ms -> 61,178.3 ms (+0.1%)
+  median per-cell delta +0.4%
+  LOSSES on projection_cost: 0
+  WINS on projection_cost: 0
+
+CELLS WHOSE TWO METRICS MOVE IN OPPOSITE DIRECTIONS: 0 (listed in both lists above, never netted)
+
+NO-VERDICT CELLS: 0
+
+per-cell TSV written to reports/aa_jbmt11_quiet.tsv
+
+CHECK SUMMARY: FAIL (1 failed check(s))
+  FAILED: A/A probe_cost D65536_K0_mb1_mp16_h1.0_bp8_pp8_T16: LOSS
