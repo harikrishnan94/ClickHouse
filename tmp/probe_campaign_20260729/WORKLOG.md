@@ -673,3 +673,98 @@ Unit 2 stays UNSETTLED with a sharper characterization (REPORT.md §4.1).
 **Plan change.** Tier b started at 22:59:47Z after the controls, so nothing contended with it. It is
 running at roughly 40 s/unit — heavier than tier a — so it is expected to be delivered as an
 explicitly labelled, quantified partial, which this task names as acceptable.
+
+---
+
+## Iteration 11 — Unit 3 both tiers, and the second refute pass on it
+
+**Tier a** completed 376/376 attempted, 368 scored. **Tier b**, expected to be a labelled partial,
+also completed: 376 attempted, 365 scored. Both gated (§7 of REPORT.md).
+
+A fresh verifier scoped to Unit 3 re-derived every tier-a figure with its own scorer and matched all
+of them, then broke two things:
+
+1. **The tier-a regression table had +211.7 % against T16 and +129.6 % against T96 — swapped.** Same
+   defect class as the fabricated winners in Iteration 9, so I fixed the *cause*, not the instance:
+   `make_report_tables.py` now generates every quotable table straight from the scorer TSV.
+2. **§5 omitted the probe total and wall clock.** Neither decides a verdict here, but leaving them
+   out let a −8.8 % `probe_cost` headline stand without the context that the probe total rose
+   +1.69 % and 287 of 368 queries got slower. Added, with the concentration analysis.
+
+It also corrected two of my claims that leaned the campaign's way: the "4 baseline / 4 candidate"
+argument for the time box being direction-blind (the arm named is always the crc32-chosen lead arm,
+so it argues nothing — replaced with the structural argument, confirmed from both servers'
+`query_log`), and "the cross-arm oracle re-confirmed empirically from the JSONL" (the JSONL stores
+the shared reference in both arms, so that comparison cannot fail).
+
+**A real bug that tier b exposed.** A harness reason can quote a server exception, whose embedded
+newlines and tabs split a TSV row so every later column is misread — visible as 382 rows in a
+376-unit file and a `None` delta. `write_tsv` now flattens whitespace per field. Verified: reverting
+the fix reproduces 382 rows and 9 malformed rows.
+
+## Iteration 12 — the final refute pass, and Unit 2's reason changes
+
+A fourth verifier attacked the whole delivery. It reproduced every headline number for both tiers
+with its own from-scratch scorer, confirmed the earlier fixes held, and established that the fleet's
+ABBA and BAAB sweeps are genuinely independent (disjoint nonces, non-overlapping time windows, 0
+byte-identical event maps across 1,880 shared keys). Seven blocking findings, all fixed:
+
+- **§5.2 compared different unit sets.** Three tier-a-only units carry 59 % of tier a's
+  `projection_cost` mass and are all near-zero TIEs, so the printed +2.8 % vs +10.0 % tier gap was
+  largely an artifact. Like-for-like on the 365 common units it is **+7.34 % vs +10.02 %**.
+- **The mechanism I offered for that gap is withdrawn.** "The regression scales with materialized
+  output" is contradicted by the per-dataset data: TPC-DS — 189 of 365 units — got *better* in tier b,
+  and three of five datasets move the wrong way. The tier move is mostly a mix re-weighting, because
+  TPC-H scales 2.5× (`TIERS`: `tpch_sf` 40 → 100) and is the worst dataset for the residual.
+- **"Measured twice over independently" was too strong.** JOB has no scale factor at all, so its 126
+  units (a third of the suite) run on byte-identical data in both tiers — confirmed empirically
+  (arm-A projection mass 244.8 s vs 244.7 s, ratio 1.00×).
+- **"Those same units got slower" was false for the majority** and the error ran *against* arm B:
+  9 of 20 (tier a) and 8 of 20 (tier b) are slower on the probe total; three TPC-H `lineitem`
+  outliers carry the group total while the other seventeen net faster.
+- Plus: "the same two units offend both times" (it is one), a 36.0 s exclusion printed as "3xx s",
+  an assertion count given as 24 in one place and 33 in another (it is 32), and a
+  "not a measurement artifact" claim pointing at evidence that did not exist — now produced in
+  `reports/top_regression_per_run.md` (the top regressions' per-arm per-run distributions are
+  **disjoint** with stable leave-one-out deltas).
+
+**The finding that changed a unit's verdict.** The verifier showed my port-swap control had changed
+two variables at once: the unswapped 11-run A/A had been running while the fleet BAAB sweep was
+orchestrated from this host, the swapped one ran after teardown on a quiet host. So "refutes a fixed
+per-port offset" was unsupported, and the cheapest settling control was unrun. I ran it — the
+**unswapped assignment on a quiet host**, 25 min, no code change:
+
+    probe_cost:      10 scored, 1 non-TIE, floor 5.01%   FAIL D65536_K0_mb1_mp16…: LOSS +5.0%
+    projection_cost: 10 scored, 0 non-TIE, floor 2.70%
+    → exit 1
+
+The offending unit keeps the **same sign and nearly the same magnitude** across the two quiet runs
+(+5.01 % unswapped, +5.22 % swapped) even though the arms sit on opposite ports, which a per-port
+offset cannot do. The offender is an **8 ms query**, where 5 % is ~400 µs. And applying fleet_ab's
+own 200 ms duration floor, **both quiet runs pass at the 3 % band** (worst remaining 2.51 % / 2.46 %
+and 2.02 % / 1.31 %), while both busy runs still fail.
+
+**So Unit 2's reason changes, and my earlier framing was too kind to this run.** I had called it
+"blocked on validity". The evidence says the synthetic venue *is* measurable to 3 % given a quiet
+host and fleet_ab's own micro-unit floor — both pre-existing rules. What actually stopped Unit 2 was
+**time**: 347 cells × ~2 min ≈ 11.5 h, unavailable alongside Unit 1's two fleet sweeps and Unit 3's
+752 real units. Calling that a validity block dressed an unaffordable sweep as a principled refusal.
+Corrected in REPORT.md §4.2 and §1. Unit 2 remains **NO RESULT** — no legacy cell was measured, so no
+legacy verdict exists — but for the honest reason.
+
+**Closing checks, both re-runnable.** Because the scorer changed after the first gate runs, every
+gate was re-established against the final scorer rather than inherited:
+
+    $ ./rerun_all_gates.sh
+    GATE RERUN SUMMARY: 25 as expected, 0 unexpected      → exit 0
+    $ python3 check_report_consistency.py
+    REPORT CONSISTENCY: PASS (0 problem(s))               → exit 0
+
+`check_report_consistency.py` exists because three wrong numbers reached this report by being typed
+rather than derived, each caught by a verifier and not by me. It re-derives the tallies and
+aggregates from the TSVs, fails on a quoted cell id that no TSV contains, and fails if a withdrawn
+claim reappears in the report body.
+
+**Known residual gap, stated rather than papered over:** no fifth verifier has audited the fixes made
+in response to the fourth pass. Those rest on the two automated checks above and on my having
+reproduced each of pass 4's numbers independently before writing them in.

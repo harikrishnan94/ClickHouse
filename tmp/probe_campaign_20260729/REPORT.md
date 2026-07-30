@@ -948,3 +948,35 @@ Origin 2 — an independent tag-filtered query, run separately from the teardown
 
 No EBS volume was ever created from snapshot `snap-021cbdc2484f86607`, because the real-suite data
 was already present locally; so there is no volume to account for either.
+
+---
+
+## 9. Definition-of-done audit
+
+Re-runnable in one command: `./rerun_all_gates.sh` (25 gate invocations with their expected exit
+codes) and `python3 check_report_consistency.py` (this report's numbers against the scorer TSVs).
+Both are green as of the final commit:
+
+    $ ./rerun_all_gates.sh
+    GATE RERUN SUMMARY: 25 as expected, 0 unexpected      → exit 0
+    $ python3 check_report_consistency.py
+    REPORT CONSISTENCY: PASS (0 problem(s))               → exit 0
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Every acceptance criterion has a green gate with its raw result in the evidence matrix, or is explicitly returned UNSETTLED / NO RESULT / BLOCKED with the gap and settling evidence named; nothing silently dropped | **MET** | §7 has one row per criterion. Green: G0-a (fleet, and jbmt real ×2), G0-b and G0-c on all four measured sweeps, G1-set on both orders, G1-b including the enforced form, the cost gate, the scorer power self-test. RED and reported RED: G1 on both orders (78/94), G3 on both tiers (368/376, 365/376), G0-a on the jbmt synthetic venue (all four sweeps). NO RESULT: G2, which has no results file to run against because no legacy sweep was measured — the gate is unrunnable, not weakened, and §4.2 names what it needs (~11.5 h on an idle host with a 200 ms floor). |
+| Both metrics reported for every scored cell, independent verdicts and bands, never netted | **MET** | Verified mechanically: in all four suites the W/T/L tallies sum to the scored count on **both** metrics, and 0 units are scored on one metric but not the other (`check_report_consistency.py`). Bands are computed per metric from that metric's own spread. Opposite-direction cells are listed in both loss lists (63 fleet, 142 tier a, 149 tier b) and never combined. |
+| Coverage exact and printed, or a labelled quantified partial with its reason | **MET** | 94 cells × 2 block orders → **78 scored per order**, the same 16 NO-VERDICT in both, each with the harness's own `below-duration-floor` reason; measured-set equality against the 94-cell plan is separately green. 347 legacy → **0 measured**, reason stated. 376 per real tier → **368** and **365** scored, every gap an `OVER_BUDGET` skip taken before any timed run with its recorded reason. |
+| Verification verdict SHIP, or FIX-THEN-RESHIP with the fixes landed and re-verified; degraded independence labelled | **MET, with the caveat below** | Passes 2, 3 and 4 each returned FIX-THEN-RESHIP; all 13 blocking findings are fixed and the fixes re-verified by re-running every gate against the final scorer (25/25 as expected) plus the consistency checker. Independence was not degraded for passes 2–4; pass 1 had no shell and is excluded. **No fifth pass has audited the fixes made in response to pass 4** — those rest on the two automated checks above and on the fact that pass 4's own numbers were reproduced independently before being written in. |
+| Every EC2 fleet torn down with raw empty-inventory proof | **MET** | §8: two origins — `fleet/teardown.sh`'s own post-delete re-query, and a separately issued tag-filtered `describe-instances` / `describe-volumes` / `describe-security-groups`, all empty, with only this pre-existing orchestration host left running in the region. No volume was created from the snapshot. |
+| No banned move anywhere in the evidence chain; every deviation documented | **MET after correction** | Nothing was declared done on red — G1, G3 and the synthetic G0-a are all reported RED. No check was weakened to pass: the red synthetic A/A was answered with **more samples** (`--min-timed-runs 11`), never a wider band, and the 200 ms floor analysis is presented as a proposal for a follow-up run, never applied retroactively to pass a gate. No cell is TIE because its data was invalid (all 16 fleet voids and all 19 `OVER_BUDGET` units have zero valid/timed rows and are NO-VERDICT with reasons). No single noisy runs: 10 timed runs per arm per fleet cell, 11 per arm per jbmt unit. Deviations documented: hardlinked binaries, jbmt measured on the orchestration host rather than a fleet, `--min-timed-runs`, `--unit-time-budget`, and the mid-campaign time-box ordering fix. **Two banned moves were committed and then corrected rather than left standing**: restating one run as independent evidence (§1's "measured twice over independently", where JOB's 126 units run on identical data; and §4.1's port-swap "refutation", which changed two variables) and an undisclosed deviation (the tier-a/tier-b scored-set difference driving the printed +2.8 % vs +10.0 % gap). Both were found by the final verifier and are now disclosed in §5.2 and §4.2. |
+
+### What a reader should not conclude from this report
+
+- **Not** that `phj-ph` HEAD is a probe-phase win. It moves cost out of dispatch+lookup and into
+  column materialization; on real queries the probe total and wall clock both rise.
+- **Not** that `projection_cost` can be attributed to the build side or the probe side. The two
+  events that would split it are absent from both binaries, so it is one unsplit residual.
+- **Not** anything about `hash`, `partitioned_hash`, or x86. Only `parallel_hash` on ARM was measured;
+  `partitioned_hash` does not exist in either binary.
+- **Not** anything about the 347 legacy synthetic cells. None was measured.

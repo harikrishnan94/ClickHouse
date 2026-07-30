@@ -1,0 +1,31 @@
+=== Unit 0 ===
+ok   G0-a fleet A/A (all TIE both metrics)                      exit 0 (expected 0)
+ok   G0-a power: --band-override 0 must go RED                  exit 1 (expected 1)
+ok   G0-a jbmt synthetic 5-run (RED)                            exit 1 (expected 1)
+ok   G0-a jbmt synthetic 11-run (RED)                           exit 1 (expected 1)
+ok   G0-a jbmt synthetic 11-run swapped (RED)                   exit 1 (expected 1)
+ok   G0-a jbmt synthetic 11-run quiet (RED)                     exit 1 (expected 1)
+ok   G0-a jbmt real 9005/9007 (GREEN)                           exit 0 (expected 0)
+ok   G0-a jbmt real measured pair 9005/9006                     exit 0 (expected 0)
+ok   G0-b decomposition, fleet ABBA                             exit 0 (expected 0)
+ok   G0-b decomposition, fleet BAAB                             exit 0 (expected 0)
+ok   G0-b decomposition, real tier a                            exit 0 (expected 0)
+ok   G0-b decomposition, real tier b                            exit 0 (expected 0)
+ok   G0-c only parallel_hash, fleet ABBA                        exit 0 (expected 0)
+ok   G0-c only parallel_hash, fleet BAAB                        exit 0 (expected 0)
+ok   G0-c only parallel_hash, real tier a                       exit 0 (expected 0)
+ok   G0-c only parallel_hash, real tier b                       exit 0 (expected 0)
+=== Unit 1 ===
+ok   G1 coverage ABBA (RED at 78/94)                            exit 1 (expected 1)
+ok   G1 coverage BAAB (RED at 78/94)                            exit 1 (expected 1)
+ok   G1-set measured cells == 94-cell plan, ABBA                exit 0 (expected 0)
+ok   G1-set measured cells == 94-cell plan, BAAB                exit 0 (expected 0)
+ok   G1-b order effect (empty list, exit 0)                     exit 0 (expected 0)
+ok   G1-b enforced (--fail-on-order-effect)                     exit 0 (expected 0)
+=== Unit 3 ===
+ok   G3 coverage tier a (RED at 368/376)                        exit 1 (expected 1)
+ok   G3 coverage tier b (RED at 365/376)                        exit 1 (expected 1)
+=== scorer power ===
+ok   scorer_selftest (every gate can go red)                    exit 0 (expected 0)
+
+GATE RERUN SUMMARY: 25 as expected, 0 unexpected
