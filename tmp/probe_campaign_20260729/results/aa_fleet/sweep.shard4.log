@@ -1,0 +1,12 @@
+
+=== shard 4 pulls fixstr:probe.inner_all.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard4.jsonl), 1 to run
+=== cell 1/1: fixstr:probe.inner_all.S2.T96 rows_build=260000 rows_probe=192000000 expected_rows=192000000 threads=96 order=ABBA runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaA); engagement recorded as null
+  block 1/4 ABBA arm A(aaA) dir0: fill 6.9s, runs 0-4, median 302.8ms, block 13.6s
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaB); engagement recorded as null
+  block 2/4 ABBA arm B(aaB) dir0: fill 7.0s, runs 0-4, median 302.7ms, block 13.7s
+  block 3/4 ABBA arm B(aaB) dir1: fill 6.9s, runs 5-9, median 302.0ms, block 13.6s
+  block 4/4 ABBA arm A(aaA) dir1: fill 6.9s, runs 5-9, median 302.5ms, block 13.6s
+  cell OK (54.6s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard4.jsonl -> PASS

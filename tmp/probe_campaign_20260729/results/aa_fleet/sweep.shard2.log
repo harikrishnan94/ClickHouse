@@ -1,0 +1,24 @@
+
+=== shard 2 pulls str:probe.inner_all.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard2.jsonl), 1 to run
+=== cell 1/1: str:probe.inner_all.S2.T96 rows_build=260000 rows_probe=192000000 expected_rows=192000000 threads=96 order=ABBA runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaA); engagement recorded as null
+  block 1/4 ABBA arm A(aaA) dir0: fill 7.0s, runs 0-4, median 291.8ms, block 13.6s
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaB); engagement recorded as null
+  block 2/4 ABBA arm B(aaB) dir0: fill 6.9s, runs 0-4, median 291.1ms, block 13.5s
+  block 3/4 ABBA arm B(aaB) dir1: fill 6.9s, runs 5-9, median 292.1ms, block 13.5s
+  block 4/4 ABBA arm A(aaA) dir1: fill 6.9s, runs 5-9, median 292.4ms, block 13.5s
+  cell OK (54.2s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard2.jsonl -> PASS
+
+=== shard 2 pulls key64:build.inner_all.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard2.jsonl), 1 to run
+=== cell 1/1: key64:build.inner_all.S2.T96 rows_build=260000 rows_probe=65000 expected_rows=65000 threads=96 order=ABBA runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaA); engagement recorded as null
+  block 1/4 ABBA arm A(aaA) dir0: fill 6.6s, runs 0-4, median 24.5ms, block 10.8s
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaB); engagement recorded as null
+  block 2/4 ABBA arm B(aaB) dir0: fill 6.5s, runs 0-4, median 25.4ms, block 10.7s
+  block 3/4 ABBA arm B(aaB) dir1: fill 6.6s, runs 5-9, median 26.2ms, block 10.8s
+  block 4/4 ABBA arm A(aaA) dir1: fill 6.6s, runs 5-9, median 24.5ms, block 10.8s
+  CELL FAILED: key64:build.inner_all.S2.T96: one or more runs INVALID (see invalid_reason in results)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=0 cells_failed=1 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard2.jsonl -> FAIL

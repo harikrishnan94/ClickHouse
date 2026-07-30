@@ -1,0 +1,77 @@
+
+=== shard 3 pulls k256:probe.inner_all.S5.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: k256:probe.inner_all.S5.T96 rows_build=192000000 rows_probe=768000000 expected_rows=768000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 8.3s, runs 0-4, median 3084.9ms, block 42.4s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 9.5s, runs 0-4, median 3462.7ms, block 49.4s
+  block 3/4 BAAB arm A(baseline) dir1: fill 8.7s, runs 5-9, median 3470.8ms, block 48.7s
+  block 4/4 BAAB arm B(candidate) dir1: fill 9.8s, runs 5-9, median 3112.9ms, block 44.0s
+  cell OK (184.4s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS
+
+=== shard 3 pulls mixed:probe.inner_all.S3.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: mixed:probe.inner_all.S3.T96 rows_build=12000000 rows_probe=192000000 expected_rows=192000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 6.9s, runs 0-4, median 481.0ms, block 15.4s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 6.9s, runs 0-4, median 701.2ms, block 17.4s
+  block 3/4 BAAB arm A(baseline) dir1: fill 7.0s, runs 5-9, median 701.4ms, block 17.6s
+  block 4/4 BAAB arm B(candidate) dir1: fill 7.0s, runs 5-9, median 485.6ms, block 15.4s
+  cell OK (65.7s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS
+
+=== shard 3 pulls str:probe.left_all.S4.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: str:probe.left_all.S4.T96 rows_build=48000000 rows_probe=192000000 expected_rows=192000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 6.9s, runs 0-4, median 442.0ms, block 15.3s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 6.9s, runs 0-4, median 501.3ms, block 16.5s
+  block 3/4 BAAB arm A(baseline) dir1: fill 7.1s, runs 5-9, median 502.2ms, block 16.7s
+  block 4/4 BAAB arm B(candidate) dir1: fill 6.9s, runs 5-9, median 439.3ms, block 15.2s
+  cell OK (63.6s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS
+
+=== shard 3 pulls mixed:probe.inner_all.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: mixed:probe.inner_all.S2.T96 rows_build=260000 rows_probe=192000000 expected_rows=192000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 6.9s, runs 0-4, median 381.8ms, block 14.3s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 6.9s, runs 0-4, median 463.0ms, block 15.2s
+  block 3/4 BAAB arm A(baseline) dir1: fill 6.9s, runs 5-9, median 463.8ms, block 15.1s
+  block 4/4 BAAB arm B(candidate) dir1: fill 6.9s, runs 5-9, median 383.5ms, block 14.4s
+  cell OK (58.9s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS
+
+=== shard 3 pulls str:probe.inner_all.S3.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: str:probe.inner_all.S3.T96 rows_build=12000000 rows_probe=192000000 expected_rows=192000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 6.9s, runs 0-4, median 323.5ms, block 13.8s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 6.9s, runs 0-4, median 390.3ms, block 14.8s
+  block 3/4 BAAB arm A(baseline) dir1: fill 6.8s, runs 5-9, median 390.9ms, block 14.5s
+  block 4/4 BAAB arm B(candidate) dir1: fill 6.9s, runs 5-9, median 322.3ms, block 13.8s
+  cell OK (57.0s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS
+
+=== shard 3 pulls str:probe.semi_anti.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: str:probe.semi_anti.S2.T96 rows_build=260000 rows_probe=192000000 expected_rows=192000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 6.9s, runs 0-4, median 257.1ms, block 13.2s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 7.0s, runs 0-4, median 290.0ms, block 13.6s
+  block 3/4 BAAB arm A(baseline) dir1: fill 6.9s, runs 5-9, median 291.2ms, block 13.5s
+  block 4/4 BAAB arm B(candidate) dir1: fill 6.9s, runs 5-9, median 258.2ms, block 13.2s
+  cell OK (53.5s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS
+
+=== shard 3 pulls key64:probe.inner_all.S4.T1 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl), 1 to run
+=== cell 1/1: key64:probe.inner_all.S4.T1 rows_build=96000000 rows_probe=384000000 expected_rows=384000000 threads=1 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 7.0s, runs 0-4, median 46765.3ms, block 434.7s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 7.0s, runs 0-4, median 47759.2ms, block 441.9s
+  block 3/4 BAAB arm A(baseline) dir1: fill 6.9s, runs 5-9, median 47267.7ms, block 440.2s
+  block 4/4 BAAB arm B(candidate) dir1: fill 7.0s, runs 5-9, median 46718.7ms, block 434.1s
+  cell OK (1750.9s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard3.jsonl -> PASS

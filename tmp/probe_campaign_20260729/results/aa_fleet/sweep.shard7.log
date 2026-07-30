@@ -1,0 +1,24 @@
+
+=== shard 7 pulls key32:probe.inner_all.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard7.jsonl), 1 to run
+=== cell 1/1: key32:probe.inner_all.S2.T96 rows_build=260000 rows_probe=192000000 expected_rows=192000000 threads=96 order=ABBA runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaA); engagement recorded as null
+  block 1/4 ABBA arm A(aaA) dir0: fill 6.6s, runs 0-4, median 261.6ms, block 12.9s
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaB); engagement recorded as null
+  block 2/4 ABBA arm B(aaB) dir0: fill 6.7s, runs 0-4, median 257.9ms, block 12.9s
+  block 3/4 ABBA arm B(aaB) dir1: fill 6.7s, runs 5-9, median 258.7ms, block 13.0s
+  block 4/4 ABBA arm A(aaA) dir1: fill 6.6s, runs 5-9, median 257.6ms, block 12.9s
+  cell OK (51.7s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard7.jsonl -> PASS
+
+=== shard 7 pulls key64:probe.inner_all.S2.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard7.jsonl), 1 to run
+=== cell 1/1: key64:probe.inner_all.S2.T96 rows_build=260000 rows_probe=192000000 expected_rows=192000000 threads=96 order=ABBA runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaA); engagement recorded as null
+  block 1/4 ABBA arm A(aaA) dir0: fill 6.7s, runs 0-4, median 303.4ms, block 13.3s
+SKIPPED: AMAC engagement counters absent in system.events (arm=aaB); engagement recorded as null
+  block 2/4 ABBA arm B(aaB) dir0: fill 6.7s, runs 0-4, median 299.9ms, block 13.4s
+  block 3/4 ABBA arm B(aaB) dir1: fill 6.7s, runs 5-9, median 298.5ms, block 13.3s
+  block 4/4 ABBA arm A(aaA) dir1: fill 6.7s, runs 5-9, median 302.3ms, block 13.4s
+  cell OK (53.4s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/aa_fleet/results.shard7.jsonl -> PASS

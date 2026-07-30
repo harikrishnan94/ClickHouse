@@ -1,0 +1,22 @@
+
+=== shard 1 pulls mixed:probe.inner_all.S5.T96 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard1.jsonl), 1 to run
+=== cell 1/1: mixed:probe.inner_all.S5.T96 rows_build=192000000 rows_probe=768000000 expected_rows=768000000 threads=96 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 8.4s, runs 0-4, median 2579.3ms, block 37.5s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 9.9s, runs 0-4, median 3570.7ms, block 50.2s
+  block 3/4 BAAB arm A(baseline) dir1: fill 9.9s, runs 5-9, median 3573.3ms, block 50.2s
+  block 4/4 BAAB arm B(candidate) dir1: fill 8.7s, runs 5-9, median 2588.9ms, block 37.7s
+  cell OK (175.7s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard1.jsonl -> PASS
+
+=== shard 1 pulls k256:probe.inner_all.S4.T1 ===
+sweep: 1 cells planned, 0 already complete (resume via /mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard1.jsonl), 1 to run
+=== cell 1/1: k256:probe.inner_all.S4.T1 rows_build=48000000 rows_probe=192000000 expected_rows=192000000 threads=1 order=BAAB runs=10(5/dir) warmups=4/block rows_source=calibration-file ===
+  block 1/4 BAAB arm B(candidate) dir0: fill 7.2s, runs 0-4, median 55586.5ms, block 515.0s
+SKIPPED: AMAC engagement counters absent in system.events (arm=baseline); engagement recorded as null
+  block 2/4 BAAB arm A(baseline) dir0: fill 7.0s, runs 0-4, median 58404.1ms, block 541.2s
+  block 3/4 BAAB arm A(baseline) dir1: fill 6.9s, runs 5-9, median 58282.0ms, block 542.0s
+  block 4/4 BAAB arm B(candidate) dir1: fill 6.9s, runs 5-9, median 55500.6ms, block 515.6s
+  cell OK (2113.8s)
+FLEET_AB SWEEP RESULT: cells_run=1 cells_ok=1 cells_failed=0 results=/mnt/ch/ClickHouse/tmp/probe_campaign_20260729/results/fleet_baab/results.shard1.jsonl -> PASS
