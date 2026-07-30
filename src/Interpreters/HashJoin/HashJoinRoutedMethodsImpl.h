@@ -200,42 +200,11 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsRo
 /// The key families the routed probe routes by the maps' own hash (see `joinHashRouteSlot`):
 /// every cursor-capable open-addressing family. Their lookups hash the key anyway, so the row's
 /// slot falls out of the hash's top route bits with no separate per-row slot-ids pass, and the
-/// lookup itself is `flatFindKey` when the ring is not engaged. Unlike the ring, the flat find
-/// serves every mapped shape (ASOF included - the match is consumed in place, so the mapped
-/// value never needs to fit a word) and the wrapped-chain builds the ring must refuse.
+/// lookup uses the selected map's standard `find` when the ring is not engaged.
 /// `key8`/`key16` and the range maps (`FixedHashMap` - no hash at all) keep the map-resolved
 /// `findKey` under the slot ids `joinBlock` derives eagerly (`computeDispatchSlotIds`).
 template <typename Map>
 constexpr bool hash_routed_lookup = AmacResumableMap<std::remove_const_t<Map>>;
-
-/// The flat find of the routed plain loop: address material from the once-per-build plan, the
-/// map object only for its hash/equality functors. The walk matches the standard grower's
-/// masked linear probing. The offset is the slot-local used-flags offset
-/// (`offsetInternal` semantics).
-template <typename KeyGetter, typename Map, typename KeyType>
-ALWAYS_INLINE typename KeyGetter::FindResult flatFindKey(const SlotMapDesc & desc, const KeyType & key, size_t hash)
-{
-    using Cell = typename std::remove_const_t<Map>::cell_type;
-    using Mapped = typename std::remove_const_t<Map>::mapped_type;
-    static constexpr HashTableNoState no_state{};
-
-    const Cell * buf = static_cast<const Cell *>(desc.buf);
-    const Cell * end = buf + desc.mask + 1;
-    const Cell * cell = buf + (hash & desc.mask);
-    while (!cell->isZero(no_state))
-    {
-        if (cell->keyEquals(key, hash, no_state))
-        {
-            /// The probe maps are immutable; the const cast only recovers `findKey`'s own
-            /// `FindResult` shape (its mapped pointer is non-const).
-            auto * mapped = const_cast<Mapped *>(&cell->getMapped());
-            return typename KeyGetter::FindResult(mapped, true, static_cast<size_t>(cell - buf) + 1);
-        }
-        if (unlikely(++cell == end))
-            cell = buf;
-    }
-    return typename KeyGetter::FindResult(nullptr, false, 0);
-}
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename Map, typename AddedColumnsType, typename Selector>
@@ -327,9 +296,8 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
         {
             if constexpr (hash_routed_lookup<Map>)
             {
-                /// The flat find's look-ahead: the home-cell address from the descriptor -
-                /// the hash routes AND places, so no map-header loads and no slot-ids array
-                /// on the prefetch path either.
+                /// Prefetch the selected map's home cell. The hash supplies both the route
+                /// and the position, so this path does not need the slot-ids array.
                 const size_t ind = selectorIndexAt(selector, k);
                 auto && key_holder = key_getter.getKeyHolder(ind, pool);
                 const auto & key = keyHolderGetKey(key_holder);
@@ -434,11 +402,11 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
                             /// internally.
                             const size_t hash = map0.hash(key);
                             slot = joinHashRouteSlot(hash, route_shift);
-                            /// The zero key lives in the dedicated zero-value cell, outside the
-                            /// descriptor's buffer; the map-resolved find serves it.
-                            if (unlikely(map0.isZeroKey(key)))
-                                return key_getter.findKey(*maps_by_slot[slot], ind, pool);
-                            return flatFindKey<KeyGetter, Map>(descs_data[slot], key, hash);
+                            const Map & map = *maps_by_slot[slot];
+                            auto it = map.find(key, hash);
+                            const bool found = it != nullptr;
+                            const size_t offset = found ? map.offsetInternal(it) : 0;
+                            return typename KeyGetter::FindResult(found ? &it->getMapped() : nullptr, found, offset);
                         }
                         else
                         {
@@ -657,9 +625,9 @@ size_t RoutedHashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
 
     if (!amac_ran)
     {
-        /// The cursor-capable families run the hash-routed flat find (`hash_routed_lookup`)
-        /// instead of the map-resolved `findKey`; everything else (`LowCardinality`,
-        /// `key8`/`key16`, the range maps) keeps the plain lookup under the eager slot ids.
+        /// The cursor-capable families use native `find` on the hash-selected map; everything
+        /// else (`LowCardinality`, `key8`/`key16`, the range maps) keeps the map-resolved
+        /// lookup under the eager slot ids.
         if (added_columns.need_filter)
         {
             if (fast_path)
