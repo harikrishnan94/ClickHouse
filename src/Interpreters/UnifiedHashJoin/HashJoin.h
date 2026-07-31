@@ -2,6 +2,7 @@
 
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <variant>
 #include <vector>
@@ -165,6 +166,16 @@ public:
     ColumnWithTypeAndName joinGet(const Block & block, const Block & block_with_columns_to_add) const;
 
     bool isFilled() const override { return from_storage_join; }
+
+    /** The right side may be filled from several threads at once. Unlike `ConcurrentHashJoin`, which
+      * splits the right side across one hash map per thread, there is still a single hash map here and
+      * `build_mutex` serializes the insertion into it. Only the per-block preparation - materialization
+      * of the key columns and of the columns to store - runs outside the critical section.
+      */
+    bool supportParallelJoin() const override { return true; }
+
+    void setTotals(const Block & block) override;
+    const Block & getTotals() const override;
 
     JoinPipelineType pipelineType() const override
     {
@@ -547,6 +558,14 @@ private:
     std::optional<TypeIndex> asof_type;
     const ASOFJoinInequality asof_inequality;
 
+    /// Serializes the build phase, which may run on several threads. Guards `data`, `used_flags`,
+    /// `all_values_unique`, `memory_usage_before_adding_blocks` and `shrink_blocks`. Joining a block does
+    /// not take it: once the build phase is over the hash table is immutable and the used flags are atomic.
+    mutable std::mutex build_mutex;
+
+    /// Guards the totals block, which every parallel `FillingRightJoinSideTransform` writes.
+    mutable std::mutex totals_mutex;
+
     /// Right table data. StorageJoin shares it between many Join objects.
     /// Flags that indicate that particular row already used in join.
     /// Flag is stored for every record in hash map.
@@ -601,6 +620,11 @@ private:
     /// Should be set via setLock to protect hash table from modification from StorageJoin
     /// If set HashJoin instance is not available for modification (addBlockToJoin)
     TableLockHolder storage_join_lock = nullptr;
+
+    /// Counterparts of the public accessors for callers that already hold `build_mutex`,
+    /// and for the probe path, which must not contend on it.
+    size_t getTotalRowCountUnlocked() const;
+    size_t getTotalByteCountUnlocked() const;
 
     void dataMapInit(MapsVariant & map);
 

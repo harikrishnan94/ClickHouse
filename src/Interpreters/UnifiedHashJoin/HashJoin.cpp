@@ -487,10 +487,17 @@ bool HashJoin::preferUseMapsAll() const
 
 bool HashJoin::alwaysReturnsEmptySet() const
 {
+    std::lock_guard lock(build_mutex);
     return isInnerOrRight(getKind()) && data->rows_to_join == 0;
 }
 
 size_t HashJoin::getTotalRowCount() const
+{
+    std::lock_guard lock(build_mutex);
+    return getTotalRowCountUnlocked();
+}
+
+size_t HashJoin::getTotalRowCountUnlocked() const
 {
     if (!data)
         return 0;
@@ -535,6 +542,12 @@ void HashJoin::doDebugAsserts() const
 
 size_t HashJoin::getTotalByteCount() const
 {
+    std::lock_guard lock(build_mutex);
+    return getTotalByteCountUnlocked();
+}
+
+size_t HashJoin::getTotalByteCountUnlocked() const
+{
     if (!data)
         return 0;
 
@@ -557,6 +570,23 @@ size_t HashJoin::getTotalByteCount() const
             [&](auto, auto, auto & map_) { res += map_.getTotalByteCountImpl(data->type); });
     }
     return res;
+}
+
+void HashJoin::setTotals(const Block & block)
+{
+    /// Every parallel `FillingRightJoinSideTransform` pushes a totals block, so this runs concurrently.
+    /// A block without columns carries nothing, so there is no point in taking the mutex for it.
+    if (block.empty())
+        return;
+
+    std::lock_guard lock(totals_mutex);
+    IJoin::setTotals(block);
+}
+
+const Block & HashJoin::getTotals() const
+{
+    std::lock_guard lock(totals_mutex);
+    return IJoin::getTotals();
 }
 
 bool HashJoin::isUsedByAnotherAlgorithm(const TableJoin & table_join)
@@ -653,13 +683,6 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
     if (unlikely(selector.size() > std::numeric_limits<decltype(RowRef::row_no)>::max()))
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Too many rows in right table block for HashJoin: {}", selector.size());
 
-    /** We do not allocate memory for stored blocks inside HashJoin, only for hash table.
-      * In case when we have all the blocks allocated before the first `addBlockToJoin` call, will already be quite high.
-      * In that case memory consumed by stored blocks will be underestimated.
-      */
-    if (!memory_usage_before_adding_blocks)
-        memory_usage_before_adding_blocks = JoinCommon::getCurrentQueryMemoryUsage();
-
     if (strictness == JoinStrictness::Asof)
     {
         chassert(kind == JoinKind::Left || kind == JoinKind::Inner);
@@ -697,7 +720,6 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
     }
 
     const size_t rows = selector.size();
-    data->rows_to_join += rows;
     const auto & right_key_names = table_join->getAllNames(JoinTableSide::Right);
     ColumnPtrMap all_key_columns(right_key_names.size());
     for (const auto & column_name : right_key_names)
@@ -709,6 +731,19 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
             prepared_key_column = prepared_key_column->convertToFullColumnIfLowCardinality();
         all_key_columns[column_name] = prepared_key_column;
     }
+
+    /// Everything above touches only the incoming block, so build threads run it concurrently.
+    /// From here on the shared hash table and the stored columns are mutated.
+    std::lock_guard lock(build_mutex);
+
+    /** We do not allocate memory for stored blocks inside HashJoin, only for hash table.
+      * In case when we have all the blocks allocated before the first `addBlockToJoin` call, will already be quite high.
+      * In that case memory consumed by stored blocks will be underestimated.
+      */
+    if (!memory_usage_before_adding_blocks)
+        memory_usage_before_adding_blocks = JoinCommon::getCurrentQueryMemoryUsage();
+
+    data->rows_to_join += rows;
 
     Block block_to_save = filterColumnsPresentInSampleBlock(block, savedBlockSample());
     if (shrink_blocks)
@@ -857,8 +892,8 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                 return true;
 
             /// TODO: Do not calculate them every time
-            total_rows = getTotalRowCount();
-            total_bytes = getTotalByteCount();
+            total_rows = getTotalRowCountUnlocked();
+            total_bytes = getTotalByteCountUnlocked();
         }
     }
     data->keys_to_join = total_rows;
@@ -957,7 +992,7 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
         doDebugAsserts();
     }
 
-    auto new_total_bytes_in_join = getTotalByteCount();
+    auto new_total_bytes_in_join = getTotalByteCountUnlocked();
 
     Int64 new_current_memory_usage = JoinCommon::getCurrentQueryMemoryUsage();
 
@@ -1174,7 +1209,7 @@ HashJoin::~HashJoin()
     {
         if (build_phase_finished && stats_collecting_params.isCollectionAndUseEnabled())
         {
-            if (const auto ht_size = getTotalRowCount())
+            if (const auto ht_size = getTotalRowCountUnlocked())
                 getHashTablesStatistics<HashJoinEntry>().update(
                     {.ht_size = ht_size, .source_rows = data->rows_to_join}, stats_collecting_params);
         }
@@ -1188,8 +1223,8 @@ HashJoin::~HashJoin()
         log,
         "{}Join data is being destroyed, {} bytes and {} rows in hash table",
         instance_log_id,
-        getTotalByteCount(),
-        getTotalRowCount());
+        getTotalByteCountUnlocked(),
+        getTotalRowCountUnlocked());
 }
 
 bool HashJoin::hasNonJoinedRows()
@@ -1581,8 +1616,14 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
 
 BlocksList HashJoin::releaseJoinedBlocks(bool restructure [[maybe_unused]])
 {
+    std::lock_guard lock(build_mutex);
+
     LOG_TRACE(
-        log, "{}Join data is being released, {} bytes and {} rows in hash table", instance_log_id, getTotalByteCount(), getTotalRowCount());
+        log,
+        "{}Join data is being released, {} bytes and {} rows in hash table",
+        instance_log_id,
+        getTotalByteCountUnlocked(),
+        getTotalRowCountUnlocked());
 
     auto extract_source_blocks = [](StoredBlocksList && columns_list, const Block & sample_block)
     {
@@ -1831,7 +1872,7 @@ bool HashJoin::rightTableCanBeReranged() const
 
 size_t HashJoin::getAndSetRightTableKeys() const
 {
-    size_t total_rows = getTotalRowCount();
+    size_t total_rows = getTotalRowCountUnlocked();
     if (data)
         data->keys_to_join = total_rows;
     return total_rows;
@@ -1843,7 +1884,7 @@ void HashJoin::tryRerangeRightTableData()
         return;
 
     if (data->keys_to_join == 0)
-        data->keys_to_join = getTotalRowCount();
+        data->keys_to_join = getTotalRowCountUnlocked();
 
     /// If the there is no columns to add, means no columns to output, then the rerange would not improve performance by using column's `insertRangeFrom`
     /// to replace column's `insertFrom` to make the output.
@@ -2389,7 +2430,12 @@ void HashJoin::onBuildPhaseFinish()
 
     build_phase_finished = true;
 
-    LOG_TRACE(log, "{}Join data is built, {} and {} rows in hash table", instance_log_id, ReadableSize(getTotalByteCount()), getTotalRowCount());
+    LOG_TRACE(
+        log,
+        "{}Join data is built, {} and {} rows in hash table",
+        instance_log_id,
+        ReadableSize(getTotalByteCountUnlocked()),
+        getTotalRowCountUnlocked());
 }
 
 bool HashJoin::hasPostBuildPhase() const

@@ -56,6 +56,7 @@ SpillingHashJoin::SpillingHashJoin(
         /*instance_id_=*/"",
         /*use_two_level_maps_=*/false,
         stats_collecting_params_);
+    supports_parallel_non_joined_blocks_processing = in_memory_hash_join->supportParallelNonJoinedBlocksProcessing();
 }
 
 SpillingHashJoin::SpillingHashJoin(
@@ -165,19 +166,17 @@ bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
         return chosen_join->addBlockToJoin(block, check_limits);
     }
 
+    /// Shared lock: several threads may be adding blocks concurrently, and it keeps them out of a
+    /// join that switchToGraceHashJoin is draining.
+    std::shared_lock lock(switch_mutex);
+
+    /// Re-check: another thread may have switched while we waited for the lock.
+    if (state.load(std::memory_order_acquire) != State::COLLECTING)
+        return chosen_join->addBlockToJoin(block, check_limits);
+
     if (concurrent_join)
-    {
-        /// Shared lock: multiple threads add to ConcurrentHashJoin concurrently.
-        std::shared_lock lock(switch_mutex);
-
-        /// Re-check: another thread may have switched while we waited for the lock.
-        if (state.load(std::memory_order_acquire) != State::COLLECTING)
-            return chosen_join->addBlockToJoin(block, check_limits);
-
         return concurrent_join->addBlockToJoin(block, check_limits);
-    }
 
-    /// Single-thread in-memory hash join path.
     return collectingJoin().addBlockToJoin(block, check_limits);
 }
 
@@ -231,8 +230,17 @@ void SpillingHashJoin::switchToGraceHashJoin()
         return;
     }
 
+    /// Single in-memory join path: extract from it and feed the blocks to GraceHashJoin.
+    /// Exclusive lock: waits for all in-flight `addBlockToJoin` (shared lock holders) to complete, so
+    /// nothing is inserted into the in-memory join while it is being drained. There are no slots to hand
+    /// out cooperatively here, so the drain stays inside the lock; it is a one-time event.
+    std::unique_lock lock(switch_mutex);
+
+    /// Re-check: another thread may have already switched.
+    if (state.load(std::memory_order_relaxed) != State::COLLECTING)
+        return;
+
     print_threshold_reached_log(in_memory_hash_join, in_memory_hash_join->getName());
-    /// Single-thread path: extract from in-memory hash join, feed to GraceHashJoin.
     ProfileEvents::increment(ProfileEvents::JoinSpillingHashJoinSwitchedToGraceJoin);
     BlocksList right_blocks = in_memory_hash_join->releaseJoinedBlocks(/*restructure=*/false);
 
