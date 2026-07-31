@@ -20,13 +20,14 @@
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/HashTableTraits.h>
-#include <Common/HashTable/TwoLevelHashMap.h>
 
 namespace DB
 {
 
 class TableJoin;
 class ExpressionActions;
+/// Reads the built maps back for StorageJoin; see StorageJoin.cpp.
+class JoinSource;
 using Sizes = std::vector<size_t>;
 
 namespace Unified
@@ -116,7 +117,6 @@ public:
         bool any_take_last_row_ = false,
         size_t reserve_num_ = 0,
         const String & instance_id_ = "",
-        bool use_two_level_maps_ = false,
         const StatsCollectingParams & stats_collecting_params_ = {});
 
     ~HashJoin() override;
@@ -144,9 +144,6 @@ public:
 
     using IJoin::addBlockToJoin;
 
-    /// Called directly from ConcurrentJoin::addBlockToJoin
-    bool addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits);
-
     void checkTypesOfKeys(const Block & block) const override;
 
     using IJoin::joinBlock;
@@ -155,9 +152,6 @@ public:
       * Could be called from different threads in parallel.
       */
     JoinResultPtr joinBlock(Block block) override;
-
-    /// Called directly from ConcurrentJoin::joinBlock
-    JoinResultPtr joinScatteredBlock(ScatteredBlock block);
 
     /// Check joinGet arguments and infer the return type.
     DataTypePtr joinGetCheckAndGetReturnType(const DataTypes & data_types, const String & column_name, bool or_null) const;
@@ -195,10 +189,6 @@ public:
     IBlocksStreamPtr getNonJoinedBlocks(
         const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
 
-    IBlocksStreamPtr getNonJoinedBlocks(
-        const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
-        size_t bucket_idx, size_t num_buckets) const override;
-
     void onBuildPhaseFinish() override;
 
     bool hasPostBuildPhase() const override;
@@ -234,15 +224,6 @@ public:
         M(hashed)                      \
         M(low_cardinality_key_string)       \
         M(low_cardinality_key_fixed_string) \
-        M(two_level_key32)             \
-        M(two_level_key64)             \
-        M(two_level_key_string)        \
-        M(two_level_key_fixed_string)  \
-        M(two_level_keys32)            \
-        M(two_level_keys64)            \
-        M(two_level_keys128)           \
-        M(two_level_keys256)           \
-        M(two_level_hashed)            \
         M(range8_key32)                \
         M(range16_key32)               \
         M(range17_key32)               \
@@ -255,7 +236,7 @@ public:
     /// Used for reading from StorageJoin and applying joinGet function. The single-LowCardinality-key
     /// maps store key values in maps physically identical to their non-LowCardinality counterparts, so
     /// they are read back the same way (the output key column is the parent LowCardinality type).
-    #define UNIFIED_UNIFIED_APPLY_FOR_JOIN_VARIANTS_LIMITED(M) \
+    #define UNIFIED_APPLY_FOR_JOIN_VARIANTS_LIMITED(M) \
         M(key8)                                \
         M(key16)                               \
         M(key32)                               \
@@ -265,40 +246,12 @@ public:
         M(low_cardinality_key_string)          \
         M(low_cardinality_key_fixed_string)
 
-    /// Used in ConcurrentHashJoin
-    #define UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M, ...)           \
-        M(two_level_key32 __VA_OPT__(,) __VA_ARGS__)            \
-        M(two_level_key64 __VA_OPT__(,) __VA_ARGS__)            \
-        M(two_level_key_string __VA_OPT__(,) __VA_ARGS__)       \
-        M(two_level_key_fixed_string __VA_OPT__(,) __VA_ARGS__) \
-        M(two_level_keys32 __VA_OPT__(,) __VA_ARGS__)           \
-        M(two_level_keys64 __VA_OPT__(,) __VA_ARGS__)           \
-        M(two_level_keys128 __VA_OPT__(,) __VA_ARGS__)          \
-        M(two_level_keys256 __VA_OPT__(,) __VA_ARGS__)          \
-        M(two_level_hashed __VA_OPT__(,) __VA_ARGS__)
-
     enum class Type : uint8_t
     {
         #define M(NAME) NAME,
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
         #undef M
     };
-
-    bool twoLevelMapIsUsed() const
-    {
-        switch (data->type)
-        {
-        #define M(NAME) \
-            case Type::NAME: \
-                return true;
-
-            UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M)
-        #undef M
-
-            default:
-                return false;
-        }
-    }
 
     /// True for the single-LowCardinality-column maps, whose key getter consumes the live
     /// ColumnLowCardinality (so the key column must not be materialized for them).
@@ -334,15 +287,6 @@ public:
         std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>>         hashed;
         std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_string;
         std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_fixed_string;
-        std::shared_ptr<TwoLevelHashMap<UInt32, Mapped, HashCRC32<UInt32>>>   two_level_key32;
-        std::shared_ptr<TwoLevelHashMap<UInt64, Mapped, HashCRC32<UInt64>>>   two_level_key64;
-        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>>      two_level_key_string;
-        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>>      two_level_key_fixed_string;
-        std::shared_ptr<TwoLevelHashMap<UInt32, Mapped, HashCRC32<UInt32>>>   two_level_keys32;
-        std::shared_ptr<TwoLevelHashMap<UInt64, Mapped, HashCRC32<UInt64>>>   two_level_keys64;
-        std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128HashCRC32>>   two_level_keys128;
-        std::shared_ptr<TwoLevelHashMap<UInt256, Mapped, UInt256HashCRC32>>   two_level_keys256;
-        std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128TrivialHash>> two_level_hashed;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>>          range8_key32;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 16>>         range16_key32;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 17>>         range17_key32;
@@ -445,9 +389,8 @@ public:
         StoredBlocksList columns; /// Columns of "right" table.
         NullmapList nullmaps; /// Nullmaps for blocks of "right" table (if needed)
 
-        /// Resolves RowRef::block_no to the stored block.
-        /// Shared between all slots of a ConcurrentHashJoin so that block numbers stay
-        /// globally unique: cells built by any slot end up in the shared two-level map.
+        /// Resolves RowRef::block_no to the stored block. Block numbers are assigned as blocks
+        /// arrive, so they stay unique across the build threads that share this instance.
         StoredColumnsIndexPtr stored_columns_index = std::make_shared<StoredColumnsIndex>();
 
         /// Additional data - strings for string keys and continuation elements of single-linked lists of references to rows.
@@ -519,13 +462,7 @@ public:
 
     size_t getAndSetRightTableKeys() const override;
 
-    bool hasNonJoinedRows();
-    void updateNonJoinedRowsStatus();
-
     const std::vector<Sizes> & getKeySizes() const { return key_sizes; }
-
-    std::shared_ptr<JoinStuff::JoinUsedFlags> getUsedFlags() const { return used_flags; }
-    void setUsedFlags(std::shared_ptr<JoinStuff::JoinUsedFlags> flags) { used_flags = std::move(flags); }
 
     bool enableLazyColumnsReplication() const { return enable_lazy_columns_replication; }
     bool enableSoftwarePrefetch() const { return enable_prefetch; }
@@ -537,17 +474,18 @@ public:
 
 private:
     friend class NotJoinedHash;
-    friend class JoinSource;
+    friend class DB::JoinSource;
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
     friend class HashJoinMethods;
 
+    /// The build implementation. `selector` restricts insertion to a subset of the block's rows;
+    /// it is narrowed for ASOF joins to drop rows with a NULL ASOF key.
+    bool addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits);
+
     std::shared_ptr<TableJoin> table_join;
     JoinKind kind;
     JoinStrictness strictness;
-
-    bool has_non_joined_rows_checked = false;
-    bool has_non_joined_rows = false;
 
     /// This join was created from StorageJoin and it is already filled.
     bool from_storage_join = false;

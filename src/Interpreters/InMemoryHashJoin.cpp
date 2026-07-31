@@ -34,7 +34,6 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
                 any_take_last_row,
                 reserve_num,
                 instance_id,
-                use_two_level_maps,
                 stats_collecting_params);
     }
 }

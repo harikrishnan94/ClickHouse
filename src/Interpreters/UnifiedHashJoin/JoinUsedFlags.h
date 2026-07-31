@@ -88,14 +88,14 @@ public:
         }
     }
 
-    /// Move the source pending per-block flags into the dense `per_row_flags` vector, which is
+    /// Move the pending per-block flags into the dense `per_row_flags` vector, which is
     /// sized to cover every block_no of the `StoredColumnsIndex`.
-    void finalizePerRowFlags(JoinUsedFlags & source, size_t num_blocks)
+    void finalizePerRowFlags(size_t num_blocks)
     {
-        if (source.pending_per_row_flags.empty())
+        if (pending_per_row_flags.empty())
             return;
 
-        auto source_pending_flags = std::exchange(source.pending_per_row_flags, PendingPerRowFlags{});
+        auto source_pending_flags = std::exchange(pending_per_row_flags, PendingPerRowFlags{});
 
         need_flags = true;
         if (per_row_flags.size() < num_blocks)
@@ -258,15 +258,6 @@ public:
             bool expected = false;
             return per_offset_flags[offset].compare_exchange_strong(expected, true);
         }
-    }
-
-    /// Are all offset flags set? (index 0 is skipped as it is a service index)
-    bool allOffsetFlagsSet() const noexcept
-    {
-        for (const auto & per_offset_flag : per_offset_flags)
-            if (!per_offset_flag.load(std::memory_order_relaxed))
-                return false;
-        return true;
     }
 };
 
