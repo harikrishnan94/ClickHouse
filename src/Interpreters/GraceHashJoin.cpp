@@ -4,7 +4,7 @@
 #include <Formats/formatBlock.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/GraceHashJoin.h>
-
+#include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
@@ -455,10 +455,11 @@ void GraceHashJoin::initialize(const Block & sample_block)
 JoinResultPtr GraceHashJoin::joinBlock(Block block)
 {
     /// Check if hash join post build optimizations could be performed.
-    if (hash_join && getNumBuckets() <= 1)
+    if (getNumBuckets() <= 1)
     {
         std::lock_guard lock(hash_join_mutex);
-        hash_join->runPostBuildPhase();
+        if (hash_join)
+            hash_join->runPostBuildPhase();
     }
 
     if (block.rows() == 0)
@@ -749,7 +750,10 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
 
 Block GraceHashJoin::prepareRightBlock(const Block & block)
 {
-    return hash_join->prepareRightBlock(block);
+    /// Deliberately does not touch `hash_join`: this runs outside `hash_join_mutex`, and the member is
+    /// reset to nullptr while a rehash re-creates it. The structuring depends only on the saved block
+    /// sample, which is the same for every bucket's instance and is cached at construction.
+    return HashJoin::prepareRightBlock(block, hash_join_sample_block);
 }
 
 void GraceHashJoin::addBlockToJoinImpl(Block block)
