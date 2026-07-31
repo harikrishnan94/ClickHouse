@@ -25,19 +25,22 @@ class ConcurrentHashJoin;
 ///
 /// Operates in two modes depending on the constructor parameters:
 ///
-/// Single-thread mode:
-/// Blocks are fed directly into a HashJoin instance during the build phase.
+/// Single in-memory join mode:
+/// Blocks are fed directly into one in-memory hash join instance during the build phase. Whether that instance accepts blocks
+/// from several threads at once is its own decision, reported by IJoin::supportParallelJoin: HashJoin does not, UnifiedHashJoin
+/// does (it serializes insertion with an internal mutex), and this class forwards that answer to the pipeline.
 /// If the data exceeds max_bytes_before_external_join, the blocks are extracted via releaseJoinedBlocks and drained into a new
 /// GraceHashJoin.
-/// If all blocks fit in memory, the HashJoin is promoted to chosen_join with zero rework.
+/// If all blocks fit in memory, the in-memory join is promoted to chosen_join with zero rework.
 ///
 /// Concurrent mode:
 /// Blocks are fed into a ConcurrentHashJoin from multiple threads concurrently.
-/// A SharedMutex protects the COLLECTING -> GRACE_HASH_JOIN transition: addBlockToJoin takes a shared lock, while
-/// switchToGraceHashJoin takes an exclusive lock.
 /// If the data exceeds max_bytes_before_external_join, a GraceHashJoin is created and ConcurrentHashJoin slots are converted via
 /// addBlockToJoin calls possibly from multiple threads.
 /// If all blocks fit in memory, the ConcurrentHashJoin is promoted to chosen_join with zero rework.
+///
+/// In both modes a SharedMutex protects the COLLECTING -> GRACE_HASH_JOIN transition: addBlockToJoin takes a shared lock,
+/// while switchToGraceHashJoin takes an exclusive lock, so no block can land in a join that is being drained.
 ///
 /// hasDelayedBlocks always returns true so that the pipeline includes the delayed-block
 /// transforms needed by GraceHashJoin. When HashJoin / ConcurrentHashJoin is used,
@@ -48,7 +51,7 @@ class ConcurrentHashJoin;
 class SpillingHashJoin final : public IJoin
 {
 public:
-    /// Single-thread mode: wraps a HashJoin.
+    /// Single in-memory join mode: wraps one HashJoin or UnifiedHashJoin.
     SpillingHashJoin(
         std::shared_ptr<TableJoin> table_join_,
         SharedHeader left_sample_block_,
@@ -90,7 +93,7 @@ public:
     size_t getTotalByteCount() const override;
     bool alwaysReturnsEmptySet() const override;
 
-    bool supportParallelJoin() const override { return concurrent_join != nullptr; }
+    bool supportParallelJoin() const override { return concurrent_join ? true : in_memory_hash_join->supportParallelJoin(); }
     bool supportParallelNonJoinedBlocksProcessing() const override;
     bool isParallelNonJoinedProcessingEnabled() const override;
 
@@ -143,10 +146,10 @@ private:
 
     std::atomic<State> state{State::COLLECTING};
 
-    /// In-memory hash join used during COLLECTING phase (single-thread mode).
+    /// In-memory hash join used during COLLECTING phase (single in-memory join mode).
     InMemoryHashJoinPtr in_memory_hash_join;
 
-    /// ConcurrentHashJoin for multi-thread path (mutually exclusive with in_memory_hash_join).
+    /// ConcurrentHashJoin for the slot-splitting path (mutually exclusive with in_memory_hash_join).
     std::shared_ptr<ConcurrentHashJoin> concurrent_join;
 
     /// GraceHashJoin created during overflow. Also assigned to chosen_join.
