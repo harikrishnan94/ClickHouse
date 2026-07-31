@@ -5,6 +5,7 @@
 #include <Interpreters/HashJoin/JoinProbeScratch.h>
 #include <Interpreters/HashJoin/JoinSlotRouting.h>
 
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_set>
@@ -351,6 +352,104 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
         const auto * base = static_cast<const DynamicMap::cell_type *>(descs[buck].buf);
         ASSERT_GE(cell, base) << "key " << key << " resolved below bucket " << buck << "'s buffer";
         ASSERT_LT(cell, base + descs[buck].mask + 1) << "key " << key << " resolved past bucket " << buck << "'s buffer";
+    }
+}
+
+TEST(TwoLevelHashTableDynamic, LockFreeConcurrentBuildWithStaticBucketOwnership)
+{
+    /// Models the two-level `ConcurrentHashJoin` build from the reference worktree
+    /// `ClickHouse-concurrent-hash-join-profile-events` (its `ConcurrentHashJoin.cpp`, commit
+    /// `a05f3ee81ff`, before the two-level machinery was removed and later re-added generically
+    /// here): `selectDispatchBlock`/`hashToSelector` there assign each row to worker
+    /// `hash_table.getBucketFromHash(hash) & (num_workers - 1)` - i.e. the worker id is a FOLD of
+    /// the table's OWN bucket id, not an independent hash. So worker `t` owns EXACTLY buckets
+    /// `t, t+num_workers, t+2*num_workers, ...` for the whole build, and no other worker's rows
+    /// are ever routed there. Because ownership is static and exclusive (never contended), NO
+    /// LOCK of any kind is needed during build - not per-row, not even per-bucket (contrast with
+    /// `ConcurrentBuildWithExternalBucketLocks` above, which needs a lock only because it does NOT
+    /// assume this static partitioning and instead lets any thread touch any bucket at any time).
+    constexpr size_t num_buckets = 256;
+    constexpr size_t num_workers = 16;
+    constexpr UInt64 num_keys = 200000;
+    static_assert(num_buckets % num_workers == 0);
+
+    DynamicMap map(num_buckets);
+
+    /// Dispatch: assign every key to its worker up front, exactly like
+    /// `ConcurrentHashJoin::dispatchBlock` computing `slot_ids` once before any insert.
+    std::vector<std::vector<UInt64>> keys_by_worker(num_workers);
+    for (UInt64 key = 1; key <= num_keys; ++key)
+        keys_by_worker[routedBucket(map, key) % num_workers].push_back(key);
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_workers);
+    for (size_t worker = 0; worker < num_workers; ++worker)
+    {
+        threads.emplace_back([&map, &keys_by_worker, worker]
+        {
+            /// No lock taken here, unlike the external-bucket-lock tests above.
+            for (UInt64 key : keys_by_worker[worker])
+                insertKeyValue(map, key, key * 13);
+        });
+    }
+    for (auto & thread : threads)
+        thread.join();
+
+    ASSERT_EQ(map.size(), num_keys);
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        auto * it = map.find(key);
+        ASSERT_NE(it, nullptr) << "key " << key << " lost by the lock-free concurrent build";
+        ASSERT_EQ(it->getMapped(), key * 13);
+    }
+}
+
+TEST(TwoLevelHashTableDynamic, MergeByMovingOwnedBucketsMatchesBaselineOnBuildPhaseFinish)
+{
+    /// Mirrors the reference worktree's `ConcurrentHashJoin::onBuildPhaseFinish`'s `move_buckets`
+    /// step (`ClickHouse-concurrent-hash-join-profile-events`, `ConcurrentHashJoin.cpp:805-855`):
+    /// each worker builds into its OWN full-size table, touching only the buckets it owns (every
+    /// other bucket stays empty for the whole build - asserted below), and the merge into one
+    /// final table is a single-threaded, O(bucket count) RELOCATION - `std::move` each owned
+    /// bucket's `Impl` into the destination's same bucket index - not a re-insertion pass, so it
+    /// costs no rehashing and needs no lock either (it runs after every worker has joined).
+    constexpr size_t num_buckets = 64;
+    constexpr size_t num_workers = 8;
+    constexpr UInt64 num_keys = 50000;
+    static_assert(num_buckets % num_workers == 0);
+
+    std::vector<std::unique_ptr<DynamicMap>> worker_maps;
+    worker_maps.reserve(num_workers);
+    for (size_t i = 0; i < num_workers; ++i)
+        worker_maps.push_back(std::make_unique<DynamicMap>(num_buckets));
+
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        const size_t bucket = routedBucket(*worker_maps[0], key);
+        insertKeyValue(*worker_maps[bucket % num_workers], key, key * 17);
+    }
+
+    /// Sanity: every worker's table must be empty outside the buckets it owns - the whole
+    /// precondition the O(1)-per-bucket move below relies on.
+    for (size_t worker = 0; worker < num_workers; ++worker)
+        for (UInt32 bucket = 0; bucket < num_buckets; ++bucket)
+            if (bucket % num_workers != worker)
+                ASSERT_TRUE(worker_maps[worker]->impls[bucket].empty())
+                    << "worker " << worker << " touched unowned bucket " << bucket;
+
+    for (size_t worker = 1; worker < num_workers; ++worker)
+        for (UInt32 bucket = static_cast<UInt32>(worker); bucket < num_buckets; bucket += num_workers)
+        {
+            ASSERT_TRUE(worker_maps[0]->impls[bucket].empty());
+            worker_maps[0]->impls[bucket] = std::move(worker_maps[worker]->impls[bucket]);
+        }
+
+    ASSERT_EQ(worker_maps[0]->size(), num_keys);
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        auto * it = worker_maps[0]->find(key);
+        ASSERT_NE(it, nullptr) << "key " << key << " lost by the bucket-move merge";
+        ASSERT_EQ(it->getMapped(), key * 17);
     }
 }
 
