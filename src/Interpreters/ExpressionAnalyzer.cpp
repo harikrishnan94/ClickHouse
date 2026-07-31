@@ -39,6 +39,8 @@
 #include <Interpreters/GlobalSubqueriesVisitor.h>
 #include <Interpreters/GraceHashJoin.h>
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/InMemoryHashJoin.h>
+#include <Interpreters/UnifiedHashJoin/HashJoin.h>
 #include <Interpreters/JoinSwitcher.h>
 #include <Interpreters/JoinUtils.h>
 #include <Interpreters/MergeJoin.h>
@@ -1009,6 +1011,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
     /// Preserve the set of algorithms that accepted CROSS and comma joins before they were handled by ConstantJoin.
     const auto is_cross_join_compatible = algorithm == JoinAlgorithm::DEFAULT || algorithm == JoinAlgorithm::AUTO
         || algorithm == JoinAlgorithm::HASH || algorithm == JoinAlgorithm::PARALLEL_HASH
+        || algorithm == JoinAlgorithm::UNIFIED_HASH
         || algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE;
 
     if (is_cross_join_compatible && isCrossOrComma(analyzed_join->kind()))
@@ -1040,8 +1043,11 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
         algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
         algorithm == JoinAlgorithm::PARALLEL_HASH ||
-        algorithm == JoinAlgorithm::DEFAULT)
+        algorithm == JoinAlgorithm::DEFAULT ||
+        algorithm == JoinAlgorithm::UNIFIED_HASH)
     {
+        const bool unified = algorithm == JoinAlgorithm::UNIFIED_HASH;
+        const auto in_memory_kind = unified ? InMemoryHashJoinKind::Unified : InMemoryHashJoinKind::Hash;
         const auto & settings = context->getSettingsRef();
 
         if (analyzed_join->maxBytesBeforeExternalJoin() > 0 && context->getTempDataOnDisk()
@@ -1050,7 +1056,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             Block left_sample_block(left_sample_columns);
             if (sanitizeBlock(left_sample_block, false))
             {
-                if (analyzed_join->allowParallelHashJoin())
+                if (analyzed_join->allowParallelHashJoin() && !unified)
                     return std::make_shared<SpillingHashJoin>(
                         analyzed_join,
                         std::make_shared<const Block>(std::move(left_sample_block)),
@@ -1059,21 +1065,27 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                         settings[Setting::grace_hash_join_initial_buckets],
                         settings[Setting::grace_hash_join_max_buckets],
                         settings[Setting::max_threads],
-                        StatsCollectingParams{});
-                else
-                    return std::make_shared<SpillingHashJoin>(
-                        analyzed_join,
-                        std::make_shared<const Block>(std::move(left_sample_block)),
-                        right_sample_block,
-                        context->getTempDataOnDisk(),
-                        settings[Setting::grace_hash_join_initial_buckets],
-                        settings[Setting::grace_hash_join_max_buckets]);
+                        StatsCollectingParams{},
+                        /*any_take_last_row_=*/false,
+                        in_memory_kind);
+                return std::make_shared<SpillingHashJoin>(
+                    analyzed_join,
+                    std::make_shared<const Block>(std::move(left_sample_block)),
+                    right_sample_block,
+                    context->getTempDataOnDisk(),
+                    settings[Setting::grace_hash_join_initial_buckets],
+                    settings[Setting::grace_hash_join_max_buckets],
+                    StatsCollectingParams{},
+                    /*any_take_last_row_=*/false,
+                    in_memory_kind);
             }
         }
 
-        if (analyzed_join->allowParallelHashJoin())
+        if (analyzed_join->allowParallelHashJoin() && !unified)
             return std::make_shared<ConcurrentHashJoin>(
                 analyzed_join, settings[Setting::max_threads], right_sample_block, StatsCollectingParams{});
+        if (unified)
+            return std::make_shared<UnifiedHashJoin>(analyzed_join, right_sample_block);
         return std::make_shared<HashJoin>(analyzed_join, right_sample_block);
     }
 

@@ -73,6 +73,7 @@ const char * toString(JoinAlgorithm join_algorithm)
         case JoinAlgorithm::DIRECT: return "DIRECT";
         case JoinAlgorithm::FULL_SORTING_MERGE: return "FULL_SORTING_MERGE";
         case JoinAlgorithm::PARALLEL_FULL_SORTING_MERGE: return "PARALLEL_FULL_SORTING_MERGE";
+        case JoinAlgorithm::UNIFIED_HASH: return "UNIFIED_HASH";
         case JoinAlgorithm::GRACE_HASH: return "GRACE_HASH";
         case JoinAlgorithm::IE_JOIN: return "IE_JOIN";
     }
