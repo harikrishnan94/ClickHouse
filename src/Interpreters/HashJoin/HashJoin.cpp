@@ -138,12 +138,14 @@ HashJoin::HashJoin(
     size_t reserve_num_,
     const String & instance_id_,
     const StatsCollectingParams & stats_collecting_params_,
-    bool is_parallel_hash_slot)
+    bool is_parallel_hash_slot,
+    size_t two_level_buckets_)
     : table_join(table_join_)
     , kind(table_join->kind())
     , strictness(table_join->strictness())
     , any_take_last_row(any_take_last_row_)
     , reserve_num(reserve_num_)
+    , two_level_buckets(two_level_buckets_)
     , instance_id(instance_id_)
     , asof_inequality(table_join->getAsofInequality())
     , data(std::make_shared<RightTableData>())
@@ -265,6 +267,11 @@ HashJoin::HashJoin(
                 current_join_method = *low_cardinality_method;
                 LOG_TRACE(log, "Using a dictionary-aware hash map for the single LowCardinality join key");
             }
+            /// Phase 3 PoC of `tmp/two_level_hashjoin_plan.md`: a `parallel_hash` slot opted into
+            /// bucketed building (`two_level_buckets > 1`) uses the bucketed map instead of the
+            /// ordinary single-level one, for the one key shape it is implemented for so far.
+            else if (is_parallel_hash_slot && two_level_buckets > 1 && current_join_method == Type::key64)
+                current_join_method = Type::key64_two_level;
             set_join_method(current_join_method);
         }
     }
@@ -422,7 +429,9 @@ void HashJoin::dataMapInit(MapsVariant & map)
 {
     const bool prefer_use_maps_all = preferUseMapsAll();
     joinDispatchInit(kind, strictness, map, prefer_use_maps_all);
-    joinDispatch(kind, strictness, map, prefer_use_maps_all, [&](auto, auto, auto & map_) { map_.create(data->type, reserve_num); });
+    joinDispatch(
+        kind, strictness, map, prefer_use_maps_all,
+        [&](auto, auto, auto & map_) { map_.create(data->type, reserve_num, two_level_buckets); });
 
     if (!data)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin::dataMapInit called with empty data");

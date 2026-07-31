@@ -170,7 +170,8 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     SharedHeader right_sample_block,
     const StatsCollectingParams & stats_collecting_params_,
     bool any_take_last_row_,
-    size_t external_join_threshold_)
+    size_t external_join_threshold_,
+    bool use_two_level_key64_poc_)
     : table_join(table_join_)
     /// The requested count is honored (tests cover the single- and few-slot plans); production
     /// callers pass `max_slots` - see its comment for why the count is not thread-derived.
@@ -188,8 +189,15 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     /// 2x because probe lanes are pipeline streams, which are not guaranteed to stay below
     /// the slot count in every pipeline shape (see `IJoin::joinBlock`'s lane contract).
     , probe_scratch_by_lane(2 * slots)
+    , use_two_level_key64_poc(use_two_level_key64_poc_)
 {
     hash_joins.resize(slots);
+
+    /// The bucketed map needs exactly `slots` buckets so that `computeDispatchSlotIds`'s slot id
+    /// and the table's own `getBucketFromHash()` bucket id are the SAME number (see
+    /// `computeHashRouteSlotIds`'s bucketed branch below) - a slot always exclusively owns the
+    /// identically-numbered bucket, nothing is folded/interleaved.
+    const size_t two_level_buckets = use_two_level_key64_poc ? slots : 1;
 
     try
     {
@@ -210,7 +218,8 @@ ConcurrentHashJoin::ConcurrentHashJoin(
                         /*reserve_num_=*/0,
                         fmt::format("concurrent{}", i),
                         /*stats_collecting_params_=*/StatsCollectingParams{},
-                        /*is_parallel_hash_slot=*/true);
+                        /*is_parallel_hash_slot=*/true,
+                        two_level_buckets);
                     inner_hash_join->data->setMaxJoinedBlockRows(table_join->maxJoinedBlockRows());
                     inner_hash_join->data->setMaxJoinedBlockBytes(table_join->maxJoinedBlockBytes());
                     /// Opt the per-slot maps into the AMAC build-insert ring (see `AmacRing.h`):
@@ -555,6 +564,15 @@ JoinResultPtr ConcurrentHashJoin::joinBlock(Block block, size_t lane)
 {
     ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
 
+    /// Once `mergeTwoLevelKey64BucketsIfUsed()` has moved every slot's bucket into
+    /// `hash_joins[0]`'s table, that ONE instance holds every row - route through its plain,
+    /// non-routed `joinBlock` directly (per decision #9 of `tmp/two_level_hashjoin_plan.md`: no
+    /// probe-side scatter, bucket dispatch happens inside the table's own `find()`). The routed
+    /// path below would find nothing for any row whose route lands on a slot other than 0 - their
+    /// buckets are empty post-merge.
+    if (two_level_key64_merged)
+        return hash_joins[0]->data->joinBlock(std::move(block));
+
     const HashJoin & join0 = *hash_joins[0]->data;
     ScatteredBlock scattered;
     std::vector<JoinOnKeyColumns> join_on_keys;
@@ -718,6 +736,16 @@ static ColumnRawPtrs routeKeyColumns(const HashJoin & join, const JoinOnKeyColum
 /// a build/probe contract (a plain `String` probe column against a `LowCardinality` build
 /// side hashes the same value bytes). Returns false for the non-cursor map types
 /// (`FixedHashMap`, the dictionary-aware `LowCardinality` maps) - the caller falls back.
+///
+/// Also engages for a runtime-bucket-count `TwoLevelHashTable` (`getBucketFromHash()`, e.g.
+/// `key64_two_level` - not `WithJoinCursor`-wrapped, so it lacks `cursorCells()`, but its own
+/// hash is just as usable for routing): the constructor sizes such a map's bucket count to
+/// `slots` (`ConcurrentHashJoin::ConcurrentHashJoin`'s `two_level_buckets`), which makes
+/// `joinHashRouteSlot(hash, route_shift)` and `map.getBucketFromHash(hash)` compute the exact
+/// same bucket number (proven for every hash bit pattern and every count 1..256 by
+/// `TwoLevelHashTableDynamic.BucketSelectionMatchesJoinHashRouteSlot`) - so this reuses the
+/// identical body below rather than a separate `map.getBucketFromHash()` call, and dispatch and
+/// the table's own internal routing are self-consistent by construction, not by a separate proof.
 static bool computeHashRouteSlotIds(
     const HashJoin & join, const ColumnRawPtrs & route_columns, size_t rows, size_t num_shards, UInt8 * slot_ids)
 {
@@ -737,7 +765,7 @@ static bool computeHashRouteSlotIds(
         {
 #define M(TYPE) \
     case HashJoin::Type::TYPE: \
-        if constexpr (requires { maps.TYPE->cursorCells(); }) \
+        if constexpr (requires { maps.TYPE->cursorCells(); } || requires { maps.TYPE->getBucketFromHash(size_t{}); }) \
         { \
             const auto & map = *maps.TYPE; \
             using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_cvref_t<decltype(map)>>::Type; \
@@ -952,6 +980,49 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
     return hash_join->data->releaseJoinedBlocks(/*restructure=*/ false);
 }
 
+/// Post-build, single-threaded (see `onBuildPhaseFinish`'s own comment: it cannot run concurrently
+/// with other `IJoin` methods). Mirrors `onBuildPhaseFinish`'s `move_buckets` step in the
+/// reference worktree `ClickHouse-concurrent-hash-join-profile-events`
+/// (`ConcurrentHashJoin.cpp`, commit `a05f3ee81ff`), simplified for the 1:1 slot/bucket mapping
+/// this PoC uses (`two_level_buckets == slots`, so slot `i` owns EXACTLY bucket `i`, no
+/// interleaving/folding needed).
+void ConcurrentHashJoin::mergeTwoLevelKey64BucketsIfUsed()
+{
+    if (!use_two_level_key64_poc || slots == 1)
+        return;
+    if (hash_joins[0]->data->getJoinedData()->type != HashJoin::Type::key64_two_level)
+        return;
+
+    auto & dst_data = *hash_joins[0]->data->getJoinedData();
+    for (size_t i = 1; i < slots; ++i)
+    {
+        auto & src_data = *hash_joins[i]->data->getJoinedData();
+
+        std::visit(
+            [&](auto & dst_maps)
+            {
+                using T = std::decay_t<decltype(dst_maps)>;
+                auto & src_maps = std::get<T>(src_data.maps.at(0));
+                /// An O(1) ownership transfer, not a re-insertion: bucket `i` was never touched
+                /// by any slot other than `i` (dispatch routes every row to the SAME bucket
+                /// number as its slot, see `computeHashRouteSlotIds`'s bucketed branch), so this
+                /// move is the entire merge for this bucket.
+                dst_maps.key64_two_level->impls[i] = std::move(src_maps.key64_two_level->impls[i]);
+            },
+            dst_data.maps.at(0));
+
+        dst_data.columns.splice(dst_data.columns.end(), src_data.columns);
+        dst_data.allocated_size += src_data.allocated_size;
+        dst_data.rows_to_join += src_data.rows_to_join;
+        dst_data.keys_to_join += src_data.keys_to_join;
+        src_data.allocated_size = 0;
+        src_data.rows_to_join = 0;
+        src_data.keys_to_join = 0;
+    }
+
+    two_level_key64_merged = true;
+}
+
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
     ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
@@ -971,8 +1042,12 @@ void ConcurrentHashJoin::onBuildPhaseFinish()
     for (const auto & hash_join : hash_joins)
         hash_join->data->onBuildPhaseFinish();
 
+    mergeTwoLevelKey64BucketsIfUsed();
+
     /// Per-slot `onBuildPhaseFinish` includes shrink-to-fit, which moves buffers, so re-collect
-    /// the final addresses.
-    collectRoutedProbePlan();
+    /// the final addresses. Skipped once merged - the routed-probe plan is unused from then on
+    /// (`joinBlock` short-circuits to `hash_joins[0]` directly, see there).
+    if (!two_level_key64_merged)
+        collectRoutedProbePlan();
 }
 }

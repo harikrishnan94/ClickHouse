@@ -55,7 +55,16 @@ public:
         SharedHeader right_sample_block,
         const StatsCollectingParams & stats_collecting_params_,
         bool any_take_last_row_ = false,
-        size_t external_join_threshold_ = 0);
+        size_t external_join_threshold_ = 0,
+        /// Phase 3 PoC of `tmp/two_level_hashjoin_plan.md` (bucket-striped concurrent build):
+        /// opts eligible `key64` builds into ONE shared bucketed `key64_two_level` map instead of
+        /// `slots` separate flat `key64` maps, merged by `onBuildPhaseFinish` via an O(bucket
+        /// count) move (see `mergeTwoLevelKey64BucketsIfUsed`), no lock anywhere in the build -
+        /// each slot's dispatched rows own their bucket exclusively by construction. Defaults to
+        /// `false`: zero behavior change for every existing caller. Not yet used by any
+        /// production caller - test-only until Phase 4 generalizes it to more map types and
+        /// handles RIGHT/FULL/spill.
+        bool use_two_level_key64_poc_ = false);
 
     ~ConcurrentHashJoin() override;
 
@@ -167,6 +176,23 @@ private:
     RoutedProbePlan routed_probe_plan;
 
     void collectRoutedProbePlan();
+
+    /// Phase 3 PoC: whether the constructor opted into `key64_two_level`; set once, never changes.
+    const bool use_two_level_key64_poc;
+    /// Set by `mergeTwoLevelKey64BucketsIfUsed()` once the bucket-move merge has moved every
+    /// slot's owned bucket into `hash_joins[0]`'s table - after this, `hash_joins[0]` alone holds
+    /// every row, and probing must go through it directly (no routed dispatch, no scatter) rather
+    /// than through `slot_joins`/`RoutedProbePlan`, which would find only slot 0's own original
+    /// bucket for any row whose route happens to be 0 and nothing for every other slot (their
+    /// buckets are empty post-move).
+    bool two_level_key64_merged = false;
+    /// Post-build, single-threaded: relocates each slot's exclusively-owned bucket
+    /// (`impls[slot_index]`) into `hash_joins[0]`'s table via `std::move` (an O(1) transfer per
+    /// bucket, not a re-insertion), and consolidates the per-slot `RightTableData` bookkeeping
+    /// (`columns`/`allocated_size`/`rows_to_join`/`keys_to_join`) the same way. A no-op unless the
+    /// constructor opted into `key64_two_level`. Mirrors `onBuildPhaseFinish`'s `move_buckets` in
+    /// the reference worktree `ClickHouse-concurrent-hash-join-profile-events`.
+    void mergeTwoLevelKey64BucketsIfUsed();
 
     ScatteredBlocks dispatchBlock(const Strings & key_columns_names, Block && from_block);
     std::pair<size_t, size_t> updateTotalRowsAndBytesUnlocked(std::shared_ptr<InternalHashJoin> & hash_join);

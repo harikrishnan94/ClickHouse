@@ -41,4 +41,21 @@ struct HasConstructorOfNumberOfElements<Method<Base>> : HasConstructorOfNumberOf
 {
 };
 
+/// True specifically for the runtime-bucket-count (`bits_for_bucket == 0`) `TwoLevelHashTable`
+/// mode: its constructor takes a bucket count first, then an optional size hint
+/// (`TwoLevelHashTable(size_t num_buckets, size_t size_hint = 0)`), unlike every other type
+/// `HasConstructorOfNumberOfElements` above matches (a size hint alone, or none). Callers that
+/// construct a `HashJoin::MapsTemplate` member generically (`MapsTemplate::create()`) need this to
+/// route to a dedicated construction branch instead of the generic size-hint-or-not dispatch.
+template <typename T>
+struct IsRuntimeBucketedTwoLevelHashTable : std::false_type
+{
+};
+
+template <typename Key, typename Cell, typename Hash, typename Grower, typename Allocator, typename ImplTable, size_t bits_for_bucket, typename BucketHash>
+struct IsRuntimeBucketedTwoLevelHashTable<TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable, bits_for_bucket, BucketHash>>
+    : std::bool_constant<(bits_for_bucket == 0)>
+{
+};
+
 }

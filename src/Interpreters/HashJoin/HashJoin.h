@@ -19,6 +19,7 @@
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/HashTableTraits.h>
+#include <Common/HashTable/TwoLevelHashTable.h>
 #include <Interpreters/HashJoin/ResumableHashMap.h>
 
 namespace DB
@@ -120,7 +121,11 @@ public:
         const String & instance_id_ = "",
         const StatsCollectingParams & stats_collecting_params_ = {},
         /// Set by `ConcurrentHashJoin` for its per-slot joins; see the LowCardinality map choice.
-        bool is_parallel_hash_slot = false);
+        bool is_parallel_hash_slot = false,
+        /// > 1 opts a `key64` build into the `key64_two_level` bucketed map instead (Phase 3 PoC
+        /// of `tmp/two_level_hashjoin_plan.md`) with this many buckets; 1 (default) keeps the
+        /// ordinary single-level `key64` map. Only meaningful together with `is_parallel_hash_slot`.
+        size_t two_level_buckets_ = 1);
 
     ~HashJoin() override;
 
@@ -226,6 +231,7 @@ public:
         M(key16)                       \
         M(key32)                       \
         M(key64)                       \
+        M(key64_two_level)             \
         M(key_string)                  \
         M(key_fixed_string)            \
         M(keys32)                      \
@@ -294,6 +300,23 @@ public:
         std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>      key32;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>::Type>      key64;
+        /// `ConcurrentHashJoin`'s bucket-striped build target (Phase 3 PoC): a runtime-bucket-count
+        /// `TwoLevelHashTable` (`bits_for_bucket == 0`) wrapping the identical `key64` map shape
+        /// per bucket. Not `WithJoinCursor`-wrapped (no AMAC/routed-probe eligibility yet - a
+        /// deliberately deferred follow-up, not a correctness gap: `cursorCells()`-gated code
+        /// paths already SFINAE away cleanly when it is absent). A separate `Type`/member from
+        /// `key64` on purpose - `MapsTemplate` is shared by every `HashJoin` caller
+        /// (`StorageJoin`, `dictGet`, `GraceHashJoin`, single-threaded joins), not just
+        /// `ConcurrentHashJoin`, so this keeps the blast radius of a first bucketed variant
+        /// contained to callers that explicitly opt in, instead of changing `key64` globally.
+        std::shared_ptr<TwoLevelHashTable<
+            UInt64,
+            HashMapCell<UInt64, Mapped, HashCRC32<UInt64>>,
+            HashCRC32<UInt64>,
+            HashTableGrowerWithPrecalculation<>,
+            HashTableAllocator,
+            HashMap<UInt64, Mapped, HashCRC32<UInt64>>,
+            /*bits_for_bucket=*/0>> key64_two_level;
         std::shared_ptr<typename WithJoinCursor<HashMapWithSavedHash<std::string_view, Mapped>>::Type>  key_string;
         std::shared_ptr<typename WithJoinCursor<HashMapWithSavedHash<std::string_view, Mapped>>::Type>  key_fixed_string;
         std::shared_ptr<typename WithJoinCursor<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>::Type>      keys32;
@@ -312,17 +335,23 @@ public:
         std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 17>>         range17_key64;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 18>>         range18_key64;
 
-        void create(Type which, size_t reserve)
+        /// `two_level_buckets` is only consumed by runtime-bucket-count members (`key64_two_level`
+        /// today; see `IsRuntimeBucketedTwoLevelHashTable`) - it is ignored for every other type,
+        /// so ordinary callers (every `HashJoin` that is not opting into a bucketed map) can leave
+        /// it at the default.
+        void create(Type which, size_t reserve, size_t num_two_level_buckets = 1)
         {
             switch (which)
             {
-            #define M(NAME)                                                                                       \
-                case Type::NAME:                                                                                  \
-                    if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
-                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)         \
-                                       : std::make_shared<typename decltype(NAME)::element_type>();               \
-                    else                                                                                          \
-                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                         \
+            #define M(NAME)                                                                                          \
+                case Type::NAME:                                                                                     \
+                    if constexpr (IsRuntimeBucketedTwoLevelHashTable<typename decltype(NAME)::element_type>::value)  \
+                        NAME = std::make_shared<typename decltype(NAME)::element_type>(num_two_level_buckets, reserve); \
+                    else if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
+                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)            \
+                                       : std::make_shared<typename decltype(NAME)::element_type>();                  \
+                    else                                                                                             \
+                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                            \
                     break;
 
                 APPLY_FOR_JOIN_VARIANTS(M)
@@ -522,6 +551,7 @@ private:
 
     const bool any_take_last_row; /// Overwrite existing values when encountering the same key again
     const size_t reserve_num;
+    const size_t two_level_buckets;
     const String instance_id;
     std::optional<TypeIndex> asof_type;
     const ASOFJoinInequality asof_inequality;
