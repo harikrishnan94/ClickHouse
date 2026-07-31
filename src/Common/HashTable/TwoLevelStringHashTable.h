@@ -16,6 +16,8 @@ public:
     static constexpr UInt32 NUM_BUCKETS = 1ULL << BITS_FOR_BUCKET;
     static constexpr UInt32 MAX_BUCKET = NUM_BUCKETS - 1;
 
+    static constexpr UInt32 numBuckets() { return NUM_BUCKETS; }
+
     // TODO: currently hashing contains redundant computations when doing distributed or external aggregations
     size_t hash(const Key & x) const
     {

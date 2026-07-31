@@ -1,7 +1,10 @@
 #pragma once
 
+#include <bit>
+#include <type_traits>
+#include <vector>
+#include <base/defines.h>
 #include <Common/HashTable/HashTable.h>
-#include <array>
 
 
 /** Two-level hash table.
@@ -13,6 +16,9 @@
   * - if you need to merge two hash tables together, then you can easily parallelize it by buckets;
   * - delay during resizes is amortized, since the small hash tables will be resized separately;
   * - in theory, resizes are cache-local in a larger range of sizes.
+  *
+  * Dynamic mode (`BITS_FOR_BUCKET = 0`) uses runtime bucket count with per-bucket address
+  * descriptors instead of fixed arrays.
   */
 
 template <size_t initial_size_degree = 8>
@@ -22,19 +28,29 @@ struct TwoLevelHashTableGrower : public HashTableGrowerWithPrecalculation<initia
     void increaseSize() { this->increaseSizeDegree(this->sizeDegree() >= 15 ? 1 : 2); }
 };
 
-template
-<
+/// Compact per-bucket address material for the `BITS_FOR_BUCKET = 0` (runtime bucket count) mode's
+/// hot lookup path (buffer base pointer + mask).
+struct TwoLevelHashTableBucketDesc
+{
+    const void * buf = nullptr;
+    size_t mask = 0;
+};
+
+constexpr size_t DEFAULT_BITS_FOR_BUCKET = 8;
+
+template <
     typename Key,
     typename Cell,
     typename Hash,
     typename Grower,
     typename Allocator,
     typename ImplTable = HashTable<Key, Cell, Hash, Grower, Allocator>,
-    size_t BITS_FOR_BUCKET = 8
->
-class TwoLevelHashTable :
-    private boost::noncopyable,
-    protected Hash            /// empty base optimization
+    size_t bits_for_bucket = DEFAULT_BITS_FOR_BUCKET,
+    /// When `void` (default), bucket selection reuses the cell-placement hash.
+    /// Otherwise this functor selects the bucket independently from `Hash`.
+    typename BucketHash = void>
+class TwoLevelHashTable : private boost::noncopyable,
+                          protected Hash /// empty base optimization
 {
 protected:
     friend class const_iterator;
@@ -45,67 +61,235 @@ protected:
 public:
     using Impl = ImplTable;
 
-    static constexpr UInt32 NUM_BUCKETS = 1ULL << BITS_FOR_BUCKET;
-    static constexpr UInt32 MAX_BUCKET = NUM_BUCKETS - 1;
-
-    size_t hash(const Key & x) const { return Hash::operator()(x); }
-
-    /// NOTE Bad for hash tables with more than 2^32 cells.
-    static size_t getBucketFromHash(size_t hash_value) { return (hash_value >> (32 - BITS_FOR_BUCKET)) & MAX_BUCKET; }
-
-protected:
-    typename Impl::iterator beginOfNextNonEmptyBucket(size_t & bucket)
+    /// Fixed-bucket mode only. Runtime mode (`bits_for_bucket == 0`) uses instance `bucketCount`.
+    static constexpr UInt32 numBuckets()
+    requires(bits_for_bucket > 0)
     {
-        while (bucket != NUM_BUCKETS && impls[bucket].empty())
-            ++bucket;
-
-        if (bucket != NUM_BUCKETS)
-            return impls[bucket].begin();
-
-        --bucket;
-        return impls[MAX_BUCKET].end();
+        return UInt32(1ULL << bits_for_bucket);
     }
 
-    typename Impl::const_iterator beginOfNextNonEmptyBucket(size_t & bucket) const
+private:
+    /// Prefix sums of bucket cell-buffer sizes, shared by both storage kinds' `offsetInternal`.
+    /// `HashJoin` indexes its per-offset RIGHT/FULL flags by these offsets, so they must reflect
+    /// the CURRENT bucket capacities: `compute()` (re)computes them from scratch, and a caller
+    /// that inserts further after taking offsets must call it again before trusting new ones.
+    class BucketPrefixSums
     {
-        while (bucket != NUM_BUCKETS && impls[bucket].empty())
-            ++bucket;
+    public:
+        template <typename BucketAt>
+        void compute(UInt32 bucket_count, BucketAt && bucket_at)
+        {
+            prefix.assign(bucket_count, 0);
+            size_t run = 0;
+            for (UInt32 i = 0; i < bucket_count; ++i)
+            {
+                prefix[i] = run;
+                run += bucket_at(i).getBufferSizeInCells();
+            }
+            computed = true;
+        }
 
-        if (bucket != NUM_BUCKETS)
-            return impls[bucket].begin();
+        /// Safe: computes the prefix sums on first use if `compute()` was not already called.
+        template <typename BucketAt>
+        size_t offset(UInt32 bucket_count, BucketAt && bucket_at, size_t buck, size_t cell_offset)
+        {
+            if (!computed)
+                compute(bucket_count, bucket_at);
+            return offsetUnsafe(buck, cell_offset);
+        }
 
-        --bucket;
-        return impls[MAX_BUCKET].end();
-    }
+        /// Unsafe: skips the "is it computed" check `offset()` pays on every call, and never
+        /// recomputes. The caller must have called `compute()` itself first (and again after any
+        /// bucket growth) - for hot per-row loops that would otherwise pay that check per row.
+        size_t offsetUnsafe(size_t buck, size_t cell_offset) const
+        {
+            chassert(computed);
+            return prefix[buck] + cell_offset;
+        }
+
+    private:
+        std::vector<size_t> prefix;
+        bool computed = false;
+    };
+
+    class FixedStorage
+    {
+    private:
+        /// `std::conditional_t` names this class even when `bits_for_bucket == 0`, so the bucket
+        /// count must stay well-formed there; the class is not instantiated in that mode.
+        static constexpr UInt32 MAX_BUCKET = bits_for_bucket > 0 ? UInt32((1ULL << bits_for_bucket) - 1) : 0;
+
+    public:
+        FixedStorage() = default;
+
+        explicit FixedStorage(size_t size_hint) { reserve(size_hint); }
+
+        Impl & operator[](size_t bucket) { return buckets[bucket]; }
+        const Impl & operator[](size_t bucket) const { return buckets[bucket]; }
+
+        static constexpr UInt32 bucketCount() { return MAX_BUCKET + 1; }
+        static constexpr UInt32 maxBucket() { return MAX_BUCKET; }
+        static constexpr UInt32 bucketShift() { return 32 - bits_for_bucket; }
+
+        /// NOTE Bad for hash tables with more than 2^32 cells.
+        static size_t getBucketFromHash(size_t hash_value) { return (hash_value >> bucketShift()) & MAX_BUCKET; }
+
+        void reserve(size_t num_elements)
+        {
+            for (auto & bucket : buckets)
+                bucket.reserve(num_elements / bucketCount());
+        }
+
+        /// No-op: fixed storage has no per-bucket address descriptors to keep in sync.
+        void refreshDesc(size_t) { }
+
+        void computeBucketPrefix() const
+        {
+            prefix_sums.compute(bucketCount(), [this](UInt32 i) -> const Impl & { return buckets[i]; });
+        }
+
+        size_t offsetInternal(typename Impl::ConstLookupResult ptr, size_t buck) const
+        {
+            if (ptr->isZero(buckets[buck]))
+                return 0;
+            const auto bucket_at = [this](UInt32 i) -> const Impl & { return buckets[i]; };
+            return prefix_sums.offset(bucketCount(), bucket_at, buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
+        }
+
+        size_t offsetInternalUnsafe(typename Impl::ConstLookupResult ptr, size_t buck) const
+        {
+            if (ptr->isZero(buckets[buck]))
+                return 0;
+            return prefix_sums.offsetUnsafe(buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
+        }
+
+    private:
+        Impl buckets[MAX_BUCKET + 1];
+        mutable BucketPrefixSums prefix_sums;
+    };
+
+    class RuntimeStorage
+    {
+    public:
+        explicit RuntimeStorage(size_t num_buckets_, size_t size_hint = 0)
+            : num_buckets(validateBucketCount(num_buckets_))
+            , max_bucket(num_buckets - 1)
+            , shift(32 - std::countr_zero(num_buckets))
+            , buckets(num_buckets)
+            , descs(num_buckets)
+        {
+            if (size_hint)
+                reserveBuckets(size_hint);
+
+            refreshAllDescs();
+        }
+
+        Impl & operator[](size_t bucket) { return buckets[bucket]; }
+        const Impl & operator[](size_t bucket) const { return buckets[bucket]; }
+
+        UInt32 bucketCount() const { return num_buckets; }
+        UInt32 maxBucket() const { return max_bucket; }
+        UInt32 bucketShift() const { return shift; }
+        UInt32 getBucketFromHash(size_t hash_value) const { return static_cast<UInt32>((hash_value >> shift) & max_bucket); }
+
+        void refreshDesc(size_t buck)
+        {
+            const void * const new_buf = buckets[buck].buf;
+            const size_t new_mask = buckets[buck].getBufferSizeInCells() - 1;
+            if (descs[buck].buf == new_buf && descs[buck].mask == new_mask)
+                return;
+
+            descs[buck].buf = new_buf;
+            descs[buck].mask = new_mask;
+        }
+
+        const TwoLevelHashTableBucketDesc * bucketDescs() const { return descs.data(); }
+
+        void reserve(size_t num_elements)
+        {
+            reserveBuckets(num_elements);
+            refreshAllDescs();
+        }
+
+        void computeBucketPrefix() const
+        {
+            prefix_sums.compute(num_buckets, [this](UInt32 i) -> const Impl & { return buckets[i]; });
+        }
+
+        size_t offsetInternal(typename Impl::ConstLookupResult ptr, size_t buck) const
+        {
+            if (ptr->isZero(buckets[buck]))
+                return 0;
+            const auto bucket_at = [this](UInt32 i) -> const Impl & { return buckets[i]; };
+            return prefix_sums.offset(num_buckets, bucket_at, buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
+        }
+
+        size_t offsetInternalUnsafe(typename Impl::ConstLookupResult ptr, size_t buck) const
+        {
+            if (ptr->isZero(buckets[buck]))
+                return 0;
+            return prefix_sums.offsetUnsafe(buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
+        }
+
+    private:
+        static UInt32 validateBucketCount(size_t num_buckets)
+        {
+            chassert(num_buckets >= 1 && std::has_single_bit(num_buckets));
+            return static_cast<UInt32>(num_buckets);
+        }
+
+        void reserveBuckets(size_t num_elements)
+        {
+            for (auto & bucket : buckets)
+                bucket.reserve(num_elements / num_buckets);
+        }
+
+        void refreshAllDescs()
+        {
+            for (UInt32 i = 0; i < num_buckets; ++i)
+                refreshDesc(i);
+        }
+
+        const UInt32 num_buckets;
+        const UInt32 max_bucket;
+        const UInt32 shift;
+        std::vector<Impl> buckets;
+        std::vector<TwoLevelHashTableBucketDesc> descs;
+        mutable BucketPrefixSums prefix_sums;
+    };
+
+    using Storage = std::conditional_t<bits_for_bucket == 0, RuntimeStorage, FixedStorage>;
 
 public:
     using key_type = typename Impl::key_type;
     using mapped_type = typename Impl::mapped_type;
     using value_type = typename Impl::value_type;
     using cell_type = typename Impl::cell_type;
-
     using LookupResult = typename Impl::LookupResult;
     using ConstLookupResult = typename Impl::ConstLookupResult;
 
-    Impl impls[NUM_BUCKETS];
+    Storage impls;
 
-    /// Cached prefix sums of bucket capacities in cells to speed up offsetInternal
-    /// bucket_cells_prefix[b] = sum_{i=0..b-1} impls[i].getBufferSizeInCells()
-    mutable std::array<size_t, NUM_BUCKETS> bucket_cells_prefix{};
-    mutable std::once_flag bucket_prefix_once;
-
-
-    TwoLevelHashTable() = default;
+    TwoLevelHashTable()
+    requires(bits_for_bucket > 0)
+    = default;
 
     explicit TwoLevelHashTable(size_t size_hint)
+    requires(bits_for_bucket > 0)
+        : impls(size_hint)
     {
-        for (auto & impl : impls)
-            impl.reserve(size_hint / NUM_BUCKETS);
+    }
+
+    explicit TwoLevelHashTable(size_t num_buckets, size_t size_hint = 0)
+    requires(bits_for_bucket == 0)
+        : impls(num_buckets, size_hint)
+    {
     }
 
     /// Copy the data from another (normal) hash table. It should have the same hash function.
     template <typename Source>
     explicit TwoLevelHashTable(const Source & src)
+    requires(bits_for_bucket > 0)
     {
         typename Source::const_iterator it = src.begin();
 
@@ -125,7 +309,77 @@ public:
         }
     }
 
+    size_t hash(const Key & x) const { return Hash::operator()(x); }
 
+    template <size_t bits_for_bucket_param = bits_for_bucket>
+    static size_t getBucketFromHash(size_t hash_value)
+    requires(bits_for_bucket_param > 0)
+    {
+        return FixedStorage::getBucketFromHash(hash_value);
+    }
+
+    UInt32 ALWAYS_INLINE getBucketFromHash(size_t hash_value) const
+    requires(bits_for_bucket == 0)
+    {
+        return impls.getBucketFromHash(hash_value);
+    }
+
+    UInt32 bucketCount() const { return impls.bucketCount(); }
+    UInt32 bucketShift() const { return impls.bucketShift(); }
+    const TwoLevelHashTableBucketDesc * bucketDescs() const
+    requires(bits_for_bucket == 0)
+    {
+        return impls.bucketDescs();
+    }
+
+    Impl * singleBucket()
+    requires(bits_for_bucket == 0)
+    {
+        return bucketCount() == 1 ? &impls[0] : nullptr;
+    }
+    const Impl * singleBucket() const
+    requires(bits_for_bucket == 0)
+    {
+        return bucketCount() == 1 ? &impls[0] : nullptr;
+    }
+
+    void reserve(size_t num_elements) { impls.reserve(num_elements); }
+
+    template <typename K>
+    size_t ALWAYS_INLINE bucketRoutingHash(const K & key, size_t cell_hash_value) const
+    {
+        if constexpr (std::is_void_v<BucketHash>)
+            return cell_hash_value;
+        else
+            return BucketHash{}(key);
+    }
+
+protected:
+    typename Impl::iterator beginOfNextNonEmptyBucket(size_t & bucket)
+    {
+        while (bucket != bucketCount() && impls[bucket].empty())
+            ++bucket;
+
+        if (bucket != bucketCount())
+            return impls[bucket].begin();
+
+        --bucket;
+        return impls[impls.maxBucket()].end();
+    }
+
+    typename Impl::const_iterator beginOfNextNonEmptyBucket(size_t & bucket) const
+    {
+        while (bucket != bucketCount() && impls[bucket].empty())
+            ++bucket;
+
+        if (bucket != bucketCount())
+            return impls[bucket].begin();
+
+        --bucket;
+        return impls[impls.maxBucket()].end();
+    }
+
+public:
     class iterator /// NOLINT
     {
         Self * container{};
@@ -151,18 +405,15 @@ public:
                 ++bucket;
                 current_it = container->beginOfNextNonEmptyBucket(bucket);
             }
-
             return *this;
         }
 
         Cell & operator* () const { return *current_it; }
         Cell * operator->() const { return current_it.getPtr(); }
-
         Cell * getPtr() const { return current_it.getPtr(); }
         size_t getHash() const { return current_it.getHash(); }
         size_t getBucket() const { return bucket; }
     };
-
 
     class const_iterator /// NOLINT
     {
@@ -192,39 +443,36 @@ public:
                 ++bucket;
                 current_it = container->beginOfNextNonEmptyBucket(bucket);
             }
-
             return *this;
         }
 
         const Cell & operator* () const { return *current_it; }
         const Cell * operator->() const { return current_it.getPtr(); }
-
         const Cell * getPtr() const { return current_it.getPtr(); }
         size_t getHash() const { return current_it.getHash(); }
         size_t getBucket() const { return bucket; }
     };
 
-
     const_iterator begin() const
     {
         size_t buck = 0;
-        typename Impl::const_iterator impl_it = beginOfNextNonEmptyBucket(buck);
+        auto impl_it = beginOfNextNonEmptyBucket(buck);
         return { this, buck, impl_it };
     }
 
     iterator begin()
     {
         size_t buck = 0;
-        typename Impl::iterator impl_it = beginOfNextNonEmptyBucket(buck);
+        auto impl_it = beginOfNextNonEmptyBucket(buck);
         return { this, buck, impl_it };
     }
 
-    const_iterator end() const         { return { this, MAX_BUCKET, impls[MAX_BUCKET].end() }; }
-    iterator end()                     { return { this, MAX_BUCKET, impls[MAX_BUCKET].end() }; }
+    const_iterator end() const { return {this, impls.maxBucket(), impls[impls.maxBucket()].end()}; }
+    iterator end() { return {this, impls.maxBucket(), impls[impls.maxBucket()].end()}; }
 
     const_iterator iteratorAt(size_t bucket) const
     {
-        if (bucket >= NUM_BUCKETS)
+        if (bucket >= bucketCount())
             return end();
         auto impl_it = beginOfNextNonEmptyBucket(bucket);
         return { this, bucket, impl_it };
@@ -232,37 +480,30 @@ public:
 
     iterator iteratorAt(size_t bucket)
     {
-        if (bucket >= NUM_BUCKETS)
+        if (bucket >= bucketCount())
             return end();
         auto impl_it = beginOfNextNonEmptyBucket(bucket);
         return { this, bucket, impl_it };
     }
 
-
-    /// Insert a value. In the case of any more complex values, it is better to use the `emplace` function.
     std::pair<LookupResult, bool> ALWAYS_INLINE insert(const value_type & x)
     {
-        size_t hash_value = hash(Cell::getKey(x));
-
+        const auto & key = Cell::getKey(x);
+        const size_t hash_value = hash(key);
         std::pair<LookupResult, bool> res;
-        emplace(Cell::getKey(x), res.first, res.second, hash_value);
-
+        emplace(key, res.first, res.second, hash_value);
         if (res.second)
             res.first->setMapped(x);
-
         return res;
     }
 
     std::pair<LookupResult, bool> ALWAYS_INLINE insert(const Cell & cell)
     {
-        auto hash_value = cell.getHash(*this);
-
+        const auto hash_value = cell.getHash(*this);
         std::pair<LookupResult, bool> res;
         emplace(cell.getKey(), res.first, res.second, hash_value);
-
         if (res.second)
             res.first->setMapped(cell.getValue());
-
         return res;
     }
 
@@ -271,58 +512,47 @@ public:
     {
         const auto & key = keyHolderGetKey(key_holder);
         const auto key_hash = hash(key);
-        prefetchByHash(key_hash);
-        /// Release any temporary key memory held by the holder (e.g. `SerializedKeyHolder` rolls back the Arena allocation).
+        const auto buck = getBucketFromHash(bucketRoutingHash(key, key_hash));
+        impls[buck].prefetchByHash(key_hash);
         keyHolderDiscardKey(key_holder);
     }
 
     void ALWAYS_INLINE prefetchByHash(size_t key_hash) const
     {
-        const auto bucket = getBucketFromHash(key_hash);
-        impls[bucket].prefetchByHash(key_hash);
+        /// A hash alone cannot identify the bucket when bucket selection does not derive from it.
+        if constexpr (!std::is_void_v<BucketHash>)
+            return;
+        else
+            impls[getBucketFromHash(key_hash)].prefetchByHash(key_hash);
     }
 
     bool ALWAYS_INLINE isEmptyCell(size_t key_hash) const
     {
-        const auto bucket = getBucketFromHash(key_hash);
-        return impls[bucket].isEmptyCell(key_hash);
+        if constexpr (!std::is_void_v<BucketHash>)
+            return false;
+        else
+            return impls[getBucketFromHash(key_hash)].isEmptyCell(key_hash);
     }
 
-    /** Insert the key,
-      * return an iterator to a position that can be used for `placement new` of value,
-      * as well as the flag - whether a new key was inserted.
-      *
-      * You have to make `placement new` values if you inserted a new key,
-      * since when destroying a hash table, the destructor will be invoked for it!
-      *
-      * Example usage:
-      *
-      * Map::iterator it;
-      * bool inserted;
-      * map.emplace(key, it, inserted);
-      * if (inserted)
-      *     new(&it->second) Mapped(value);
-      */
     template <typename KeyHolder>
     void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it, bool & inserted)
     {
-        size_t hash_value = hash(keyHolderGetKey(key_holder));
-        emplace(key_holder, it, inserted, hash_value);
+        emplace(key_holder, it, inserted, hash(keyHolderGetKey(key_holder)));
     }
 
-
-    /// Same, but with a precalculated values of hash function.
+    /// Synchronization follows the underlying hash table contract and is the caller's
+    /// responsibility. Any external lock must also cover initialization through `it`.
     template <typename KeyHolder>
-    void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it,
-                                  bool & inserted, size_t hash_value)
+    void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it, bool & inserted, size_t hash_value)
     {
-        size_t buck = getBucketFromHash(hash_value);
+        const size_t buck = getBucketFromHash(bucketRoutingHash(keyHolderGetKey(key_holder), hash_value));
         impls[buck].emplace(key_holder, it, inserted, hash_value);
+        impls.refreshDesc(buck);
     }
 
     LookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
     {
-        size_t buck = getBucketFromHash(hash_value);
+        const size_t buck = getBucketFromHash(bucketRoutingHash(x, hash_value));
         return impls[buck].find(x, hash_value);
     }
 
@@ -332,19 +562,19 @@ public:
     }
 
     LookupResult ALWAYS_INLINE find(Key x) { return find(x, hash(x)); }
-
     ConstLookupResult ALWAYS_INLINE find(Key x) const { return find(x, hash(x)); }
 
-
     void write(DB::WriteBuffer & wb) const
+    requires(bits_for_bucket > 0)
     {
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
             impls[i].write(wb);
     }
 
     void writeText(DB::WriteBuffer & wb) const
+    requires(bits_for_bucket > 0)
     {
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
         {
             if (i != 0)
                 DB::writeChar(',', wb);
@@ -353,14 +583,16 @@ public:
     }
 
     void read(DB::ReadBuffer & rb)
+    requires(bits_for_bucket > 0)
     {
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
             impls[i].read(rb);
     }
 
     void readText(DB::ReadBuffer & rb)
+    requires(bits_for_bucket > 0)
     {
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
         {
             if (i != 0)
                 DB::assertChar(',', rb);
@@ -368,59 +600,72 @@ public:
         }
     }
 
-
     size_t size() const
     {
         size_t res = 0;
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
             res += impls[i].size();
-
         return res;
     }
 
     bool empty() const
     {
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
             if (!impls[i].empty())
                 return false;
-
         return true;
     }
 
     size_t getBufferSizeInBytes() const
     {
         size_t res = 0;
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
             res += impls[i].getBufferSizeInBytes();
-
         return res;
     }
 
     size_t getBufferSizeInCells() const
     {
         size_t res = 0;
-        for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
+        for (UInt32 i = 0; i < bucketCount(); ++i)
             res += impls[i].getBufferSizeInCells();
         return res;
     }
 
+    template <typename Func>
+    void ALWAYS_INLINE forEachMapped(Func && func)
+    {
+        for (UInt32 i = 0; i < bucketCount(); ++i)
+            impls[i].forEachMapped(func);
+    }
+
+    bool ALWAYS_INLINE has(const Key & x) const
+    {
+        const size_t buck = getBucketFromHash(bucketRoutingHash(x, hash(x)));
+        return impls[buck].has(x);
+    }
+
+    /// (Re)compute the bucket prefix sums `offsetInternal` relies on. Call this once, after the
+    /// last insert that may have changed a bucket's capacity, before switching a per-row loop to
+    /// `offsetInternalUnsafe` - that skips the "already computed" check `offsetInternal` pays on
+    /// every call.
+    void computeBucketPrefix() const { impls.computeBucketPrefix(); }
+
+    /// Lazily computes the prefix sums on first use, then reuses them - it does NOT notice later
+    /// bucket growth on its own (there is no internal tracking of buffer changes, by design; see
+    /// the class-level comment). A caller that inserts more after taking offsets, and needs
+    /// correct offsets afterward, must call `computeBucketPrefix()` again itself.
     size_t offsetInternal(ConstLookupResult ptr) const
     {
-        const size_t buck = getBucketFromHash(ptr->getHash(*this));
-        if (ptr->isZero(impls[buck]))
-            return 0;
+        const size_t buck = getBucketFromHash(bucketRoutingHash(ptr->getKey(), ptr->getHash(*this)));
+        return impls.offsetInternal(ptr, buck);
+    }
 
-        // Lazily compute prefix sums across buckets once; subsequent calls are O(1).
-        std::call_once(bucket_prefix_once, [this]()
-        {
-            size_t run = 0;
-            for (UInt32 i = 0; i < NUM_BUCKETS; ++i)
-            {
-                bucket_cells_prefix[i] = run;
-                run += impls[i].getBufferSizeInCells();
-            }
-        });
-
-        return bucket_cells_prefix[buck] + (ptr - impls[buck].buf) + 1;
+    /// Precondition: `computeBucketPrefix()` has been called since the last change to any
+    /// bucket's capacity. See `computeBucketPrefix()`.
+    size_t offsetInternalUnsafe(ConstLookupResult ptr) const
+    {
+        const size_t buck = getBucketFromHash(bucketRoutingHash(ptr->getKey(), ptr->getHash(*this)));
+        return impls.offsetInternalUnsafe(ptr, buck);
     }
 };
