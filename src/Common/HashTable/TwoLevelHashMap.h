@@ -26,7 +26,7 @@ public:
     template <typename Func>
     void ALWAYS_INLINE forEachMapped(Func && func)
     {
-        for (auto i = 0u; i < this->NUM_BUCKETS; ++i)
+        for (auto i = 0u; i < this->numBuckets(); ++i)
             this->impls[i].forEachMapped(func);
     }
 

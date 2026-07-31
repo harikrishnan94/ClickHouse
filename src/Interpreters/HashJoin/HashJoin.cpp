@@ -1421,7 +1421,10 @@ private:
             const StoredBlock * const * stored_columns = parent.data->stored_columns_index->blocksData();
 
             /// case: two-level hash tables with parallel iteration
-            if constexpr (requires { it.getBucket(); map.NUM_BUCKETS; })
+            if constexpr (requires {
+                              it.getBucket();
+                              map.numBuckets();
+                          })
             {
                 auto skipToNextOwnedBucket = [&]() -> bool
                 {
