@@ -110,19 +110,6 @@ struct LowCardinalityKeyGetterForJoin
         return base.getKeyHolder(isLowCardinality() ? getIndexAt(row) : row, pool);
     }
 
-    /// Used by ConcurrentHashJoin to shard rows; the hash must be of the key value, which is what
-    /// the dictionary's saved hash / the base method over the (dictionary or plain) column produce.
-    template <typename Data>
-    ALWAYS_INLINE size_t getHash(const Data & data, size_t row, Arena & pool)
-    {
-        if (!isLowCardinality())
-            return base.getHash(data, row, pool);
-        const size_t index = getIndexAt(row);
-        if (saved_hash)
-            return saved_hash[index];
-        return base.getHash(data, index, pool);
-    }
-
     /// Build side: every row must be inserted/appended into the real hash-table cell, so there is no
     /// per-dictionary-index deduplication here (the mapped RowRefList lives in the cell, not behind a
     /// stable pointer as in aggregation). The dictionary speedup is realized on the probe side only.
@@ -233,42 +220,6 @@ template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin:
 {
     using Type = LowCardinalityKeyGetterForJoin<
         ColumnsHashing::HashMethodFixedString<Value, Mapped, true, false, use_offset>, Mapped>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_key32, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodOneNumber<Value, Mapped, UInt32, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_key64, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodOneNumber<Value, Mapped, UInt64, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_key_string, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodString<Value, Mapped, true, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_key_fixed_string, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodFixedString<Value, Mapped, true, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_keys32, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodKeysFixed<Value, UInt32, Mapped, false, false, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_keys64, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodKeysFixed<Value, UInt64, Mapped, false, false, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_keys128, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodKeysFixed<Value, UInt128, Mapped, false, false, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_keys256, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodKeysFixed<Value, UInt256, Mapped, false, false, false, use_offset>;
-};
-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_hashed, Value, Mapped>
-{
-    using Type = ColumnsHashing::HashMethodHashed<Value, Mapped, false, use_offset>;
 };
 #define UNIFIED_KEYGETTER_RANGE_IMPL(TYPE, FIELD_TYPE) \
     template <typename Value, typename Mapped> \
