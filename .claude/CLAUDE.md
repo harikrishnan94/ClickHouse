@@ -181,3 +181,58 @@ ARM machines in CI are not slow. They are similar to x86 in performance.
 
 Use `tmp` subdirectory in the current directory for temporary files (logs, downloads, scripts, etc.), do not use `/tmp`. Create the directory if needed.
 
+## Cursor Cloud specific instructions
+
+This is the ClickHouse C++/CMake monorepo. See `docs/en/development/build.md` and `docs/en/development/tests.md` for canonical build/test docs.
+
+### Toolchain (one-time on the VM image)
+
+- **Clang 21+** is required (`CC=clang-21`, `CXX=clang++-21`). Install via https://apt.llvm.org/llvm.sh if missing.
+- **Rust** `nightly-2026-03-22` with `rust-src` is required for CMake (`rustup toolchain install nightly-2026-03-22`).
+- System packages: `cmake`, `ninja-build`, `ccache`, `nasm`, `yasm`, `gawk`, `python3`, `python3-pip`, `python3-venv`.
+- Add to PATH when needed: `/usr/local/cargo/bin` (rustup) and `~/.local/bin` (pip user scripts).
+
+### Build
+
+```bash
+export CC=clang-21 CXX=clang++-21
+export PATH="/usr/local/cargo/bin:$PATH"
+mkdir -p build && cd build
+cmake -D CMAKE_BUILD_TYPE=Release ..
+cd build && ninja clickhouse > build/build_clickhouse.log 2>&1   # do not pass -j
+```
+
+First full `ninja clickhouse` from scratch takes ~60–90 minutes on an 8-core VM; incremental rebuilds are much faster with `ccache`. The binary is at `build/programs/clickhouse` (~1–2 GB Release).
+
+### Run server (dev, without system install)
+
+Use repo-local data paths under `tmp/` (not `/var/lib/clickhouse`):
+
+```bash
+mkdir -p tmp/ch-data tmp/ch-logs
+cd build/programs
+./clickhouse server --config-file /workspace/programs/server/config.xml -- \
+  --path=/workspace/tmp/ch-data \
+  --tmp_path=/workspace/tmp/ch-data/tmp \
+  --logger.log=/workspace/tmp/ch-logs/server.log \
+  --logger.errorlog=/workspace/tmp/ch-logs/server.err.log \
+  --http_port=8123 --tcp_port=9000
+```
+
+Client: `./clickhouse client --host 127.0.0.1`. Quick check without server: `./clickhouse local --query "SELECT 1"`.
+
+### Tests and lint
+
+- **Functional (stateless):** server must listen on port **9000**. `PATH=build/programs:$PATH tests/clickhouse-test <test_name>` (e.g. `00001_select_1`).
+- **Unit tests:** `cd build && ninja test` then run gtest binaries (requires building with tests).
+- **Integration tests:** need Docker + pytest deps (`tests/integration/README.md`); run via `python -m ci.praktika run "integration" --test <selector>`.
+- **Python lint:** `black`, `isort`, `pylint` per `pyproject.toml`; install praktika with `pip install -e ci`.
+- **C++ style:** `utils/check-style` and CI style jobs (`docs/en/development/continuous-integration.md`).
+
+### Gotchas
+
+- `git submodule update --init --jobs 12` is required after clone/pull when `contrib/` changes (~5 min).
+- CMake fails without Rust `nightly-2026-03-22`; do not use `-DENABLE_RUST=OFF` unless you accept missing features.
+- Do not use `--path` as a top-level server flag; pass path overrides after `--` (config property overrides).
+- Redirect ninja and test output to log files under `build/` or `tmp/`; use subagents to summarize long logs.
+
