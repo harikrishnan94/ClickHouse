@@ -7,7 +7,7 @@
 #include <vector>
 
 #include <Interpreters/HashTablesStatistics.h>
-#include <Interpreters/IJoin.h>
+#include <Interpreters/IInMemoryHashJoin.h>
 #include <Interpreters/RowRefs.h>
 
 #include <Core/Block_fwd.h>
@@ -103,7 +103,7 @@ class HashJoinMethods;
   * If it is true, we always generate Nullable column and substitute NULLs for non-joined rows,
   *  as in standard SQL.
   */
-class HashJoin : public IJoin
+class HashJoin : public IInMemoryHashJoin
 {
 public:
     HashJoin(
@@ -482,13 +482,13 @@ public:
     void reuseJoinedData(const HashJoin & join);
 
     RightTableDataPtr getJoinedData() const { return data; }
-    BlocksList releaseJoinedBlocks(bool restructure = false);
+    BlocksList releaseJoinedBlocks(bool restructure = false) override;
 
     /// Modify right block (update structure according to sample block) to save it in block list
     static Block prepareRightBlock(const Block & block, const Block & saved_block_sample_);
-    Block prepareRightBlock(const Block & block) const;
+    Block prepareRightBlock(const Block & block) const override;
 
-    const Block & savedBlockSample() const { return data->sample_block; }
+    const Block & savedBlockSample() const override { return data->sample_block; }
 
     bool isUsed(size_t off) const;
     bool isUsed(UInt32 block_no, size_t row_idx) const;
@@ -503,7 +503,7 @@ public:
     void materializeColumnsFromLeftBlock(Block & block) const;
     Block materializeColumnsFromRightBlock(Block block) const;
 
-    size_t getAndSetRightTableKeys() const;
+    size_t getAndSetRightTableKeys() const override;
 
     bool hasNonJoinedRows();
     void updateNonJoinedRowsStatus();

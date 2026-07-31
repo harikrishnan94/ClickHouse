@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Interpreters/Context_fwd.h>
+#include <Interpreters/IInMemoryHashJoin.h>
+#include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
 
@@ -15,7 +17,6 @@
 namespace DB
 {
 class TableJoin;
-class HashJoin;
 
 /**
  * Efficient and highly parallel implementation of external memory JOIN based on HashJoin.
@@ -46,7 +47,7 @@ class GraceHashJoin final : public IJoin
     class FileBucket;
     class DelayedBlocks;
 
-    using InMemoryJoinPtr = std::shared_ptr<HashJoin>;
+    using InMemoryJoinPtr = InMemoryHashJoinPtr;
 
 public:
     using BucketPtr = std::shared_ptr<FileBucket>;
@@ -66,7 +67,8 @@ public:
         SharedHeader left_sample_block_, SharedHeader right_sample_block_,
         TemporaryDataOnDiskScopePtr tmp_data_,
         bool any_take_last_row_ = false,
-        size_t external_join_threshold_ = 0);
+        size_t external_join_threshold_ = 0,
+        InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash);
 
     ~GraceHashJoin() override;
 
@@ -144,6 +146,7 @@ private:
     const size_t initial_num_buckets;
     const size_t max_num_buckets;
     const size_t external_join_threshold;
+    const InMemoryHashJoinKind in_memory_kind;
 
     Names left_key_names;
     Names right_key_names;

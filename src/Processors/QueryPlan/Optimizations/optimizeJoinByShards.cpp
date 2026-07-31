@@ -8,6 +8,7 @@
 #include <Processors/QueryPlan/ArrayJoinStep.h>
 #include <Processors/QueryPlan/DistinctStep.h>
 #include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/UnifiedHashJoin/HashJoin.h>
 #include <Interpreters/ConcurrentHashJoin.h>
 #include <Interpreters/FullSortingMergeJoin.h>
 #include <Interpreters/TableJoin.h>
@@ -367,9 +368,10 @@ void optimizeJoinByShards(QueryPlan::Node & root)
             const auto & join = join_step->getJoin();
 
             auto * hash_join = typeid_cast<HashJoin *>(join.get());
+            auto * unified_hash_join = typeid_cast<UnifiedHashJoin *>(join.get());
             auto * concurrent_hash_join = typeid_cast<ConcurrentHashJoin *>(join.get());
             auto * full_sorting_merge_join = typeid_cast<FullSortingMergeJoin *>(join.get());
-            bool is_algo_supported = hash_join || concurrent_hash_join || full_sorting_merge_join;
+            bool is_algo_supported = hash_join || unified_hash_join || concurrent_hash_join || full_sorting_merge_join;
 
             bool can_split_left_table = frame.results.front() != std::nullopt && is_algo_supported && !join->hasDelayedBlocks();
             // std::cerr << "can_split_left_table " << can_split_left_table << std::endl;

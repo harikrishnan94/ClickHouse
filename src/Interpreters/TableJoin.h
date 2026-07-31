@@ -291,6 +291,17 @@ public:
 
     static bool isEnabledAlgorithm(const std::vector<JoinAlgorithm> & join_algorithms, JoinAlgorithm val);
 
+    static bool isHashFamilyEnabled(const std::vector<JoinAlgorithm> & join_algorithms)
+    {
+        return isEnabledAlgorithm(join_algorithms, JoinAlgorithm::HASH)
+            || isEnabledAlgorithm(join_algorithms, JoinAlgorithm::UNIFIED_HASH);
+    }
+
+    bool isHashFamilyEnabled() const
+    {
+        return isHashFamilyEnabled(join_algorithms);
+    }
+
     bool isEnabledAlgorithm(JoinAlgorithm val) const
     {
         return isEnabledAlgorithm(join_algorithms, val);

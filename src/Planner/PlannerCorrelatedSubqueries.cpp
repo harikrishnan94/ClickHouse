@@ -606,7 +606,12 @@ QueryPlan buildLogicalJoin(
         /// of correlated subquery input.
         /// We must be sure that the input stream is fully evaluated
         /// before the correlated subquery is executed.
-        std::erase_if(join_algorithms, [](auto join_algorithm) { return join_algorithm != JoinAlgorithm::HASH && join_algorithm != JoinAlgorithm::PARALLEL_HASH; });
+        std::erase_if(join_algorithms, [](auto join_algorithm)
+        {
+            return join_algorithm != JoinAlgorithm::HASH
+                && join_algorithm != JoinAlgorithm::PARALLEL_HASH
+                && join_algorithm != JoinAlgorithm::UNIFIED_HASH;
+        });
         /// Forbid reordering of this JOIN step. Child subplans still can be reordered and optimized.
         result_join->setOptimized();
     }

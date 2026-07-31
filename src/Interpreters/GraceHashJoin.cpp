@@ -1,9 +1,11 @@
 #include <Compression/CompressedWriteBuffer.h>
+#include <deque>
 #include <Formats/NativeWriter.h>
 #include <Formats/formatBlock.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/GraceHashJoin.h>
-#include <Interpreters/HashJoin/HashJoin.h>
+
+#include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
 #include <base/FnTraits.h>
@@ -257,7 +259,8 @@ GraceHashJoin::GraceHashJoin(
     SharedHeader right_sample_block_,
     TemporaryDataOnDiskScopePtr tmp_data_,
     bool any_take_last_row_,
-    size_t external_join_threshold_)
+    size_t external_join_threshold_,
+    InMemoryHashJoinKind in_memory_kind_)
     : log{getLogger("GraceHashJoin")}
     , table_join{std::move(table_join_)}
     , left_sample_block{left_sample_block_}
@@ -266,6 +269,7 @@ GraceHashJoin::GraceHashJoin(
     , initial_num_buckets(initial_num_buckets_)
     , max_num_buckets(max_num_buckets_)
     , external_join_threshold(external_join_threshold_)
+    , in_memory_kind(in_memory_kind_)
     , left_key_names(table_join->getOnlyClause().key_names_left)
     , right_key_names(table_join->getOnlyClause().key_names_right)
     , tmp_data(tmp_data_->childScope({
@@ -732,12 +736,20 @@ IBlocksStreamPtr GraceHashJoin::getDelayedBlocks()
 
 GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bucket_id, size_t reserve_num)
 {
-    return std::make_unique<HashJoin>(table_join, right_sample_block, any_take_last_row, reserve_num, bucket_id);
+    return createInMemoryHashJoin(
+        in_memory_kind,
+        table_join,
+        right_sample_block,
+        any_take_last_row,
+        reserve_num,
+        bucket_id,
+        /*use_two_level_maps_=*/false,
+        StatsCollectingParams{});
 }
 
 Block GraceHashJoin::prepareRightBlock(const Block & block)
 {
-    return HashJoin::prepareRightBlock(block, hash_join_sample_block);
+    return hash_join->prepareRightBlock(block);
 }
 
 void GraceHashJoin::addBlockToJoinImpl(Block block)

@@ -3604,6 +3604,10 @@ Possible values:
 
  When using the `hash` algorithm, the right part of `JOIN` is uploaded into RAM.
 
+- unified_hash
+
+ Experimental hash join algorithm. Same semantics as `hash`, intended as a foundation for a unified hash join implementation.
+
 - parallel_hash
 
  A variation of `hash` join that splits the data into buckets and builds several hashtables instead of one concurrently to speed up this process.

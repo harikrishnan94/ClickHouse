@@ -1157,7 +1157,7 @@ static QueryPlanNode buildPhysicalJoinImpl(
         if (!has_keys && join_operator.strictness != JoinStrictness::Asof)
         {
             bool can_convert_to_cross = (isInner(join_operator.kind) || isCrossOrComma(join_operator.kind))
-                && TableJoin::isEnabledAlgorithm(join_settings.join_algorithms, JoinAlgorithm::HASH)
+                && TableJoin::isHashFamilyEnabled(join_settings.join_algorithms)
                 && join_operator.strictness == JoinStrictness::All;
 
             table_join_clauses.pop_back();

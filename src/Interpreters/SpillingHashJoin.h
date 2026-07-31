@@ -6,6 +6,8 @@
 #include <Core/Block.h>
 #include <Core/Block_fwd.h>
 #include <Interpreters/HashTablesStatistics.h>
+#include <Interpreters/IInMemoryHashJoin.h>
+#include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
@@ -55,7 +57,8 @@ public:
         size_t initial_num_buckets_,
         size_t max_num_buckets_,
         const StatsCollectingParams & stats_collecting_params_ = {},
-        bool any_take_last_row_ = false);
+        bool any_take_last_row_ = false,
+        InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash);
 
     /// Concurrent mode: wraps a ConcurrentHashJoin.
     SpillingHashJoin(
@@ -67,7 +70,8 @@ public:
         size_t max_num_buckets_,
         size_t concurrent_slots_,
         const StatsCollectingParams & stats_collecting_params_ = {},
-        bool any_take_last_row_ = false);
+        bool any_take_last_row_ = false,
+        InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash);
 
     ~SpillingHashJoin() override;
 
@@ -127,6 +131,10 @@ private:
     size_t max_num_buckets;
     bool any_take_last_row;
     size_t max_bytes_before_external_join;
+    InMemoryHashJoinKind in_memory_kind;
+
+    IInMemoryHashJoin & collectingJoin();
+    const IInMemoryHashJoin & collectingJoin() const;
 
     SharedMutex switch_mutex;
     std::atomic<size_t> next_slot_to_convert{0};
@@ -135,10 +143,10 @@ private:
 
     std::atomic<State> state{State::COLLECTING};
 
-    /// HashJoin that stores right-side blocks during COLLECTING phase (single-thread mode).
-    std::shared_ptr<HashJoin> hash_join;
+    /// In-memory hash join used during COLLECTING phase (single-thread mode).
+    InMemoryHashJoinPtr in_memory_hash_join;
 
-    /// ConcurrentHashJoin for multi-thread path (mutually exclusive with hash_join).
+    /// ConcurrentHashJoin for multi-thread path (mutually exclusive with in_memory_hash_join).
     std::shared_ptr<ConcurrentHashJoin> concurrent_join;
 
     /// GraceHashJoin created during overflow. Also assigned to chosen_join.
