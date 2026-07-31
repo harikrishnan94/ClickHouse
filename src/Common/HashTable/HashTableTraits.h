@@ -28,8 +28,19 @@ struct HasConstructorOfNumberOfElements<HashTable<Ts...>> : std::true_type
 {
 };
 
-template <typename... Ts>
-struct HasConstructorOfNumberOfElements<TwoLevelHashTable<Ts...>> : std::true_type
+/// Fixed-bucket tables expose a size-hint constructor. Runtime-sized tables (`bits_for_bucket == -1`)
+/// take a bucket count instead, so they must not match this trait.
+template <
+    typename Key,
+    typename Cell,
+    typename Hash,
+    typename Grower,
+    typename Allocator,
+    typename ImplTable,
+    Int32 bits_for_bucket,
+    typename BucketHash>
+struct HasConstructorOfNumberOfElements<TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable, bits_for_bucket, BucketHash>>
+    : std::bool_constant<(bits_for_bucket >= 0)>
 {
 };
 
