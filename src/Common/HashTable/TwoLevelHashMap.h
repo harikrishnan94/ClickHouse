@@ -11,13 +11,14 @@ template
     typename Hash = DefaultHash<Key>,
     typename Grower = TwoLevelHashTableGrower<>,
     typename Allocator = HashTableAllocator,
-    template <typename ...> typename ImplTable = HashMapTable
+    template <typename ...> typename ImplTable = HashMapTable,
+    Int32 bits_for_bucket = DEFAULT_BITS_FOR_BUCKET
 >
-class TwoLevelHashMapTable : public TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable<Key, Cell, Hash, Grower, Allocator>>
+class TwoLevelHashMapTable : public TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable<Key, Cell, Hash, Grower, Allocator>, bits_for_bucket>
 {
 public:
     using Impl = ImplTable<Key, Cell, Hash, Grower, Allocator>;
-    using Base = TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable<Key, Cell, Hash, Grower, Allocator>>;
+    using Base = TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable<Key, Cell, Hash, Grower, Allocator>, bits_for_bucket>;
     using LookupResult = typename Impl::LookupResult;
 
     using Base::Base;
@@ -26,7 +27,10 @@ public:
     template <typename Func>
     void ALWAYS_INLINE forEachMapped(Func && func)
     {
-        for (auto i = 0u; i < this->numBuckets(); ++i)
+        /// `bucketCount()` rather than `numBuckets()`: the latter is constrained to fixed-bucket
+        /// mode, which would make this the only member that fails to compile at `bits_for_bucket
+        /// == -1`.
+        for (auto i = 0u; i < this->bucketCount(); ++i)
             this->impls[i].forEachMapped(func);
     }
 
@@ -51,9 +55,10 @@ template
     typename Hash = DefaultHash<Key>,
     typename Grower = TwoLevelHashTableGrower<>,
     typename Allocator = HashTableAllocator,
-    template <typename ...> typename ImplTable = HashMapTable
+    template <typename ...> typename ImplTable = HashMapTable,
+    Int32 bits_for_bucket = DEFAULT_BITS_FOR_BUCKET
 >
-using TwoLevelHashMap = TwoLevelHashMapTable<Key, HashMapCell<Key, Mapped, Hash>, Hash, Grower, Allocator, ImplTable>;
+using TwoLevelHashMap = TwoLevelHashMapTable<Key, HashMapCell<Key, Mapped, Hash>, Hash, Grower, Allocator, ImplTable, bits_for_bucket>;
 
 
 template
@@ -63,6 +68,8 @@ template
     typename Hash = DefaultHash<Key>,
     typename Grower = TwoLevelHashTableGrower<>,
     typename Allocator = HashTableAllocator,
-    template <typename ...> typename ImplTable = HashMapTable
+    template <typename ...> typename ImplTable = HashMapTable,
+    Int32 bits_for_bucket = DEFAULT_BITS_FOR_BUCKET
 >
-using TwoLevelHashMapWithSavedHash = TwoLevelHashMapTable<Key, HashMapCellWithSavedHash<Key, Mapped, Hash>, Hash, Grower, Allocator, ImplTable>;
+using TwoLevelHashMapWithSavedHash
+    = TwoLevelHashMapTable<Key, HashMapCellWithSavedHash<Key, Mapped, Hash>, Hash, Grower, Allocator, ImplTable, bits_for_bucket>;

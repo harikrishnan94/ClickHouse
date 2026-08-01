@@ -20,6 +20,7 @@
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/HashTableTraits.h>
+#include <Common/HashTable/TwoLevelHashMap.h>
 
 namespace DB
 {
@@ -41,6 +42,39 @@ class JoinUsedFlags;
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods;
+
+/// The join's hash maps are two-level, in the runtime-sized mode (`bits_for_bucket == -1`), and are
+/// currently built with a single first-level bucket, so bucket selection always yields 0 and the
+/// offsets the per-row used-flags are indexed by come out identical to the single-level ones. The
+/// build is still serialized by `build_mutex`. Making `NUM_BUCKETS` a real, per-join value is the
+/// next step of the sharded build that lets `hash` subsume `parallel_hash`.
+///
+/// Behaviour is unchanged, but cost is not. Runtime mode keeps the bucket count in a member rather
+/// than in the type, so the compiler cannot fold the bucket arithmetic away: `offsetInternal` really
+/// does recompute the cell hash to derive a bucket that is always 0, the buckets live behind a
+/// `std::vector` instead of an inline array, and `emplace` calls a `refreshDesc` that is no longer
+/// an empty function.
+constexpr Int32 BITS_FOR_BUCKET = -1;
+
+/// Must be a power of two and at least 1; see `TwoLevelHashTable::RuntimeStorage`.
+constexpr size_t NUM_BUCKETS = 1;
+
+/// The grower is spelled out because `TwoLevelHashMap` defaults to `TwoLevelHashTableGrower`, which
+/// stops quadrupling at 2^15 cells. That is the right trade when a bucket holds a 256th of the rows,
+/// but here a bucket holds all of them, so keep the single-level grower.
+template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
+using JoinHashMap
+    = TwoLevelHashMap<Key, Mapped, Hash, HashTableGrowerWithPrecalculation<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET>;
+
+template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
+using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
+    Key,
+    Mapped,
+    Hash,
+    HashTableGrowerWithPrecalculation<>,
+    HashTableAllocator,
+    HashMapTable,
+    BITS_FOR_BUCKET>;
 
 /** Data structure for implementation of hash JOIN.
   * It is a hash table: keys -> rows of joined ("right") table.
@@ -276,17 +310,17 @@ public:
         using MappedType = Mapped;
         std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
         std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
-        std::shared_ptr<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>           key32;
-        std::shared_ptr<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>           key64;
-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>              key_string;
-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>              key_fixed_string;
-        std::shared_ptr<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>           keys32;
-        std::shared_ptr<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>           keys64;
-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128HashCRC32>>           keys128;
-        std::shared_ptr<HashMap<UInt256, Mapped, UInt256HashCRC32>>           keys256;
-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>>         hashed;
-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_string;
-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_fixed_string;
+        std::shared_ptr<JoinHashMap<UInt32, Mapped, HashCRC32<UInt32>>>       key32;
+        std::shared_ptr<JoinHashMap<UInt64, Mapped, HashCRC32<UInt64>>>       key64;
+        std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>          key_string;
+        std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>          key_fixed_string;
+        std::shared_ptr<JoinHashMap<UInt32, Mapped, HashCRC32<UInt32>>>       keys32;
+        std::shared_ptr<JoinHashMap<UInt64, Mapped, HashCRC32<UInt64>>>       keys64;
+        std::shared_ptr<JoinHashMap<UInt128, Mapped, UInt128HashCRC32>>       keys128;
+        std::shared_ptr<JoinHashMap<UInt256, Mapped, UInt256HashCRC32>>       keys256;
+        std::shared_ptr<JoinHashMap<UInt128, Mapped, UInt128TrivialHash>>     hashed;
+        std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>  low_cardinality_key_string;
+        std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>  low_cardinality_key_fixed_string;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>>          range8_key32;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 16>>         range16_key32;
         std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 17>>         range17_key32;
@@ -300,13 +334,15 @@ public:
         {
             switch (which)
             {
-            #define M(NAME)                                                                                       \
-                case Type::NAME:                                                                                  \
-                    if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
-                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)         \
-                                       : std::make_shared<typename decltype(NAME)::element_type>();               \
-                    else                                                                                          \
-                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                         \
+            #define M(NAME)                                                                                        \
+                case Type::NAME:                                                                                   \
+                    if constexpr (HasConstructorOfNumberOfBuckets<typename decltype(NAME)::element_type>::value)   \
+                        NAME = std::make_shared<typename decltype(NAME)::element_type>(NUM_BUCKETS, reserve);      \
+                    else if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
+                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)          \
+                                       : std::make_shared<typename decltype(NAME)::element_type>();                \
+                    else                                                                                           \
+                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                          \
                     break;
 
                 UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
