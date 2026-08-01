@@ -18,8 +18,16 @@ struct HasConstructorOfNumberOfElements<HashMapTable<Ts...>> : std::true_type
 {
 };
 
-template <typename Key, typename Cell, typename Hash, typename Grower, typename Allocator, template <typename...> typename ImplTable>
-struct HasConstructorOfNumberOfElements<TwoLevelHashMapTable<Key, Cell, Hash, Grower, Allocator, ImplTable>> : std::true_type
+template <
+    typename Key,
+    typename Cell,
+    typename Hash,
+    typename Grower,
+    typename Allocator,
+    template <typename...> typename ImplTable,
+    Int32 bits_for_bucket>
+struct HasConstructorOfNumberOfElements<TwoLevelHashMapTable<Key, Cell, Hash, Grower, Allocator, ImplTable, bits_for_bucket>>
+    : std::bool_constant<(bits_for_bucket >= 0)>
 {
 };
 
@@ -46,6 +54,41 @@ struct HasConstructorOfNumberOfElements<TwoLevelHashTable<Key, Cell, Hash, Growe
 
 template <template <typename> typename Method, typename Base>
 struct HasConstructorOfNumberOfElements<Method<Base>> : HasConstructorOfNumberOfElements<Base>
+{
+};
+
+// Runtime-sized two-level tables (`bits_for_bucket == -1`) have no default constructor: they take a
+// bucket count, and only then an optional size hint. A caller that builds tables generically has to
+// tell them apart from the size-hint-only ones, which is what this trait is for.
+template <typename...>
+struct HasConstructorOfNumberOfBuckets : std::false_type
+{
+};
+
+template <
+    typename Key,
+    typename Cell,
+    typename Hash,
+    typename Grower,
+    typename Allocator,
+    typename ImplTable,
+    Int32 bits_for_bucket,
+    typename BucketHash>
+struct HasConstructorOfNumberOfBuckets<TwoLevelHashTable<Key, Cell, Hash, Grower, Allocator, ImplTable, bits_for_bucket, BucketHash>>
+    : std::bool_constant<(bits_for_bucket == -1)>
+{
+};
+
+template <
+    typename Key,
+    typename Cell,
+    typename Hash,
+    typename Grower,
+    typename Allocator,
+    template <typename...> typename ImplTable,
+    Int32 bits_for_bucket>
+struct HasConstructorOfNumberOfBuckets<TwoLevelHashMapTable<Key, Cell, Hash, Grower, Allocator, ImplTable, bits_for_bucket>>
+    : std::bool_constant<(bits_for_bucket == -1)>
 {
 };
 

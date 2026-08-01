@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <mutex>
 #include <type_traits>
 #include <vector>
 #include <base/defines.h>
@@ -94,11 +95,15 @@ private:
         }
 
         /// Safe: computes the prefix sums on first use if `compute()` was not already called.
+        /// `offsetInternal` is `const` and reached per row from probe threads that share one table,
+        /// so the first-use computation is synchronized. `compute()` called directly (through
+        /// `computeBucketPrefix`) leaves the flag unarmed, so the first `offset()` after it computes
+        /// again; that is idempotent, and it is what keeps the recompute-after-growth contract
+        /// working alongside the flag.
         template <typename BucketAt>
         size_t offset(UInt32 bucket_count, BucketAt && bucket_at, size_t buck, size_t cell_offset)
         {
-            if (!computed)
-                compute(bucket_count, bucket_at);
+            std::call_once(compute_once, [&] { compute(bucket_count, bucket_at); });
             return offsetUnsafe(buck, cell_offset);
         }
 
@@ -113,6 +118,7 @@ private:
 
     private:
         std::vector<size_t> prefix;
+        std::once_flag compute_once;
         bool computed = false;
     };
 
