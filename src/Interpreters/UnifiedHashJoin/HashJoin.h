@@ -86,6 +86,9 @@ struct BuildResult
     bool all_values_unique = true;
     /// Keys the map did not have before.
     size_t new_keys = 0;
+    /// Map and arena bytes added by this insert batch, measured only while the relevant bucket lock
+    /// is held.
+    size_t bytes_grown = 0;
 };
 
 /// The grower is spelled out because `TwoLevelHashMap` defaults to `TwoLevelHashTableGrower`, which

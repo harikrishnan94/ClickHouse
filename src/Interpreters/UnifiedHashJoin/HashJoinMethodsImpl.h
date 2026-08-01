@@ -118,7 +118,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     const JoinCommon::JoinMask & join_mask,
     std::vector<std::unique_ptr<Arena>> & pools,
     BuildResult & result,
-    std::vector<BucketLock> * bucket_locks)
+    std::vector<BucketLock> * bucket_locks,
+    HashJoin::Type map_type)
 {
     switch (type)
     {
@@ -127,11 +128,11 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pools, result, bucket_locks); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pools, result, bucket_locks, map_type); \
         else \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pools, result, bucket_locks); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pools, result, bucket_locks, map_type); \
         break;
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
@@ -362,7 +363,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     const JoinCommon::JoinMask & join_mask,
     std::vector<std::unique_ptr<Arena>> & pools,
     BuildResult & result,
-    std::vector<BucketLock> * bucket_locks)
+    std::vector<BucketLock> * bucket_locks,
+    HashJoin::Type map_type)
 {
     [[maybe_unused]] constexpr bool mapped_one = std::is_same_v<typename HashMap::mapped_type, RowRef>;
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
@@ -385,7 +387,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
 
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = shouldUseJoinPrefetch(join.enable_prefetch, &map);
+        use_prefetch = !parallel_build && shouldUseJoinPrefetch(join.enable_prefetch, &map);
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -431,10 +433,18 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         {
             const UInt32 actual_bucket = bucketForRow(map, key_getter, ind, scratch_pool);
             std::lock_guard lock((*bucket_locks)[actual_bucket].mutex);
+            const size_t bytes_before = map.getBucketBufferSizeInBytes(map_type, actual_bucket) + pools[actual_bucket]->allocatedBytes();
             insert_row(*pools[actual_bucket]);
+            const size_t bytes_after = map.getBucketBufferSizeInBytes(map_type, actual_bucket) + pools[actual_bucket]->allocatedBytes();
+            result.bytes_grown += bytes_after - bytes_before;
         }
         else
+        {
+            const size_t bytes_before = map.getBucketBufferSizeInBytes(map_type, 0) + pools[0]->allocatedBytes();
             insert_row(*pools[0]);
+            const size_t bytes_after = map.getBucketBufferSizeInBytes(map_type, 0) + pools[0]->allocatedBytes();
+            result.bytes_grown += bytes_after - bytes_before;
+        }
     }
 }
 

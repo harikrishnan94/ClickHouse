@@ -110,29 +110,19 @@ BuildResult insertIntoBuckets(
 
     const size_t num_buckets = per_bucket.size();
 
-    auto measure_bytes = [&]() -> size_t
-    {
-        size_t total = 0;
-        for (size_t b = 0; b < num_buckets; ++b)
-            total += map.getBucketBufferSizeInBytes(type, b) + pools[b]->allocatedBytes();
-        return total;
-    };
-
     auto insert_bucket = [&](size_t bucket)
     {
-        const size_t bytes_before = measure_bytes();
-
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
             join, type, map, key_columns, key_sizes, stored_block_no,
-            *per_bucket[bucket], null_map, join_mask, pools, bucket_result, &locks);
+            *per_bucket[bucket], null_map, join_mask, pools, bucket_result, &locks, type);
 
-        const size_t bytes_after = measure_bytes();
-        bucket_bytes.fetch_add(bytes_after - bytes_before, std::memory_order_relaxed);
+        bucket_bytes.fetch_add(bucket_result.bytes_grown, std::memory_order_relaxed);
 
         result.is_inserted |= bucket_result.is_inserted;
         result.all_values_unique &= bucket_result.all_values_unique;
         result.new_keys += bucket_result.new_keys;
+        result.bytes_grown += bucket_result.bytes_grown;
     };
 
     std::vector<char> pending(num_buckets, 0);
