@@ -118,8 +118,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     const JoinCommon::JoinMask & join_mask,
     std::vector<std::unique_ptr<Arena>> & pools,
     BuildResult & result,
-    std::vector<BucketLock> * bucket_locks,
-    HashJoin::Type map_type)
+    std::vector<BucketLock> * bucket_locks)
 {
     switch (type)
     {
@@ -128,11 +127,11 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pools, result, bucket_locks, map_type); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pools, result, bucket_locks); \
         else \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pools, result, bucket_locks, map_type); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pools, result, bucket_locks); \
         break;
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
@@ -363,8 +362,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     const JoinCommon::JoinMask & join_mask,
     std::vector<std::unique_ptr<Arena>> & pools,
     BuildResult & result,
-    std::vector<BucketLock> * bucket_locks,
-    HashJoin::Type map_type)
+    std::vector<BucketLock> * bucket_locks)
 {
     [[maybe_unused]] constexpr bool mapped_one = std::is_same_v<typename HashMap::mapped_type, RowRef>;
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
