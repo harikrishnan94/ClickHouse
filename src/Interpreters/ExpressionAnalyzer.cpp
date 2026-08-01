@@ -1085,7 +1085,9 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             return std::make_shared<ConcurrentHashJoin>(
                 analyzed_join, settings[Setting::max_threads], right_sample_block, StatsCollectingParams{});
         if (unified)
-            return std::make_shared<UnifiedHashJoin>(analyzed_join, right_sample_block);
+            return std::make_shared<UnifiedHashJoin>(
+                analyzed_join, right_sample_block, /*any_take_last_row_=*/false, /*reserve_num_=*/0, /*instance_id_=*/"",
+                StatsCollectingParams{}, settings[Setting::max_threads]);
         return std::make_shared<HashJoin>(analyzed_join, right_sample_block);
     }
 

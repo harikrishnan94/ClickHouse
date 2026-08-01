@@ -71,6 +71,23 @@ run_all_queries --max_bytes_before_external_join=100000000
 # SpillingHashJoin switching to GraceHashJoin in the middle of a parallel build.
 run_all_queries --max_bytes_before_external_join=8000000
 
+# `unified_hash` derives its bucket count - which is its build-side lock granularity, and the
+# partitioning the rows are routed by - from `max_threads`, so the answer must not depend on it.
+# 1 is the serial case, where routing is skipped entirely; 3 rounds up to a bucket count that does
+# not divide the thread count; 64 gives many more buckets than there are rows per bucket.
+for threads in 1 3 64
+do
+    compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_DUP)
+        SELECT count(), sum(l.k), sum(r.v) FROM l INNER JOIN r ON l.k = r.k" --max_threads="$threads"
+    compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_DUP)
+        SELECT count(), sum(l.k), sum(r.v) FROM l FULL JOIN r ON l.k = r.k" --max_threads="$threads"
+    # A string key, so the per-bucket arenas the keys are copied into are exercised too.
+    compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_DUP)
+        SELECT count(), sum(r.v) FROM l INNER JOIN r ON l.s = r.s" --max_threads="$threads"
+    compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_UNIQ)
+        SELECT count(), sum(l.k) FROM l LEFT SEMI JOIN r ON l.k = r.k" --max_threads="$threads"
+done
+
 # The right side must actually be filled by more than one thread.
 count_filling_transforms()
 {

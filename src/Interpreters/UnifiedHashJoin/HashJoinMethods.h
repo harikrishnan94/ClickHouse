@@ -23,22 +23,29 @@ size_t getMinBytesForPrefetchInJoin();
 template <typename HashMap, typename KeyGetter>
 struct Inserter
 {
-    static ALWAYS_INLINE bool
-    insertOne(const HashJoin & join, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool)
+    /// `new_keys` counts keys the map did not have before, which is what the size limits are
+    /// checked against. It is not always what these functions return: with `any_take_last_row` a
+    /// duplicate overwrites the mapped value, so the row becomes reachable without adding a key.
+    static ALWAYS_INLINE bool insertOne(
+        const HashJoin & join, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool, size_t & new_keys)
     {
         auto emplace_result = key_getter.emplaceKey(map, i, pool);
 
-        if (emplace_result.isInserted() || join.anyTakeLastRow())
+        const bool inserted = emplace_result.isInserted();
+        new_keys += inserted;
+        if (inserted || join.anyTakeLastRow())
             new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, i);
-        return emplace_result.isInserted() || join.anyTakeLastRow();
+        return inserted || join.anyTakeLastRow();
     }
 
-    static ALWAYS_INLINE bool
-    insertAll(const HashJoin &, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool)
+    static ALWAYS_INLINE bool insertAll(
+        const HashJoin &, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool, size_t & new_keys)
     {
         auto emplace_result = key_getter.emplaceKey(map, i, pool);
 
-        if (emplace_result.isInserted())
+        const bool inserted = emplace_result.isInserted();
+        new_keys += inserted;
+        if (inserted)
             new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, i);
         else
         {
@@ -46,7 +53,7 @@ struct Inserter
             /// switches the value to a pointer to an arena-allocated list of refs.
             emplace_result.getMapped().insert(RowRef(stored_block_no, i).encode(), pool);
         }
-        return emplace_result.isInserted();
+        return inserted;
     }
 
     static ALWAYS_INLINE bool insertAsof(
@@ -56,19 +63,21 @@ struct Inserter
         UInt32 stored_block_no,
         size_t i,
         Arena & pool,
+        size_t & new_keys,
         const IColumn & asof_column)
     {
         auto emplace_result = key_getter.emplaceKey(map, i, pool);
         typename HashMap::mapped_type * time_series_map = &emplace_result.getMapped();
 
+        const bool inserted = emplace_result.isInserted();
+        new_keys += inserted;
         TypeIndex asof_type = *join.getAsofType();
-        if (emplace_result.isInserted())
+        if (inserted)
             time_series_map = new (time_series_map) typename HashMap::mapped_type(createAsofRowRef(asof_type, join.getAsofInequality()));
         (*time_series_map)->insert(asof_column, stored_block_no, i);
-        return emplace_result.isInserted();
+        return inserted;
     }
 };
-
 /// MapsTemplate is one of MapsOne, MapsAll and MapsAsof
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods
@@ -85,8 +94,18 @@ public:
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
-        bool & is_inserted,
-        bool & all_values_unique);
+        BuildResult & result);
+
+    /// Split `selector`'s rows by the bucket of `maps` each row's key routes to, returning one
+    /// selector per bucket. Inserting a bucket's selector then touches only that bucket, which is
+    /// what makes holding just that bucket's lock sufficient.
+    static std::vector<ScatteredBlock::Selector> scatterByBucket(
+        HashJoin::Type type,
+        MapsTemplate & maps,
+        const ColumnRawPtrs & key_columns,
+        const Sizes & key_sizes,
+        const ScatteredBlock::Selector & selector,
+        size_t num_buckets);
 
     using MapsTemplateVector = std::vector<const MapsTemplate *>;
 
@@ -119,8 +138,15 @@ private:
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
-        bool & is_inserted,
-        bool & all_values_unique);
+        BuildResult & result);
+
+    template <typename KeyGetter, typename HashMap>
+    static std::vector<ScatteredBlock::Selector> scatterByBucketTypeCase(
+        const HashMap & map,
+        const ColumnRawPtrs & key_columns,
+        const Sizes & key_sizes,
+        const ScatteredBlock::Selector & selector,
+        size_t num_buckets);
 
     template <typename AddedColumns>
     static size_t switchJoinRightColumns(
