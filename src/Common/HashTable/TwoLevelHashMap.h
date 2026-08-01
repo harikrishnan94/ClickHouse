@@ -23,16 +23,7 @@ public:
 
     using Base::Base;
     using Base::prefetch;
-
-    template <typename Func>
-    void ALWAYS_INLINE forEachMapped(Func && func)
-    {
-        /// `bucketCount()` rather than `numBuckets()`: the latter is constrained to fixed-bucket
-        /// mode, which would make this the only member that fails to compile at `bits_for_bucket
-        /// == -1`.
-        for (auto i = 0u; i < this->bucketCount(); ++i)
-            this->impls[i].forEachMapped(func);
-    }
+    /// `forEachMapped` comes from the base, which asks the storage rather than looping buckets.
 
     typename Cell::Mapped & ALWAYS_INLINE operator[](const Key & x)
     {

@@ -17,9 +17,10 @@
 #include <Storages/IStorage_fwd.h>
 #include <Storages/TableLockHolder.h>
 #include <Common/Arena.h>
+#include <Common/HashTable/BucketPartitionedTable.h>
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/HashMap.h>
-#include <Common/HashTable/HashTableTraits.h>
+#include <Common/HashTable/PartitionedFixedHashMap.h>
 #include <Common/HashTable/TwoLevelHashMap.h>
 
 namespace DB
@@ -75,6 +76,17 @@ using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     HashTableAllocator,
     HashMapTable,
     BITS_FOR_BUCKET>;
+
+/// The direct-addressed maps (`key8`/`key16`, and `range8_key32`..`range18_key64` after the
+/// post-build range conversion). Same bucket protocol, same `NUM_BUCKETS`, but the buckets route
+/// into one flat `buf[key]` buffer rather than owning their cells - see `FixedRangeStorage`.
+template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8>
+using JoinFixedHashMap = PartitionedFixedHashMap<Key, Mapped, size_bits>;
+
+static_assert(BucketPartitionedMap<JoinHashMap<UInt64, RowRefList>>);
+static_assert(BucketPartitionedMap<JoinHashMapWithSavedHash<std::string_view, RowRefList>>);
+static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt8, RowRefList>>);
+static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt64, RowRefList, 18>>);
 
 /** Data structure for implementation of hash JOIN.
   * It is a hash table: keys -> rows of joined ("right") table.
@@ -308,8 +320,8 @@ public:
     {
         /// NOLINTBEGIN(bugprone-macro-parentheses)
         using MappedType = Mapped;
-        std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
-        std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
+        std::shared_ptr<JoinFixedHashMap<UInt8, Mapped>>                      key8;
+        std::shared_ptr<JoinFixedHashMap<UInt16, Mapped>>                     key16;
         std::shared_ptr<JoinHashMap<UInt32, Mapped, HashCRC32<UInt32>>>       key32;
         std::shared_ptr<JoinHashMap<UInt64, Mapped, HashCRC32<UInt64>>>       key64;
         std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>          key_string;
@@ -321,28 +333,29 @@ public:
         std::shared_ptr<JoinHashMap<UInt128, Mapped, UInt128TrivialHash>>     hashed;
         std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>  low_cardinality_key_string;
         std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>  low_cardinality_key_fixed_string;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>>          range8_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 16>>         range16_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 17>>         range17_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 18>>         range18_key32;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 8>>          range8_key64;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 16>>         range16_key64;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 17>>         range17_key64;
-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 18>>         range18_key64;
+        std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 8>>                  range8_key32;
+        std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 16>>                 range16_key32;
+        std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 17>>                 range17_key32;
+        std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 18>>                 range18_key32;
+        std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 8>>                  range8_key64;
+        std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 16>>                 range16_key64;
+        std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 17>>                 range17_key64;
+        std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 18>>                 range18_key64;
+
+        /// Every variant is a bucket-partitioned table taking the same `(num_buckets, size_hint)`,
+        /// so there is one construction path rather than one per map family. The `static_assert`
+        /// below is what keeps it that way.
+        #define M(NAME) static_assert(BucketPartitionedMap<typename decltype(NAME)::element_type>);
+            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
+        #undef M
 
         void create(Type which, size_t reserve)
         {
             switch (which)
             {
-            #define M(NAME)                                                                                        \
-                case Type::NAME:                                                                                   \
-                    if constexpr (HasConstructorOfNumberOfBuckets<typename decltype(NAME)::element_type>::value)   \
-                        NAME = std::make_shared<typename decltype(NAME)::element_type>(NUM_BUCKETS, reserve);      \
-                    else if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
-                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)          \
-                                       : std::make_shared<typename decltype(NAME)::element_type>();                \
-                    else                                                                                           \
-                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                          \
+            #define M(NAME)                                                                        \
+                case Type::NAME:                                                                   \
+                    NAME = std::make_shared<typename decltype(NAME)::element_type>(NUM_BUCKETS, reserve); \
                     break;
 
                 UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
