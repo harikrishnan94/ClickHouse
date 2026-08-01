@@ -430,13 +430,23 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         if (parallel_build)
         {
             const UInt32 actual_bucket = bucketForRow(map, key_getter, ind, scratch_pool);
-            std::lock_guard lock((*bucket_locks)[actual_bucket].mutex);
-            /// Under bucket-parallel build only arena growth is measured per row: map buffers for
-            /// direct-addressed tables are shared across buckets, and open-addressing resizes are
-            /// already covered by the bucket lock held across emplace.
-            const size_t bytes_before = pools[actual_bucket]->allocatedBytes();
-            insert_row(*pools[actual_bucket]);
-            result.bytes_grown += pools[actual_bucket]->allocatedBytes() - bytes_before;
+            /// `RowRefList` appends can touch the same cell from threads that picked different bucket
+            /// locks; serialize those inserts on `blocks_mutex` while keeping per-bucket locking for
+            /// single-ref maps.
+            if constexpr (!mapped_one)
+            {
+                std::scoped_lock locks(join.blocks_mutex, (*bucket_locks)[actual_bucket].mutex);
+                const size_t bytes_before = pools[actual_bucket]->allocatedBytes();
+                insert_row(*pools[actual_bucket]);
+                result.bytes_grown += pools[actual_bucket]->allocatedBytes() - bytes_before;
+            }
+            else
+            {
+                std::lock_guard lock((*bucket_locks)[actual_bucket].mutex);
+                const size_t bytes_before = pools[actual_bucket]->allocatedBytes();
+                insert_row(*pools[actual_bucket]);
+                result.bytes_grown += pools[actual_bucket]->allocatedBytes() - bytes_before;
+            }
         }
         else
         {
