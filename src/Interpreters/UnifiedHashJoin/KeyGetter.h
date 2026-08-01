@@ -110,6 +110,25 @@ struct LowCardinalityKeyGetterForJoin
         return base.getKeyHolder(isLowCardinality() ? getIndexAt(row) : row, pool);
     }
 
+    /// Hash value `emplace` would pass for bucket routing on this row. When the dictionary carries a
+    /// saved hash, it must be used here too - `map.hash(key)` alone can disagree with `emplace`.
+    template <typename Data>
+    ALWAYS_INLINE size_t routingHashForRow(const Data & data, size_t row_, Arena & pool) const
+    {
+        if (!isLowCardinality())
+        {
+            auto key_holder = base.getKeyHolder(row_, pool);
+            return data.hash(keyHolderGetKey(key_holder));
+        }
+
+        const size_t row = getIndexAt(row_);
+        if (saved_hash)
+            return saved_hash[row];
+
+        auto key_holder = base.getKeyHolder(row, pool);
+        return data.hash(keyHolderGetKey(key_holder));
+    }
+
     /// Build side: every row must be inserted/appended into the real hash-table cell, so there is no
     /// per-dictionary-index deduplication here (the mapped RowRefList lives in the cell, not behind a
     /// stable pointer as in aggregation). The dictionary speedup is realized on the probe side only.
@@ -127,10 +146,7 @@ struct LowCardinalityKeyGetterForJoin
 
         typename Data::LookupResult it;
         bool inserted = false;
-        if (saved_hash)
-            data.emplace(key_holder, it, inserted, saved_hash[row]);
-        else
-            data.emplace(key_holder, it, inserted);
+        data.emplace(key_holder, it, inserted, routingHashForRow(data, row_, pool));
 
         auto & mapped = it->getMapped();
         if (inserted)
