@@ -895,37 +895,24 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                 {
                     using Methods = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>;
 
-                    /// One selector per bucket, pointing either into the scatter's output or - when
-                    /// there is a single bucket, so routing is the identity - straight at the
-                    /// block's own selector, which avoids materializing a copy of it.
-                    const size_t buckets = data->num_buckets;
-                    std::vector<ScatteredBlock::Selector> scattered;
-                    std::vector<const ScatteredBlock::Selector *> per_bucket(buckets, nullptr);
-                    if (buckets == 1)
-                    {
-                        per_bucket[0] = &stored_columns->selector;
-                    }
-                    else
-                    {
-                        scattered = Methods::scatterByBucket(
-                            data->type, map, key_columns, key_sizes[onexpr_idx], stored_columns->selector, buckets);
-                        for (size_t bucket = 0; bucket < buckets; ++bucket)
-                            per_bucket[bucket] = &scattered[bucket];
-                    }
-
-                    const BuildResult result = insertIntoBuckets<Methods>(
+                    /// Per-row locks use the emplace bucket directly, so scatter batching is unnecessary
+                    /// and skipping it avoids skew between scatter bucket and emplace bucket.
+                    BuildResult result;
+                    Methods::insertFromBlockImpl(
                         *this,
                         data->type,
                         map,
-                        bucket_locks[onexpr_idx],
-                        data->pools,
-                        data->bucket_bytes,
-                        per_bucket,
                         key_columns,
                         key_sizes[onexpr_idx],
                         stored_columns->block_no,
+                        stored_columns->selector,
                         null_map,
-                        join_mask_col);
+                        join_mask_col,
+                        data->pools,
+                        result,
+                        &bucket_locks[onexpr_idx]);
+
+                    data->bucket_bytes.fetch_add(result.bytes_grown, std::memory_order_relaxed);
 
                     is_inserted = result.is_inserted;
                     if (!result.all_values_unique)

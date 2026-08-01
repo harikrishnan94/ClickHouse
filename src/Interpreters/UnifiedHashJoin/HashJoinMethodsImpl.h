@@ -431,19 +431,12 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         {
             const UInt32 actual_bucket = bucketForRow(map, key_getter, ind, scratch_pool);
             std::lock_guard lock((*bucket_locks)[actual_bucket].mutex);
-            /// Direct-addressed maps share one flat buffer across buckets; its size is fixed, so only
-            /// arena growth matters and reading the buffer under one bucket lock races with writes
-            /// routed under another.
-            const auto measured_bytes = [&]
-            {
-                if constexpr (HashMap::isFixedRangeStorage())
-                    return pools[actual_bucket]->allocatedBytes();
-                return map.impls[actual_bucket].getBufferSizeInBytes() + pools[actual_bucket]->allocatedBytes();
-            };
-            const size_t bytes_before = measured_bytes();
+            /// Under bucket-parallel build only arena growth is measured per row: map buffers for
+            /// direct-addressed tables are shared across buckets, and open-addressing resizes are
+            /// already covered by the bucket lock held across emplace.
+            const size_t bytes_before = pools[actual_bucket]->allocatedBytes();
             insert_row(*pools[actual_bucket]);
-            const size_t bytes_after = measured_bytes();
-            result.bytes_grown += bytes_after - bytes_before;
+            result.bytes_grown += pools[actual_bucket]->allocatedBytes() - bytes_before;
         }
         else
         {
