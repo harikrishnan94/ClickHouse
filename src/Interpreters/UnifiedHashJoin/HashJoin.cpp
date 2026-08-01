@@ -365,9 +365,8 @@ HashJoin::HashJoin(
     for (auto & locks : bucket_locks)
         locks = std::vector<BucketLock>(data->num_buckets);
 
-    /// The running byte count starts from what the empty maps and arenas already occupy; the build
-    /// only ever adds the deltas its inserts produce.
-    recomputeBucketBytes();
+    /// `bucket_bytes` tracks insert deltas only; do not seed it from empty map buffers here or
+    /// `SpillingHashJoin` sees ~1 MiB before the first row and spills immediately.
 
     if (table_join->getMixedJoinExpression())
     {
@@ -2339,6 +2338,9 @@ void HashJoin::onBuildPhaseFinish()
     }
 
     build_phase_finished = true;
+
+    /// Sync map and arena bytes after the last insert; the running sum tracked only insert deltas.
+    recomputeBucketBytes();
 
     LOG_TRACE(
         log,
