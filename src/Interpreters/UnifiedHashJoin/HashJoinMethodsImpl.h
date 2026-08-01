@@ -433,16 +433,16 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         {
             const UInt32 actual_bucket = bucketForRow(map, key_getter, ind, scratch_pool);
             std::lock_guard lock((*bucket_locks)[actual_bucket].mutex);
-            const size_t bytes_before = map.getBucketBufferSizeInBytes(map_type, actual_bucket) + pools[actual_bucket]->allocatedBytes();
+            const size_t bytes_before = map.impls[actual_bucket].getBufferSizeInBytes() + pools[actual_bucket]->allocatedBytes();
             insert_row(*pools[actual_bucket]);
-            const size_t bytes_after = map.getBucketBufferSizeInBytes(map_type, actual_bucket) + pools[actual_bucket]->allocatedBytes();
+            const size_t bytes_after = map.impls[actual_bucket].getBufferSizeInBytes() + pools[actual_bucket]->allocatedBytes();
             result.bytes_grown += bytes_after - bytes_before;
         }
         else
         {
-            const size_t bytes_before = map.getBucketBufferSizeInBytes(map_type, 0) + pools[0]->allocatedBytes();
+            const size_t bytes_before = map.impls[0].getBufferSizeInBytes() + pools[0]->allocatedBytes();
             insert_row(*pools[0]);
-            const size_t bytes_after = map.getBucketBufferSizeInBytes(map_type, 0) + pools[0]->allocatedBytes();
+            const size_t bytes_after = map.impls[0].getBufferSizeInBytes() + pools[0]->allocatedBytes();
             result.bytes_grown += bytes_after - bytes_before;
         }
     }
