@@ -377,7 +377,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     result.is_inserted = !mapped_one || is_asof_join;
 
     const size_t rows = ScatteredBlock::Selector::size(selector);
-    const bool parallel_build = bucket_locks != nullptr && pools.size() > 1;
+    const bool parallel_build = bucket_locks != nullptr;
     Arena scratch_pool;
 
     /// Software prefetch during the build phase.
