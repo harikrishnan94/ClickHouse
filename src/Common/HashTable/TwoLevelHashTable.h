@@ -167,7 +167,7 @@ private:
         }
 
         /// No-op: fixed storage has no per-bucket address descriptors to keep in sync.
-        void refreshDesc(size_t) { }
+        void refreshDescs() { }
 
         void computeBucketPrefix() const
         {
@@ -251,7 +251,7 @@ private:
             if (size_hint)
                 reserveBuckets(size_hint);
 
-            refreshAllDescs();
+            refreshDescs();
         }
 
         Impl & operator[](size_t bucket) { return buckets[bucket]; }
@@ -262,15 +262,13 @@ private:
         UInt32 bucketShift() const { return shift; }
         UInt32 getBucketFromHash(size_t hash_value) const { return static_cast<UInt32>((hash_value >> shift) & max_bucket); }
 
-        void refreshDesc(size_t buck)
+        void refreshDescs()
         {
-            const void * const new_buf = buckets[buck].buf;
-            const size_t new_mask = buckets[buck].getBufferSizeInCells() - 1;
-            if (descs[buck].buf == new_buf && descs[buck].mask == new_mask)
-                return;
-
-            descs[buck].buf = new_buf;
-            descs[buck].mask = new_mask;
+            for (UInt32 i = 0; i < num_buckets; ++i)
+            {
+                descs[i].buf = buckets[i].buf;
+                descs[i].mask = buckets[i].getBufferSizeInCells() - 1;
+            }
         }
 
         const TwoLevelHashTableBucketDesc * bucketDescs() const { return descs.data(); }
@@ -278,7 +276,7 @@ private:
         void reserve(size_t num_elements)
         {
             reserveBuckets(num_elements);
-            refreshAllDescs();
+            refreshDescs();
         }
 
         void computeBucketPrefix() const
@@ -358,12 +356,6 @@ private:
                 bucket.reserve(num_elements / num_buckets);
         }
 
-        void refreshAllDescs()
-        {
-            for (UInt32 i = 0; i < num_buckets; ++i)
-                refreshDesc(i);
-        }
-
         const UInt32 num_buckets;
         const UInt32 max_bucket;
         const UInt32 shift;
@@ -426,7 +418,7 @@ private:
         /// reserve, no descriptor to refresh, and no prefix sums to compute: an offset is already
         /// global, because there is only ever one buffer to be an offset into.
         void reserve(size_t) { }
-        void refreshDesc(size_t) { }
+        void refreshDescs() { }
         void computeBucketPrefix() const { }
 
         size_t offsetInternal(typename Impl::ConstLookupResult ptr) const { return flat.offsetInternal(ptr); }
@@ -517,6 +509,7 @@ public:
     UInt32 bucketCount() const { return impls.bucketCount(); }
     UInt32 bucketShift() const { return impls.bucketShift(); }
     /// Per-bucket buffer descriptors exist only where a bucket has its own buffer to describe.
+    /// Valid only as of the last `refreshBucketDescs()` - see there.
     const TwoLevelHashTableBucketDesc * bucketDescs() const
     requires(isRuntimeStorage() && !isFixedRangeStorage())
     {
@@ -741,12 +734,17 @@ public:
 
     /// Synchronization follows the underlying hash table contract and is the caller's
     /// responsibility. Any external lock must also cover initialization through `it`.
+    ///
+    /// Only the target bucket is touched, so callers holding one lock per bucket may run this
+    /// concurrently for keys that route to different buckets. Nothing shared between buckets is
+    /// updated here - in particular the bucket descriptors are NOT refreshed, because writing them
+    /// per row would reintroduce exactly such a shared write (four 16-byte descriptors to a cache
+    /// line). Refresh them once with `refreshBucketDescs()` when the inserting is over.
     template <typename KeyHolder>
     void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it, bool & inserted, size_t hash_value)
     {
         const size_t buck = getBucketFromHash(bucketRoutingHash(keyHolderGetKey(key_holder), hash_value));
         impls[buck].emplace(key_holder, it, inserted, hash_value);
-        impls.refreshDesc(buck);
     }
 
     LookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
@@ -823,6 +821,13 @@ public:
     /// `offsetInternalUnsafe` - that skips the "already computed" check `offsetInternal` pays on
     /// every call.
     void computeBucketPrefix() const { impls.computeBucketPrefix(); }
+
+    /// (Re)point the bucket descriptors at their buckets' current buffers. Same contract as
+    /// `computeBucketPrefix()`: call it once, after the last insert that may have grown a bucket,
+    /// and before anything reads `bucketDescs()`. `emplace` deliberately does not maintain them,
+    /// so that a bucket-parallel build writes nothing shared between buckets. A no-op for the
+    /// storages that have no descriptors.
+    void refreshBucketDescs() { impls.refreshDescs(); }
 
     /// Lazily computes the prefix sums on first use, then reuses them - it does NOT notice later
     /// bucket growth on its own (there is no internal tracking of buffer changes, by design; see

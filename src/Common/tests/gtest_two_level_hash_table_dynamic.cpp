@@ -347,8 +347,12 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
         ASSERT_EQ(it->getMapped(), key * 5) << "mapped value of key " << key << " was corrupted";
     }
 
-    /// Descriptors are refreshed by `emplace` itself, so after the (externally-locked) build every
-    /// one must describe its bucket's final buffer.
+    /// `emplace` deliberately leaves the descriptors alone - maintaining them per row would be a
+    /// write shared between buckets, which is what the per-bucket locks exist to avoid. They are
+    /// published once, after the build, and only then must every one describe its bucket's final
+    /// buffer. This mirrors what `HashJoin::onBuildPhaseFinish` does.
+    map.refreshBucketDescs();
+
     const auto * descs = map.bucketDescs();
     for (UInt32 i = 0; i < map.bucketCount(); ++i)
     {
