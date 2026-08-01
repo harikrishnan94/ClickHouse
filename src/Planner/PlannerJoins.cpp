@@ -1259,7 +1259,7 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         {
             return std::make_shared<UnifiedHashJoin>(
                 table_join, right_table_expression_header, params.join_any_take_last_row, /*reserve_num_=*/0, /*instance_id_=*/"",
-                stats_collecting_params);
+                stats_collecting_params, params.max_threads);
         }
 
         return std::make_shared<HashJoin>(

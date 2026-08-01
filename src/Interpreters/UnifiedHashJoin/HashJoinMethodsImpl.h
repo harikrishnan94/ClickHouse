@@ -100,8 +100,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
     Arena & pool,
-    bool & is_inserted,
-    bool & all_values_unique)
+    BuildResult & result)
 {
     switch (type)
     {
@@ -110,16 +109,100 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, is_inserted, all_values_unique); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, result); \
         else \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, is_inserted, all_values_unique); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, result); \
         break;
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
     }
+}
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucket(
+    HashJoin::Type type,
+    MapsTemplate & maps,
+    const ColumnRawPtrs & key_columns,
+    const Sizes & key_sizes,
+    const ScatteredBlock::Selector & selector,
+    size_t num_buckets)
+{
+    switch (type)
+    {
+#define M(TYPE) \
+    case HashJoin::Type::TYPE: \
+        return scatterByBucketTypeCase< \
+            typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
+            *maps.TYPE, key_columns, key_sizes, selector, num_buckets);
+
+            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+    }
+    UNREACHABLE();
+}
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <typename KeyGetter, typename HashMap>
+std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucketTypeCase(
+    const HashMap & map,
+    const ColumnRawPtrs & key_columns,
+    const Sizes & key_sizes,
+    const ScatteredBlock::Selector & selector,
+    size_t num_buckets)
+{
+    /// The bucket picked here must be the one `emplace` would pick, or a thread holding bucket B's
+    /// lock would write into bucket A. `emplace` derives it from the hash the key getter hands the
+    /// map, and every getter reachable from a join lets the map compute that hash itself - except
+    /// the LowCardinality one, which substitutes the dictionary's saved hash, and that is the same
+    /// `StringViewHash` the map would have used. A getter supplying its own precomputed hashes
+    /// would break the equivalence silently, so refuse to compile for one.
+    if constexpr (requires { KeyGetter::has_pre_computed_hashes; })
+        static_assert(!KeyGetter::has_pre_computed_hashes, "Bucket routing assumes the map computes the hash it places by");
+
+    constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
+    auto key_getter = createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes);
+
+    /// Key holders are only read here, never persisted into the map, so nothing allocated through
+    /// this outlives the call. String key holders do not touch it at all.
+    Arena scratch_pool;
+
+    const size_t rows = selector.size();
+
+    /// Count, then place, so that each bucket's index array is allocated once at its final size.
+    /// Rows filtered by the null map or the ON condition are routed like any other: dropping them
+    /// here would lose the `is_inserted` a NULL key has to produce for a RIGHT/FULL join, and the
+    /// insert loop already skips them.
+    PODArray<UInt32> row_to_bucket(rows);
+    std::vector<size_t> counts(num_buckets, 0);
+    for (size_t i = 0; i < rows; ++i)
+    {
+        auto key_holder = key_getter.getKeyHolder(selector[i], scratch_pool);
+        const auto & key = keyHolderGetKey(key_holder);
+        const auto bucket = static_cast<UInt32>(map.getBucketFromHash(map.bucketRoutingHash(key, map.hash(key))));
+        row_to_bucket[i] = bucket;
+        ++counts[bucket];
+    }
+
+    std::vector<ScatteredBlock::Selector::IndexesPtr> indexes;
+    indexes.reserve(num_buckets);
+    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+    {
+        auto column = ScatteredBlock::Selector::Indexes::create();
+        column->getData().reserve(counts[bucket]);
+        indexes.push_back(std::move(column));
+    }
+
+    for (size_t i = 0; i < rows; ++i)
+        indexes[row_to_bucket[i]]->getData().push_back(selector[i]);
+
+    std::vector<ScatteredBlock::Selector> result;
+    result.reserve(num_buckets);
+    for (auto & column : indexes)
+        result.emplace_back(std::move(column));
+    return result;
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
@@ -253,8 +336,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
     Arena & pool,
-    bool & is_inserted,
-    bool & all_values_unique)
+    BuildResult & result)
 {
     [[maybe_unused]] constexpr bool mapped_one = std::is_same_v<typename HashMap::mapped_type, RowRef>;
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
@@ -266,7 +348,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     auto key_getter = createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes);
 
     /// For ALL and ASOF join always insert values
-    is_inserted = !mapped_one || is_asof_join;
+    result.is_inserted = !mapped_one || is_asof_join;
 
     const size_t rows = ScatteredBlock::Selector::size(selector);
 
@@ -296,7 +378,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         {
             /// nulls are not inserted into hash table,
             /// keep them for RIGHT and FULL joins
-            is_inserted = true;
+            result.is_inserted = true;
             continue;
         }
 
@@ -305,11 +387,14 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
             continue;
 
         if constexpr (is_asof_join)
-            Inserter<HashMap, KeyGetter>::insertAsof(join, map, key_getter, stored_block_no, ind, pool, *asof_column);
+            Inserter<HashMap, KeyGetter>::insertAsof(
+                join, map, key_getter, stored_block_no, ind, pool, result.new_keys, *asof_column);
         else if constexpr (mapped_one)
-            is_inserted |= Inserter<HashMap, KeyGetter>::insertOne(join, map, key_getter, stored_block_no, ind, pool);
+            result.is_inserted
+                |= Inserter<HashMap, KeyGetter>::insertOne(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
         else
-            all_values_unique &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool);
+            result.all_values_unique
+                &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
     }
 }
 
