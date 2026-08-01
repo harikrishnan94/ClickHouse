@@ -115,7 +115,7 @@ BuildResult insertIntoBuckets(
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
             join, type, map, key_columns, key_sizes, stored_block_no,
-            *per_bucket[bucket], null_map, join_mask, pools, bucket_result, &locks, type);
+            *per_bucket[bucket], null_map, join_mask, pools, bucket_result, &locks);
 
         bucket_bytes.fetch_add(bucket_result.bytes_grown, std::memory_order_relaxed);
 
