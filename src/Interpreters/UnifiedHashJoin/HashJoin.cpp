@@ -1,9 +1,9 @@
+#include <algorithm>
 #include <any>
 #include <bit>
 #include <limits>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <vector>
 
 #include <base/getL2CacheSize.h>
@@ -88,17 +88,9 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, bucket by bucket, holding only one bucket's lock
-/// at a time. `per_bucket[b]` holds the rows routed to bucket `b`.
-///
-/// Buckets are drained with `try_lock`-and-skip rather than in order: a thread that finds a bucket
-/// busy moves on and comes back to it later, so build threads working on different blocks interleave
-/// instead of all queueing behind whichever bucket they happen to reach first. `ConcurrentHashJoin`
-/// drains its per-slot locks the same way; the difference here is that these are buckets of one
-/// shared map, so there is nothing to merge when the build ends.
-///
-/// A thread holds one bucket lock at a time and takes no other lock while holding it, so the loop
-/// cannot deadlock: every bucket it waits on is owned by a thread that is itself making progress.
+/// Insert one block's rows into one clause's map, bucket by bucket. `per_bucket[b]` holds the rows
+/// routed to bucket `b` for batching; each row is inserted under the lock of the bucket `emplace`
+/// actually routes it to, which can differ when routing hash differs from `map.hash(key)` alone.
 template <typename Methods, typename Map>
 BuildResult insertIntoBuckets(
     HashJoin & join,
@@ -118,18 +110,24 @@ BuildResult insertIntoBuckets(
 
     const size_t num_buckets = per_bucket.size();
 
+    auto measure_bytes = [&]() -> size_t
+    {
+        size_t total = 0;
+        for (size_t b = 0; b < num_buckets; ++b)
+            total += map.getBucketBufferSizeInBytes(type, b) + pools[b]->allocatedBytes();
+        return total;
+    };
+
     auto insert_bucket = [&](size_t bucket)
     {
-        /// Measured under the bucket's own lock, so the growth this insert caused is attributed
-        /// exactly once even while other threads are growing other buckets.
-        const size_t bytes_before = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
+        const size_t bytes_before = measure_bytes();
 
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
             join, type, map, key_columns, key_sizes, stored_block_no,
-            *per_bucket[bucket], null_map, join_mask, *pools[bucket], bucket_result);
+            *per_bucket[bucket], null_map, join_mask, pools, bucket_result, &locks);
 
-        const size_t bytes_after = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
+        const size_t bytes_after = measure_bytes();
         bucket_bytes.fetch_add(bytes_after - bytes_before, std::memory_order_relaxed);
 
         result.is_inserted |= bucket_result.is_inserted;
@@ -138,49 +136,27 @@ BuildResult insertIntoBuckets(
     };
 
     std::vector<char> pending(num_buckets, 0);
-    size_t buckets_left = 0;
     for (size_t bucket = 0; bucket < num_buckets; ++bucket)
     {
         if (per_bucket[bucket]->size() != 0)
-        {
             pending[bucket] = 1;
-            ++buckets_left;
-        }
     }
 
     /// A block with no rows must still report `is_inserted` the way a non-empty one would, because
     /// for the map kinds that keep every block that is what decides whether the block is dropped
     /// again. Run the (empty) insert once rather than trying to predict its answer here.
-    if (buckets_left == 0)
+    if (std::none_of(pending.begin(), pending.end(), [](char v) { return v != 0; }))
     {
-        std::lock_guard lock(locks[0].mutex);
         insert_bucket(0);
         return result;
     }
 
-    while (buckets_left > 0)
+    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
     {
-        bool made_progress = false;
+        if (!pending[bucket])
+            continue;
 
-        for (size_t bucket = 0; bucket < num_buckets; ++bucket)
-        {
-            if (!pending[bucket])
-                continue;
-
-            std::unique_lock lock(locks[bucket].mutex, std::try_to_lock);
-            if (!lock.owns_lock())
-                continue;
-
-            made_progress = true;
-            insert_bucket(bucket);
-
-            pending[bucket] = 0;
-            --buckets_left;
-        }
-
-        /// Every bucket still pending is held by another build thread; yield instead of spinning.
-        if (!made_progress)
-            std::this_thread::yield();
+        insert_bucket(bucket);
     }
 
     return result;

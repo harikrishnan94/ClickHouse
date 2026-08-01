@@ -93,12 +93,13 @@ public:
         const ScatteredBlock::Selector & selector,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
-        Arena & pool,
-        BuildResult & result);
+        std::vector<std::unique_ptr<Arena>> & pools,
+        BuildResult & result,
+        std::vector<BucketLock> * bucket_locks = nullptr);
 
     /// Split `selector`'s rows by the bucket of `maps` each row's key routes to, returning one
-    /// selector per bucket. Inserting a bucket's selector then touches only that bucket, which is
-    /// what makes holding just that bucket's lock sufficient.
+    /// selector per bucket. Inserts lock the bucket `emplace` routes each row to, which is the same
+    /// routing function used here.
     static std::vector<ScatteredBlock::Selector> scatterByBucket(
         HashJoin::Type type,
         MapsTemplate & maps,
@@ -137,8 +138,9 @@ private:
         const Selector & selector,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
-        Arena & pool,
-        BuildResult & result);
+        std::vector<std::unique_ptr<Arena>> & pools,
+        BuildResult & result,
+        std::vector<BucketLock> * bucket_locks);
 
     template <typename KeyGetter, typename HashMap>
     static std::vector<ScatteredBlock::Selector> scatterByBucketTypeCase(
