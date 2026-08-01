@@ -1737,8 +1737,8 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
     using Mapped = typename std::decay_t<decltype(source_map)>::mapped_type;
     auto convert_to_fixed_hash_map = [&]<size_t size_bits>(auto & dst_map, Type type)
     {
-        using RangeMap = FixedHashMapWithSizeBits<Key, Mapped, size_bits>;
-        auto range_map = std::make_shared<RangeMap>();
+        using RangeMap = JoinFixedHashMap<Key, Mapped, size_bits>;
+        auto range_map = std::make_shared<RangeMap>(NUM_BUCKETS);
         for (auto source_map_it = source_map.begin(); source_map_it != source_map.end(); ++source_map_it)
         {
             typename RangeMap::LookupResult res;
