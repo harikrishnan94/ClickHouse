@@ -43,6 +43,29 @@ for f in $(ls src/Interpreters/HashJoin/); do
 done
 rm -f /tmp/u3_norm_uhj.$$ /tmp/u3_norm_base.$$
 
+# Files the fork has that the baseline directory does not. Iterating only over baseline files
+# would leave these never compared to anything, so the "whole-directory" claim would be false.
+# `joinDispatch.h` is forked from the shared `src/Interpreters/joinDispatch.h`.
+for u in $(ls src/Interpreters/UnifiedHashJoin/); do
+    [ -f "src/Interpreters/HashJoin/$u" ] && continue
+    case "$u" in
+        joinDispatch.h) base="src/Interpreters/joinDispatch.h" ;;
+        *)              base="" ;;
+    esac
+    if [ -z "$base" ] || [ ! -f "$base" ]; then
+        echo "=== UHJONLY-NO-BASELINE $u ===" >> "$OUT"
+        continue
+    fi
+    norm_uhj "src/Interpreters/UnifiedHashJoin/$u" > /tmp/u3_norm_uhj.$$
+    awk '{lines[NR]=$0} END {n=NR; while (n>0 && lines[n] ~ /^[[:space:]]*$/) n--; for(i=1;i<=n;i++) print lines[i]}' \
+        "$base" > /tmp/u3_norm_base.$$
+    if ! diff -q /tmp/u3_norm_base.$$ /tmp/u3_norm_uhj.$$ > /dev/null; then
+        echo "=== DIFF $u ===" >> "$OUT"
+        diff -u --label "base/$u" --label "uhj/$u" /tmp/u3_norm_base.$$ /tmp/u3_norm_uhj.$$ >> "$OUT"
+    fi
+    rm -f /tmp/u3_norm_uhj.$$ /tmp/u3_norm_base.$$
+done
+
 echo "--- residual per-file changed-line counts ---"
 awk '/^=== DIFF /{f=$3} /^[+-][^+-]/{c[f]++} END {for (k in c) printf "%6d %s\n", c[k], k}' "$OUT" | sort -rn
 echo "TOTAL_RESIDUAL_LINES=$(grep -c '^[+-][^+-]' "$OUT")"
