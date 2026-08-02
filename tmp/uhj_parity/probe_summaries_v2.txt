@@ -1,0 +1,4 @@
+SUMMARY label=serial_hash_v2 total=86 lock_ops=0 insert_related=41 lock_in_insert=0
+SUMMARY label=serial_uhj_v2 total=353 lock_ops=33 insert_related=172 lock_in_insert=33
+SUMMARY label=parallel_phash_v2 total=43 lock_ops=0 insert_related=4 lock_in_insert=0
+SUMMARY label=parallel_uhj_v2 total=5929 lock_ops=5055 insert_related=5096 lock_in_insert=5055
