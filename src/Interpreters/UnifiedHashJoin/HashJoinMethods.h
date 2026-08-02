@@ -93,9 +93,8 @@ public:
         const ScatteredBlock::Selector & selector,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
-        std::vector<std::unique_ptr<Arena>> & pools,
-        BuildResult & result,
-        std::vector<BucketLock> * bucket_locks);
+        Arena & pool,
+        BuildResult & result);
 
     /// Split `selector`'s rows by the bucket of `maps` each row's key routes to, returning one
     /// selector per bucket. Inserts lock the bucket `emplace` routes each row to, which is the same
@@ -138,9 +137,8 @@ private:
         const Selector & selector,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
-        std::vector<std::unique_ptr<Arena>> & pools,
-        BuildResult & result,
-        std::vector<BucketLock> * bucket_locks);
+        Arena & pool,
+        BuildResult & result);
 
     template <typename KeyGetter, typename HashMap>
     static std::vector<ScatteredBlock::Selector> scatterByBucketTypeCase(

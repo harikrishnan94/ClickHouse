@@ -56,23 +56,6 @@ ALWAYS_INLINE size_t selectorIndexAt(const Selector & selector, size_t k)
         return selector.first + k;
 }
 
-/// Bucket `emplace` would route this row to. Must match `emplaceKey` / `emplace` exactly, or a build
-/// thread holding one bucket's lock would write into another bucket's cells.
-template <typename KeyGetter, typename HashMap>
-UInt32 bucketForRow(const HashMap & map, const KeyGetter & key_getter, size_t row, Arena & scratch_pool)
-{
-    auto key_holder = key_getter.getKeyHolder(row, scratch_pool);
-    const auto & key = keyHolderGetKey(key_holder);
-
-    size_t hash_value;
-    if constexpr (requires { key_getter.routingHashForRow(map, row, scratch_pool); })
-        hash_value = key_getter.routingHashForRow(map, row, scratch_pool);
-    else
-        hash_value = map.hash(key);
-
-    return static_cast<UInt32>(map.getBucketFromHash(map.bucketRoutingHash(key, hash_value)));
-}
-
 /// Drives the adaptive software prefetch logic in the hash join probe loop.
 template <typename PrefetchAction>
 struct JoinPrefetcher
@@ -116,9 +99,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     const ScatteredBlock::Selector & selector,
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
-    std::vector<std::unique_ptr<Arena>> & pools,
-    BuildResult & result,
-    std::vector<BucketLock> * bucket_locks)
+    Arena & pool,
+    BuildResult & result)
 {
     switch (type)
     {
@@ -127,11 +109,11 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pools, result, bucket_locks); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, result); \
         else \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pools, result, bucket_locks); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, result); \
         break;
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
@@ -360,9 +342,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     const Selector & selector,
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
-    std::vector<std::unique_ptr<Arena>> & pools,
-    BuildResult & result,
-    std::vector<BucketLock> * bucket_locks)
+    Arena & pool,
+    BuildResult & result)
 {
     [[maybe_unused]] constexpr bool mapped_one = std::is_same_v<typename HashMap::mapped_type, RowRef>;
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
@@ -377,21 +358,19 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     result.is_inserted = !mapped_one || is_asof_join;
 
     const size_t rows = ScatteredBlock::Selector::size(selector);
-    const bool parallel_build = bucket_locks != nullptr;
-    Arena scratch_pool;
 
     /// Software prefetch during the build phase.
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, HashMap>;
 
     bool use_prefetch = false;
     if constexpr (can_prefetch)
-        use_prefetch = !parallel_build && shouldUseJoinPrefetch(join.enable_prefetch, &map);
+        use_prefetch = shouldUseJoinPrefetch(join.enable_prefetch, &map);
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
         {
             if constexpr (can_prefetch)
-                map.prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), scratch_pool));
+                map.prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
         });
 
     for (size_t i = 0; i < rows; ++i)
@@ -414,47 +393,15 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         if (join_mask.isRowFiltered(ind))
             continue;
 
-        const auto insert_row = [&](Arena & pool)
-        {
-            if constexpr (is_asof_join)
-                Inserter<HashMap, KeyGetter>::insertAsof(
-                    join, map, key_getter, stored_block_no, ind, pool, result.new_keys, *asof_column);
-            else if constexpr (mapped_one)
-                result.is_inserted
-                    |= Inserter<HashMap, KeyGetter>::insertOne(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
-            else
-                result.all_values_unique
-                    &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
-        };
-
-        if (parallel_build)
-        {
-            const UInt32 actual_bucket = bucketForRow(map, key_getter, ind, scratch_pool);
-            /// `RowRefList` appends can touch the same cell from threads that picked different bucket
-            /// locks; serialize those inserts on `blocks_mutex` while keeping per-bucket locking for
-            /// single-ref maps.
-            if constexpr (!mapped_one)
-            {
-                std::scoped_lock locks(join.blocks_mutex, (*bucket_locks)[actual_bucket].mutex);
-                const size_t bytes_before = pools[actual_bucket]->allocatedBytes();
-                insert_row(*pools[actual_bucket]);
-                result.bytes_grown += pools[actual_bucket]->allocatedBytes() - bytes_before;
-            }
-            else
-            {
-                std::lock_guard lock((*bucket_locks)[actual_bucket].mutex);
-                const size_t bytes_before = pools[actual_bucket]->allocatedBytes();
-                insert_row(*pools[actual_bucket]);
-                result.bytes_grown += pools[actual_bucket]->allocatedBytes() - bytes_before;
-            }
-        }
+        if constexpr (is_asof_join)
+            Inserter<HashMap, KeyGetter>::insertAsof(
+                join, map, key_getter, stored_block_no, ind, pool, result.new_keys, *asof_column);
+        else if constexpr (mapped_one)
+            result.is_inserted
+                |= Inserter<HashMap, KeyGetter>::insertOne(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
         else
-        {
-            const size_t bytes_before = map.impls[0].getBufferSizeInBytes() + pools[0]->allocatedBytes();
-            insert_row(*pools[0]);
-            const size_t bytes_after = map.impls[0].getBufferSizeInBytes() + pools[0]->allocatedBytes();
-            result.bytes_grown += bytes_after - bytes_before;
-        }
+            result.all_values_unique
+                &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
     }
 }
 
