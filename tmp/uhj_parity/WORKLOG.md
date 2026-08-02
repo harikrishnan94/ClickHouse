@@ -306,3 +306,48 @@ diff -> no output ; M6 ROWS IDENTICAL
 So UHJ does preserve the left block ordering the gate assumes; this is aligned, not UNSETTLED.
 
 Artifacts: `tmp/uhj_parity/m6/`.
+
+## U3 / interim correctness (Gate U4 dry run on the M2+M3+M4+M6 binary)
+
+Test server: restarted on `:9101` because the running one (pid 982095, started 14:07) was executing
+a **deleted** binary — `readlink /proc/982095/exe` reported `.../clickhouse (deleted)` — so it would
+have tested pre-U3 code. This is the campaign's own dedicated server under `tmp/uhj_parity/`; no
+other process was touched.
+
+```
+$ bash tests/queries/0_stateless/04658_unified_hash_join_equivalence.sh   # via CLICKHOUSE_PORT_TCP=9101
+OK
+JOB_EXIT=0
+04658 MATCHES REFERENCE
+
+$ bash tmp/uhj_parity/run_04659.sh
+OK
+JOB_EXIT=0
+SCRIPT_EXIT=0
+04659: harness form required — the upstream .sh passes --max_threads and so does shell_config, and
+the client rejects a duplicated option ("option '--max_threads' cannot be specified more than
+once", JOB_EXIT=36). run_04659.sh (written in a prior unit for this reason) mirrors the test logic
+without the duplicate. Also had to CREATE DATABASE test, which clickhouse-test normally provides.
+```
+
+Both green. This is an interim run; Gate U4 will be re-run on the final binary.
+
+## U3 / M1 feasibility study (read-only, pending user decision)
+
+Checked the one thing that could have made the M1 port impossible: whether UHJ's map iterators can
+report the bucket a cell lives in, which is what the baseline's `isBucketInRange` /
+`skipToNextOwnedBucket` machinery needs.
+```
+$ rg -n "getBucket\b" src/Common/HashTable/TwoLevelHashTable.h
+675:        size_t getBucket() const { return bucket; }
+713:        size_t getBucket() const { return bucket; }
+```
+UHJ's `JoinHashMap`/`JoinHashMapWithSavedHash` are `TwoLevelHashMap`s, so both const and non-const
+iterators expose it. UHJ's non-joined scan (`HashJoin.cpp:1452-1479`) already walks
+`map.begin()..map.end()` with exactly the iterator type the baseline filters on. Open sub-question
+if M1 is approved: whether `JoinFixedHashMap` (`PartitionedFixedHashMap`, used by
+`key8`/`key16`/`range*`) exposes the same, and if not, how the baseline handles those — the baseline
+reaches its bucket-partitioned path only for the two-level family, so a `requires`/`if constexpr`
+guard is the likely shape.
+
+**Status: not implemented. Awaiting the user's answer on M1 scope.**
