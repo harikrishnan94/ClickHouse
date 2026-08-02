@@ -69,6 +69,32 @@ Environment of record (filled as measured):
 ---
 
 
-## Unit 2 — (pre-register each fix before implementing; noise band above)
+## Unit 2 — Parity fixes (PRE-REGISTERED before any fix commit)
 
-*(placeholder — fill before each fix commit)*
+Noise band (declared): effects within `max(5%, 1 stdev)` of run-to-run variance are **NO RESULT**.
+
+### Fix F1 — Align serial/parallel insert locking with baselines (closes A2/B1)
+
+**Expected delta:** UHJ serial wall/cpu within noise of `hash`; UHJ parallel wall/cpu within noise of `parallel_hash` (or residual attributable only to EXCLUDED two-level after F1).
+
+**Baseline being matched**
+- Serial: `src/Interpreters/HashJoin/HashJoinMethodsImpl.h` insert path with `Arena &` and no locks (~243–311); pass `bucket_locks=nullptr` when not doing a multi-threaded build.
+- Parallel: `src/Interpreters/ConcurrentHashJoin.cpp` ~298–351 — hold shard/bucket mutex around a *batch* of rows for that shard (restore scatter-then-lock-per-group), not per-row `std::lock(blocks_mutex, bucket)`. Index `bucket_locks` by bucket alone (not clause×bucket) so arena races are covered without `blocks_mutex` on the row path — matching ConcurrentHashJoin's one-mutex-per-shard model.
+
+**Gate command:** `bash tmp/uhj_parity/bench_serial.sh` and `bash tmp/uhj_parity/bench_parallel.sh`; `bash tmp/uhj_parity/diff_inventory.sh` → no new UHJ-only divergences.
+
+**Refute:** if after F1, serial UHJ still > hash + noise with profile still showing per-row mutex in insert, F1 failed. If parallel still mutex-dominated at 99%, F1 failed.
+
+**Must not:** add UHJ-only fast paths absent from baselines; remove TwoLevel.
+
+### Fix F2 — Plumb `max_threads` through `createInMemoryHashJoin` / SpillingHashJoin for Unified (closes B2)
+
+**Expected delta:** with default spill wrapper, UHJ `num_buckets` / parallel build track `max_threads` like ConcurrentHashJoin path.
+
+**Baseline:** `PlannerJoins.cpp` ConcurrentHashJoin / SpillingHashJoin concurrent ctor passes `params.max_threads`; `InMemoryHashJoin.cpp` must pass through to `UnifiedHashJoin` ctor.
+
+**Gate:** after F1, probe with `max_bytes_before_external_join>0` vs `=0` at same threads — wall should be comparable (not forced to 1-bucket). Re-run U2-PARALLEL.
+
+**Refute:** UHJ under spill still reports/behaves as 1 bucket when max_threads=16.
+
+---
