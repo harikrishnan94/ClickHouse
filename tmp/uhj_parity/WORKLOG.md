@@ -103,3 +103,106 @@ PARALLEL t16: phash wall_median=121 cpu=915184; uhj wall_median=867 cpu=729459
 ```
 
 **Plan change:** apply F1b (`4ea37fd` bucket sizing + F2 max_threads plumb) and `ce6d1d` stagger before re-measuring parallel; do not claim U2-PARALLEL on F1 alone.
+
+---
+
+# U3 — divergence reduction excluding compulsory TwoLevel
+
+## U3 / Unit 1 — Exhaustive divergence inventory
+
+**Goal:** classify every UHJ-vs-baseline divergence; leave no unlabeled avoidable path.
+Performance is explicitly *not* an oracle in this mission.
+
+**Starting state re-verified (not trusted from prior report)**
+```
+$ git status && git log --oneline -3
+On branch uhj-parity
+nothing to commit, working tree clean
+13ec290c6c6 uhj_parity Unit 2: REPORT, gate logs, stop-criterion for two-level CPU
+f0420d93d31 Align UnifiedHashJoin build locks and threading with hash/parallel_hash
+5b659f8f24a uhj_parity: record REWORK remediation status in U1_VERIFY.md
+$ git branch -v | grep preserve
+  uhj-parity-preserve-20260802  86e2f1b07b3 Add buffer size management for HashTable and UnifiedHashJoin
+```
+Tip matches the briefed `13ec290c6c6` / `f0420d93d31`; preserve branch intact.
+
+**Method change vs prior units.** The prior inventory (`INVENTORY.md`) listed 7 items (A1-A4, B1-B3)
+found by profiling hot paths. That is a sampling method and cannot support a "zero avoidable
+divergence" claim. Replaced with a mechanical whole-directory diff, since `UnifiedHashJoin` is a
+fork of `HashJoin` and therefore fully enumerable:
+
+```
+$ diff -ru src/Interpreters/HashJoin src/Interpreters/UnifiedHashJoin > tmp/uhj_parity/U3_rawdiff.txt
+$ wc -l tmp/uhj_parity/U3_rawdiff.txt
+3420 tmp/uhj_parity/U3_rawdiff.txt
+```
+
+3420 lines is mostly the mechanical fork transformation. `tmp/uhj_parity/U3_normdiff.sh` strips the
+`namespace Unified` wrapper, the include-path rewrites and the `Unified::` qualifiers, then re-diffs:
+
+```
+$ ./tmp/uhj_parity/U3_normdiff.sh
+--- residual per-file changed-line counts ---
+   626 HashJoin.cpp
+   364 HashJoin.h
+   152 HashJoinMethodsImpl.h
+   148 KeyGetter.h
+   108 JoinUsedFlags.h
+    66 HashJoinMethods.h
+TOTAL_RESIDUAL_LINES=1464
+```
+
+36 of 42 forked files are byte-identical modulo the wrapper -> they contain no divergence at all.
+This is what makes the inventory exhaustive rather than sampled.
+
+**Claims checked directly rather than taken from subagents** (both plumbing and HashJoin.cpp
+catalogues were produced by explore subagents; every load-bearing row below was re-verified by me):
+
+1. `allOffsetFlagsSet` — baseline defines it at `JoinUsedFlags.h:261` and its only use is
+   `HashJoin.cpp:1231`, inside `updateNonJoinedRowsStatus`, whose only caller is
+   `ConcurrentHashJoin.cpp:569`. `hash` never reaches it. -> removal loses no baseline behavior. EXCLUDED (E15).
+2. `prepareRightBlock` — subagent flagged `GraceHashJoin.cpp:759` hardcoding the baseline static for
+   the Unified kind as a possible correctness risk. Diffed the two statics:
+   ```
+   $ diff -u <(sed -n '/^Block HashJoin::prepareRightBlock(const Block & block, const Block & saved_block_sample_)/,/^}/p' src/Interpreters/HashJoin/HashJoin.cpp) \
+             <(sed -n '/^Block HashJoin::prepareRightBlock(const Block & block, const Block & saved_block_sample_)/,/^}/p' src/Interpreters/UnifiedHashJoin/HashJoin.cpp)
+   IDENTICAL
+   ```
+   -> no behavioral divergence today. Downgraded MATERIAL -> LEAD (L1). **Null result recorded.**
+3. `ExpressionAnalyzer` arg parity — subagent's table implied unified gets weaker args than `hash`
+   there. Read `ExpressionAnalyzer.cpp:1085-1092`: `hash` is constructed as
+   `HashJoin(analyzed_join, right_sample_block)` (defaults `any_take_last_row=false`, stats `{}`),
+   `parallel_hash` gets `StatsCollectingParams{}`, unified gets `false` + `StatsCollectingParams{}`.
+   All three identical. -> **REFUTED, null result.** Not an inventory row.
+4. Macro renames — the two renames are not equivalent:
+   ```
+   $ rg -n "KEYGETTER_RANGE_IMPL" src/Interpreters/HashJoin/KeyGetter.h | tail -1
+   284:#undef KEYGETTER_RANGE_IMPL          # undef'd -> rename is gratuitous  -> MATERIAL M4
+   $ rg -n "APPLY_FOR_JOIN_VARIANTS" src/ | grep -v UnifiedHashJoin | wc -l
+   13                                       # not undef'd, used from 4 other TUs -> rename required -> FORK-MECHANICAL F1
+   ```
+5. M1 (the flagship item) — verified by reading `ConcurrentHashJoin.cpp:525-560` and
+   `HashJoin.cpp:1513-1521` directly. CHJ's parallel non-joined path has an explicit
+   *two-level* branch (`:555-560`, comment "Two-level maps: partition buckets across pipeline
+   streams") that delegates to the baseline's 5-arg `HashJoin::getNonJoinedBlocks`. So the baseline
+   implements parallel non-joined processing **on top of** two-level maps. UHJ's maps are always
+   two-level yet it overrides neither `supportParallelNonJoinedBlocksProcessing` (inherits `false`
+   from `IJoin.h:158`) nor the 5-arg overload (inherits the partition-ignoring default at
+   `IJoin.h:170`). TwoLevel is the *enabler* here, not the cause of the gap -> MATERIAL, not EXCLUDED.
+
+**Classification-scheme decision (authority call, raised to user).** Two rows (macro rename required
+to avoid redefinition clash; `getName()` string) are neither TwoLevel-required nor removable without
+deleting the fork. Folding them into EXCLUDED would be exactly the reclassification the mission
+bans, so they are carried in a separate, explicitly labeled FORK-MECHANICAL bucket and excluded from
+the `AVOIDABLE_MATERIAL` count. Flagged to the user for confirmation rather than decided silently.
+
+**Outcome:** `INVENTORY_U3.md`. `AVOIDABLE_MATERIAL=6` (M1-M6), EXCLUDED 17 groups / 44 regions,
+FORK-MECHANICAL 2, LEAD 4, UNSETTLED 0. Prior A3 (per-row `getBufferSizeInBytes`) is resolved: it no
+longer exists — byte accounting is now the `bucket_bytes` running sum (E12). Prior A4
+(`supportParallelJoin`) is resolved as EXCLUDED/baseline-faithful (E14): it matches
+`ConcurrentHashJoin`, which the mission names as the parallel-path baseline.
+
+**Plan change:** Unit 2 gated on three user decisions recorded in `INVENTORY_U3.md` "Open questions"
+(M1 scope, M5 align direction, FORK-MECHANICAL bucket). Asked and waiting; no implementing edit made.
+
+**Non-gates:** no bench was run in this unit and none is required by it.
