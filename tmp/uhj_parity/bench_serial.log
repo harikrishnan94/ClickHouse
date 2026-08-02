@@ -1,0 +1,22 @@
+BENCH_SERIAL begin port=9101 binary=/mnt/ch/ClickHouse/build/reldeb/programs/clickhouse 2026-08-02T13:35:49+05:30
+SETTINGS max_threads=1 enable_join_runtime_filters=0 max_bytes_before_external_join=0
+# algo=hash runs=5 build_rows=10000000 probe_rows=100000
+  run=1 wall_ms=489 cpu_us=158117
+  run=2 wall_ms=272 cpu_us=167568
+  run=3 wall_ms=270 cpu_us=159516
+  run=4 wall_ms=252 cpu_us=159771
+  run=5 wall_ms=386 cpu_us=163660
+RESULT algo=hash wall_median_ms=272 wall_stdev_ms=101.726 cpu_median_us=159771 cpu_stdev_us=3860.06
+RAW_WALL algo=hash 489 272 270 252 386 
+RAW_CPU algo=hash 158117 167568 159516 159771 163660 
+# algo=unified_hash runs=5 build_rows=10000000 probe_rows=100000
+  run=1 wall_ms=1817 cpu_us=1720913
+  run=2 wall_ms=2063 cpu_us=1733076
+  run=3 wall_ms=1839 cpu_us=1746325
+  run=4 wall_ms=1832 cpu_us=1726481
+  run=5 wall_ms=2071 cpu_us=1743146
+RESULT algo=unified_hash wall_median_ms=1839 wall_stdev_ms=130.448 cpu_median_us=1733076 cpu_stdev_us=10772.8
+RAW_WALL algo=unified_hash 1817 2063 1839 1832 2071 
+RAW_CPU algo=unified_hash 1720913 1733076 1746325 1726481 1743146 
+BENCH_SERIAL_DONE
+JOB_EXIT=0

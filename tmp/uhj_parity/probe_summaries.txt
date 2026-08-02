@@ -1,0 +1,4 @@
+SUMMARY label=serial_hash total=36 mutex_related=18 insert_related=18
+SUMMARY label=serial_uhj total=170 mutex_related=110 insert_related=84
+SUMMARY label=parallel_phash total=42 mutex_related=10 insert_related=5
+SUMMARY label=parallel_uhj total=6733 mutex_related=6674 insert_related=5815

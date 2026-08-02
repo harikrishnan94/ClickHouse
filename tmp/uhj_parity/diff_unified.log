@@ -1,0 +1,18 @@
+MISMATCH [spill INNER] extra=[--max_bytes_before_external_join=2000000]
+  query: WITH l AS (SELECT number % 1000 AS k, toString(number % 700) AS s FROM numbers(5000)), r AS (SELECT number % 1300 AS k, toInt64(number) AS v, toString(number % 900) AS s FROM numbers(4000))
+            SELECT count(), sum(ifNull(r.v, -1)) FROM l INNER JOIN r ON l.k = r.k
+  hash        : Received exception from server (version 26.8.1):|Code: 290. DB::Exception: Received from 127.0.0.1:9101. DB::Exception: Too many grace hash join buckets (2048 > 1024), consider increasing grace_hash_join_max_buckets or max_rows_in_join/max_bytes_in_join: While executing DelayedJoinedBlocksTransform. (LIMIT_EXCEEDED)|(query: WITH l AS (SELECT number % 1000 AS k, toString(number % 700) AS s FROM numbers(5000)), r AS (SELECT number % 1300 AS k, toInt64(number) AS v, toString(number % 900) AS s FROM numbers(4000))|            SELECT count(), sum(ifNull(r.v, -1)) FROM l INNER JOIN r ON l.k = r.k)|
+  unified_hash: 15500	28967250|
+MISMATCH [spill RIGHT] extra=[--max_bytes_before_external_join=2000000]
+  query: WITH l AS (SELECT number % 1000 AS k, toString(number % 700) AS s FROM numbers(5000)), r AS (SELECT number % 1300 AS k, toInt64(number) AS v, toString(number % 900) AS s FROM numbers(4000))
+            SELECT count(), sum(ifNull(r.v, -1)) FROM l RIGHT JOIN r ON l.k = r.k
+  hash        : Received exception from server (version 26.8.1):|Code: 290. DB::Exception: Received from 127.0.0.1:9101. DB::Exception: Too many grace hash join buckets (2048 > 1024), consider increasing grace_hash_join_max_buckets or max_rows_in_join/max_bytes_in_join: While executing DelayedJoinedBlocksTransform. (LIMIT_EXCEEDED)|(query: WITH l AS (SELECT number % 1000 AS k, toString(number % 700) AS s FROM numbers(5000)), r AS (SELECT number % 1300 AS k, toInt64(number) AS v, toString(number % 900) AS s FROM numbers(4000))|            SELECT count(), sum(ifNull(r.v, -1)) FROM l RIGHT JOIN r ON l.k = r.k)|
+  unified_hash: 16400	31171800|
+MISMATCH [spill FULL] extra=[--max_bytes_before_external_join=2000000]
+  query: WITH l AS (SELECT number % 1000 AS k, toString(number % 700) AS s FROM numbers(5000)), r AS (SELECT number % 1300 AS k, toInt64(number) AS v, toString(number % 900) AS s FROM numbers(4000))
+            SELECT count(), sum(ifNull(r.v, -1)) FROM l FULL JOIN r ON l.k = r.k
+  hash        : Received exception from server (version 26.8.1):|Code: 290. DB::Exception: Received from 127.0.0.1:9101. DB::Exception: Too many grace hash join buckets (2048 > 1024), consider increasing grace_hash_join_max_buckets or max_rows_in_join/max_bytes_in_join: While executing DelayedJoinedBlocksTransform. (LIMIT_EXCEEDED)|(query: WITH l AS (SELECT number % 1000 AS k, toString(number % 700) AS s FROM numbers(5000)), r AS (SELECT number % 1300 AS k, toInt64(number) AS v, toString(number % 900) AS s FROM numbers(4000))|            SELECT count(), sum(ifNull(r.v, -1)) FROM l FULL JOIN r ON l.k = r.k)|
+  unified_hash: 16400	31171800|
+checks=44 mismatches=3
+DIFF_RESULT=FAIL
+JOB_EXIT=0
