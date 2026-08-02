@@ -86,3 +86,20 @@ SUMMARY label=parallel_uhj total=6733 mutex_related=6674 insert_related=5815
 4. Evidence refresh committed as its own commit after this remediation (freeze for re-verify).
 
 **INVENTORY:** A2 path CONFIRM MATERIAL (magnitude partial); B1 CONFIRM MATERIAL; B2 plumbing CONFIRM / wall UNSETTLED pending B1.
+
+---
+
+## Unit 2 — F1 lock alignment (in progress)
+
+**What was done**
+- Cherry-picked `2f1efe4c617` (batch bucket lock / Arena& insert like HashJoin+ConcurrentHashJoin).
+- Build JOB_EXIT=0; server restarted.
+
+**F1-alone gates** (`bench_*_f1.log`)
+```
+SERIAL: hash wall_median=268 cpu=160021; uhj wall_median=254 cpu=157107  → GREEN (uhj ≤ hash)
+PARALLEL t16: phash wall_median=121 cpu=915184; uhj wall_median=867 cpu=729459
+  → RED wall (uhj 867 > 121+noise); CPU already better
+```
+
+**Plan change:** apply F1b (`4ea37fd` bucket sizing + F2 max_threads plumb) and `ce6d1d` stagger before re-measuring parallel; do not claim U2-PARALLEL on F1 alone.

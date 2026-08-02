@@ -1,0 +1,22 @@
+BENCH_PARALLEL begin port=9101 threads=16 binary=/mnt/ch/ClickHouse/build/reldeb/programs/clickhouse 2026-08-02T14:06:36+05:30
+SETTINGS max_threads=16 enable_join_runtime_filters=0 max_bytes_before_external_join=0
+# algo=parallel_hash threads=16 runs=5 build_rows=40000000 probe_rows=200000
+  run=1 wall_ms=241 cpu_us=1151584
+  run=2 wall_ms=156 cpu_us=921965
+  run=3 wall_ms=119 cpu_us=895228
+  run=4 wall_ms=117 cpu_us=883207
+  run=5 wall_ms=121 cpu_us=875629
+RESULT algo=parallel_hash threads=16 wall_median_ms=121 wall_stdev_ms=52.9264 cpu_median_us=895228 cpu_stdev_us=116527
+RAW_WALL algo=parallel_hash 241 156 119 117 121 
+RAW_CPU algo=parallel_hash 1151584 921965 895228 883207 875629 
+# algo=unified_hash threads=16 runs=5 build_rows=40000000 probe_rows=200000
+  run=1 wall_ms=197 cpu_us=1195068
+  run=2 wall_ms=155 cpu_us=1183975
+  run=3 wall_ms=148 cpu_us=1215387
+  run=4 wall_ms=144 cpu_us=1217865
+  run=5 wall_ms=158 cpu_us=1189301
+RESULT algo=unified_hash threads=16 wall_median_ms=155 wall_stdev_ms=21.1967 cpu_median_us=1195068 cpu_stdev_us=15419.2
+RAW_WALL algo=unified_hash 197 155 148 144 158 
+RAW_CPU algo=unified_hash 1195068 1183975 1215387 1217865 1189301 
+BENCH_PARALLEL_DONE
+JOB_EXIT=0

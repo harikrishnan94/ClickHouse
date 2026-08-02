@@ -87,6 +87,26 @@ Noise band (declared): effects within `max(5%, 1 stdev)` of run-to-run variance 
 
 **Must not:** add UHJ-only fast paths absent from baselines; remove TwoLevel.
 
+### Fix F1b — Stagger + bucket sizing (closes B3 residual after F1)
+
+**Expected delta:** U2-PARALLEL wall within noise of `parallel_hash` after F1 left ~7× wall gap (CPU already ≤ baseline).
+
+**Baseline:** ConcurrentHashJoin uses `slots ≈ max_threads` and try_lock drain across shards starting independently. Preserve commits `4ea37fd4777` / `ce6d1d7150d` align UHJ bucket count and drain start with that model.
+
+**Gate:** `bench_parallel.sh` after rebuild.
+
+**Refute:** parallel UHJ wall still > parallel_hash + noise after F1b.
+
+### Fix F1c — Drop per-row bucket re-routing (align with HashJoin cost model)
+
+**Expected delta:** parallel/serial UserTime within noise of baselines (F1b wall OK; CPU ~33% high).
+
+**Baseline:** HashJoin does not re-derive two-level bucket per row after scatter; ConcurrentHashJoin probes per-shard maps without extra UHJ routing.
+
+**Gate:** `bench_parallel.sh` / `bench_serial.sh` CPU medians ≤ baseline + noise.
+
+**Refute:** CPU still > baseline + noise after F1c.
+
 ### Fix F2 — Plumb `max_threads` through `createInMemoryHashJoin` / SpillingHashJoin for Unified (closes B2)
 
 **Expected delta:** with default spill wrapper, UHJ `num_buckets` / parallel build track `max_threads` like ConcurrentHashJoin path.

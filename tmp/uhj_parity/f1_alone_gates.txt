@@ -1,0 +1,3 @@
+F1-alone U2-SERIAL: GREEN uhj 254ms <= hash 268ms (noise ~100ms stdev)
+F1-alone U2-PARALLEL: RED uhj 867ms > phash 121ms + noise(~50ms); cpu uhj 729k < phash 915k
+Next: F1b stagger + BUCKETS_PER_THREAD + F2 max_threads plumb (4ea37fd+ce6d1d)
