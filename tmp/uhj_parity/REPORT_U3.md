@@ -138,4 +138,24 @@ So `UNATTRIBUTED=0` does not depend on the broad markers.
 Commissioned specifically to close finding 1: independent adversarial RIGHT/FULL row-set
 comparisons (odd `max_threads`, tiny/empty sides, all-NULL keys, skew, LowCardinality, multi-column
 and direct-addressed keys, no-key joins, spill variants, `join_use_nulls`) plus re-running `04658`
-and `04659` on the current binary. Result recorded in `WORKLOG.md`.
+and `04659` on the current binary.
+
+**RUNTIME VERDICT: PASS.** Binary currency confirmed. ~50 row-set comparisons against both `hash`
+and `parallel_hash`, zero mismatches, covering direct-addressed/String/FixedString/LowCardinality/
+multi-column/Nullable keys, empty and 3-row right sides at `max_threads=32`, 99% skew, `ON 1=0`,
+`join_use_nulls=1`, spill variants, 400k-row full sorted sets, duplicate chains, `max_block_size=7`,
+and odd thread counts. `04658` exit 0 byte-identical to reference; `04659` exit 0.
+
+It also caught a reachability nuance my own discriminator missed: the parallel non-joined path is
+dormant when the optimizer swaps a RIGHT join to LEFT (`query_plan_join_swap_table` default). My
+Gate U2-ALIGN measurement used a CTE query where no swap applied, so it showed 0/8/8 without
+revealing the dependence. With the swap disabled, `unified_hash` = `parallel_hash` = `max_threads`
+across every key type and thread count. M1 stands — UHJ now tracks `parallel_hash` in *both*
+regimes — but the feature's practical reach is narrower than "all RIGHT/FULL joins", which is
+recorded rather than left implied.
+
+### Combined Unit 5 verdict: **SHIP**
+
+Verifier 1's own SHIP condition ("if the runtime gates come back clean") was met by Verifier 2.
+Independence was **not** degraded: neither grader saw the implementer's reasoning, and Verifier 1's
+tool limitation was resolved by commissioning a second grader rather than by self-passing.

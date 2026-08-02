@@ -423,3 +423,43 @@ PARALLEL_BUILD   hunks=25   changed_lines=195
 FORK_MECHANICAL  hunks=9    changed_lines=18
 UNATTRIBUTED     hunks=0    changed_lines=0
 ```
+
+## U3 / Unit 5 — independent verification (two graders)
+
+### Verifier 1 (static, shell blocked in its environment) — FIX-THEN-RESHIP
+No banned move; **no avoidable divergence mislabeled as excluded** (it read every hunk). Three real
+gaps, all addressed: W1 prereg miss (recorded as a gap, not backdated), `joinDispatch.h` never
+diffed (script fixed), broad attribution regexes (answered with `U3_attribute_strict.sh` + reading
+all 347 residue lines). Its stated condition for SHIP was that the runtime gates come back clean.
+
+### Verifier 2 (runtime, adversarial) — RUNTIME VERDICT: PASS
+Binary currency confirmed (`readlink /proc/1080068/exe` -> real path, not `(deleted)`).
+~50 row-set comparisons vs both `hash` and `parallel_hash`, all PASS, zero mismatches:
+UInt8/UInt16 (direct-addressed), UInt64, String, FixedString, LowCardinality, two-column keys,
+Nullable mixed, all-NULL keys, empty right, empty left, 3-row right at `max_threads=32`, 99% skew,
+`ON 1=0`, `join_use_nulls=1`, spill at 8MB and 100MB, 400k-row full sorted sets, duplicate chains
+(RowRefList), `max_block_size=7` (resume + `skipToNextOwnedBucket` stress), odd thread counts 3/5/7.
+`04658` exit 0 byte-identical to reference; `04659` exit 0 `JOB_EXIT=0`.
+
+**Finding it caught that my own discriminator did not.** The parallel non-joined path is reachable
+only when the optimizer does **not** swap the join: with `query_plan_join_swap_table` at its default,
+a RIGHT join over real tables is rewritten to LEFT and the path is dormant (`NonJoined` = 0 for
+`parallel_hash` **and** `unified_hash` alike). My Gate U2-ALIGN measurement used a CTE-based query
+where the swap did not apply, which is why it showed 0/8/8; both observations are correct, but mine
+did not reveal the dependence. With `query_plan_join_swap_table=0` the verifier got, across every
+key type and threads {1,2,3,5,7,8,16,32}:
+```
+hash          NonJoined = 0
+parallel_hash NonJoined = max_threads
+unified_hash  NonJoined = max_threads   (identical to parallel_hash)
+```
+This does not weaken M1: `unified_hash` now tracks `parallel_hash` in **both** regimes — dormant
+when the plan swaps, parallel when it does not — which is exactly the divergence removal claimed.
+It does mean the feature's practical reach is narrower than "all RIGHT/FULL joins", and that is
+recorded rather than left implied.
+Also N/A, not a gap: ASOF RIGHT/FULL is rejected by every algorithm including `hash`; multi-OR FULL
+is `NOT_IMPLEMENTED` in both non-hash algorithms. Consistent, so not divergence.
+
+**Combined verdict: SHIP.** Verifier 1's SHIP condition was met by Verifier 2's clean runtime pass.
+Independence: full — neither grader saw the implementer's reasoning; Verifier 1's tool limitation
+was compensated by commissioning Verifier 2 rather than by self-passing.
