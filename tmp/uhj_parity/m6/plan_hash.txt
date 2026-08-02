@@ -1,0 +1,28 @@
+Output: k, v, w
+
+Limit (preliminary LIMIT)
+│  Limit 20
+│  Offset 0
+└──Sorting (Sorting for ORDER BY)
+   │  Sort description: k ASC
+   │  Limit 20
+   └──Join (JOIN FillRightFirst)
+      │  Type: left | Strictness: any | Algorithm: SpillingHashJoin(HashJoin)
+      │  Join conditions: k = k
+      │  Output:
+      │    Left:  k, v
+      │    Right: w
+      ├──Limit
+      │  │  Limit 20
+      │  │  Offset 0
+      │  └──Sorting
+      │     │  Sort description: k ASC
+      │     │  Limit 20
+      │     └──ReadFromMergeTree (default.l)
+      │           Read type: Default
+      │           Parts: 1 | Granules: 24
+      │           Output: k, v
+      └──ReadFromMergeTree (default.r)
+            Read type: Default
+            Parts: 1 | Granules: 12
+            Output: k, w

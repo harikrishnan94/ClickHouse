@@ -261,3 +261,48 @@ the E13 parallel-build lock split, which is EXCLUDED.
 recorded above rather than quietly re-run.
 
 **Not done in this batch:** M1, M5, M6 — awaiting user decisions.
+
+## U3 / Unit 2 — batch 2: M6 (`optimize_read_in_order` gate)
+
+**Goal:** stop `unified_hash` silently losing `optimize_read_in_order` in the legacy-analyzer path.
+
+**Pre-registration:** `b9cbfabc408`, before the implementing commit.
+
+**Change:** `ExpressionAnalyzer.cpp:2255-2256` — the gate
+`typeid_cast<HashJoin *>(join.get())` now also accepts `UnifiedHashJoin *`.
+
+**Gate U1-DISC — first attempt was inconclusive; recorded rather than discarded.**
+The initial `EXPLAIN PLAN` compared all three algorithms and showed identical plans differing only
+in the algorithm name. Cause: with default settings the join is wrapped, so the plan reported
+`SpillingHashJoin(HashJoin)` and `join.get()` is a `SpillingHashJoin` — the `typeid_cast` fails for
+*all three* algorithms and the gate is never reached. That run discriminated nothing.
+
+Re-ran with `max_bytes_before_external_join=0, max_bytes_ratio_before_external_join=0` so the join
+is a bare in-memory one:
+```
+hash          Algorithm: HashJoin           left ReadFromMergeTree  Read type: InOrder
+unified_hash  Algorithm: UnifiedHashJoin    left ReadFromMergeTree  Read type: InOrder
+parallel_hash Algorithm: ConcurrentHashJoin left ReadFromMergeTree  Read type: Default  (+ extra Sorting)
+```
+
+**Genuine before/after control.** Because the discriminator was first run *after* the edit, the
+change was stashed, rebuilt and re-measured, then restored:
+```
+$ git stash push -q src/Interpreters/ExpressionAnalyzer.cpp && ninja -C build/reldeb clickhouse   # NINJA_EXIT=0
+  unified_hash  Algorithm: UnifiedHashJoin  Read type: Default     <-- BEFORE fix
+$ git stash pop -q && ninja -C build/reldeb clickhouse             # NINJA_EXIT=0
+  unified_hash  Algorithm: UnifiedHashJoin  Read type: InOrder     <-- AFTER fix
+```
+CONFIRM: the divergence was real and this edit is what removes it. `parallel_hash` remains the
+negative control — it fails the same cast and still reads `Default`, which is the baseline-faithful
+outcome for it.
+
+**Refute condition not met.** 200-row ordered result set is byte-identical between `hash` and
+`unified_hash` under the read-in-order plan:
+```
+rows: hash=200 unified=200
+diff -> no output ; M6 ROWS IDENTICAL
+```
+So UHJ does preserve the left block ordering the gate assumes; this is aligned, not UNSETTLED.
+
+Artifacts: `tmp/uhj_parity/m6/`.
