@@ -69,3 +69,35 @@ section of `U3_normdiff.txt`; the file still compiles, proving no clash.
 
 **Refute condition.** A redefinition or "macro redefined" diagnostic appears at build time, which
 would reclassify this as FORK-MECHANICAL.
+
+---
+
+## M6 — admit `Unified::HashJoin` to the `optimize_read_in_order` gate
+
+**Divergence.** `ExpressionAnalyzer.cpp:2255`:
+```cpp
+join_allow_read_in_order = typeid_cast<HashJoin *>(join.get()) && !join_has_delayed_stream;
+```
+A `Unified::HashJoin` is a distinct type, so the cast fails and `unified_hash` silently loses
+`optimize_read_in_order` in the legacy-analyzer path. `hash` keeps it.
+
+**Why avoidable.** Nothing about bucketing affects left-side block ordering. UHJ's probe path
+(`joinBlock` -> `joinBlockImpl`) is textually the baseline's, and `pipelineType()` is identical, so
+UHJ preserves left block order exactly as `hash` does. `supportParallelJoin()==true` resizes the
+**right** stream only, which read-in-order does not depend on. The `join_has_delayed_stream`
+conjunct is computed from `needStreamWithNonJoinedRows()` and is algorithm-independent, so it still
+gates UHJ exactly as it gates `hash`.
+
+**Baseline choice.** Two baseline-faithful shapes exist: `hash` enables read-in-order,
+`parallel_hash` does not (a `ConcurrentHashJoin` also fails the cast). Per the mission's
+reconciling rule this is the serial in-memory join, so `hash` is the shape to match.
+
+**Change.** Extend the gate to accept `Unified::HashJoin` as well.
+
+**Expected structural outcome.** `EXPLAIN PLAN` for an ORDER-BY-on-primary-key query joined with
+`join_algorithm='unified_hash'` under the legacy analyzer shows the same read-in-order plan shape as
+the identical query with `join_algorithm='hash'`, and both return identical rows.
+
+**Refute condition.** Result rows differ between `hash` and `unified_hash` for that query, or the
+plan shows a sort that `hash` does not have — either would mean UHJ does not in fact preserve the
+ordering property the gate assumes, making this UNSETTLED rather than aligned.
