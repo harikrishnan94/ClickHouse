@@ -55,11 +55,14 @@ class HashJoinMethods;
 /// rather than a separate code path.
 constexpr Int32 BITS_FOR_BUCKET = -1;
 
-/// Buckets - and therefore locks and arenas - per build thread. Compile-time, because the right
-/// value is a property of the machine rather than of the query. Raising it trades memory for less
-/// contention when the keys are skewed: each bucket is a sub-table with a minimum capacity, and the
-/// per-offset used flags are sized from the capacity summed over all buckets.
-constexpr size_t BUCKETS_PER_THREAD = 1;
+/// Buckets - and therefore locks and arenas - per build thread. Has to be well above one: a build
+/// thread visits every bucket for every block it inserts, so with as many buckets as threads all of
+/// them are held almost all of the time, every `try_lock` fails and the threads end up queueing on
+/// whichever bucket they block on. Giving each thread several buckets to choose from is what makes
+/// the build actually run concurrently. Raising it further trades memory for tolerance of key skew:
+/// each bucket is a sub-table with a minimum capacity, and the per-offset used flags are sized from
+/// the capacity summed over all buckets.
+constexpr size_t BUCKETS_PER_THREAD = 16;
 
 /// Bucket count for a join whose right side is built by `max_threads` threads. The result is a
 /// power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.

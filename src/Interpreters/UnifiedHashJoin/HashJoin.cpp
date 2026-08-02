@@ -66,7 +66,12 @@ namespace Unified
 {
 size_t bucketCountForThreads(size_t max_threads)
 {
-    return std::bit_ceil(std::max<size_t>(1, max_threads)) * BUCKETS_PER_THREAD;
+    /// A single build thread cannot contend with anyone, so it gets the one-bucket layout: no
+    /// scatter pass, one hash table with the whole right side in it, and a lock it always gets.
+    if (max_threads <= 1)
+        return 1;
+
+    return std::bit_ceil(max_threads) * BUCKETS_PER_THREAD;
 }
 
 size_t getMinBytesForPrefetchInJoin()
