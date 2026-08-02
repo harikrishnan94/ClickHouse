@@ -18,7 +18,6 @@ namespace ErrorCodes
 extern const int LOGICAL_ERROR;
 }
 
-
 namespace Unified
 {
 /// Check if the hash table type supports the prefetch interface.

@@ -11,7 +11,6 @@ namespace ErrorCodes
     extern const int LOGICAL_ERROR;
 }
 
-
 namespace Unified
 {
 static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nullable)

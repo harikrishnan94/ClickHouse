@@ -13,7 +13,6 @@ namespace ErrorCodes
     extern const int LOGICAL_ERROR;
 }
 
-
 namespace Unified
 {
 template <HashJoin::Type type, typename Value, typename Mapped, bool use_offset>

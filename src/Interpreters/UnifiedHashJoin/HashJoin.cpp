@@ -61,7 +61,6 @@ extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 extern const int INVALID_JOIN_ON_EXPRESSION;
 }
 
-
 namespace Unified
 {
 size_t bucketCountForThreads(size_t max_threads)
@@ -1453,6 +1452,7 @@ private:
         {
             using Mapped = typename Map::mapped_type;
             using Iterator = typename Map::const_iterator;
+
 
             if (!position.has_value())
                 position = std::make_any<Iterator>(map.begin());
