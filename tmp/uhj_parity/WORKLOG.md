@@ -67,3 +67,22 @@ SUMMARY label=parallel_uhj total=6733 mutex_related=6674 insert_related=5815
 **Plan changes:** Primary fix target for Unit 2 = align insert locking with baselines (nullptr/`hash` serial path; ConcurrentHashJoin-style batch lock for parallel), then plumb max_threads (B2).
 
 **Authority calls:** none new.
+
+---
+
+## Unit 1 — REWORK remediation (after verifier a8148942)
+
+**Blockers addressed**
+1. Fixed `probe_profile.sh` lock filter (exclude `condition_variable` / `pthread_cond`; require real lock ops). Re-ran as v2:
+   ```
+   serial_hash_v2  lock_in_insert=0
+   serial_uhj_v2   lock_in_insert=33   (lock_ops=33, all under insert)
+   parallel_phash_v2 lock_in_insert=0
+   parallel_uhj_v2   lock_in_insert=5055/5929
+   ```
+   Retracted prior `mutex_related=110/170` claim.
+2. `probe_b2.txt` now has raw RESULT lines (UHJ ~1.3s both spill settings; parallel_hash ~60ms).
+3. `run_04659.sh` rewritten to avoid duplicate `--max_threads` (original test + shell_config clash).
+4. Evidence refresh committed as its own commit after this remediation (freeze for re-verify).
+
+**INVENTORY:** A2 path CONFIRM MATERIAL (magnitude partial); B1 CONFIRM MATERIAL; B2 plumbing CONFIRM / wall UNSETTLED pending B1.

@@ -1,0 +1,10 @@
+B2 spill probe 2026-08-02T13:57:30+05:30
+QUERY: SELECT count() FROM (SELECT number AS k FROM numbers(20000)) l INNER JOIN (SELECT number AS k FROM numbers_mt(2000000)) r ON l.k=r.k
+settings: max_threads=16 enable_join_runtime_filters=0; spill in {0, 1000000000}
+RESULT algo=unified_hash spill=0 best_ms=1390 raw_ms= 1413 1390 1400
+RESULT algo=parallel_hash spill=0 best_ms=62 raw_ms= 69 62 62
+RESULT algo=unified_hash spill=1000000000 best_ms=1319 raw_ms= 1319 1410 1341
+RESULT algo=parallel_hash spill=1000000000 best_ms=60 raw_ms= 60 61 61
+B2_CODE: PlannerJoins UNIFIED+spill uses SpillingHashJoin without concurrent_slots; createInMemoryHashJoin omits max_threads
+B2_DONE
+JOB_EXIT=0

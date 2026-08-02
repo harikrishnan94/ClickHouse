@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# U1-DISC: sampling Real profiler; summarize top frames mentioning mutex/lock vs insert.
+# U1-DISC: Real profiler; lock share excludes cond_wait false positives.
+# Lock samples require pthread_mutex_lock/unlock or std::__1::lock / scoped_lock / lock_guard
+# as a *frame symbol*, not a mere template parameter containing the substring "mutex".
 set -euo pipefail
 CH_BIN="${CH_BIN:-/mnt/ch/ClickHouse/build/reldeb/programs/clickhouse}"
 PORT="${UHJ_PORT:-9101}"
 CH=("$CH_BIN" client --host 127.0.0.1 --port "$PORT")
 OUTDIR=/mnt/ch/ClickHouse/tmp/uhj_parity
-LABEL="$1"   # e.g. serial_hash
+LABEL="$1"
 ALGO="$2"
 THREADS="$3"
 BUILD_ROWS="$4"
@@ -23,7 +25,6 @@ echo "PROBE label=$LABEL algo=$ALGO threads=$THREADS qid=$QID"
 
 "${CH[@]}" -q "SYSTEM FLUSH LOGS"
 
-# Top 12 stacks by samples (symbol demangled, truncated)
 "${CH[@]}" --allow_introspection_functions=1 -q "
 SELECT
   count() AS samples,
@@ -38,23 +39,47 @@ LIMIT 12
 FORMAT PrettyCompact
 " | tee "$OUTDIR/probe_${LABEL}_stacks.txt"
 
-# Aggregate keyword shares
+# Frame is a lock acquisition/release symbol (not condition_variable wait).
+# Match on mangled-friendly demangled names that are actual lock ops.
+LOCK_PRED="
+  arrayExists(x ->
+    (
+      position(demangle(addressToSymbol(x)), 'pthread_mutex_lock') > 0
+      OR position(demangle(addressToSymbol(x)), 'pthread_mutex_unlock') > 0
+      OR position(demangle(addressToSymbol(x)), '__pthread_mutex_lock') > 0
+      OR position(demangle(addressToSymbol(x)), 'std::__1::mutex::lock') > 0
+      OR position(demangle(addressToSymbol(x)), 'std::__1::mutex::unlock') > 0
+      OR position(demangle(addressToSymbol(x)), 'std::__1::lock') > 0
+      OR position(demangle(addressToSymbol(x)), 'scoped_lock') > 0
+      OR position(demangle(addressToSymbol(x)), 'lock_guard') > 0
+    )
+    AND position(demangle(addressToSymbol(x)), 'condition_variable') = 0
+    AND position(demangle(addressToSymbol(x)), 'pthread_cond') = 0
+  , trace)
+"
+
+INSERT_PRED="
+  arrayExists(x ->
+    position(demangle(addressToSymbol(x)), 'insertFromBlock') > 0
+    OR position(demangle(addressToSymbol(x)), 'insertAll') > 0
+    OR position(demangle(addressToSymbol(x)), 'insertOne') > 0
+  , trace)
+"
+
 TOTAL=$("${CH[@]}" -q "SELECT count() FROM system.trace_log WHERE query_id='$QID' AND trace_type='Real'")
-MUTEX=$("${CH[@]}" --allow_introspection_functions=1 -q "
+LOCK=$("${CH[@]}" --allow_introspection_functions=1 -q "
 SELECT count() FROM system.trace_log
-WHERE query_id='$QID' AND trace_type='Real'
-  AND arrayExists(x -> positionCaseInsensitive(demangle(addressToSymbol(x)), 'mutex') > 0
-                    OR positionCaseInsensitive(demangle(addressToSymbol(x)), 'pthread_mutex') > 0
-                    OR positionCaseInsensitive(demangle(addressToSymbol(x)), 'std::lock') > 0
-                    OR positionCaseInsensitive(demangle(addressToSymbol(x)), 'scoped_lock') > 0
-                    OR positionCaseInsensitive(demangle(addressToSymbol(x)), 'lock_guard') > 0, trace)
+WHERE query_id='$QID' AND trace_type='Real' AND ($LOCK_PRED)
 ")
 INSERT=$("${CH[@]}" --allow_introspection_functions=1 -q "
 SELECT count() FROM system.trace_log
-WHERE query_id='$QID' AND trace_type='Real'
-  AND arrayExists(x -> positionCaseInsensitive(demangle(addressToSymbol(x)), 'insertFromBlock') > 0
-                    OR positionCaseInsensitive(demangle(addressToSymbol(x)), 'insertAll') > 0
-                    OR positionCaseInsensitive(demangle(addressToSymbol(x)), 'insertOne') > 0, trace)
+WHERE query_id='$QID' AND trace_type='Real' AND ($INSERT_PRED)
 ")
-echo "SUMMARY label=$LABEL total=$TOTAL mutex_related=$MUTEX insert_related=$INSERT"
-echo "SUMMARY label=$LABEL total=$TOTAL mutex_related=$MUTEX insert_related=$INSERT" | tee -a "$OUTDIR/probe_summaries.txt"
+# Discriminating: lock frames under insert path
+LOCK_IN_INSERT=$("${CH[@]}" --allow_introspection_functions=1 -q "
+SELECT count() FROM system.trace_log
+WHERE query_id='$QID' AND trace_type='Real' AND ($LOCK_PRED) AND ($INSERT_PRED)
+")
+
+echo "SUMMARY label=$LABEL total=$TOTAL lock_ops=$LOCK insert_related=$INSERT lock_in_insert=$LOCK_IN_INSERT"
+echo "SUMMARY label=$LABEL total=$TOTAL lock_ops=$LOCK insert_related=$INSERT lock_in_insert=$LOCK_IN_INSERT" | tee -a "$OUTDIR/probe_summaries_v2.txt"
