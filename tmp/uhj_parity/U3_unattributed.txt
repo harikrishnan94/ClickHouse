@@ -1,0 +1,440 @@
++        return 1;
++template <typename Methods, typename Map>
++    HashJoin & join,
++    HashJoin::Type type,
++    Map & map,
++    const ColumnRawPtrs & key_columns,
++    const Sizes & key_sizes,
++    ConstNullMapPtr null_map,
++    const JoinCommon::JoinMask & join_mask)
++        return result;
++        bool made_progress = false;
++                continue;
++                continue;
++            made_progress = true;
++        if (!made_progress)
++                    continue;
++                break;
++    return result;
++static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes);
+-            default:                                          return 0;
++            case Type::keys32: return 1;
++            case Type::keys64: return 2;
++            case Type::keys128: return 3;
++            case Type::keys256: return 4;
++            default: return 0;
+-    const StatsCollectingParams & stats_collecting_params_)
++    const StatsCollectingParams & stats_collecting_params_,
+-    , data(std::make_shared<RightTableData>())
++    if (table_join->oneDisjunct() && strictness != JoinStrictness::Asof)
++            selected_join_method = chooseMethod(key_columns, asof_key_sizes);
++            auto current_join_method = chooseMethod(key_columns, key_sizes.emplace_back());
+-    using Type = HashJoin::Type;
+-        return chooseMethod(key_columns, key_sizes);
+-    switch (auto type = chooseMethod(key_columns, key_sizes))
+-        case Type::key32:
+-        case Type::key64:
+-        case Type::keys32:
+-        case Type::keys64:
+-        case Type::keys128:
+-        case Type::keys256:
+-        case Type::key_string:
+-        case Type::key_fixed_string:
+-        case Type::hashed:
+-        default:
+-            return type;
+-    joinDispatch(kind, strictness, map, prefer_use_maps_all, [&](auto, auto, auto & map_) { map_.create(data->type, reserve_num); });
++    joinDispatch(
+-    size_t res = 0;
++    if (!data)
++        return;
+-            kind, strictness, map, prefer_use_maps_all, [&](auto, auto, auto & map_) { res += map_.getTotalRowCount(data->type); });
++            kind,
++            strictness,
++            map,
++            prefer_use_maps_all,
++            [&](auto, auto, auto & map_) { res += map_.getTotalByteCountImpl(data->type); });
+-    return res;
+-    size_t res = 0;
++    if (!data)
++        return 0;
+-    res += data->pool.allocatedBytes();
+-    const bool prefer_use_maps_all = preferUseMapsAll();
+-    for (const auto & map : data->maps)
+-        joinDispatch(
+-            kind,
+-            strictness,
+-            map,
+-            prefer_use_maps_all,
+-            [&](auto, auto, auto & map_) { res += map_.getTotalByteCountImpl(data->type); });
+-    return res;
++        return;
++        size_t data_allocated_bytes = 0;
++            data_allocated_bytes = stored_columns->allocatedBytes();
+-        auto * stored_columns = &data->columns.back();
+-        size_t data_allocated_bytes = stored_columns->allocatedBytes();
++                    using Methods = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>;
++                    else
+-                        stored_columns->selector,
+-                        join_mask_col,
+-                        data->pool,
++                        join_mask_col);
+-                data->columns.pop_back();
++                stored_columns = nullptr;
+-            total_rows = getTotalRowCount();
+-            total_bytes = getTotalByteCount();
+-    auto new_total_bytes_in_join = getTotalByteCount();
+-    if (!data)
+-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot join after data has been released");
+-    chassert(kind == JoinKind::Left || kind == JoinKind::Inner || kind == JoinKind::Right || kind == JoinKind::Full);
+-    for (const auto & onexpr : table_join->getClauses())
+-        auto cond_column_name = onexpr.condColumnNames();
+-        JoinCommon::checkTypesOfKeys(
+-            onexpr.key_names_left,
+-            cond_column_name.first,
+-            onexpr.key_names_right,
+-            cond_column_name.second);
+-    std::vector<const std::decay_t<decltype(data->maps[0])> *> maps_vector;
+-    maps_vector.reserve(table_join->getClauses().size());
+-    for (size_t i = 0; i < table_join->getClauses().size(); ++i)
+-        maps_vector.push_back(&data->maps[i]);
+-    const bool prefer_use_maps_all = preferUseMapsAll();
+-    JoinResultPtr res;
+-    [[maybe_unused]] const bool joined = joinDispatch(
+-        kind,
+-        strictness,
+-        maps_vector,
+-        prefer_use_maps_all,
+-        [&](auto kind_, auto strictness_, auto & maps_vector_)
+-            if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAll *>>)
+-            else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsOne *>>)
+-            else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAsof *>>)
+-            else
+-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown maps type");
+-    chassert(joined);
+-    return res;
+-            if (const auto ht_size = getTotalRowCount())
+-        getTotalByteCount(),
+-        getTotalRowCount());
+-    if (has_non_joined_rows_checked)
+-        return has_non_joined_rows;
+-    if (!isRightOrFull(kind))
+-        return false;
+-    if (!needUsedFlagsForPerRightTableRow(table_join))
+-        return false;
+-        return false;
+-    return has_non_joined_rows;
+-    if (has_non_joined_rows_checked)
+-        return;
+-    bool found_non_joined = false;
+-        if (!data->nullmaps.empty())
+-            found_non_joined = true;
+-        else if (used_flags)
+-            if (needUsedFlagsForPerRightTableRow(table_join))
+-                found_non_joined = true;
+-            else if (table_join->oneDisjunct())
+-            else
+-                found_non_joined = true;
+-    has_non_joined_rows = found_non_joined;
+-    has_non_joined_rows_checked = true;
+-            APPLY_FOR_JOIN_VARIANTS(M)
+-                    continue;
+-            if constexpr (requires {
++            for (; it != end; ++it)
+-                        if (next <= cur)
+-                        it = map.iteratorAt(next);
+-                    return it != end;
++                if (parent.isUsed(offset))
++                    continue;
+-                    return row_nums.size();
++                const Mapped & mapped = it->getMapped();
++                CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
+-                    if (!parent.isUsed(offset))
+-                        const Mapped & mapped = it->getMapped();
+-                        CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
+-                        break;
+-            else
+-                for (; it != end; ++it)
+-                    if (parent.isUsed(offset))
+-                        continue;
+-                    const Mapped & mapped = it->getMapped();
+-                    CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
+-                        ++it;
+-                        break;
++                    break;
+-            return;
+-        log, "{}Join data is being released, {} bytes and {} rows in hash table", instance_log_id, getTotalByteCount(), getTotalRowCount());
++        log,
++        "{}Join data is being released, {} bytes and {} rows in hash table",
++        instance_log_id,
+-                APPLY_FOR_JOIN_VARIANTS(M)
+-    size_t total_rows = getTotalRowCount();
+-    if (data)
+-    return total_rows;
++        LOG_DEBUG(
++            log,
++            "The joined right table total rows :{}, total keys :{}",
+-        using RangeMap = FixedHashMapWithSizeBits<Key, Mapped, size_bits>;
+-        auto range_map = std::make_shared<RangeMap>();
++    const bool prefer_use_maps_all = preferUseMapsAll();
++    for (auto & map : data->maps)
++        joinDispatch(
++            kind,
++            strictness,
++            map,
++            prefer_use_maps_all,
+-    if (!twoLevelMapIsUsed())
+-        used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
++    used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
+-    LOG_TRACE(log, "{}Join data is built, {} and {} rows in hash table", instance_log_id, ReadableSize(getTotalByteCount()), getTotalRowCount());
++    LOG_TRACE(
++        log,
++        "{}Join data is built, {} and {} rows in hash table",
++        instance_log_id,
++class JoinSource;
++template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
++template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
++    Key,
++    Mapped,
++    Hash,
++    HashTableGrowerWithPrecalculation<>,
++    HashTableAllocator,
++    HashMapTable,
++template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8>
+-        const StatsCollectingParams & stats_collecting_params_ = {});
++        const StatsCollectingParams & stats_collecting_params_ = {},
++        return std::make_shared<HashJoin>(
+-    #define APPLY_FOR_JOIN_VARIANTS(M) \
+-    #define APPLY_FOR_JOIN_VARIANTS_LIMITED(M) \
+-    #define APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M, ...)           \
+-            APPLY_FOR_JOIN_VARIANTS(M)
+-    bool twoLevelMapIsUsed() const
+-        switch (data->type)
+-        #define M(NAME) \
+-            case Type::NAME: \
+-                return true;
+-            APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M)
+-        #undef M
+-            default:
+-                return false;
+-        std::shared_ptr<FixedHashMap<UInt8, Mapped>>                          key8;
+-        std::shared_ptr<FixedHashMap<UInt16, Mapped>>                         key16;
+-        std::shared_ptr<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>           key32;
+-        std::shared_ptr<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>           key64;
+-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>              key_string;
+-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>              key_fixed_string;
+-        std::shared_ptr<HashMap<UInt32, Mapped, HashCRC32<UInt32>>>           keys32;
+-        std::shared_ptr<HashMap<UInt64, Mapped, HashCRC32<UInt64>>>           keys64;
+-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128HashCRC32>>           keys128;
+-        std::shared_ptr<HashMap<UInt256, Mapped, UInt256HashCRC32>>           keys256;
+-        std::shared_ptr<HashMap<UInt128, Mapped, UInt128TrivialHash>>         hashed;
+-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_string;
+-        std::shared_ptr<HashMapWithSavedHash<std::string_view, Mapped>>      low_cardinality_key_fixed_string;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 8>>          range8_key32;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 16>>         range16_key32;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 17>>         range17_key32;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt32, Mapped, 18>>         range18_key32;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 8>>          range8_key64;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 16>>         range16_key64;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 17>>         range17_key64;
+-        std::shared_ptr<FixedHashMapWithSizeBits<UInt64, Mapped, 18>>         range18_key64;
++        #undef M
+-        void create(Type which, size_t reserve)
+-            #define M(NAME)                                                                                       \
+-                case Type::NAME:                                                                                  \
+-                    if constexpr (HasConstructorOfNumberOfElements<typename decltype(NAME)::element_type>::value) \
+-                        NAME = reserve ? std::make_shared<typename decltype(NAME)::element_type>(reserve)         \
+-                                       : std::make_shared<typename decltype(NAME)::element_type>();               \
+-                    else                                                                                          \
+-                        NAME = std::make_shared<typename decltype(NAME)::element_type>();                         \
++            #define M(NAME)                                                                        \
++                case Type::NAME:                                                                   \
+-                APPLY_FOR_JOIN_VARIANTS(M)
+-                APPLY_FOR_JOIN_VARIANTS(M)
+-                APPLY_FOR_JOIN_VARIANTS(M)
+-                APPLY_FOR_JOIN_VARIANTS(M)
++            #undef M
++            switch (which)
++            #define M(NAME) \
++            #undef M
++            switch (which)
++            #define M(NAME) \
+-        Arena pool;
++            size_t res = 0;
++                res += pool->allocatedBytes();
++            return res;
++            if (keys == 0)
+-    friend class JoinSource;
++    friend class DB::JoinSource;
+-    bool has_non_joined_rows_checked = false;
+-    bool has_non_joined_rows = false;
+-    static ALWAYS_INLINE bool
++    static ALWAYS_INLINE bool insertOne(
+-        if (emplace_result.isInserted() || join.anyTakeLastRow())
++        const bool inserted = emplace_result.isInserted();
++        if (inserted || join.anyTakeLastRow())
+-        return emplace_result.isInserted() || join.anyTakeLastRow();
++        return inserted || join.anyTakeLastRow();
+-    static ALWAYS_INLINE bool
++    static ALWAYS_INLINE bool insertAll(
+-        if (emplace_result.isInserted())
++        const bool inserted = emplace_result.isInserted();
++        if (inserted)
+-        return emplace_result.isInserted();
++        return inserted;
++        const bool inserted = emplace_result.isInserted();
+-        if (emplace_result.isInserted())
++        if (inserted)
+-        return emplace_result.isInserted();
++        return inserted;
++        HashJoin::Type type,
++        MapsTemplate & maps,
++        const ColumnRawPtrs & key_columns,
++        const Sizes & key_sizes,
++    template <typename KeyGetter, typename HashMap>
++        const HashMap & map,
++        const ColumnRawPtrs & key_columns,
++        const Sizes & key_sizes,
+-                typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
+-                typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
+-            APPLY_FOR_JOIN_VARIANTS(M)
++    HashJoin::Type type,
++    MapsTemplate & maps,
++    const ColumnRawPtrs & key_columns,
++    const Sizes & key_sizes,
++    switch (type)
++#define M(TYPE) \
++    case HashJoin::Type::TYPE: \
++#undef M
++    UNREACHABLE();
++template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
++template <typename KeyGetter, typename HashMap>
++    const HashMap & map,
++    const ColumnRawPtrs & key_columns,
++    const Sizes & key_sizes,
++    if constexpr (requires { KeyGetter::has_pre_computed_hashes; })
++    constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
++    auto key_getter = createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes);
++    Arena scratch_pool;
++    const size_t rows = selector.size();
++    for (size_t i = 0; i < rows; ++i)
++        auto key_holder = key_getter.getKeyHolder(selector[i], scratch_pool);
++        const auto & key = keyHolderGetKey(key_holder);
++        size_t hash_value;
++        else
++            hash_value = map.hash(key);
++        indexes.push_back(std::move(column));
++    for (size_t i = 0; i < rows; ++i)
++    for (auto & column : indexes)
++        result.emplace_back(std::move(column));
++    return result;
++template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+-                map.prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
++                auto key_holder = key_getter.getKeyHolder(selectorIndexAt(selector, k), pool);
++                keyHolderDiscardKey(key_holder);
++            Inserter<Cells, KeyGetter>::insertAsof(
+-        using KeyGetter = typename KeyGetterForType<HashJoin::Type::TYPE, MapTypeVal>::Type; \
+-            APPLY_FOR_JOIN_VARIANTS(M)
+-                map->prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
+-            auto find_result = key_getter.findKey(*map, ind, pool);
++    for (const auto * clause_map : mapv)
+-                mapv[0]->prefetch(key_getter_vector[0].getKeyHolder(selectorIndexAt(selector, k), pool));
+-                auto find_result = key_getter_vector[onexpr_idx].findKey(*(mapv[onexpr_idx]), ind, pool);
++        for (const auto * clause_map : mapv)
+-                    mapv[0]->prefetch(key_getter_vector[0].getKeyHolder(selector[k], *pool));
+-                    = row_acceptable ? key_getter_vector[join_clause_idx].findKey(*(mapv[join_clause_idx]), ind, *pool) : FindResult();
+-    void setUsed(const FindResult & f)
++    void setUsed(const FindResult & f [[maybe_unused]])
+-        if constexpr (!use_flags)
+-            return;
+-        if constexpr (flag_per_row)
++        if constexpr (use_flags)
+-            auto & mapped = f.getMapped();
+-            if constexpr (std::is_same_v<std::decay_t<decltype(mapped)>, RowRefList>)
++            if constexpr (flag_per_row)
+-                for (const UInt64 ref_word : refsOf(mapped.word))
++                auto & mapped = f.getMapped();
++                if constexpr (std::is_same_v<std::decay_t<decltype(mapped)>, RowRefList>)
++                    for (const UInt64 ref_word : refsOf(mapped.word))
++                else
++                    auto & flag = headRowFlag(mapped);
+-                auto & flag = headRowFlag(mapped);
+-        else
+-    bool getUsed(const FindResult & f)
++    bool getUsed(const FindResult & f [[maybe_unused]])
+-        if constexpr (!use_flags)
+-            return true;
+-        if constexpr (flag_per_row)
++        if constexpr (use_flags)
+-            return headRowFlag(f.getMapped()).load();
++            if constexpr (flag_per_row)
++                return headRowFlag(f.getMapped()).load();
++            else
++            return true;
+-    bool setUsedOnce(const FindResult & f)
++    bool setUsedOnce(const FindResult & f [[maybe_unused]])
+-        if constexpr (!use_flags)
+-            return true;
+-        if constexpr (flag_per_row)
++        if constexpr (use_flags)
+-            auto & flag = headRowFlag(f.getMapped());
++            if constexpr (flag_per_row)
++                auto & flag = headRowFlag(f.getMapped());
+-                return false;
++                    return false;
+-            bool expected = false;
+-            return flag.compare_exchange_strong(expected, true);
+-        else
++                bool expected = false;
++                return flag.compare_exchange_strong(expected, true);
++            else
+-                return false;
++                    return false;
+-            bool expected = false;
+-            return per_offset_flags[off].compare_exchange_strong(expected, true);
++                bool expected = false;
++                return per_offset_flags[off].compare_exchange_strong(expected, true);
++        else
++            return true;
+-        for (const auto & per_offset_flag : per_offset_flags)
+-                return false;
+-        return true;
+-template <HashJoin::Type type, typename Value, typename Mapped>
+-struct KeyGetterForTypeImpl;
++struct KeyGetterForTypeImpl;
+-template <typename BaseMethod, typename Mapped>
+-    ALWAYS_INLINE size_t getHash(const Data & data, size_t row, Arena & pool)
+-            return base.getHash(data, row, pool);
+-        const size_t index = getIndexAt(row);
++            auto key_holder = base.getKeyHolder(row_, pool);
++            return data.hash(keyHolderGetKey(key_holder));
++        const size_t row = getIndexAt(row_);
+-            return saved_hash[index];
+-        return base.getHash(data, index, pool);
++            return saved_hash[row];
++        auto key_holder = base.getKeyHolder(row, pool);
++        return data.hash(keyHolderGetKey(key_holder));
+-        if (saved_hash)
+-            data.emplace(key_holder, it, inserted, saved_hash[row]);
+-        else
+-            data.emplace(key_holder, it, inserted);
++            size_t cached_offset = 0;
++            return FindResult(mapped_cache[row], visit_cache[row] == 1, cached_offset);
++        size_t offset = 0;
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key8, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key16, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key32, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key64, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key_string, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key_fixed_string, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::keys32, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::keys64, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::keys128, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::keys256, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::hashed, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::low_cardinality_key_string, Value, Mapped>
+-template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::low_cardinality_key_fixed_string, Value, Mapped>
+-    template <typename Value, typename Mapped> \
+-    struct KeyGetterForTypeImpl<HashJoin::Type::TYPE, Value, Mapped> \
+-template <HashJoin::Type type, typename Data>
+-    using Type = typename KeyGetterForTypeImpl<type, Value, Mapped>::Type;

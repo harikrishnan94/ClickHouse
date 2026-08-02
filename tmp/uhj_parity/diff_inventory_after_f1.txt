@@ -1,0 +1,308 @@
+# diff_inventory 2026-08-02T14:02:11+05:30
+# work tip: 5b659f8f24a uhj_parity: record REWORK remediation status in U1_VERIFY.md
+
+## Commands used
+diff -u src/Interpreters/HashJoin/HashJoinMethodsImpl.h src/Interpreters/UnifiedHashJoin/HashJoinMethodsImpl.h | head
+rg -n 'insertFromBlockImplTypeCase|bucket_locks|blocks_mutex|parallel_build|TwoLevel|max_threads|createInMemoryHashJoin' ...
+
+## Comparison A — serial build: HashJoin vs UnifiedHashJoin
+### insertFromBlockImplTypeCase signature / locking
+HashJoin (no locks, single Arena&):
+99:    Arena & pool,
+108:            insertFromBlockImplTypeCase< \
+112:            insertFromBlockImplTypeCase< \
+243:void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCase(
+252:    Arena & pool,
+
+UnifiedHashJoin (bucket_locks / blocks_mutex on parallel path; two-level byte accounting on serial):
+110:            insertFromBlockImplTypeCase< \
+114:            insertFromBlockImplTypeCase< \
+336:void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCase(
+
+### Map type / TwoLevel
+HashJoin chooseMethod / use_two_level_maps:
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:22:#include <Common/HashTable/TwoLevelHashMap.h>
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:115:        bool use_two_level_maps_ = false,
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:323:        std::shared_ptr<TwoLevelHashMap<UInt32, Mapped, HashCRC32<UInt32>>>   two_level_key32;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:324:        std::shared_ptr<TwoLevelHashMap<UInt64, Mapped, HashCRC32<UInt64>>>   two_level_key64;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:325:        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>>      two_level_key_string;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:326:        std::shared_ptr<TwoLevelHashMapWithSavedHash<std::string_view, Mapped>>      two_level_key_fixed_string;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:327:        std::shared_ptr<TwoLevelHashMap<UInt32, Mapped, HashCRC32<UInt32>>>   two_level_keys32;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:328:        std::shared_ptr<TwoLevelHashMap<UInt64, Mapped, HashCRC32<UInt64>>>   two_level_keys64;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:329:        std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128HashCRC32>>   two_level_keys128;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:330:        std::shared_ptr<TwoLevelHashMap<UInt256, Mapped, UInt256HashCRC32>>   two_level_keys256;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.h:331:        std::shared_ptr<TwoLevelHashMap<UInt128, Mapped, UInt128TrivialHash>> two_level_hashed;
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:100:static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes, bool use_two_level_maps);
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:141:    bool use_two_level_maps,
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:202:    if (table_join->oneDisjunct() && !use_two_level_maps && strictness != JoinStrictness::Asof)
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:254:            selected_join_method = chooseMethod(key_columns, asof_key_sizes, use_two_level_maps);
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:260:            auto current_join_method = chooseMethod(key_columns, key_sizes.emplace_back(), use_two_level_maps);
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:315:static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes)
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:390:static HashJoin::Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes, bool use_two_level_maps)
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:394:    if (!use_two_level_maps)
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:395:        return chooseMethod(key_columns, key_sizes);
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:397:    // if `use_two_level_maps == true` returns two-level version of the map
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:398:    switch (auto type = chooseMethod(key_columns, key_sizes))
+/mnt/ch/ClickHouse/src/Interpreters/HashJoin/HashJoin.cpp:425:/// (materialized) path. Mirrors the single-LowCardinality branch of AggregatedDataVariants::chooseMethod.
+UHJ unconditional TwoLevel / num_buckets:
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:67:size_t bucketCountForThreads(size_t max_threads)
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:69:    return std::bit_ceil(std::max<size_t>(1, max_threads)) * BUCKETS_PER_THREAD;
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:124:    const size_t num_buckets = per_bucket.size();
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:145:    std::vector<char> pending(num_buckets, 0);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:147:    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:170:        for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:189:            for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:265:    size_t max_threads_)
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:272:    , max_threads(std::max<size_t>(1, max_threads_))
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:273:    , num_buckets(bucketCountForThreads(max_threads))
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:275:    , data(std::make_shared<RightTableData>(num_buckets))
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:413:    bucket_locks = std::vector<BucketLock>(data->num_buckets);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:569:        kind, strictness, map, prefer_use_maps_all, [&](auto, auto, auto & map_) { map_.create(data->type, num_buckets, reserve_num); });
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:947:                    const size_t buckets = data->num_buckets;
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:1550:    bucket_locks = std::vector<BucketLock>(data->num_buckets);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.cpp:1919:        auto range_map = std::make_shared<RangeMap>(num_buckets);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:25:#include <Common/HashTable/TwoLevelHashMap.h>
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:62:constexpr size_t BUCKETS_PER_THREAD = 1;
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:64:/// Bucket count for a join whose right side is built by `max_threads` threads. The result is a
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:65:/// power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:66:size_t bucketCountForThreads(size_t max_threads);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:93:/// The grower is spelled out because `TwoLevelHashMap` defaults to `TwoLevelHashTableGrower`, which
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:98:    = TwoLevelHashMap<Key, Mapped, Hash, HashTableGrowerWithPrecalculation<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET>;
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:101:using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:197:        size_t max_threads_ = 1);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:215:            table_join_, right_sample_block_, any_take_last_row, reserve_num, instance_id, stats_collecting_params, max_threads);
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:378:        /// Every variant is a bucket-partitioned table taking the same `(num_buckets, size_hint)`,
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:491:        explicit RightTableData(size_t buckets) : num_buckets(buckets)
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:500:        /// `max_threads`, and the locks must match the maps, not the join that took them over.
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:501:        const size_t num_buckets;
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:653:    /// it. Every map of every clause is built with `num_buckets` buckets, so one bucket index
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:655:    const size_t max_threads;
+/mnt/ch/ClickHouse/src/Interpreters/UnifiedHashJoin/HashJoin.h:656:    const size_t num_buckets;
+
+### Plumbing: createInMemoryHashJoin / SpillingHashJoin / PlannerJoins
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:36:#include <Interpreters/ConcurrentHashJoin.h>
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:44:#include <Interpreters/UnifiedHashJoin/HashJoin.h>
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:49:#include <Interpreters/SpillingHashJoin.h>
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:70:    extern const SettingsMaxThreads max_threads;
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1217:                    return std::make_shared<SpillingHashJoin>(
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1224:                        params.max_threads,
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1231:            return std::make_shared<SpillingHashJoin>(
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1249:                return std::make_shared<ConcurrentHashJoin>(
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1251:                    params.max_threads,
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1260:            return std::make_shared<UnifiedHashJoin>(
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1262:                stats_collecting_params, params.max_threads);
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1308:                return std::make_shared<SpillingHashJoin>(
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1315:                    params.max_threads,
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1320:            return std::make_shared<SpillingHashJoin>(
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1357:    max_threads = settings[Setting::max_threads];
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1369:    UInt64 max_threads_,
+/mnt/ch/ClickHouse/src/Planner/PlannerJoins.cpp:1386:    max_threads = max_threads_;
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:1:#include <Interpreters/SpillingHashJoin.h>
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:3:#include <Interpreters/ConcurrentHashJoin.h>
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:11:extern const Event JoinSpillingHashJoinSwitchedToGraceJoin;
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:17:IInMemoryHashJoin & SpillingHashJoin::collectingJoin()
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:23:const IInMemoryHashJoin & SpillingHashJoin::collectingJoin() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:29:SpillingHashJoin::SpillingHashJoin(
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:39:    : log(getLogger("SpillingHashJoin"))
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:50:    in_memory_hash_join = createInMemoryHashJoin(
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:62:SpillingHashJoin::SpillingHashJoin(
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:73:    : log(getLogger("SpillingHashJoin"))
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:84:    concurrent_join = std::make_shared<ConcurrentHashJoin>(
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:94:SpillingHashJoin::~SpillingHashJoin() = default;
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:96:void SpillingHashJoin::tryConvertSlots()
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:122:std::string SpillingHashJoin::getName() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:124:    static constexpr auto name_format = "SpillingHashJoin({})";
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:132:bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:137:        /// Help convert one ConcurrentHashJoin slot while in GRACE_HASH_JOIN state.
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:183:void SpillingHashJoin::switchToGraceHashJoin()
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:198:            /// to complete. After this, no thread is inside `ConcurrentHashJoin::addBlockToJoin`.
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:205:            ProfileEvents::increment(ProfileEvents::JoinSpillingHashJoinSwitchedToGraceJoin);
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:207:            print_threshold_reached_log(concurrent_join, "ConcurrentHashJoin");
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:227:        /// Convert ConcurrentHashJoin slots into GraceHashJoin.
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:244:    ProfileEvents::increment(ProfileEvents::JoinSpillingHashJoinSwitchedToGraceJoin);
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:271:void SpillingHashJoin::onBuildPhaseFinish()
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:288:                "All blocks fit in memory ({} bytes, {} rows), promoting ConcurrentHashJoin",
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:310:void SpillingHashJoin::setEnableLazyColumnsIndexing(bool value)
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:318:void SpillingHashJoin::checkTypesOfKeys(const Block & block) const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:326:void SpillingHashJoin::initialize(const Block & sample_block)
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:333:JoinResultPtr SpillingHashJoin::joinBlock(Block block)
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:347:void SpillingHashJoin::setTotals(const Block & block)
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:353:const Block & SpillingHashJoin::getTotals() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:359:size_t SpillingHashJoin::getTotalRowCount() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:370:size_t SpillingHashJoin::getTotalByteCount() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:381:bool SpillingHashJoin::alwaysReturnsEmptySet() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:392:bool SpillingHashJoin::supportParallelNonJoinedBlocksProcessing() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:397:bool SpillingHashJoin::isParallelNonJoinedProcessingEnabled() const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:404:SpillingHashJoin::getNonJoinedBlocks(const Block & left_sample_block_, const Block & result_sample_block, UInt64 max_block_size) const
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:410:IBlocksStreamPtr SpillingHashJoin::getNonJoinedBlocks(
+/mnt/ch/ClickHouse/src/Interpreters/SpillingHashJoin.cpp:417:IBlocksStreamPtr SpillingHashJoin::getDelayedBlocks()
+/mnt/ch/ClickHouse/src/Interpreters/InMemoryHashJoin.cpp:4:#include <Interpreters/UnifiedHashJoin/HashJoin.h>
+/mnt/ch/ClickHouse/src/Interpreters/InMemoryHashJoin.cpp:9:InMemoryHashJoinPtr createInMemoryHashJoin(
+/mnt/ch/ClickHouse/src/Interpreters/InMemoryHashJoin.cpp:31:            return std::make_shared<UnifiedHashJoin>(
+
+## Comparison B — parallel build: ConcurrentHashJoin vs UnifiedHashJoin
+ConcurrentHashJoin addBlockToJoin / scatter / per-shard mutex:
+189:ConcurrentHashJoin::ConcurrentHashJoin(
+255:ConcurrentHashJoin::~ConcurrentHashJoin()
+298:bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_limits)
+338:                    std::unique_lock<std::mutex> lock(hash_join->mutex, std::try_to_lock);
+351:                    bool limit_exceeded = !hash_join->data->addBlockToJoin(block, std::move(selector), check_limits);
+488:        std::lock_guard lock(totals_mutex);
+512:        std::lock_guard lock(hash_join->mutex);
+551:        std::lock_guard lock(hash_joins[0]->mutex);
+558:        std::lock_guard lock(hash_joins[0]->mutex);
+568:        std::lock_guard lock(hash_join->mutex);
+611:/// scatter selector in `selectDispatchBlock`. For non-ASOF joins this is
+614:/// in scatter hashing: the per-partition HashJoin's bucket key is the
+618:/// different asof values would be scattered to different partitions and
+688:static ScatteredBlocks scatterBlocksByCopying(size_t num_shards, const IColumn::Selector & selector, const Block & from_block)
+696:        auto dispatched_columns = from_block.getByPosition(i).column->scatter(num_shards, selector);
+711:static ScatteredBlocks scatterBlocksWithSelector(size_t num_shards, const IColumn::Selector & selector, const Block & from_block)
+756:    return use_zero_copy_approach ? scatterBlocksWithSelector(num_shards, selector, from_block)
+757:                                  : scatterBlocksByCopying(num_shards, selector, from_block);
+798:    std::lock_guard lock(hash_join->mutex);
+
+UHJ parallel build path (bucket_locks sizing / insert):
+124:    const size_t num_buckets = per_bucket.size();
+133:        Methods::insertFromBlockImpl(
+145:    std::vector<char> pending(num_buckets, 0);
+147:    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+170:        for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+189:            for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+273:    , num_buckets(bucketCountForThreads(max_threads))
+275:    , data(std::make_shared<RightTableData>(num_buckets))
+413:    bucket_locks = std::vector<BucketLock>(data->num_buckets);
+569:        kind, strictness, map, prefer_use_maps_all, [&](auto, auto, auto & map_) { map_.create(data->type, num_buckets, reserve_num); });
+763:bool HashJoin::addBlockToJoin(const Block & source_block, bool check_limits)
+766:    return addBlockToJoin(materialized, ScatteredBlock::Selector(materialized.rows()), check_limits);
+769:bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits)
+849:                throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "addBlockToJoin called when HashJoin locked to prevent updates");
+852:              * In case when we have all the blocks allocated before the first `addBlockToJoin` call, will already be quite high.
+947:                    const size_t buckets = data->num_buckets;
+966:                        bucket_locks,
+1550:    bucket_locks = std::vector<BucketLock>(data->num_buckets);
+1919:        auto range_map = std::make_shared<RangeMap>(num_buckets);
+
+## Symbol-level diffstat (HashJoinMethodsImpl.h)
+@@ -3,9 +3,9 @@
+-#include <Interpreters/HashJoin/AddedColumns.h>
+-#include <Interpreters/HashJoin/HashJoinMethods.h>
+-#include <Interpreters/HashJoin/HashJoinResult.h>
++#include <Interpreters/UnifiedHashJoin/AddedColumns.h>
++#include <Interpreters/UnifiedHashJoin/HashJoinMethods.h>
++#include <Interpreters/UnifiedHashJoin/HashJoinResult.h>
+@@ -18,6 +18,9 @@
++namespace Unified
++{
+@@ -97,8 +100,7 @@
+-    bool & is_inserted,
+-    bool & all_values_unique)
++    BuildResult & result)
+@@ -107,16 +109,107 @@
+-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, is_inserted, all_values_unique); \
++                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, result); \
+-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, is_inserted, all_values_unique); \
++                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, result); \
+-            APPLY_FOR_JOIN_VARIANTS(M)
++            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
++#undef M
++    }
++}
++template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
++std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucket(
++    HashJoin::Type type,
++    MapsTemplate & maps,
++    const ColumnRawPtrs & key_columns,
++    const Sizes & key_sizes,
++    const ScatteredBlock::Selector & selector,
++    size_t num_buckets)
++{
++    switch (type)
++    {
++#define M(TYPE) \
++    case HashJoin::Type::TYPE: \
++        return scatterByBucketTypeCase< \
++            typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
++            *maps.TYPE, key_columns, key_sizes, selector, num_buckets);
++            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
++    UNREACHABLE();
++}
++template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
++template <typename KeyGetter, typename HashMap>
++std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucketTypeCase(
++    const HashMap & map,
++    const ColumnRawPtrs & key_columns,
++    const Sizes & key_sizes,
++    const ScatteredBlock::Selector & selector,
++    size_t num_buckets)
++{
++    /// The bucket picked here must be the one `emplace` would pick, or a thread holding bucket B's
++    /// lock would write into bucket A. `emplace` derives it from the hash the key getter hands the
++    /// map, and every getter reachable from a join lets the map compute that hash itself - except
++    /// the LowCardinality one, which substitutes the dictionary's saved hash, and that is the same
++    /// `StringViewHash` the map would have used. A getter supplying its own precomputed hashes
++    /// would break the equivalence silently, so refuse to compile for one.
++    if constexpr (requires { KeyGetter::has_pre_computed_hashes; })
++        static_assert(!KeyGetter::has_pre_computed_hashes, "Bucket routing assumes the map computes the hash it places by");
++    constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
++    auto key_getter = createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes);
++    /// Key holders are only read here, never persisted into the map, so nothing allocated through
++    /// this outlives the call. String key holders do not touch it at all.
++    Arena scratch_pool;
++    const size_t rows = selector.size();
++    /// Count, then place, so that each bucket's index array is allocated once at its final size.
++    /// Rows filtered by the null map or the ON condition are routed like any other: dropping them
++    /// here would lose the `is_inserted` a NULL key has to produce for a RIGHT/FULL join, and the
++    /// insert loop already skips them.
++    PODArray<UInt32> row_to_bucket(rows);
++    std::vector<size_t> counts(num_buckets, 0);
++    for (size_t i = 0; i < rows; ++i)
++    {
++        auto key_holder = key_getter.getKeyHolder(selector[i], scratch_pool);
++        const auto & key = keyHolderGetKey(key_holder);
++        size_t hash_value;
++        if constexpr (requires { key_getter.routingHashForRow(map, selector[i], scratch_pool); })
++            hash_value = key_getter.routingHashForRow(map, selector[i], scratch_pool);
++        else
++            hash_value = map.hash(key);
++        const auto bucket = static_cast<UInt32>(map.getBucketFromHash(map.bucketRoutingHash(key, hash_value)));
++        row_to_bucket[i] = bucket;
++        ++counts[bucket];
++    }
++    std::vector<ScatteredBlock::Selector::IndexesPtr> indexes;
++    indexes.reserve(num_buckets);
++    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
++    {
++        auto column = ScatteredBlock::Selector::Indexes::create();
++        column->getData().reserve(counts[bucket]);
++        indexes.push_back(std::move(column));
++    }
++    for (size_t i = 0; i < rows; ++i)
++        indexes[row_to_bucket[i]]->getData().push_back(selector[i]);
++    std::vector<ScatteredBlock::Selector> result;
++    result.reserve(num_buckets);
++    for (auto & column : indexes)
++        result.emplace_back(std::move(column));
++    return result;
+@@ -250,8 +343,7 @@
+-    bool & is_inserted,
+-    bool & all_values_unique)
++    BuildResult & result)
+@@ -263,7 +355,7 @@
+-    is_inserted = !mapped_one || is_asof_join;
++    result.is_inserted = !mapped_one || is_asof_join;
+@@ -293,7 +385,7 @@
+-            is_inserted = true;
++            result.is_inserted = true;
+@@ -302,11 +394,14 @@
+-            Inserter<HashMap, KeyGetter>::insertAsof(join, map, key_getter, stored_block_no, ind, pool, *asof_column);
++            Inserter<HashMap, KeyGetter>::insertAsof(
++                join, map, key_getter, stored_block_no, ind, pool, result.new_keys, *asof_column);
+-            is_inserted |= Inserter<HashMap, KeyGetter>::insertOne(join, map, key_getter, stored_block_no, ind, pool);
++            result.is_inserted
++                |= Inserter<HashMap, KeyGetter>::insertOne(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
+-            all_values_unique &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool);
++            result.all_values_unique
++                &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool, result.new_keys);
+
+DIFF_INVENTORY_DONE

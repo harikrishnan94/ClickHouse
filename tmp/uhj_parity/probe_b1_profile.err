@@ -1,0 +1,9 @@
+Received exception from server (version 26.8.1):
+Code: 60. DB::Exception: Received from 127.0.0.1:9101. DB::Exception: Unknown table expression identifier 'system.trace_log' in scope SELECT count() AS samples, arrayStringConcat(arrayMap(x -> demangle(addressToSymbol(x)), trace), '\n') AS stack FROM system.trace_log WHERE (query_id = 'prof-uhj-p-1785658881867317643') AND (trace_type = 'Real') GROUP BY trace ORDER BY samples DESC LIMIT 15. (UNKNOWN_TABLE)
+(query: SELECT count() AS samples, arrayStringConcat(arrayMap(x -> demangle(addressToSymbol(x)), trace), '\n') AS stack
+FROM system.trace_log
+WHERE query_id = 'prof-uhj-p-1785658881867317643' AND trace_type = 'Real'
+GROUP BY trace
+ORDER BY samples DESC
+LIMIT 15
+FORMAT TSV)

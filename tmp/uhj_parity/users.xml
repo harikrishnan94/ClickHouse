@@ -1,0 +1,13 @@
+<clickhouse>
+    <profiles><default>
+        <max_memory_usage>0</max_memory_usage>
+        <log_queries>1</log_queries>
+        <allow_introspection_functions>1</allow_introspection_functions>
+    </default></profiles>
+    <users><default>
+        <password></password>
+        <networks><ip>127.0.0.1</ip><ip>::1</ip></networks>
+        <profile>default</profile><quota>default</quota>
+    </default></users>
+    <quotas><default></default></quotas>
+</clickhouse>
