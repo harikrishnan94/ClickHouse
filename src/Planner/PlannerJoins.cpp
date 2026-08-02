@@ -1237,7 +1237,8 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 params.grace_hash_join_max_buckets,
                 stats_collecting_params,
                 params.join_any_take_last_row,
-                in_memory_kind);
+                in_memory_kind,
+                params.max_threads);
         }
 
         if (table_join->allowParallelHashJoin() && !unified)

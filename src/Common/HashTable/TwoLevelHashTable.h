@@ -28,14 +28,6 @@ struct TwoLevelHashTableGrower : public HashTableGrowerWithPrecalculation<initia
     void increaseSize() { this->increaseSizeDegree(this->sizeDegree() >= 15 ? 1 : 2); }
 };
 
-/// Compact per-bucket address material for the `BITS_FOR_BUCKET = -1` (runtime bucket count) mode's
-/// hot lookup path (buffer base pointer + mask).
-struct TwoLevelHashTableBucketDesc
-{
-    const void * buf = nullptr;
-    size_t mask = 0;
-};
-
 constexpr int DEFAULT_BITS_FOR_BUCKET = 8;
 
 /** Is `Impl` a direct-addressed table - one where the cell for a key is found by indexing a buffer
@@ -132,6 +124,14 @@ private:
             return prefix[buck] + cell_offset;
         }
 
+        /// The prefix sums themselves, for a caller that indexes them per bucket rather than
+        /// asking for one offset at a time. Same precondition as `offsetUnsafe`.
+        const size_t * data() const
+        {
+            chassert(computed);
+            return prefix.data();
+        }
+
     private:
         std::vector<size_t> prefix;
         std::once_flag compute_once;
@@ -165,9 +165,6 @@ private:
             for (auto & bucket : buckets)
                 bucket.reserve(num_elements / bucketCount());
         }
-
-        /// No-op: fixed storage has no per-bucket address descriptors to keep in sync.
-        void refreshDescs() { }
 
         void computeBucketPrefix() const
         {
@@ -246,12 +243,9 @@ private:
             , max_bucket(num_buckets - 1)
             , shift(32 - std::countr_zero(num_buckets))
             , buckets(num_buckets)
-            , descs(num_buckets)
         {
             if (size_hint)
                 reserveBuckets(size_hint);
-
-            refreshDescs();
         }
 
         Impl & operator[](size_t bucket) { return buckets[bucket]; }
@@ -262,22 +256,17 @@ private:
         UInt32 bucketShift() const { return shift; }
         UInt32 getBucketFromHash(size_t hash_value) const { return static_cast<UInt32>((hash_value >> shift) & max_bucket); }
 
-        void refreshDescs()
-        {
-            for (UInt32 i = 0; i < num_buckets; ++i)
-            {
-                descs[i].buf = buckets[i].buf;
-                descs[i].mask = buckets[i].getBufferSizeInCells() - 1;
-            }
-        }
+        /// The buckets, contiguously, so that a lookup handle can address bucket `i` as `[i]` from
+        /// one base pointer it resolved once.
+        const Impl * bucketsData() const { return buckets.data(); }
 
-        const TwoLevelHashTableBucketDesc * bucketDescs() const { return descs.data(); }
+        /// The one bucket that answers every lookup, when there is one - so a lookup handle can drop
+        /// the routing entirely rather than route every key to the same place.
+        const Impl * soleBucket() const { return num_buckets == 1 ? buckets.data() : nullptr; }
 
-        void reserve(size_t num_elements)
-        {
-            reserveBuckets(num_elements);
-            refreshDescs();
-        }
+        const size_t * bucketPrefix() const { return prefix_sums.data(); }
+
+        void reserve(size_t num_elements) { reserveBuckets(num_elements); }
 
         void computeBucketPrefix() const
         {
@@ -360,7 +349,6 @@ private:
         const UInt32 max_bucket;
         const UInt32 shift;
         std::vector<Impl> buckets;
-        std::vector<TwoLevelHashTableBucketDesc> descs;
         mutable BucketPrefixSums prefix_sums;
     };
 
@@ -399,6 +387,12 @@ private:
         UInt32 bucketShift() const { return shift; }
         UInt32 getBucketFromHash(size_t hash_value) const { return static_cast<UInt32>((hash_value >> shift) & max_bucket); }
 
+        /// Every bucket is the flat table, so it is also the sole one a lookup handle needs, whatever
+        /// the bucket count - routing here decides a lock, and a lookup takes none.
+        const Impl * bucketsData() const { return &flat; }
+        const Impl * soleBucket() const { return &flat; }
+        static constexpr const size_t * bucketPrefix() { return nullptr; }
+
         /// One flat pass: buckets share the cells, so iterating per bucket would repeat the table.
         static constexpr UInt32 iterationBuckets() { return 1; }
         static constexpr UInt32 lastIterationBucket() { return 0; }
@@ -415,10 +409,9 @@ private:
         }
 
         /// Capacity is fixed at construction and the buffer never moves, so there is nothing to
-        /// reserve, no descriptor to refresh, and no prefix sums to compute: an offset is already
-        /// global, because there is only ever one buffer to be an offset into.
+        /// reserve and no prefix sums to compute: an offset is already global, because there is only
+        /// ever one buffer to be an offset into.
         void reserve(size_t) { }
-        void refreshDescs() { }
         void computeBucketPrefix() const { }
 
         size_t offsetInternal(typename Impl::ConstLookupResult ptr) const { return flat.offsetInternal(ptr); }
@@ -508,24 +501,6 @@ public:
 
     UInt32 bucketCount() const { return impls.bucketCount(); }
     UInt32 bucketShift() const { return impls.bucketShift(); }
-    /// Per-bucket buffer descriptors exist only where a bucket has its own buffer to describe.
-    /// Valid only as of the last `refreshBucketDescs()` - see there.
-    const TwoLevelHashTableBucketDesc * bucketDescs() const
-    requires(isRuntimeStorage() && !isFixedRangeStorage())
-    {
-        return impls.bucketDescs();
-    }
-
-    Impl * singleBucket()
-    requires(isRuntimeStorage())
-    {
-        return bucketCount() == 1 ? &impls[0] : nullptr;
-    }
-    const Impl * singleBucket() const
-    requires(isRuntimeStorage())
-    {
-        return bucketCount() == 1 ? &impls[0] : nullptr;
-    }
 
     void reserve(size_t num_elements) { impls.reserve(num_elements); }
 
@@ -536,6 +511,104 @@ public:
             return cell_hash_value;
         else
             return BucketHash{}(key);
+    }
+
+    /** A handle for looking keys up in this table, held across a run of lookups.
+      *
+      * Which bucket a hash selects, and where that bucket's cells live, stops changing once the
+      * table stops growing - but it is fixed in memory, not in the code, so reaching a cell means
+      * loading the bucket array, then that bucket's table, then its buffer. A handle resolves that
+      * routing state once, so a lookup loop pays for it once instead of once per key; where there is
+      * nothing to route - a single bucket, or buckets sharing one cell buffer - a lookup through the
+      * handle is exactly a single-level table's lookup.
+      *
+      * `offsetInternal` answers about the cell the handle's last `find` returned. That is why the
+      * handle is stateful, and it is what makes an offset cheap: recovering the bucket from the cell
+      * instead means re-hashing the key, which for a cell that does not save its hash is the whole
+      * hash again. A handle therefore belongs to one thread, and is valid only while the table's
+      * buckets keep their buffers - that is, for as long as nothing inserts into the table.
+      */
+    class Prober
+    {
+    public:
+        using key_type = typename Self::key_type;
+        using mapped_type = typename Self::mapped_type;
+        using value_type = typename Self::value_type;
+        using cell_type = typename Self::cell_type;
+        using LookupResult = typename Self::ConstLookupResult;
+        using ConstLookupResult = typename Self::ConstLookupResult;
+
+        explicit Prober(const Self & table_)
+            : table(&table_)
+            , buckets(table_.impls.bucketsData())
+            , sole(table_.impls.soleBucket())
+            , routed(sole)
+            , prefix(sole ? nullptr : table_.impls.bucketPrefix())
+            , shift(table_.impls.bucketShift())
+            , max_bucket(table_.impls.maxBucket())
+        {
+        }
+
+        size_t ALWAYS_INLINE hash(const Key & x) const { return table->hash(x); }
+
+        ConstLookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
+        {
+            if (sole)
+                return sole->find(x, hash_value);
+
+            const size_t bucket = (table->bucketRoutingHash(x, hash_value) >> shift) & max_bucket;
+            routed = buckets + bucket;
+            routed_prefix = prefix[bucket];
+            return routed->find(x, hash_value);
+        }
+
+        ConstLookupResult ALWAYS_INLINE find(Key x) { return find(x, hash(x)); }
+
+        /// The global cell offset of the cell the last `find` returned, as `TwoLevelHashTable`
+        /// numbers them. Zero is reserved for the zero-key cell, in every bucket, exactly as a
+        /// single-level table reserves it - only one bucket can hold that cell, since the zero key
+        /// routes like any other.
+        size_t ALWAYS_INLINE offsetInternal(ConstLookupResult ptr) const
+        {
+            const size_t offset_in_bucket = routed->offsetInternal(ptr);
+            return offset_in_bucket ? routed_prefix + offset_in_bucket : 0;
+        }
+
+        /// Same contract as `TwoLevelHashTable::prefetch`, and declared under the same constraint so
+        /// that callers testing for the member only see it when the underlying table can prefetch.
+        template <typename KeyHolder>
+        void ALWAYS_INLINE prefetch(KeyHolder && key_holder) const
+        requires requires(const Impl & impl, size_t key_hash) { impl.prefetchByHash(key_hash); }
+        {
+            const auto & key = keyHolderGetKey(key_holder);
+            const auto key_hash = hash(key);
+            if (sole)
+                sole->prefetchByHash(key_hash);
+            else
+                buckets[(table->bucketRoutingHash(key, key_hash) >> shift) & max_bucket].prefetchByHash(key_hash);
+            keyHolderDiscardKey(key_holder);
+        }
+
+    private:
+        /// Only for the hash functions, which are stateless, so this costs no load.
+        const Self * table;
+        const Impl * buckets;
+        /// Non-null when routing is a no-op, and then it is the table every lookup goes to.
+        const Impl * sole;
+        /// The bucket the last `find` routed to, and where its cells start in the global numbering.
+        const Impl * routed;
+        size_t routed_prefix = 0;
+        const size_t * prefix;
+        UInt32 shift;
+        UInt32 max_bucket;
+    };
+
+    /// Precondition: `computeBucketPrefix()` has been called since the last change to any bucket's
+    /// capacity, as for `offsetInternalUnsafe()`.
+    Prober prober() const
+    requires(isRuntimeStorage())
+    {
+        return Prober(*this);
     }
 
 protected:
@@ -737,9 +810,9 @@ public:
     ///
     /// Only the target bucket is touched, so callers holding one lock per bucket may run this
     /// concurrently for keys that route to different buckets. Nothing shared between buckets is
-    /// updated here - in particular the bucket descriptors are NOT refreshed, because writing them
-    /// per row would reintroduce exactly such a shared write (four 16-byte descriptors to a cache
-    /// line). Refresh them once with `refreshBucketDescs()` when the inserting is over.
+    /// written here, by design: a bucket-parallel build must not have to synchronize on anything but
+    /// its own bucket. Whatever the table derives from all the buckets at once - the prefix sums - is
+    /// computed once with `computeBucketPrefix()` when the inserting is over.
     template <typename KeyHolder>
     void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it, bool & inserted, size_t hash_value)
     {
@@ -817,17 +890,10 @@ public:
     }
 
     /// (Re)compute the bucket prefix sums `offsetInternal` relies on. Call this once, after the
-    /// last insert that may have changed a bucket's capacity, before switching a per-row loop to
-    /// `offsetInternalUnsafe` - that skips the "already computed" check `offsetInternal` pays on
-    /// every call.
+    /// last insert that may have changed a bucket's capacity, and before anything that reads the
+    /// prefix sums without checking whether they are there: `offsetInternalUnsafe`, which skips the
+    /// "already computed" check `offsetInternal` pays on every call, and `prober()`.
     void computeBucketPrefix() const { impls.computeBucketPrefix(); }
-
-    /// (Re)point the bucket descriptors at their buckets' current buffers. Same contract as
-    /// `computeBucketPrefix()`: call it once, after the last insert that may have grown a bucket,
-    /// and before anything reads `bucketDescs()`. `emplace` deliberately does not maintain them,
-    /// so that a bucket-parallel build writes nothing shared between buckets. A no-op for the
-    /// storages that have no descriptors.
-    void refreshBucketDescs() { impls.refreshDescs(); }
 
     /// Lazily computes the prefix sums on first use, then reuses them - it does NOT notice later
     /// bucket growth on its own (there is no internal tracking of buffer changes, by design; see
