@@ -88,14 +88,14 @@ public:
         }
     }
 
-    /// Move the pending per-block flags into the dense `per_row_flags` vector, which is
+    /// Move the source pending per-block flags into the dense `per_row_flags` vector, which is
     /// sized to cover every block_no of the `StoredColumnsIndex`.
-    void finalizePerRowFlags(size_t num_blocks)
+    void finalizePerRowFlags(JoinUsedFlags & source, size_t num_blocks)
     {
-        if (pending_per_row_flags.empty())
+        if (source.pending_per_row_flags.empty())
             return;
 
-        auto source_pending_flags = std::exchange(pending_per_row_flags, PendingPerRowFlags{});
+        auto source_pending_flags = std::exchange(source.pending_per_row_flags, PendingPerRowFlags{});
 
         need_flags = true;
         if (per_row_flags.size() < num_blocks)

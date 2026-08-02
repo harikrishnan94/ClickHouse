@@ -666,6 +666,10 @@ void HashJoin::doDebugAsserts() const
 size_t HashJoin::getTotalByteCount() const
 {
     std::lock_guard lock(blocks_mutex);
+    if (!data)
+        return 0;
+
+    doDebugAsserts();
     return getTotalByteCountUnlocked();
 }
 
@@ -2404,7 +2408,7 @@ void HashJoin::onBuildPhaseFinish()
 
     /// Finalizing here assumes the build is over and no more blocks will arrive, so a parallel build
     /// must keep this after its last insertion.
-    used_flags->finalizePerRowFlags(data->stored_columns_index->size());
+    used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
 
     if (all_values_unique && strictness == JoinStrictness::All && isInnerOrLeft(kind) && data->maps.size() == 1)
     {
