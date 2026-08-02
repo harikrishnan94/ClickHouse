@@ -463,3 +463,52 @@ is `NOT_IMPLEMENTED` in both non-hash algorithms. Consistent, so not divergence.
 **Combined verdict: SHIP.** Verifier 1's SHIP condition was met by Verifier 2's clean runtime pass.
 Independence: full — neither grader saw the implementer's reasoning; Verifier 1's tool limitation
 was compensated by commissioning Verifier 2 rather than by self-passing.
+
+## OPERATIONAL — post-mission performance snapshot (NOT a gate, NOT acceptance evidence)
+
+Measured on request AFTER the U3 mission closed. These numbers were not used to accept or reject
+any unit, and no design choice was made because of them. Recorded as context only.
+
+Host 96 CPUs, `build/reldeb`, server :9101 (binary currency confirmed), 7 runs, median + sample
+stdev, `enable_join_runtime_filters=0`, `max_bytes_before_external_join=0`.
+Logs: `u3_bench_serial.log`, `u3_bench_parallel.log`, `u3_bench_extra.log`.
+
+### Serial, `max_threads=1` (vs `hash`)
+```
+build-bound INNER   hash 267ms/164324us   unified 257ms/161954us   parity (unified marginally ahead, within stdev ~88/~8k)
+probe-bound INNER   hash 378ms/318919us   unified 382ms/324767us   parity (+1.1% wall, +1.8% CPU)
+RIGHT + non-joined  hash 1167ms/986486us  unified 1223ms/1049852us +4.8% wall (within stdev 242), +6.4% CPU (beyond stdev)
+```
+
+### Parallel, `max_threads=16` (vs `parallel_hash`)
+```
+build-bound INNER   phash 125ms/908822us   unified 144ms/1138819us  wall within noise (125+43>144); CPU +25% BEYOND noise
+probe-bound INNER   phash  91ms/446506us   unified  83ms/ 420393us  unified FASTER: -8.8% wall, -5.8% CPU (stdevs 2.3/0.7, so real)
+RIGHT + non-joined  phash 205ms/1246121us  unified 288ms/1511559us  +40% wall, +21% CPU, both beyond noise
+```
+
+### What M1 actually bought — clean A/B on the setting that gates it
+`parallel_non_joined_rows_processing` toggles `allowParallelNonJoinedRowsProcessing()`, which
+`supportParallelNonJoinedBlocksProcessing()` consults, so 0 reproduces pre-M1 behaviour exactly.
+RIGHT join, 20M right / 5M left, `max_threads=16`, `query_plan_join_swap_table=0`, 5 runs:
+```
+pnj=0 (pre-M1)   parallel_hash 667ms    unified_hash 824ms
+pnj=1 (post-M1)  parallel_hash 205ms    unified_hash 293ms
+```
+**M1 is a 2.8x wall improvement for `unified_hash` on this workload** (824 -> 293), and it closes
+most of the gap to `parallel_hash`: 824/205 = 4.0x worse before, 293/205 = 1.43x worse after.
+
+**This revises my earlier characterisation to the user.** I had described M1 as throughput-only and
+leaned toward risk-accepting it. That was accurate about *results* (M1 changes no rows) but badly
+understated the magnitude: declining M1 would have left a ~2.8x regression against the baseline in
+place. The user's instruction to fix it was the right call and my lean was wrong.
+
+### Attribution of the two remaining deficits
+- Parallel build-bound CPU +25%: consistent with the prior campaign's ~21% figure, attributed to
+  EXCLUDED unconditional two-level (per-bucket sub-tables, `BUCKETS_PER_THREAD=2` cache footprint).
+- Parallel RIGHT non-joined +40% wall: `parallel_hash` shards the map so each stream scans its own
+  small table, whereas UHJ streams walk one shared partitioned map and each `isUsed(offset)` needs
+  `offsetInternal`, which on a partitioned table resolves through the bucket prefix sum (E8/E10)
+  rather than flat pointer arithmetic. TwoLevel-attributable, and NOT investigated further, because
+  chasing it is out of scope for a mission whose anti-goals include optimising for bench deltas.
+  Flagged as a candidate for a future, explicitly performance-scoped mission.

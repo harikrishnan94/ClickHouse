@@ -1,0 +1,11 @@
+BENCH_EXTRA begin 2026-08-02T17:41:00+05:30 runs=7
+RESULT case=probe_bound algo=hash           threads=1   wall_median_ms=378     wall_stdev=16.9256   cpu_median_us=318919    cpu_stdev=9892.07
+RESULT case=probe_bound algo=unified_hash   threads=1   wall_median_ms=382     wall_stdev=10.5627   cpu_median_us=324767    cpu_stdev=8970.89
+RESULT case=probe_bound algo=parallel_hash  threads=16  wall_median_ms=91      wall_stdev=2.34013   cpu_median_us=446506    cpu_stdev=3778.05
+RESULT case=probe_bound algo=unified_hash   threads=16  wall_median_ms=83      wall_stdev=0.690066  cpu_median_us=420393    cpu_stdev=3231.52
+RESULT case=right_nonjoined algo=hash           threads=1   wall_median_ms=1167    wall_stdev=241.774   cpu_median_us=986486    cpu_stdev=15604.7
+RESULT case=right_nonjoined algo=unified_hash   threads=1   wall_median_ms=1223    wall_stdev=127.326   cpu_median_us=1049852   cpu_stdev=18222.7
+RESULT case=right_nonjoined algo=parallel_hash  threads=16  wall_median_ms=205     wall_stdev=11.6312   cpu_median_us=1246121   cpu_stdev=19168.6
+RESULT case=right_nonjoined algo=unified_hash   threads=16  wall_median_ms=288     wall_stdev=30.5443   cpu_median_us=1511559   cpu_stdev=13901.1
+BENCH_EXTRA_DONE
+EXIT=0
