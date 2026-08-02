@@ -18,9 +18,13 @@ Verifier could not write this file (Ask/read-only mode); doer records the verdic
 - Parallel B1 directionally strong (pthread_mutex under UHJ insert).
 - Differential: `JOB_EXIT=0` but `DIFF_RESULT=FAIL` with 3 spill mismatches.
 
-## Remediation plan (this follow-up)
+## Remediation status (doer follow-up)
 
-- Fix probe keyword filter; re-run serial (+ confirm parallel) U1-DISC.
-- Rewrite `probe_b2.txt` with raw timings.
-- Re-run `04659` without duplicate `--max_threads`; ensure `JOB_EXIT=` on proxy.
-- Freeze Unit 1 evidence commit; re-verify before Unit 2.
+| Blocker | Status | Evidence |
+| --- | --- | --- |
+| 1 Serial A2 polluted metric | Fixed | `probe_summaries_v2.txt`: lock_in_insert 33 vs 0 |
+| 2 B2 missing raw probe | Fixed | `probe_b2.txt` RESULT lines + JOB_EXIT=0 |
+| 3 04659 JOB_EXIT=36 | Fixed | `test_04659.log`: OK / JOB_EXIT=0 via `run_04659.sh` |
+| 4 Branch moved mid-verify | Mitigated | Remediation frozen in dedicated commit for re-verify |
+
+Re-verify required before Unit 2.
