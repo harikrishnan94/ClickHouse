@@ -181,3 +181,32 @@ argument set modulo the bucket knob.
 
 **Refute condition.** A build error showing `max_threads` cannot be passed without also naming
 stats — would mean the two are not separable and the split is wrong.
+
+---
+
+## W1 — gratuitous blank-line differences  [RETROSPECTIVE — see honesty note]
+
+**Honesty note.** This entry is written **after** commit `b99fa90b5b0`, which made the change. It is
+therefore *not* a valid Gate U2-PRE pre-registration and is not counted as one. It exists because an
+independent verifier correctly flagged that `b99fa90b5b0` modified source with no PREREG entry.
+Recorded as a gap rather than backdated.
+
+**Divergence.** Four whitespace-only differences: a doubled blank line before the `namespace Unified`
+opener in four headers, and one missing blank line in the non-joined map scan.
+
+**Why it was not pre-registered.** It was found *by* the attribution tooling as the residue left
+after every classified cause was accounted for, and treated as part of running the gate rather than
+as a separate alignment. That reasoning was wrong: it changed tracked source, so it needed an entry.
+
+**Materiality of the gap:** nil in substance — whitespace only, no token changed, and the same build
+and tests covered it. The process gap is real and is reported as such in `REPORT_U3.md`.
+
+---
+
+## L5 — `Interpreters//HashJoin` double-slash include typo  [NOT ALIGNED, deliberately]
+
+Raised by the independent verifier. Baseline `HashJoin/HashJoinMethods.h:4` reads
+`#include <Interpreters//HashJoin/JoinUsedFlags.h>` (double slash); the fork spells it correctly.
+This is an avoidable divergence in which **the fork is the correct side**. Aligning it would mean
+re-introducing a typo into the fork, so it is deliberately left, classified LEAD, not MATERIAL.
+Fixing the baseline instead is out of scope (the mission forbids touching unrelated baseline code).
