@@ -85,3 +85,57 @@ EXCLUDED=17 groups / 100 hunks / 1427 changed lines
 FORK_MECHANICAL=2 items / 9 hunks / 18 changed lines
 LEAD=4      UNSETTLED=0      UNATTRIBUTED=0
 ```
+
+---
+
+## Unit 5 — independent verification
+
+Two independent graders, neither of which saw the implementer's reasoning.
+
+### Verifier 1 (static) — FIX-THEN-RESHIP
+
+Its shell was blocked by an environment gate, so it could not execute the runtime gates. It
+compensated with a full static review: it read **every hunk** of the normalized diff and
+reconstructed git state from `.git` refs and reflog directly.
+
+Findings and disposition:
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | Runtime gates (U4, adversarial M1) not executed in its environment | blocking for SHIP | Addressed by commissioning Verifier 2 with working tools |
+| 2 | **W1 (`b99fa90b5b0`) changed source with no PREREG entry** — Gate U2-PRE technically unmet for it | minor gate | **Accepted as a real gap.** Recorded in `PREREG_U3.md` as an explicitly retrospective entry marked *not* a valid pre-registration, rather than backdated. Substance is nil (whitespace only); the process gap stands. |
+| 3 | **`UnifiedHashJoin/joinDispatch.h` was never diffed** — `U3_normdiff.sh` iterated only baseline files, so the fork's one extra file was compared to nothing, undercutting the "exhaustive whole-directory diff" claim | minor method | **Fixed.** The script now also diffs fork-only files against their true baseline (`src/Interpreters/joinDispatch.h`). Result: no diff section, i.e. identical modulo the wrapper — now proven by tooling rather than by manual inspection. |
+| 4 | Attribution regexes in `U3_attribute.sh` are broad, so `UNATTRIBUTED=0` may be a regex property | cosmetic | **Tested, not just noted** — see below. |
+| 5 | The fork *fixes* a baseline `Interpreters//HashJoin` double-slash include typo | cosmetic | Recorded as **L5**, deliberately not aligned: the fork is the correct side, and aligning would mean re-introducing a typo. |
+
+It explicitly reported **no banned move** and, having read every hunk, **no avoidable divergence
+mislabeled as excluded** — the check that matters most.
+
+### Response to finding 4 — the attribution was re-run with narrow markers
+
+Rather than argue the regexes are fine, `U3_attribute_strict.sh` re-runs the same hunk-level
+attribution keeping **only** unambiguous TwoLevel markers (dropping `lock`, `offset`, `cells`,
+`pools`, `#include`, `max_threads`, `atomic`, ...):
+
+```
+STRICT_TWOLEVEL  hunks=69   changed_lines=1098
+RESIDUE          hunks=40   changed_lines=347  -> tmp/uhj_parity/U3_strict_residue.txt
+```
+
+All 347 residue lines were then read. Every one is: atomics/`blocks_mutex`/`*Unlocked()` accessors
+(shared-map parallel build), removal of `ConcurrentHashJoin`-only entry points
+(`joinScatteredBlock`, `addBlockToJoin(Selector)`, `getUsedFlags`/`setUsedFlags`,
+`hasNonJoinedRows`/`updateNonJoinedRowsStatus`), the F1 macro rename, `BuildResult`/`new_keys`
+plumbing (E7), or bucket-addressed build prefetch (E11). One apparent deletion was checked rather
+than assumed: the `memory_usage_before_adding_blocks` initialisation shows as removed at
+`HashJoin.cpp:650`, and was confirmed **relocated** to `HashJoin.cpp:872-873` inside the
+`blocks_mutex` section, with the same four usages as the baseline — not lost.
+
+So `UNATTRIBUTED=0` does not depend on the broad markers.
+
+### Verifier 2 (runtime) — adversarial execution
+
+Commissioned specifically to close finding 1: independent adversarial RIGHT/FULL row-set
+comparisons (odd `max_threads`, tiny/empty sides, all-NULL keys, skew, LowCardinality, multi-column
+and direct-addressed keys, no-key joins, spill variants, `join_use_nulls`) plus re-running `04658`
+and `04659` on the current binary. Result recorded in `WORKLOG.md`.
