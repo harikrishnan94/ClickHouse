@@ -14,7 +14,8 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
     size_t reserve_num,
     const String & instance_id,
     bool use_two_level_maps,
-    const StatsCollectingParams & stats_collecting_params)
+    const StatsCollectingParams & stats_collecting_params,
+    size_t max_threads)
 {
     switch (kind)
     {
@@ -34,7 +35,8 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
                 any_take_last_row,
                 reserve_num,
                 instance_id,
-                stats_collecting_params);
+                stats_collecting_params,
+                max_threads);
     }
 }
 

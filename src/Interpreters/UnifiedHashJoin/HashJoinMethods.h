@@ -82,20 +82,30 @@ struct Inserter
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods
 {
+    /// Whether the key getters have to report a matched cell's offset: only a join that keeps
+    /// per-offset used flags reads one (see `JoinUsedFlags`), and on a partitioned map producing an
+    /// offset means placing the cell among the other buckets' cells rather than reading a pointer
+    /// difference. The build never reads offsets, but it shares the constant so that a join
+    /// instantiates one key getter rather than two.
+    static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;
+
 public:
+    /// Insert `selector`'s rows into `bucket` of every map in `maps`. The caller routed those rows
+    /// there (see `scatterByBucket`) and holds that bucket's lock, so the insert addresses the
+    /// bucket's cells directly rather than re-deriving the bucket from each row's key.
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
         MapsTemplate & maps,
+        size_t bucket,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         UInt32 stored_block_no,
         const ScatteredBlock::Selector & selector,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
-        std::vector<std::unique_ptr<Arena>> & pools,
-        BuildResult & result,
-        std::vector<BucketLock> * bucket_locks);
+        Arena & pool,
+        BuildResult & result);
 
     /// Split `selector`'s rows by the bucket of `maps` each row's key routes to, returning one
     /// selector per bucket. Inserts lock the bucket `emplace` routes each row to, which is the same
@@ -132,15 +142,15 @@ private:
     static void insertFromBlockImplTypeCase(
         HashJoin & join,
         HashMap & map,
+        size_t bucket,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         UInt32 stored_block_no,
         const Selector & selector,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
-        std::vector<std::unique_ptr<Arena>> & pools,
-        BuildResult & result,
-        std::vector<BucketLock> * bucket_locks);
+        Arena & pool,
+        BuildResult & result);
 
     template <typename KeyGetter, typename HashMap>
     static std::vector<ScatteredBlock::Selector> scatterByBucketTypeCase(

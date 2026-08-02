@@ -1077,7 +1077,8 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                     settings[Setting::grace_hash_join_max_buckets],
                     StatsCollectingParams{},
                     /*any_take_last_row_=*/false,
-                    in_memory_kind);
+                    in_memory_kind,
+                    settings[Setting::max_threads]);
             }
         }
 

@@ -52,6 +52,9 @@ class SpillingHashJoin final : public IJoin
 {
 public:
     /// Single in-memory join mode: wraps one HashJoin or UnifiedHashJoin.
+    ///
+    /// `max_threads_` is how many threads the pipeline will run `addBlockToJoin` on. It only matters
+    /// for a wrapped join that builds in parallel, which is why it comes last and defaults to one.
     SpillingHashJoin(
         std::shared_ptr<TableJoin> table_join_,
         SharedHeader left_sample_block_,
@@ -61,7 +64,8 @@ public:
         size_t max_num_buckets_,
         const StatsCollectingParams & stats_collecting_params_ = {},
         bool any_take_last_row_ = false,
-        InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash);
+        InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash,
+        size_t max_threads_ = 1);
 
     /// Concurrent mode: wraps a ConcurrentHashJoin.
     SpillingHashJoin(

@@ -55,19 +55,26 @@ class HashJoinMethods;
 /// rather than a separate code path.
 constexpr Int32 BITS_FOR_BUCKET = -1;
 
-/// Buckets - and therefore locks and arenas - per build thread. Compile-time, because the right
-/// value is a property of the machine rather than of the query. Raising it trades memory for less
-/// contention when the keys are skewed: each bucket is a sub-table with a minimum capacity, and the
-/// per-offset used flags are sized from the capacity summed over all buckets.
-constexpr size_t BUCKETS_PER_THREAD = 1;
+/// Buckets - and therefore locks and arenas - per build thread. Above one, because a build thread
+/// visits every bucket for every block it inserts: with as many buckets as threads, nearly all of
+/// them are held at any moment, so `try_lock` fails everywhere and threads end up queueing. A small
+/// margin is enough once the scan is staggered (see `insertIntoBuckets`) - measured on a 40M-row
+/// build-bound join, two buckets per thread matched sixteen on wall time while costing ~25% less
+/// build CPU per row, because every extra bucket is another sub-table to miss the cache on.
+/// Raising it trades that per-row cost for tolerance of key skew: each bucket is a sub-table with a
+/// minimum capacity, and the per-offset used flags are sized from the capacity summed over all
+/// buckets.
+constexpr size_t BUCKETS_PER_THREAD = 2;
 
 /// Bucket count for a join whose right side is built by `max_threads` threads. The result is a
 /// power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.
 size_t bucketCountForThreads(size_t max_threads);
 
-/// The lock guarding one bucket of one clause's map, together with that bucket's arena. Padded,
-/// because two threads inserting into neighbouring buckets would otherwise contend on the cache
-/// line holding both mutexes even though they never contend on the lock itself.
+/// The lock guarding one bucket: that bucket in every clause's map, and that bucket's arena. One
+/// lock covers all clauses because the arenas are per bucket and shared between them, so two
+/// threads working on different clauses of the same bucket would otherwise race on the arena.
+/// Padded, because two threads inserting into neighbouring buckets would otherwise contend on the
+/// cache line holding both mutexes even though they never contend on the lock itself.
 struct alignas(DB::CH_CACHE_LINE_SIZE) BucketLock
 {
     std::mutex mutex;
@@ -86,9 +93,6 @@ struct BuildResult
     bool all_values_unique = true;
     /// Keys the map did not have before.
     size_t new_keys = 0;
-    /// Map and arena bytes added by this insert batch, measured only while the relevant bucket lock
-    /// is held.
-    size_t bytes_grown = 0;
 };
 
 /// The grower is spelled out because `TwoLevelHashMap` defaults to `TwoLevelHashTableGrower`, which
@@ -444,15 +448,15 @@ public:
             }
         }
 
-        /// Point the bucket descriptors at the buffers the build left behind. `emplace` does not
-        /// maintain them, precisely so that a bucket-parallel build writes nothing shared between
-        /// buckets, so this must run once after the last insert and before any probe.
-        void refreshBucketDescs(Type which)
+        /// Sum up the buckets' capacities into the prefix the global cell offsets are numbered from.
+        /// The build does not maintain it, precisely so that a bucket-parallel build writes nothing
+        /// shared between buckets, so this must run once after the last insert and before any probe.
+        void computeBucketPrefix(Type which) const
         {
             switch (which)
             {
             #define M(NAME) \
-                case Type::NAME: if (NAME) NAME->refreshBucketDescs(); break;
+                case Type::NAME: if (NAME) NAME->computeBucketPrefix(); break;
                 UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
             #undef M
             }
@@ -666,17 +670,18 @@ private:
     /// shrink decision. All of it is O(1) per block, so holding one lock for it costs nothing -
     /// unlike the rows, which are the actual work.
     ///
-    /// `bucket_locks[clause][bucket]` covers the rows: a build thread routes its block's rows to
-    /// buckets and then inserts each group holding only that bucket's lock, so threads inserting
-    /// into different buckets of the same map run concurrently. Clauses are separated too, because
-    /// their maps are independent and a thread works through them one at a time.
+    /// `bucket_locks[bucket]` covers the rows: a build thread routes its block's rows to buckets
+    /// once and then inserts each group holding only that bucket's lock for the whole group, so
+    /// threads inserting into different buckets of the same map run concurrently. The lock is taken
+    /// per group and not per row - a per-row acquisition costs more than the insert it protects and
+    /// makes the build scale negatively with the thread count.
     ///
     /// A thread holds at most one bucket lock at a time and never holds one across `blocks_mutex`,
     /// so there is no lock order to get wrong. Joining a block takes neither: once the build phase
     /// is over the hash table is immutable and the used flags are atomic.
     mutable std::mutex blocks_mutex;
 
-    mutable std::vector<std::vector<BucketLock>> bucket_locks;
+    mutable std::vector<BucketLock> bucket_locks;
 
     /// Guards the totals block, which every parallel `FillingRightJoinSideTransform` writes.
     mutable std::mutex totals_mutex;

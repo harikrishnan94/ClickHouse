@@ -153,55 +153,67 @@ TEST(TwoLevelHashTableDynamic, DegenerateSingleBucket)
     ASSERT_EQ(map.getBucketFromHash(0xFFFFFFFFFFFFFFFFULL), 0u);
 }
 
-TEST(TwoLevelHashTableDynamic, SingleBucketHoistsRoutingOutOfTheRowLoop)
+TEST(TwoLevelHashTableDynamic, BucketAddressedDirectlyStaysOneStorage)
 {
     /// The bucket count is a runtime value, so a single-bucket table cannot be folded away at
-    /// compile time - the routing has to be hoisted to a per-block test instead. `singleBucket()`
-    /// is that test: non-null only for one bucket, and the pointer it hands back is the bucket's
-    /// own `Impl`, so the selected loop calls `Impl::find` with no wrapper and no bucket
-    /// indirection left to pay per row.
+    /// compile time - the build addresses `impls[bucket]` directly instead, because the caller
+    /// already routed the rows it is inserting. That has to be the same storage the table's own
+    /// routed lookups see, not a view of it that could drift.
     constexpr UInt64 num_keys = 20000;
 
     DynamicMap flat_map(1);
+    auto & cells = flat_map.impls[0];
     for (UInt64 key = 1; key <= num_keys; ++key)
-        insertKeyValue(flat_map, key, key * 9);
-
-    auto * flat = flat_map.singleBucket();
-    ASSERT_NE(flat, nullptr);
-    ASSERT_EQ(flat, &flat_map.impls[0]);
-
-    /// The hoisted loop must agree with the routed one on every key, present or absent.
-    for (UInt64 key = 1; key <= num_keys; ++key)
-    {
-        auto * hoisted = flat->find(key);
-        auto * routed = flat_map.find(key);
-        ASSERT_NE(hoisted, nullptr) << "key " << key;
-        ASSERT_EQ(hoisted, routed) << "hoisted and routed lookups disagreed on key " << key;
-        ASSERT_EQ(hoisted->getMapped(), key * 9);
-    }
-    ASSERT_EQ(flat->find(num_keys + 1), nullptr);
-    ASSERT_EQ(flat_map.find(num_keys + 1), nullptr);
-
-    /// Anything the hoisted loop inserts must be visible to the routed path too, and vice versa -
-    /// they are the same storage, not two views that could drift.
     {
         BenchLookupResult it = nullptr;
         bool inserted = false;
-        flat->emplace(num_keys + 1, it, inserted);
-        ASSERT_TRUE(inserted);
-        new (&it->getMapped()) UInt64(12345);
+        cells.emplace(key, it, inserted);
+        ASSERT_TRUE(inserted) << "key " << key;
+        new (&it->getMapped()) UInt64(key * 9);
     }
-    ASSERT_NE(flat_map.find(num_keys + 1), nullptr);
-    ASSERT_EQ(flat_map.find(num_keys + 1)->getMapped(), 12345u);
 
-    /// More than one bucket means there is no single bucket to hoist to, so the caller must take
-    /// the routed loop. Getting this wrong would silently probe only bucket 0.
-    for (size_t num_buckets = 2; num_buckets <= 256; num_buckets *= 2)
+    ASSERT_EQ(flat_map.size(), num_keys);
+    for (UInt64 key = 1; key <= num_keys; ++key)
     {
-        DynamicMap partitioned(num_buckets);
-        ASSERT_EQ(partitioned.singleBucket(), nullptr) << "num_buckets " << num_buckets;
-        const auto & const_ref = partitioned;
-        ASSERT_EQ(const_ref.singleBucket(), nullptr) << "num_buckets " << num_buckets;
+        auto * direct = cells.find(key);
+        auto * routed = flat_map.find(key);
+        ASSERT_NE(routed, nullptr) << "key " << key;
+        ASSERT_EQ(direct, routed) << "direct and routed lookups disagreed on key " << key;
+        ASSERT_EQ(routed->getMapped(), key * 9);
+    }
+    ASSERT_EQ(cells.find(num_keys + 1), nullptr);
+    ASSERT_EQ(flat_map.find(num_keys + 1), nullptr);
+}
+
+TEST(TwoLevelHashTableDynamic, DirectBucketInsertIsFoundByRoutedLookup)
+{
+    /// The contract the build relies on: a caller that routed a key itself and inserted it straight
+    /// into that bucket must be found by the table's own routed lookup. It holds for a bucket
+    /// selection independent of the cell hash too, which is the case that has no safety net - the
+    /// insert no longer re-derives the bucket, so the two routings have to agree by construction.
+    constexpr size_t num_buckets = 64;
+    constexpr UInt64 num_keys = 20000;
+
+    RoutedMap map(num_buckets);
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        auto & cells = map.impls[routedBucket(map, key)];
+        typename RoutedMap::LookupResult it = nullptr;
+        bool inserted = false;
+        cells.emplace(key, it, inserted);
+        ASSERT_TRUE(inserted) << "key " << key;
+        new (&it->getMapped()) UInt64(key * 7);
+    }
+
+    ASSERT_EQ(map.size(), num_keys);
+    map.computeBucketPrefix();
+    auto prober = map.prober();
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        auto * it = map.find(key);
+        ASSERT_NE(it, nullptr) << "key " << key << " inserted into its bucket but not found";
+        ASSERT_EQ(it->getMapped(), key * 7);
+        ASSERT_EQ(prober.find(key), it) << "key " << key;
     }
 }
 
@@ -347,30 +359,48 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
         ASSERT_EQ(it->getMapped(), key * 5) << "mapped value of key " << key << " was corrupted";
     }
 
-    /// `emplace` deliberately leaves the descriptors alone - maintaining them per row would be a
-    /// write shared between buckets, which is what the per-bucket locks exist to avoid. They are
-    /// published once, after the build, and only then must every one describe its bucket's final
-    /// buffer. This mirrors what `HashJoin::onBuildPhaseFinish` does.
-    map.refreshBucketDescs();
-
-    const auto * descs = map.bucketDescs();
-    for (UInt32 i = 0; i < map.bucketCount(); ++i)
-    {
-        ASSERT_NE(descs[i].buf, nullptr);
-        ASSERT_EQ(descs[i].mask, map.impls[i].getBufferSizeInCells() - 1);
-    }
-
-    /// Exercise the descriptors the way a probe fast path does (`desc.buf + (hash & desc.mask)`):
-    /// every cell `find()` returns must lie inside its own bucket's described buffer, or a probe
-    /// reading through the descriptor would address another bucket's memory.
+    /// A probe handle resolves the routing once, after the build, so it must find everything the
+    /// bucket-parallel build inserted and number the cells exactly as the table itself does.
+    map.computeBucketPrefix();
+    auto prober = map.prober();
     for (UInt64 key = 1; key <= num_threads * keys_per_thread; ++key)
     {
-        const auto * cell = map.find(key);
-        ASSERT_NE(cell, nullptr);
-        const auto buck = map.getBucketFromHash(map.hash(key));
-        const auto * base = static_cast<const DynamicMap::cell_type *>(descs[buck].buf);
-        ASSERT_GE(cell, base) << "key " << key << " resolved below bucket " << buck << "'s buffer";
-        ASSERT_LT(cell, base + descs[buck].mask + 1) << "key " << key << " resolved past bucket " << buck << "'s buffer";
+        const auto * cell = prober.find(key);
+        ASSERT_NE(cell, nullptr) << "key " << key << " not found through the probe handle";
+        ASSERT_EQ(cell->getMapped(), key * 5) << "key " << key;
+        ASSERT_EQ(prober.offsetInternal(cell), map.offsetInternal(cell)) << "key " << key;
+    }
+}
+
+TEST(TwoLevelHashTableDynamic, ProberMatchesTheTableAtEveryBucketCount)
+{
+    /// The probe handle is an alternative addressing path into the same cells: same answers, same
+    /// offsets, for a routed bucket count and for the one-bucket case it addresses directly.
+    for (size_t num_buckets = 1; num_buckets <= 64; num_buckets *= 2)
+    {
+        constexpr UInt64 num_keys = 20000;
+        DynamicMap map(num_buckets);
+        for (UInt64 key = 1; key <= num_keys; ++key)
+            insertKeyValue(map, key, key * 3);
+
+        map.computeBucketPrefix();
+        auto prober = map.prober();
+
+        std::unordered_set<size_t> offsets;
+        for (UInt64 key = 1; key <= num_keys; ++key)
+        {
+            const auto * cell = prober.find(key);
+            ASSERT_NE(cell, nullptr) << num_buckets << " buckets, key " << key;
+            ASSERT_EQ(cell, map.find(key)) << num_buckets << " buckets, key " << key;
+            ASSERT_EQ(cell->getMapped(), key * 3) << num_buckets << " buckets, key " << key;
+
+            const size_t offset = prober.offsetInternal(cell);
+            ASSERT_EQ(offset, map.offsetInternal(cell)) << num_buckets << " buckets, key " << key;
+            ASSERT_TRUE(offsets.insert(offset).second) << num_buckets << " buckets, duplicate offset for key " << key;
+        }
+
+        for (UInt64 key = num_keys + 1; key <= num_keys + 1000; ++key)
+            ASSERT_EQ(prober.find(key), nullptr) << num_buckets << " buckets, key " << key << " should be missing";
     }
 }
 
@@ -410,13 +440,8 @@ TEST(TwoLevelHashTableDynamic, ReserveSizesEveryBucket)
     DynamicMap map(num_buckets);
     map.reserve(num_buckets * 2048);
 
-    const auto * descs = map.bucketDescs();
     for (UInt32 i = 0; i < map.bucketCount(); ++i)
-    {
         ASSERT_GE(map.impls[i].getBufferSizeInCells(), 2048u);
-        /// Descriptors must follow the reallocation, not keep pointing at the pre-reserve buffers.
-        ASSERT_EQ(descs[i].mask, map.impls[i].getBufferSizeInCells() - 1);
-    }
 
     /// And the table must still work afterwards.
     for (UInt64 key = 1; key <= 10000; ++key)

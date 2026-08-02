@@ -66,7 +66,12 @@ namespace Unified
 {
 size_t bucketCountForThreads(size_t max_threads)
 {
-    return std::bit_ceil(std::max<size_t>(1, max_threads)) * BUCKETS_PER_THREAD;
+    /// A single build thread cannot contend with anyone, so it gets the one-bucket layout: no
+    /// scatter pass, one hash table with the whole right side in it, and a lock it always gets.
+    if (max_threads <= 1)
+        return 1;
+
+    return std::bit_ceil(max_threads) * BUCKETS_PER_THREAD;
 }
 
 size_t getMinBytesForPrefetchInJoin()
@@ -88,9 +93,27 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, bucket by bucket. `per_bucket[b]` holds the rows
-/// routed to bucket `b` for batching; each row is inserted under the lock of the bucket `emplace`
-/// actually routes it to, which can differ when routing hash differs from `map.hash(key)` alone.
+/// Insert one block's rows into one clause's map, bucket by bucket, holding only one bucket's lock
+/// at a time. `per_bucket[b]` holds the rows routed to bucket `b` by the same routing function
+/// `emplace` uses, so a group's rows all land in cells the held lock covers.
+///
+/// The lock is taken once per group rather than once per row. A row's insert is a handful of
+/// nanoseconds; an uncontended mutex round trip is more than that on its own, and a contended one
+/// turns into a futex wait, so per-row locking makes the build slower the more threads run it.
+///
+/// Buckets are drained with `try_lock`-and-skip rather than in order: a thread that finds a bucket
+/// busy moves on and comes back to it later, so build threads working on different blocks interleave
+/// instead of all queueing behind whichever bucket they happen to reach first. `ConcurrentHashJoin`
+/// drains its per-slot locks the same way; the difference here is that these are buckets of one
+/// shared map, so there is nothing to merge when the build ends.
+///
+/// The scan starts at a different bucket per block rather than always at zero. Every thread has to
+/// visit every bucket, so threads that all scan in the same order collide on the same bucket at the
+/// same time; block numbers are handed out in sequence, so starting at `block_no % num_buckets`
+/// staggers concurrent threads into taking different buckets from the first attempt.
+///
+/// A thread holds one bucket lock at a time and takes no other lock while holding it, so the loop
+/// cannot deadlock: every bucket it waits on is owned by a thread that is itself making progress.
 template <typename Methods, typename Map>
 BuildResult insertIntoBuckets(
     HashJoin & join,
@@ -112,41 +135,83 @@ BuildResult insertIntoBuckets(
 
     auto insert_bucket = [&](size_t bucket)
     {
+        /// Measured under the bucket's own lock, so the growth this insert caused is attributed
+        /// exactly once even while other threads are growing other buckets.
+        const size_t bytes_before = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
+
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
-            join, type, map, key_columns, key_sizes, stored_block_no,
-            *per_bucket[bucket], null_map, join_mask, pools, bucket_result, &locks);
+            join, type, map, bucket, key_columns, key_sizes, stored_block_no,
+            *per_bucket[bucket], null_map, join_mask, *pools[bucket], bucket_result);
 
-        bucket_bytes.fetch_add(bucket_result.bytes_grown, std::memory_order_relaxed);
+        const size_t bytes_after = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
+        bucket_bytes.fetch_add(bytes_after - bytes_before, std::memory_order_relaxed);
 
         result.is_inserted |= bucket_result.is_inserted;
         result.all_values_unique &= bucket_result.all_values_unique;
         result.new_keys += bucket_result.new_keys;
-        result.bytes_grown += bucket_result.bytes_grown;
     };
 
     std::vector<char> pending(num_buckets, 0);
+    size_t buckets_left = 0;
     for (size_t bucket = 0; bucket < num_buckets; ++bucket)
     {
         if (per_bucket[bucket]->size() != 0)
+        {
             pending[bucket] = 1;
+            ++buckets_left;
+        }
     }
 
     /// A block with no rows must still report `is_inserted` the way a non-empty one would, because
     /// for the map kinds that keep every block that is what decides whether the block is dropped
     /// again. Run the (empty) insert once rather than trying to predict its answer here.
-    if (std::none_of(pending.begin(), pending.end(), [](char v) { return v != 0; }))
+    if (buckets_left == 0)
     {
+        std::lock_guard lock(locks[0].mutex);
         insert_bucket(0);
         return result;
     }
 
-    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
-    {
-        if (!pending[bucket])
-            continue;
+    const size_t first_bucket = stored_block_no % num_buckets;
 
-        insert_bucket(bucket);
+    while (buckets_left > 0)
+    {
+        bool made_progress = false;
+
+        for (size_t i = 0; i < num_buckets; ++i)
+        {
+            const size_t bucket = (first_bucket + i) % num_buckets;
+            if (!pending[bucket])
+                continue;
+
+            std::unique_lock lock(locks[bucket].mutex, std::try_to_lock);
+            if (!lock.owns_lock())
+                continue;
+
+            made_progress = true;
+            insert_bucket(bucket);
+            pending[bucket] = 0;
+            --buckets_left;
+        }
+
+        /// Every remaining bucket was busy. Block on one instead of spinning: the owner is
+        /// inserting, so waiting for it costs less than burning a core on `try_lock`.
+        if (!made_progress)
+        {
+            for (size_t i = 0; i < num_buckets; ++i)
+            {
+                const size_t bucket = (first_bucket + i) % num_buckets;
+                if (!pending[bucket])
+                    continue;
+
+                std::lock_guard lock(locks[bucket].mutex);
+                insert_bucket(bucket);
+                pending[bucket] = 0;
+                --buckets_left;
+                break;
+            }
+        }
     }
 
     return result;
@@ -359,11 +424,7 @@ HashJoin::HashJoin(
     for (auto & maps : data->maps)
         dataMapInit(maps);
 
-    /// One lock per (clause, bucket). Clauses have independent maps, so a thread inserting into
-    /// one clause's bucket must not block a thread inserting into another clause's.
-    bucket_locks.resize(disjuncts_num);
-    for (auto & locks : bucket_locks)
-        locks = std::vector<BucketLock>(data->num_buckets);
+    bucket_locks = std::vector<BucketLock>(data->num_buckets);
 
     /// `bucket_bytes` tracks insert deltas only; do not seed it from empty map buffers here or
     /// `SpillingHashJoin` sees ~1 MiB before the first row and spills immediately.
@@ -894,24 +955,37 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                 {
                     using Methods = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>;
 
-                    /// Per-row locks use the emplace bucket directly, so scatter batching is unnecessary
-                    /// and skipping it avoids skew between scatter bucket and emplace bucket.
-                    BuildResult result;
-                    Methods::insertFromBlockImpl(
+                    /// One selector per bucket, pointing either into the scatter's output or - when
+                    /// there is a single bucket, so routing is the identity - straight at the
+                    /// block's own selector, which avoids materializing a copy of it.
+                    const size_t buckets = data->num_buckets;
+                    std::vector<ScatteredBlock::Selector> scattered;
+                    std::vector<const ScatteredBlock::Selector *> per_bucket(buckets, nullptr);
+                    if (buckets == 1)
+                    {
+                        per_bucket[0] = &stored_columns->selector;
+                    }
+                    else
+                    {
+                        scattered = Methods::scatterByBucket(
+                            data->type, map, key_columns, key_sizes[onexpr_idx], stored_columns->selector, buckets);
+                        for (size_t bucket = 0; bucket < buckets; ++bucket)
+                            per_bucket[bucket] = &scattered[bucket];
+                    }
+
+                    const BuildResult result = insertIntoBuckets<Methods>(
                         *this,
                         data->type,
                         map,
+                        bucket_locks,
+                        data->pools,
+                        data->bucket_bytes,
+                        per_bucket,
                         key_columns,
                         key_sizes[onexpr_idx],
                         stored_columns->block_no,
-                        stored_columns->selector,
                         null_map,
-                        join_mask_col,
-                        data->pools,
-                        result,
-                        &bucket_locks[onexpr_idx]);
-
-                    data->bucket_bytes.fetch_add(result.bytes_grown, std::memory_order_relaxed);
+                        join_mask_col);
 
                     is_inserted = result.is_inserted;
                     if (!result.all_values_unique)
@@ -1487,8 +1561,7 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
 
     /// The maps come from another join, which may have been built by a different number of threads.
     /// The locks index the maps' buckets, so they have to follow the maps.
-    for (auto & locks : bucket_locks)
-        locks = std::vector<BucketLock>(data->num_buckets);
+    bucket_locks = std::vector<BucketLock>(data->num_buckets);
 
     bool flag_per_row = needUsedFlagsForPerRightTableRow(table_join);
     if (flag_per_row)
@@ -1508,6 +1581,9 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
                     map_.getBufferSizeInCells(data->type) + 1);
             });
     }
+
+    /// This join did not build these maps, so it has not published what its own probe reads.
+    freezeMapsForProbing();
 }
 
 BlocksList HashJoin::releaseJoinedBlocks(bool restructure [[maybe_unused]])
@@ -1938,7 +2014,7 @@ void HashJoin::freezeMapsForProbing()
             strictness,
             map,
             prefer_use_maps_all,
-            [this](auto, auto, auto & map_) { map_.refreshBucketDescs(data->type); });
+            [this](auto, auto, auto & map_) { map_.computeBucketPrefix(data->type); });
     }
 }
 
