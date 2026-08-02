@@ -55,14 +55,16 @@ class HashJoinMethods;
 /// rather than a separate code path.
 constexpr Int32 BITS_FOR_BUCKET = -1;
 
-/// Buckets - and therefore locks and arenas - per build thread. Has to be well above one: a build
-/// thread visits every bucket for every block it inserts, so with as many buckets as threads all of
-/// them are held almost all of the time, every `try_lock` fails and the threads end up queueing on
-/// whichever bucket they block on. Giving each thread several buckets to choose from is what makes
-/// the build actually run concurrently. Raising it further trades memory for tolerance of key skew:
-/// each bucket is a sub-table with a minimum capacity, and the per-offset used flags are sized from
-/// the capacity summed over all buckets.
-constexpr size_t BUCKETS_PER_THREAD = 16;
+/// Buckets - and therefore locks and arenas - per build thread. Above one, because a build thread
+/// visits every bucket for every block it inserts: with as many buckets as threads, nearly all of
+/// them are held at any moment, so `try_lock` fails everywhere and threads end up queueing. A small
+/// margin is enough once the scan is staggered (see `insertIntoBuckets`) - measured on a 40M-row
+/// build-bound join, two buckets per thread matched sixteen on wall time while costing ~25% less
+/// build CPU per row, because every extra bucket is another sub-table to miss the cache on.
+/// Raising it trades that per-row cost for tolerance of key skew: each bucket is a sub-table with a
+/// minimum capacity, and the per-offset used flags are sized from the capacity summed over all
+/// buckets.
+constexpr size_t BUCKETS_PER_THREAD = 2;
 
 /// Bucket count for a join whose right side is built by `max_threads` threads. The result is a
 /// power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.

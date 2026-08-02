@@ -107,6 +107,11 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
 /// drains its per-slot locks the same way; the difference here is that these are buckets of one
 /// shared map, so there is nothing to merge when the build ends.
 ///
+/// The scan starts at a different bucket per block rather than always at zero. Every thread has to
+/// visit every bucket, so threads that all scan in the same order collide on the same bucket at the
+/// same time; block numbers are handed out in sequence, so starting at `block_no % num_buckets`
+/// staggers concurrent threads into taking different buckets from the first attempt.
+///
 /// A thread holds one bucket lock at a time and takes no other lock while holding it, so the loop
 /// cannot deadlock: every bucket it waits on is owned by a thread that is itself making progress.
 template <typename Methods, typename Map>
@@ -168,12 +173,15 @@ BuildResult insertIntoBuckets(
         return result;
     }
 
+    const size_t first_bucket = stored_block_no % num_buckets;
+
     while (buckets_left > 0)
     {
         bool made_progress = false;
 
-        for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+        for (size_t i = 0; i < num_buckets; ++i)
         {
+            const size_t bucket = (first_bucket + i) % num_buckets;
             if (!pending[bucket])
                 continue;
 
@@ -187,12 +195,13 @@ BuildResult insertIntoBuckets(
             --buckets_left;
         }
 
-        /// Every remaining bucket was busy. Block on the first one instead of spinning: the owner is
+        /// Every remaining bucket was busy. Block on one instead of spinning: the owner is
         /// inserting, so waiting for it costs less than burning a core on `try_lock`.
         if (!made_progress)
         {
-            for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+            for (size_t i = 0; i < num_buckets; ++i)
             {
+                const size_t bucket = (first_bucket + i) % num_buckets;
                 if (!pending[bucket])
                     continue;
 
