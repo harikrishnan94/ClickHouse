@@ -247,21 +247,21 @@ struct KeyGetterForTypeImpl<HashJoin::Type::low_cardinality_key_fixed_string, Va
     using Type = LowCardinalityKeyGetterForJoin<
         ColumnsHashing::HashMethodFixedString<Value, Mapped, true, false, use_offset>, Mapped, use_offset>;
 };
-#define UNIFIED_KEYGETTER_RANGE_IMPL(TYPE, FIELD_TYPE) \
+#define KEYGETTER_RANGE_IMPL(TYPE, FIELD_TYPE) \
     template <typename Value, typename Mapped, bool use_offset> \
     struct KeyGetterForTypeImpl<HashJoin::Type::TYPE, Value, Mapped, use_offset> \
     { \
         using Type = ColumnsHashing::HashMethodOneNumberInRange<Value, Mapped, FIELD_TYPE, false, use_offset>; \
     };
-UNIFIED_KEYGETTER_RANGE_IMPL(range8_key32, UInt32)
-UNIFIED_KEYGETTER_RANGE_IMPL(range16_key32, UInt32)
-UNIFIED_KEYGETTER_RANGE_IMPL(range17_key32, UInt32)
-UNIFIED_KEYGETTER_RANGE_IMPL(range18_key32, UInt32)
-UNIFIED_KEYGETTER_RANGE_IMPL(range8_key64, UInt64)
-UNIFIED_KEYGETTER_RANGE_IMPL(range16_key64, UInt64)
-UNIFIED_KEYGETTER_RANGE_IMPL(range17_key64, UInt64)
-UNIFIED_KEYGETTER_RANGE_IMPL(range18_key64, UInt64)
-#undef UNIFIED_KEYGETTER_RANGE_IMPL
+KEYGETTER_RANGE_IMPL(range8_key32, UInt32)
+KEYGETTER_RANGE_IMPL(range16_key32, UInt32)
+KEYGETTER_RANGE_IMPL(range17_key32, UInt32)
+KEYGETTER_RANGE_IMPL(range18_key32, UInt32)
+KEYGETTER_RANGE_IMPL(range8_key64, UInt64)
+KEYGETTER_RANGE_IMPL(range16_key64, UInt64)
+KEYGETTER_RANGE_IMPL(range17_key64, UInt64)
+KEYGETTER_RANGE_IMPL(range18_key64, UInt64)
+#undef KEYGETTER_RANGE_IMPL
 
 /// `use_offset` asks the key getter to report a matched cell's global offset. Only a join that keeps
 /// per-offset used flags reads it (see `JoinUsedFlags`), and on a partitioned map an offset is not

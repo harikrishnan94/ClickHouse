@@ -206,3 +206,58 @@ longer exists — byte accounting is now the `bucket_bytes` running sum (E12). P
 (M1 scope, M5 align direction, FORK-MECHANICAL bucket). Asked and waiting; no implementing edit made.
 
 **Non-gates:** no bench was run in this unit and none is required by it.
+
+## U3 / Unit 2 — batch 1: M2, M3, M4 (independent of the three open questions)
+
+**Goal:** close the three MATERIAL items whose align direction is unambiguous, while the user
+decides M1/M5/FORK-MECHANICAL.
+
+**Pre-registration:** `PREREG_U3.md` committed as `cab6730b83a`, *before* the implementing commit.
+
+**Changes**
+- M2: `UnifiedHashJoin/JoinUsedFlags.h` `finalizePerRowFlags(size_t)` ->
+  `finalizePerRowFlags(JoinUsedFlags & source, size_t)`; call site `HashJoin.cpp:2407` -> baseline
+  self-merge shape `used_flags->finalizePerRowFlags(*used_flags, ...)`.
+- M3: `UnifiedHashJoin/HashJoin.cpp` public `getTotalByteCount()` now null-checks then calls
+  `doDebugAsserts()` under the `blocks_mutex` it already holds. Checked first that `doDebugAsserts`
+  takes no lock (no deadlock) and that it dereferences `data` unguarded — hence the null check
+  ordering copied from baseline `HashJoin.cpp:533-538`.
+- M4: `UNIFIED_KEYGETTER_RANGE_IMPL` -> `KEYGETTER_RANGE_IMPL` (9 sites + `#undef`).
+
+**Build**
+```
+$ ninja -C build/reldeb clickhouse > build/reldeb/u3_build_m234.log 2>&1
+[514/515] Linking CXX executable programs/clickhouse
+NINJA_EXIT=0
+```
+Green build is itself M4's refute test: no macro redefinition diagnostic, so the rename was indeed
+gratuitous rather than clash-avoiding.
+
+**Gate U2-ALIGN — structural proofs.** Re-ran `U3_normdiff.sh`; residual fell 1464 -> 1437.
+```
+KeyGetter.h      148 -> 128
+JoinUsedFlags.h  108 -> 100
+```
+The decisive check is *changed* (`+`/`-`) lines, not context lines — a first grep counted context
+and produced a false "REFUTED", corrected here:
+```
+$ awk '/^=== DIFF /{f=$3} /^[+-][^+-]/{print f" | "$0}' tmp/uhj_parity/U3_normdiff.txt \
+    | grep -E "finalizePerRowFlags|KEYGETTER_RANGE_IMPL"
+HashJoin.cpp | -        used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
+HashJoin.cpp | +    used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
+```
+- **M2 CLOSED.** The signature is now identical on both sides; the only surviving difference is the
+  surrounding baseline guard `if (!twoLevelMapIsUsed())` ("Two-level maps per-row flags will be
+  finalized by ConcurrentHashJoin"). UHJ has neither `twoLevelMapIsUsed` (every map is two-level,
+  E2) nor a `ConcurrentHashJoin` to defer to (E15), so that residue is EXCLUDED, not M2.
+- **M4 CLOSED.** No `+`/`-` line mentions the macro; all its occurrences are now context.
+- **M3 CLOSED.** `doDebugAsserts();` call-site count base 9 / uhj 9, and the public
+  `getTotalByteCount()` bodies now match modulo the E13 lock split.
+
+`HashJoin.cpp` residual moved 626 -> 627: the one added line is the `std::lock_guard`, inherent to
+the E13 parallel-build lock split, which is EXCLUDED.
+
+**Null/negative results:** the first proof attempt was wrong (grep matched context lines) and is
+recorded above rather than quietly re-run.
+
+**Not done in this batch:** M1, M5, M6 — awaiting user decisions.
