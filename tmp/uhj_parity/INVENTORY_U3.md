@@ -80,12 +80,12 @@ is partitioned — so those rows are EXCLUDED with that mechanism spelled out, p
 
 | ID | Divergence | Baseline file/symbol | One-line align plan |
 | --- | --- | --- | --- |
-| **M1** | **Parallel non-joined block processing absent.** UHJ does not override `supportParallelNonJoinedBlocksProcessing()` (inherits `false` from `IJoin.h:158`) and does not override the 5-arg `getNonJoinedBlocks(..., bucket_idx, num_buckets)`, so it inherits the `IJoin.h:170` default that ignores the partitioning. `NotJoinedHash` lost the `isBucketInRange`/`isBlockInRange` filtering and the `bucket_idx != 0` nullmap guard. RIGHT/FULL joins therefore emit non-joined rows from a single stream. | `ConcurrentHashJoin::supportParallelNonJoinedBlocksProcessing` (`ConcurrentHashJoin.cpp:525`) and `ConcurrentHashJoin::getNonJoinedBlocks(...,stream_idx,num_streams)` (`:535`), whose **two-level branch** (`:555-560`) delegates to `HashJoin::getNonJoinedBlocks(..., stream_idx, num_streams)` (`HashJoin.cpp:1520`) | Port the baseline bucket-partitioned non-joined path into UHJ and override `supportParallelNonJoinedBlocksProcessing` with the same predicate as CHJ. **Not TwoLevel-required — TwoLevel is the enabler**: the baseline reaches this path *because* the map is two-level, and UHJ's map always is. |
-| **M2** | `JoinUsedFlags::finalizePerRowFlags` drops the `source` parameter | `HashJoin/JoinUsedFlags.h:90` `finalizePerRowFlags(JoinUsedFlags & source, size_t num_blocks)` | Restore the baseline signature and the `HashJoin.cpp:2380` self-merge call shape |
-| **M3** | `doDebugAsserts()` no longer runs on the public byte-count path: UHJ's `getTotalByteCount` takes `blocks_mutex` then calls `getTotalByteCountUnlocked`, which omits the assert | `HashJoin.cpp:533-538` calls `doDebugAsserts()` inside `getTotalByteCount()` | Call `doDebugAsserts()` in UHJ's public `getTotalByteCount()` under the lock it already holds |
-| **M4** | `KEYGETTER_RANGE_IMPL` gratuitously renamed to `UNIFIED_KEYGETTER_RANGE_IMPL` | `HashJoin/KeyGetter.h:270-284` | Rename back — verified `#undef`'d at `KeyGetter.h:284` in both copies, so no clash exists (unlike F1) |
-| **M5** | `clone()` propagates `stats_collecting_params` and `max_threads`; the baseline clone propagates neither its stats nor its map-shape knob | `HashJoin.h:129-134` | **Align direction ambiguous — see Open questions.** Dropping `stats_collecting_params` matches baseline; dropping `max_threads` would silently make every cloned UHJ single-bucket |
-| **M6** | `optimize_read_in_order` disabled for UHJ: the gate is `typeid_cast<HashJoin *>(join.get())`, which a `Unified::HashJoin` fails | `ExpressionAnalyzer.cpp:2255` | Admit `Unified::HashJoin` to the same gate. UHJ's probe path is the baseline's, so left block order is preserved. Matches `hash`; diverges from `parallel_hash`, which also fails the cast |
+| ~~M1~~ **ALIGNED** (`5362055b4ed`) | **Parallel non-joined block processing absent.** UHJ does not override `supportParallelNonJoinedBlocksProcessing()` (inherits `false` from `IJoin.h:158`) and does not override the 5-arg `getNonJoinedBlocks(..., bucket_idx, num_buckets)`, so it inherits the `IJoin.h:170` default that ignores the partitioning. `NotJoinedHash` lost the `isBucketInRange`/`isBlockInRange` filtering and the `bucket_idx != 0` nullmap guard. RIGHT/FULL joins therefore emit non-joined rows from a single stream. | `ConcurrentHashJoin::supportParallelNonJoinedBlocksProcessing` (`ConcurrentHashJoin.cpp:525`) and `ConcurrentHashJoin::getNonJoinedBlocks(...,stream_idx,num_streams)` (`:535`), whose **two-level branch** (`:555-560`) delegates to `HashJoin::getNonJoinedBlocks(..., stream_idx, num_streams)` (`HashJoin.cpp:1520`) | Port the baseline bucket-partitioned non-joined path into UHJ and override `supportParallelNonJoinedBlocksProcessing` with the same predicate as CHJ. **Not TwoLevel-required — TwoLevel is the enabler**: the baseline reaches this path *because* the map is two-level, and UHJ's map always is. |
+| ~~M2~~ **ALIGNED** (`8de627d44f5`) | `JoinUsedFlags::finalizePerRowFlags` drops the `source` parameter | `HashJoin/JoinUsedFlags.h:90` `finalizePerRowFlags(JoinUsedFlags & source, size_t num_blocks)` | Restore the baseline signature and the `HashJoin.cpp:2380` self-merge call shape |
+| ~~M3~~ **ALIGNED** (`8de627d44f5`) | `doDebugAsserts()` no longer runs on the public byte-count path: UHJ's `getTotalByteCount` takes `blocks_mutex` then calls `getTotalByteCountUnlocked`, which omits the assert | `HashJoin.cpp:533-538` calls `doDebugAsserts()` inside `getTotalByteCount()` | Call `doDebugAsserts()` in UHJ's public `getTotalByteCount()` under the lock it already holds |
+| ~~M4~~ **ALIGNED** (`8de627d44f5`) | `KEYGETTER_RANGE_IMPL` gratuitously renamed to `UNIFIED_KEYGETTER_RANGE_IMPL` | `HashJoin/KeyGetter.h:270-284` | Rename back — verified `#undef`'d at `KeyGetter.h:284` in both copies, so no clash exists (unlike F1) |
+| ~~M5~~ **ALIGNED** (`5362055b4ed`) | `clone()` propagates `stats_collecting_params` and `max_threads`; the baseline clone propagates neither its stats nor its map-shape knob | `HashJoin.h:129-134` | Resolved by the user's "fix both" instruction using the proposed split: `stats_collecting_params` dropped (MATERIAL, done); `max_threads` kept and reclassified EXCLUDED under E3, being the bucket-count knob and the analogue of the `use_two_level_maps` the baseline's clone also settles |
+| ~~M6~~ **ALIGNED** (`58fbde3ae1d`) | `optimize_read_in_order` disabled for UHJ: the gate is `typeid_cast<HashJoin *>(join.get())`, which a `Unified::HashJoin` fails | `ExpressionAnalyzer.cpp:2255` | Admit `Unified::HashJoin` to the same gate. UHJ's probe path is the baseline's, so left block order is preserved. Matches `hash`; diverges from `parallel_hash`, which also fails the cast |
 
 ## D. LEAD (no behavior difference today)
 
@@ -126,9 +126,80 @@ is partitioned — so those rows are EXCLUDED with that mechanism spelled out, p
 ## Summary line
 
 ```
-AVOIDABLE_MATERIAL=6        (M1..M6, none yet aligned — Unit 1 is inventory only)
+UNIT1_SNAPSHOT_AVOIDABLE_MATERIAL=6   (M1..M6, none yet aligned — Unit 1 is inventory only)
+[superseded — the authoritative machine-checkable line is AVOIDABLE_MATERIAL= in the FINAL PASS below]
 EXCLUDED=17 groups / 44 diff regions
 FORK_MECHANICAL=2
 LEAD=4
 UNSETTLED=0
+```
+
+---
+
+# FINAL PASS (Unit 3) — after all alignments
+
+Re-derived on the final tree, not carried over from the Unit 1 pass. Regenerate with
+`./tmp/uhj_parity/U3_normdiff.sh && ./tmp/uhj_parity/U3_attribute.sh`.
+
+## Every examined divergence → classification → disposition
+
+| ID | Divergence | Classification | Disposition |
+| --- | --- | --- | --- |
+| M1 | Parallel non-joined block processing absent | MATERIAL | **ALIGNED** `5362055b4ed` — `NonJoinedBlocksTransform` count 0 → 8, matching `parallel_hash`; 30 RIGHT/FULL row-set cases identical to `hash` |
+| M2 | `finalizePerRowFlags` signature | MATERIAL | **ALIGNED** `8de627d44f5` — no changed line names it |
+| M3 | `doDebugAsserts` off the public byte-count path | MATERIAL | **ALIGNED** `8de627d44f5` — call sites base 9 / UHJ 9 |
+| M4 | `KEYGETTER_RANGE_IMPL` renamed | MATERIAL | **ALIGNED** `8de627d44f5` — green build proves no clash |
+| M5 | `clone()` forwards stats | MATERIAL | **ALIGNED** `5362055b4ed` — stats dropped; `max_threads` reclassified EXCLUDED (E3) |
+| M6 | `optimize_read_in_order` gate excludes UHJ | MATERIAL | **ALIGNED** `58fbde3ae1d` — `Read type` Default → InOrder, before/after control |
+| W1 | 4 gratuitous blank-line differences | MATERIAL (cosmetic) | **ALIGNED** `b99fa90b5b0` — unattributed hunks 4 → 0 |
+| E1–E17 | Bucketed maps, per-bucket arenas/locks, scatter-by-bucket, bucket-offset synthesis, and the shared-map parallel build those bucket locks enable | EXCLUDED | Kept, by MUST-HOLD. 100 hunks / 1427 changed lines |
+| F1 | `APPLY_FOR_JOIN_VARIANTS` renamed | FORK-MECHANICAL | Kept — verified not `#undef`'d and used from 4 other TUs, so a redefinition clash is real |
+| F2 | `getName()` returns `"UnifiedHashJoin"` | FORK-MECHANICAL | Kept — must be distinguishable in `EXPLAIN`/logs |
+| L1 | `GraceHashJoin::prepareRightBlock` hardcodes the baseline static | LEAD | Kept — the two statics are textually identical, so no behavioral divergence |
+| L2 | `unified_hash` missing from several setting docs | LEAD | Kept — documentation only |
+| L3 | `AUTO` never selects `unified_hash` | LEAD | Kept — deliberate staging of an experimental algorithm |
+| L4 | `calculateHashTableCacheKeys` skips UHJ | LEAD | Kept — a `parallel_hash` slot-preallocation mechanism; UHJ still gets `StatsCollectingParams` from the planner |
+| — | `ExpressionAnalyzer` ctor-arg parity | NULL RESULT | Refuted: all three algorithms get identical args |
+| — | Runtime filters, `isFilled`, `alwaysReturnsEmptySet`, `pipelineType`, `joinGet`, ASOF, prefetch threshold, ProfileEvents | NULL RESULT | No divergence |
+
+## Residual-diff attribution (final tree)
+
+Every changed line is attributed to a classified cause; nothing is unexplained.
+
+```
+TWOLEVEL         hunks=75   changed_lines=1232
+PARALLEL_BUILD   hunks=25   changed_lines=195
+FORK_MECHANICAL  hunks=9    changed_lines=18
+UNATTRIBUTED     hunks=0    changed_lines=0
+```
+
+`PARALLEL_BUILD` is counted separately from `TWOLEVEL` for honesty, but is excluded on the same
+ground: the fork builds one shared map from many threads *because* the map is partitioned into
+bucket-indexed locks, which the mission excludes explicitly ("bucket-indexed locks **when** they
+exist only because of TwoLevel").
+
+Note the residual line count rose 1435 → 1445 across the M1 commit even though M1 *removed* a
+divergence: UHJ's partitioned scan is textually shorter than the baseline's, which keeps an
+`if constexpr` guard and a single-level `else` branch that would be dead code here. Padding the fork
+with a dead branch to shrink the metric would be gaming it. The line count is a proxy; the oracle is
+the count below.
+
+## The much larger structural divergence, NOT addressed here
+
+`UnifiedHashJoin` is 7466 lines, and **36 of its 42 files are byte-identical to their `HashJoin`
+counterparts** modulo the namespace wrapper — roughly 6000 lines of pure duplication that diverges
+in no way at all. That duplication is a larger divergence than the 1445 behavioral lines, and no
+item-by-item alignment can touch it; removing it means merging the two trees (e.g. templating
+`HashJoin` over a map policy so `unified_hash` becomes an instantiation). Raised with the user and
+**explicitly left out of scope** for this mission. Recorded so it is not mistaken for an oversight.
+
+## Summary line
+
+```
+AVOIDABLE_MATERIAL=0
+EXCLUDED=17 groups / 100 hunks / 1427 changed lines
+FORK_MECHANICAL=2 items / 9 hunks / 18 changed lines
+LEAD=4 (none risk-accepted as blocking; all are no-behavior-change or out-of-scope)
+UNSETTLED=0
+UNATTRIBUTED=0
 ```
