@@ -216,8 +216,10 @@ public:
         SharedHeader,
         SharedHeader right_sample_block_) const override
     {
+        /// `max_threads` is carried over because it only sizes the buckets, which is this join's
+        /// analogue of the `use_two_level_maps` the baseline's `clone` also settles here.
         return std::make_shared<HashJoin>(
-            table_join_, right_sample_block_, any_take_last_row, reserve_num, instance_id, stats_collecting_params, max_threads);
+            table_join_, right_sample_block_, any_take_last_row, reserve_num, instance_id, StatsCollectingParams{}, max_threads);
     }
 
     /** Add block of data from right hand of JOIN to the map.
@@ -252,6 +254,12 @@ public:
       */
     bool supportParallelJoin() const override { return true; }
 
+    /** The non-joined rows of a RIGHT/FULL join are emitted by several streams, each taking the
+      * buckets it owns. `ConcurrentHashJoin` does the same on a two-level map; the maps here are
+      * always two-level, so the same partitioning applies.
+      */
+    bool supportParallelNonJoinedBlocksProcessing() const override;
+
     void setTotals(const Block & block) override;
     const Block & getTotals() const override;
 
@@ -272,6 +280,10 @@ public:
       */
     IBlocksStreamPtr getNonJoinedBlocks(
         const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const override;
+
+    IBlocksStreamPtr getNonJoinedBlocks(
+        const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
+        size_t stream_idx, size_t num_streams) const override;
 
     void onBuildPhaseFinish() override;
 

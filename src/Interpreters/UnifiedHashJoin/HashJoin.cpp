@@ -1366,9 +1366,17 @@ class NotJoinedHash final : public NotJoinedBlocks::RightColumnsFiller
 {
 public:
     NotJoinedHash(const HashJoin & parent_, UInt64 max_block_size_, bool flag_per_row_)
+        : NotJoinedHash(parent_, max_block_size_, flag_per_row_, 0, 1)
+    {
+    }
+
+    NotJoinedHash(const HashJoin & parent_, UInt64 max_block_size_, bool flag_per_row_,
+                  size_t bucket_idx_, size_t num_buckets_)
         : parent(parent_)
         , max_block_size(max_block_size_)
         , flag_per_row(flag_per_row_)
+        , bucket_idx(bucket_idx_)
+        , num_buckets(num_buckets_)
     {
         if (parent.data == nullptr)
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot join after data has been released");
@@ -1398,10 +1406,24 @@ private:
     const HashJoin & parent;
     UInt64 max_block_size;
     bool flag_per_row;
+    /// This stream's share of the right side: it emits the buckets, or the stored blocks, whose
+    /// index is congruent to `bucket_idx` modulo `num_buckets`. `num_buckets <= 1` is the whole side.
+    size_t bucket_idx;
+    size_t num_buckets;
 
     std::any position;
     std::optional<HashJoin::NullmapList::const_iterator> nulls_position;
     std::optional<HashJoin::StoredBlocksList::const_iterator> used_position;
+
+    bool isBucketInRange(size_t bucket) const
+    {
+        return num_buckets <= 1 || (bucket % num_buckets) == bucket_idx;
+    }
+
+    bool isBlockInRange(size_t block_no) const
+    {
+        return num_buckets <= 1 || (block_no % num_buckets) == bucket_idx;
+    }
 
     template <typename Maps>
     size_t fillColumnsFromMap(const Maps & maps, MutableColumns & columns_keys_and_right)
@@ -1428,6 +1450,8 @@ private:
 
         if (flag_per_row)
         {
+            /// The stored blocks are not partitioned by bucket, so streams divide them by the
+            /// globally unique `block_no` instead.
             if (!used_position.has_value())
                 used_position = parent.data->columns.begin();
 
@@ -1436,6 +1460,9 @@ private:
             for (auto & it = *used_position; it != end && row_nums.size() < max_block_size; ++it)
             {
                 const auto & mapped_block = *it;
+                if (!isBlockInRange(mapped_block.block_no))
+                    continue;
+
                 size_t rows = mapped_block.columns.at(0)->size();
 
                 for (size_t row = 0; row < rows; ++row)
@@ -1461,20 +1488,41 @@ private:
             auto end = map.end();
             const StoredBlock * const * stored_columns = parent.data->stored_columns_index->blocksData();
 
-            for (; it != end; ++it)
+            /// Streams divide the map by the bucket the iterator reports. That is the *iteration*
+            /// partition, not the routing one (see `TwoLevelHashTable::iteratorAt`), which is all
+            /// this needs: every cell belongs to exactly one iteration bucket, so the streams cover
+            /// the map once between them. For a direct-addressed map the whole flat buffer is
+            /// iteration bucket 0, so stream 0 emits it and the others emit nothing.
+            auto skipToNextOwnedBucket = [&]() -> bool
+            {
+                while (it != end && !isBucketInRange(it.getBucket()))
+                {
+                    /// smallest bucket > current that satisfies: bucket = bucket_idx (mod num_buckets)
+                    size_t cur = it.getBucket();
+                    size_t next = cur - (cur % num_buckets) + bucket_idx;
+                    if (next <= cur)
+                        next += num_buckets;
+                    it = map.iteratorAt(next);
+                }
+                return it != end;
+            };
+
+            if (!skipToNextOwnedBucket())
+                return row_nums.size();
+
+            while (it != end && row_nums.size() < max_block_size)
             {
                 size_t offset = map.offsetInternal(it.getPtr());
-                if (parent.isUsed(offset))
-                    continue;
-
-                const Mapped & mapped = it->getMapped();
-                CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
-
-                if (row_nums.size() >= max_block_size)
+                if (!parent.isUsed(offset))
                 {
-                    ++it;
-                    break;
+                    const Mapped & mapped = it->getMapped();
+                    CollectorNonJoined<Mapped>::collect(mapped, stored_columns, many_columns, row_nums);
                 }
+
+                ++it;
+
+                if (it != end && !isBucketInRange(it.getBucket()) && !skipToNextOwnedBucket())
+                    break;
             }
         }
 
@@ -1486,6 +1534,11 @@ private:
 
     void fillNullsFromBlocks(MutableColumns & columns_keys_and_right, size_t & rows_added)
     {
+        /// The nullmaps are not partitioned, so only stream 0 emits them; otherwise every stream
+        /// would emit the same NULL-key rows.
+        if (bucket_idx != 0)
+            return;
+
         if (!nulls_position.has_value())
             nulls_position = parent.data->nullmaps.begin();
 
@@ -1524,7 +1577,26 @@ private:
 IBlocksStreamPtr
 HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size) const
 {
+    return getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size, 0, 1);
+}
+
+bool HashJoin::supportParallelNonJoinedBlocksProcessing() const
+{
+    return table_join->allowParallelNonJoinedRowsProcessing()
+        && JoinCommon::hasNonJoinedBlocks(*table_join)
+        && !table_join->getOnlyClause().key_names_right.empty();
+}
+
+IBlocksStreamPtr
+HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size,
+                             size_t stream_idx, size_t num_streams) const
+{
     if (!JoinCommon::hasNonJoinedBlocks(*table_join))
+        return {};
+
+    /// With no join keys every right row is non-joined and none of them sits in a map, so there is
+    /// nothing to partition: stream 0 emits them all.
+    if (num_streams > 1 && table_join->getOnlyClause().key_names_right.empty() && stream_idx != 0)
         return {};
 
     size_t left_columns_count = left_sample_block.columns();
@@ -1554,7 +1626,7 @@ HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & resu
         }
     }
 
-    auto non_joined = std::make_unique<NotJoinedHash>(*this, max_block_size, flag_per_row);
+    auto non_joined = std::make_unique<NotJoinedHash>(*this, max_block_size, flag_per_row, stream_idx, num_streams);
     return std::make_unique<NotJoinedBlocks>(std::move(non_joined), result_sample_block, left_columns_count, *table_join);
 }
 

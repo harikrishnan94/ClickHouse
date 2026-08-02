@@ -351,3 +351,75 @@ reaches its bucket-partitioned path only for the two-level family, so a `require
 guard is the likely shape.
 
 **Status: not implemented. Awaiting the user's answer on M1 scope.**
+
+## U3 / Unit 2 — batch 3: M1 and M5 (user decision: "Fix both M1 and M5")
+
+**Authority call recorded.** User asked how M1/M5 affect performance and functionality. Answered
+honestly: **neither changes query results.** M5 affects only hash-table size hints; M1 changes only
+how many streams emit the non-joined rows of a RIGHT/FULL join, not which rows or their values.
+Both were then implemented on the user's instruction, justified as divergence removal, **not** by
+any throughput measurement. No bench was run for either.
+M5 used the proposed split (drop `stats_collecting_params`; keep `max_threads` as EXCLUDED under E3),
+which the user did not object to.
+
+**Pre-registration:** `9f0b669b7fc`, before the implementing commit.
+
+**The trap M1 nearly walked into.** The baseline gates its partitioned branch on
+`if constexpr (requires { it.getBucket(); map.numBuckets(); })` (`HashJoin.cpp:1406-1409`). Copying
+that verbatim would have been silently wrong here: `numBuckets()` is declared
+`requires(isFixedStorage())` (`TwoLevelHashTable.h:77-82`) and UHJ runs every map in runtime mode
+(`BITS_FOR_BUCKET == -1`), so the clause is **false for every UHJ map**. All of them would have
+fallen into the unfiltered branch and each stream would have emitted every non-joined row —
+duplicates, in a path that aggregate-only tests could easily have missed. Found by reading
+`TwoLevelHashTable.h` before writing the port, not by testing afterwards.
+
+Partitioning is therefore by the **iteration** bucket, which is what `iteratorAt`/`getBucket`
+actually index (`TwoLevelHashTable.h:733`):
+- `JoinHashMap`/`JoinHashMapWithSavedHash` (RuntimeStorage): `iterationBuckets() == num_buckets`
+  -> genuine disjoint partition across streams.
+- `JoinFixedHashMap` (FixedRangeStorage, `key8`/`key16`/`range*`): `iterationBuckets()` is `1`
+  (`TwoLevelHashTable.h:397-398`) -> everything is iteration-bucket 0, so stream 0 emits it all and
+  the others emit nothing. Serial for those types, but correct.
+Correctness needs only a disjoint, complete cover of the cells; both cases give one.
+
+**Build.** First attempt failed: `-Werror,-Wshadow`, because the baseline's parameter name
+`num_buckets` shadows UHJ's `num_buckets` **member** (the map's bucket count, which the baseline has
+no equivalent of). Renamed the parameters to `stream_idx`/`num_streams` — which is what
+`ConcurrentHashJoin::getNonJoinedBlocks` calls them (`ConcurrentHashJoin.cpp:536-537`), so the fix
+is baseline-faithful rather than invented. `NINJA_EXIT=0` after.
+
+**Gate U2-ALIGN — capability now matches the parallel baseline.** Count of
+`NonJoinedBlocksTransform` in `EXPLAIN PIPELINE` for a RIGHT join at `max_threads=8`:
+```
+hash           NonJoined_count=0     (serial, emitted inside JoiningTransform)
+parallel_hash  NonJoined_count=8
+unified_hash   NonJoined_count=8     <-- was 0 before this change
+```
+
+**Refute condition not met.** `tmp/uhj_parity/m1_nonjoined.sh`, 30 cases — RIGHT and FULL x
+{aggregate, **full sorted row set**, NULL right keys, string keys, UInt8 direct-addressed keys} x
+`max_threads` {1,4,16}, each compared against `hash`:
+```
+30/30 ok ; FAIL=0 ; M1 ROWSETS IDENTICAL ; JOB_EXIT=0
+```
+The full-row-set cases matter specifically: a wrong partition duplicates or loses rows in a way
+`count()`/`sum()` can cancel out. The UInt8 case covers the direct-addressed single-iteration-bucket
+path, and the NULL-key case covers the stream-0 nullmap guard.
+
+**Gate U4 on this binary:** `04658` OK JOB_EXIT=0; `04659` OK JOB_EXIT=0.
+
+**Honest note on the line metric.** Residual went **1435 -> 1445 (+10)** even though M1 *removed* a
+behavioral divergence. Reason: UHJ's partitioned scan is textually shorter than the baseline's,
+because the baseline keeps an `if constexpr` guard plus a single-level `else` branch that would be
+**dead code** in UHJ (every UHJ map is a `TwoLevelHashTable`), and because the parameters had to be
+renamed for the shadow error. Padding UHJ with a dead branch purely to shrink the line count would
+be gaming the metric, so it was not done. The line count is a proxy; the completion oracle is
+`AVOIDABLE_MATERIAL`, and the capability proof above is what settles M1.
+
+Attribution after this batch — still no unexplained divergence:
+```
+TWOLEVEL         hunks=75   changed_lines=1232
+PARALLEL_BUILD   hunks=25   changed_lines=195
+FORK_MECHANICAL  hunks=9    changed_lines=18
+UNATTRIBUTED     hunks=0    changed_lines=0
+```
