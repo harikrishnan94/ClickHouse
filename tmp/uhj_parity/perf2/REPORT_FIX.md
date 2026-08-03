@@ -567,3 +567,67 @@ storage kind cannot simply follow the thread count of whoever probes.
 
 Raw: `/tmp/twolevel_probe.py` in the session; re-runnable against the harness with
 `H.Cell(kind, key, match, 1, card)` and `settings_for(cell, "parallel_hash")`.
+
+### 11.7 How strongly can "`unified_hash` beats `parallel_hash`" be stated?
+
+**Inside the measured space the claim is stronger than "almost always" - it is every cell.**
+Of the 48 cells at 16 and 64 threads that have a `parallel_hash` comparator:
+
+| margin | wall | CPU |
+| --- | ---: | ---: |
+| unified faster by >20% | 24 / 48 | 8 / 48 |
+| faster by 10-20% | 8 / 48 | 22 / 48 |
+| faster by 5-10% | 14 / 48 | 12 / 48 |
+| faster by 3-5% | 1 / 48 | 5 / 48 |
+| within ±3% (parity) | 1 / 48 | 1 / 48 |
+| **slower by >3%** | **0 / 48** | **0 / 48** |
+
+median −27.0% wall / −12.1% CPU; worst cell −2.0% / −0.3% (`INNER|str|lo|t16|large`, the same
+cell as §11.5); best −52.0% / −33.1%.
+
+**Peak memory, never analysed before this section, points the same way:**
+
+| | median | best | worst | cells >+10% |
+| --- | ---: | ---: | ---: | ---: |
+| t16 | **−15.0%** | −26.8% | −7.6% | 0 / 24 |
+| t64 | **−23.6%** | −48.4% | −7.2% | 0 / 24 |
+| t1 (vs `hash`) | +0.1% | −4.7% | +39.5% | 10 / 72 |
+
+The t1 outliers are all `small` cells whose absolute peak is 0.01 GiB, so the percentage is on a
+10 MB base. At 16 and 64 threads there is no cell where `unified_hash` uses more memory.
+
+And at **one thread** with `parallel_hash` forced (§11.6, 8 cells x 7 reps): 115 ms vs 118 ms wall,
+115.1 vs 118.3 ms CPU, −7.3% on probe+non-joined. So at every thread count measured
+`unified_hash` is at least as fast, never slower.
+
+**What stops it being a blanket claim.** Five gaps, in the order that matters:
+
+1. **A third of the multi-threaded matrix has no comparison at all.** `allowParallelHashJoin()`
+   is false for SEMI/ANTI, so 24 of the 72 cells at 16/64 have no `parallel_hash` to be faster
+   than. Practically that favours `unified_hash` - it is the only parallel option there - but it
+   is a capability statement, not a speed one.
+2. **Only `large` cardinality is measured above one thread.** `THREAD_CARDS` pairs one thread
+   with small/medium and 16/64 with large only, so a 16-thread join over a 20k-row build side -
+   a common shape - is entirely unmeasured. This is the cheapest gap to close and the one most
+   likely to contain a surprise, because the fixed per-row costs of §11.3/§11.6 matter most when
+   the table is cache-resident.
+3. **Uniform keys, no skew.** The bucket count `K` is load-bearing for contention (ablation
+   A-K1), and skew is exactly where a bucket layout differs from a slot layout.
+4. **Whole feature families are unexercised**: residual/additional filters (loop family P9,
+   UNSETTLED), `LowCardinality` keys, the direct-addressed `key8`/`key16` maps, long
+   `RowRefList` chains (the matrix has 2 rows per key), ASOF, multi-disjunct OR joins, nullable
+   keys, `StorageJoin` reuse, and the spill/external paths.
+5. **One microarchitecture** (aarch64 Neoverse-V2), one host, single-tenant.
+
+**A sentence that is defensible as written:** *on a 30M-row build side with uniform keys at 16
+and 64 threads, `unified_hash` was faster than `parallel_hash` in all 48 measured cells - median
+27% less wall time, 12% less CPU and 24% less peak memory at 64 threads - and slower in none.*
+
+That generalises with some confidence because the mechanism is measured, not inferred:
+`parallel_hash` fails a `try_lock` 309 times per successful acquisition against
+`unified_hash`'s 0.70 and spends 26% more time inside critical sections; it merges every slot
+into slot 0 at build finish where `unified_hash` shares one map from the start; its scatter
+copies columns where `unified_hash` routes row indices; and its probe pays a re-hash plus a
+`call_once` per matched row for an offset that `unified_hash` reads from a precomputed prefix
+(§11.6: +11.6% over a single-level map against `unified_hash`'s +3.5%). None of those depend on
+the key type or the data distribution.
