@@ -1011,3 +1011,135 @@ re-hash is provably dead at one thread, `perf stat` should show
 If instead IPC drops and `LLC-load-misses`/row rises, the cost is the flag array's
 layout (claim A5) rather than the instruction count, and A7 is downgraded. That is
 the discriminating counter test G1.3 exists for.
+
+---
+
+## E12 — FIX for A7 implemented and re-measured. Real, correct, and much smaller than I estimated.
+
+Requested directly by the requester: fix the per-non-joined-cell `offsetInternal`
+cost the codegen artifact found (102 vs 39 instructions, a `crc32cx` re-hash that
+is dead at one thread, and `std::call_once` closure stores paid every cell).
+
+### The change (3 files, no baseline touched)
+
+1. `src/Common/HashTable/TwoLevelHashTable.h` — **added**
+   `offsetInternalAtBucket(ptr, iteration_bucket)`, `ALWAYS_INLINE`, forwarding to
+   `impls.offsetInternalUnsafe(...)`. No re-hash (the bucket is passed in), no
+   `call_once`.
+2. `src/Interpreters/UnifiedHashJoin/HashJoin.cpp:1515` — the non-joined scan now
+   calls `map.offsetInternalAtBucket(it.getPtr(), it.getBucket())`.
+3. `src/Common/HashTable/BucketPartitionedTable.h` — the concept requires the new
+   method, so a map type lacking it fails at compile time rather than silently.
+
+**Preconditions verified from source before writing it**, not assumed: the
+iterator exposes both `getPtr()` and `getBucket()`; `RuntimeStorage::iterationBuckets()
+== bucketCount()` so an iteration bucket *is* a bucket partition; `FixedRangeStorage`
+has one iteration partition and its `offsetInternalUnsafe(ptr)` needs no bucket;
+`PartitionedFixedHashMap` is a `TwoLevelHashTable` alias so one method covers every
+variant; and `freezeMapsForProbing()` (which calls `computeBucketPrefix()`) runs at
+`onBuildPhaseFinish` (`:2478`) and again at the end of `runPostBuildPhase` (`:2528`)
+after any map-replacing pass, so the prefix sums the unsafe path reads are always
+established.
+
+Build: `build/reldeb/build_fix_a7.log`, `JOB_EXIT=0`, 0 errors.
+New binary `BuildID d115153fc6a930dd1ffaeab37b57b525218905a8` (was `b7980f6e...`).
+
+### Correctness
+
+- **Gate G0.2 GREEN** on the post-fix sweep: all 144 cells return byte-identical
+  full-output-column checksums across all three algorithms.
+- `04658_unified_hash_join_equivalence.sh`: `exit=0`, `REFERENCE_MATCH=OK`.
+- `04659` equivalence via `tmp/uhj_parity/run_04659.sh` (the stock test cannot run
+  here because it passes `--max_threads` twice, which the client rejects — my
+  harness problem, not the fix's): `OK`, exit 0.
+
+### Effect on the phase it targets — real and beyond noise
+
+`unified_hash` non-joined phase, medians over 7 runs, sample stdev in parentheses:
+
+| cell | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `FULL\|u64\|hi\|t1\|medium` | 14,794 (112) | 13,315 (139) | **-10.0%** |
+| `RIGHT\|u64\|hi\|t1\|medium` | 14,856 (160) | 13,200 (205) | **-11.1%** |
+| `RIGHT\|u64\|hi\|t1\|small` | 199 (6) | 178 (4) | **-10.6%** |
+| `FULL\|u64\|hi\|t1\|small` | 199 (7) | 181 (8) | **-9.0%** |
+| `FULL\|u64\|lo\|t1\|medium` | 55,986 (811) | 54,877 (461) | -2.0% |
+| `RIGHT\|u64\|lo\|t1\|medium` | 56,079 (986) | 54,431 (539) | -2.9% |
+
+At roughly 10 standard deviations, the high-match improvements are far outside the
+noise band. And the **dose-response is mechanistically right**, which is what makes
+this an attribution rather than a coincidence: the fix removes per-cell *flag-test*
+cost, so it pays where most cells are tested-and-skipped (high match, -10%) and
+barely pays where most cells are emitted and collection dominates (low match,
+-2%). Nothing in the harness knew to expect that split.
+
+Claim **A7 is therefore CONFIRMED as a real cost** — the operation exists, removing
+it moves the number beyond the band, and the direction and the shape were both
+predicted.
+
+### But my bounded estimate was WRONG, by about 6x
+
+PREREG/REPORT carried a SUPPORTED bound for A7: "~9,200 us of the 11,342 us probe
+gap, an upper bound of order **80%**", extrapolated from the 39/102 instruction
+ratio. Measured: the fix recovered **1,479 us**, not ~9,200 us.
+
+The probe+non-joined gap moved accordingly, and only that far:
+
+| cell | gap before | gap after | closed |
+| --- | --- | --- | --- |
+| `FULL\|u64\|hi\|t1\|medium` | +12.6% | +10.3% | 2.3pp |
+| `FULL\|u64\|lo\|t1\|medium` | +5.9% | +4.1% | 1.9pp |
+| `RIGHT\|u64\|lo\|t1\|medium` | +6.0% | +3.8% | 2.2pp |
+| `RIGHT\|u64\|hi\|t1\|medium` | +12.7% | +13.3% | -0.6pp (drift) |
+
+**The instruction-ratio extrapolation overestimated the recoverable time by roughly
+6x.** Two reasons, both of which I should have weighted: instructions are not
+cycles, and — more importantly — the 102-vs-39 count covers the whole per-cell
+emitting path, while the fix only removes the re-hash and the `call_once`
+machinery, leaving the bucket-aware iterator and the out-of-line frame in place.
+
+This is precisely why the brief forbids writing an instruction ratio as a
+percentage. The bound is now replaced by a measurement, and the old estimate is
+struck rather than quietly adjusted.
+
+### Effect on the deficit map — small
+
+Across the 13 cells that were classified slower at 1 thread, mean wall delta
+**+7.28% -> +6.54%**, i.e. **-0.73pp**, and cells classified slower at 1 thread go
+**13 -> 10**. Several cells move by exactly 0.0pp because wall is integer
+milliseconds and these cells run in 51-61 ms, so sub-millisecond changes cannot
+resolve — a real resolution limit of using `query_duration_ms` for small cells,
+recorded rather than worked around.
+
+**So the 1-thread deficit is NOT explained by A7.** The non-joined phase is only
+about a tenth of these queries, so even a 10% phase win is ~1% of wall. The bulk of
+the 5-9% remains unattributed, and the probe-path used-flag maintenance (claim A6)
+is still the open target.
+
+### Regression check on the shared header
+
+`TwoLevelHashTable.h` is also used by `parallel_hash` (its shards are two-level)
+and by `Aggregator`, so adding a method there had to be proven inert:
+
+```
+hash          : 72 cells, median wall change +0.00%, 1 cell beyond +-5% (-5.3%, drift)
+parallel_hash : 48 cells, median wall change +0.00%, 0 cells beyond +-5%
+```
+
+Both comparator arms are unchanged. G1.7 still holds: `src/Interpreters/HashJoin/`
+and `ConcurrentHashJoin.{h,cpp}` are untouched.
+
+### Gate G0.5 went RED post-fix, and it is a gate weakness, not a regression
+
+7 of 29 build-only cross-check pairs exceed the 20% tolerance, including
+`FULL|str|hi|t1|medium` on the **`hash`** arm at 48.7% — an arm my change cannot
+affect. Cause: the build-only cross-check compares a median of 7 timed runs against
+a **single** build-only run (`purpose="buildonly"` is executed once per cell), so
+one side has n=1 and no noise estimate at all. That under-powering also explains the
+lone 25% outlier seen earlier.
+
+Not fixed by widening the tolerance, which is banned. The honest statements are: the
+check is under-powered by construction and needs repetitions on the build-only arm,
+and the property it exists to protect is independently affirmed by check (iii),
+which compares `ConcurrentHashJoinBuildMicroseconds` against the processor figure
+across 48 cells at **median 0.2%, max 2.0%** deviation. G0.5 is reported RED.

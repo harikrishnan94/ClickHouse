@@ -1,0 +1,8 @@
+=== 04658_unified_hash_join_equivalence ===
+exit=0
+REFERENCE_MATCH=OK
+=== 04659_unified_hash_join_parallel_build ===
+exit=36
+REFERENCE_MATCH=DIFF
+0a1
+> OK

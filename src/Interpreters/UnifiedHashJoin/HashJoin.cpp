@@ -1512,7 +1512,11 @@ private:
 
             while (it != end && row_nums.size() < max_block_size)
             {
-                size_t offset = map.offsetInternal(it.getPtr());
+                /// The iterator already knows its bucket, so pass it rather than making
+                /// `offsetInternal` recover it by re-hashing the cell's key once per cell. The
+                /// prefix sums this reads are established by `freezeMapsForProbing()`, which runs at
+                /// build finish and again after any map-replacing post-build pass.
+                size_t offset = map.offsetInternalAtBucket(it.getPtr(), it.getBucket());
                 if (!parent.isUsed(offset))
                 {
                     const Mapped & mapped = it->getMapped();
