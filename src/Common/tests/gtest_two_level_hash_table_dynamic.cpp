@@ -370,10 +370,11 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
         {
             for (UInt64 key = 1; key <= num_threads * keys_per_thread; ++key)
             {
-                const auto * cell = prober.find(key);
+                size_t offset = 0;
+                const auto * cell = prober.findWithOffset(key, offset);
                 ASSERT_NE(cell, nullptr) << "key " << key << " not found through the probe handle";
                 ASSERT_EQ(cell->getMapped(), key * 5) << "key " << key;
-                ASSERT_EQ(prober.offsetInternal(cell), map.offsetInternal(cell)) << "key " << key;
+                ASSERT_EQ(offset, map.offsetInternal(cell)) << "key " << key;
             }
         });
 }
@@ -396,18 +397,22 @@ TEST(TwoLevelHashTableDynamic, ProberMatchesTheTableAtEveryBucketCount)
                 std::unordered_set<size_t> offsets;
                 for (UInt64 key = 1; key <= num_keys; ++key)
                 {
-                    const auto * cell = prober.find(key);
+                    size_t offset = 0;
+                    const auto * cell = prober.findWithOffset(key, offset);
                     ASSERT_NE(cell, nullptr) << num_buckets << " buckets, key " << key;
                     ASSERT_EQ(cell, map.find(key)) << num_buckets << " buckets, key " << key;
                     ASSERT_EQ(cell->getMapped(), key * 3) << num_buckets << " buckets, key " << key;
-
-                    const size_t offset = prober.offsetInternal(cell);
                     ASSERT_EQ(offset, map.offsetInternal(cell)) << num_buckets << " buckets, key " << key;
                     ASSERT_TRUE(offsets.insert(offset).second) << num_buckets << " buckets, duplicate offset for key " << key;
                 }
 
                 for (UInt64 key = num_keys + 1; key <= num_keys + 1000; ++key)
-                    ASSERT_EQ(prober.find(key), nullptr) << num_buckets << " buckets, key " << key << " should be missing";
+                {
+                    size_t offset = 0;
+                    ASSERT_EQ(prober.findWithOffset(key, offset), nullptr)
+                        << num_buckets << " buckets, key " << key << " should be missing";
+                    ASSERT_EQ(offset, 0u) << num_buckets << " buckets, missing key " << key << " must report offset 0";
+                }
             });
     }
 }
