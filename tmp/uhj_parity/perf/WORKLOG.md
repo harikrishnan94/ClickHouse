@@ -1143,3 +1143,78 @@ check is under-powered by construction and needs repetitions on the build-only a
 and the property it exists to protect is independently affirmed by check (iii),
 which compares `ConcurrentHashJoinBuildMicroseconds` against the processor figure
 across 48 cells at **median 0.2%, max 2.0%** deviation. G0.5 is reported RED.
+
+---
+
+## E13 — G1.4 validity check on the A7 fix: the instructions really are gone
+
+Artifact: `codegen/A7_fix_verification.md`. Cross-binary diff, pre-fix
+`bin/clickhouse.pristine` (b7980f6e) vs post-fix `build/reldeb/programs/clickhouse`
+(d115153f). All figures MEASURED.
+
+| metric (per non-joined cell, emitting path) | before | after | delta |
+| --- | ---: | ---: | --- |
+| hot-path instructions | 102 | **69** | **-33 / -32%** |
+| loads | 28 | 21 | -7 |
+| stores | 8 | 1 | -7 |
+| branches | 16 | 14 | -2 |
+| calls executed | 2 | 1 | -1 |
+| spills (st / ld) | 7 / 5 | 0 / 2 | -7 / -3 |
+| dep-load chain, as scheduled | 7 | 4 | -3 |
+| offset computation alone | 49 | **16** | -33 |
+
+Three direct answers:
+
+- **`crc32cx` re-hash removed — YES.** One occurrence before (`0x165e8b50`), zero
+  anywhere in the function after.
+- **`call_once` machinery removed — YES.** No `ldapr`/`ldar`/`call_once`/
+  `__cxa_guard`/`pthread_once` remains. The checker first re-verified the earlier
+  artifact's before-side claims (`ldapr x8,[x0]` at `0x165f0d20`, `bl
+  std::__call_once` at `0x165f0d44`) and confirmed both, so the two artifacts are
+  consistent rather than independently invented.
+- **`offsetInternal` now inlined — YES**, fully: 16 instructions, no call, no
+  frame, no spill.
+
+### The regression proof is much stronger than my timing one
+
+I had argued the shared-header edit was inert from timings (both comparator arms
+median +0.00% wall). The static check is decisive instead: across **645,013** text
+symbols, exactly **18** changed size, and all 18 are
+`Unified::NotJoinedHash::fillColumns` instantiations. 0 added. 36 removed — the 18
+dead-stripped `offsetInternal` bodies and 18 `__call_once_proxy<...BucketPrefixSums::offset...>`
+thunks, one pair per instantiation. Six non-unified symbols were then byte-diffed —
+the baseline two-level `HashJoin` scan (which is the `parallel_hash` shard path),
+three `Aggregator` two-level symbols and two `ConcurrentHashJoin` symbols —
+identical instruction counts, opcode streams and branch/call targets, differing only
+in static-data immediates because `.rodata` moved.
+
+So the comparator arms are provably untouched, not merely measured-as-unchanged.
+
+### A calibration worth carrying forward: instructions -> time on this workload
+
+This is the first time in the mission I hold **both** a static instruction delta and
+a measured time delta for the same change:
+
+```
+static per-cell instructions   -32%   (102 -> 69)
+measured non-joined phase      -10%   (14,794 -> 13,315 us, high match)
+observed conversion            ~0.31 of the instruction ratio
+```
+
+Two readings, both plausible and not separable without counters: the per-cell test
+path is roughly a third of the phase (the rest being block setup and column
+collection), and/or the removed instructions were individually cheap — well-predicted
+branches, L1-resident loads, and spills absorbed by the store buffer.
+
+Either way this retrospectively explains the **6x** overestimate in E12: I converted
+an instruction ratio to a time share at an implied factor near 1.0, where the
+measured factor here is about 0.3, and I applied it to the whole per-cell path rather
+than to the part the change actually touched. Recorded as an empirical number the
+next mission can use instead of repeating the mistake — and noting that one data
+point is a calibration hint, not a law.
+
+**Caveat carried from the artifact:** `llvm-mca` is unavailable, so these are static
+counts only. No cycle or wall-time claim follows from -32%; the -10% is the measured
+one. The checker also did not independently confirm the pristine binary's build
+commit — its whole-binary symbol comparison is the argument that the two differ by
+exactly this change.
