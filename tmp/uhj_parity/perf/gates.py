@@ -326,9 +326,20 @@ def g07(recs, show_all=False):
             continue
         entry = {"cell_id": cell_id, "threads": threads, "comparator": base_algo,
                  "n": min(len(base), len(uhj))}
-        for metric in ("wall_ms", "cpu_us", "build_us", "probe_us", "nonjoined_us"):
-            bv = [r[metric] for r in base]
-            uv = [r[metric] for r in uhj]
+        for metric in ("wall_ms", "cpu_us", "build_us", "probe_us", "nonjoined_us",
+                       "probe_plus_nonjoined_us"):
+            # probe and non-joined must be compared TOGETHER, not separately:
+            # at 1 thread `hash` emits its non-joined rows from inside
+            # JoiningTransform (its output_rows carries them) and records a zero
+            # NonJoinedBlocksTransform, while `unified_hash` runs a separate
+            # transform. Comparing the two phase columns in isolation compares
+            # different partitions of the same work. See WORKLOG E9.
+            if metric == "probe_plus_nonjoined_us":
+                bv = [r["probe_us"] + r["nonjoined_us"] for r in base]
+                uv = [r["probe_us"] + r["nonjoined_us"] for r in uhj]
+            else:
+                bv = [r[metric] for r in base]
+                uv = [r[metric] for r in uhj]
             verdict, pct, band = H.classify(bv, uv)
             entry[metric] = {"base": H.median(bv), "uhj": H.median(uv),
                              "pct": pct, "band": band, "verdict": verdict}

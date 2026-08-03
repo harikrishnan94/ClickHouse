@@ -722,3 +722,117 @@ percentage taken against `parallel_hash` via the build-only route carries a stat
 caveat, whereas cell-level wall and CPU (from `query_duration_ms` and
 `UserTimeMicroseconds`) are independent of processor attribution entirely and are
 unaffected.
+
+---
+
+## E8 — clean re-run: G0.5 goes GREEN, and E7.3's mechanism story was WRONG
+
+Re-ran the whole sweep with per-process-unique query ids (`--run-tag u0v2`,
+144 cells, 12.2 min, `JOB_EXIT=0`). Gates on the uncontaminated data:
+
+| Gate | Verdict |
+| --- | --- |
+| G0.1 measured algo == requested | **GREEN** |
+| G0.2 checksums agree | **GREEN** |
+| G0.3 A/A calibration | **GREEN** |
+| G0.4 known-signal recovery | **RED** |
+| G0.5 phase split reconciles | **GREEN** |
+| G0.6 coverage | **GREEN** |
+
+**Correction to E7.3, amending it forward.** E7.3 concluded that the build-only
+cross-check is "systematically biased for `parallel_hash`", and offered a
+mechanism: its try-lock drain loop yielding differently without probe-side
+contention. **That was wrong.** On clean data:
+
+```
+(ii) build-only vs FillingRightJoinSide : 29 pairs, over tolerance 0   (was 1)
+(iii) internal timer vs processor       : 48 cells, over tolerance 0,
+                                          median dev 0.3%, max 1.5%    (was max 50.1%)
+```
+
+Every deviation was the duplicate-`query_id` double-counting from E7.2, not a
+property of `parallel_hash`. The lesson is the one worth keeping: I had a
+plausible mechanism ready for a number that was simply corrupt, and wrote it down
+as if it explained something. The invented mechanism is struck; only the
+contamination was real.
+
+G0.5 is now GREEN on its own pre-registered terms, with the tolerance untouched.
+
+---
+
+## E9 — why the 1-thread deficit exists, and a phase comparison that was invalid
+
+The 1-thread deficit is real and its shape is sharp. Median wall delta vs `hash`,
+across all 12 cells of each kind:
+
+| kind | n | median wall | max |
+| --- | --- | --- | --- |
+| `RIGHT` | 12 | **+5.27%** | +9.30% |
+| `FULL` | 12 | **+4.79%** | +9.70% |
+| `LEFT` | 12 | +2.33% | +4.40% |
+| `LEFT SEMI` | 12 | +2.06% | +6.67% |
+| `LEFT ANTI` | 12 | +1.57% | +7.14% |
+| `INNER` | 12 | **+0.64%** | +2.78% |
+
+The deficit is monotone in how much used-flag and non-joined work the kind does,
+and `INNER` — which does none — is at parity. That gradient is itself evidence:
+whatever the cause is, it is not on the common lookup path.
+
+**A phase comparison I was making was invalid, and the fix changes the answer.**
+Non-joined phase medians at 1 thread, over 84 runs each:
+
+```
+card=medium  hash          nonjoined_us =      0   (0/84 runs non-zero)
+card=medium  unified_hash  nonjoined_us = 37,858  (84/84 runs non-zero)
+```
+
+That is not `hash` skipping the work — G0.2 proves the outputs are identical. The
+processor lists show where it goes (`FULL|u64|hi|t1|medium`):
+
+```
+hash          JoiningTransform  93,560 us  out_rows 3,885,728   NonJoined: absent
+unified_hash  JoiningTransform  93,167 us  out_rows 3,800,000
+              NonJoinedBlocksTransform 14,888 us  out_rows 85,728
+```
+
+`hash` emits its 85,728 non-joined rows **from inside `JoiningTransform`** — its
+`output_rows` carries them — and pays almost nothing extra for it (93,560 vs
+93,167 us for a transform doing 85,728 rows more work). `unified_hash` runs a
+**separate scan** costing 14,888 us.
+
+So comparing `probe_us` and `nonjoined_us` as separate columns compares different
+partitions of the same work, and it made `unified_hash` look *better* on probe
+(-2.9%) while being worse overall. Gate G0.7 now also reports
+`probe_plus_nonjoined_us`, which is the only fair comparison for these kinds:
+
+| cell | wall | probe alone | probe+nonjoined |
+| --- | --- | --- | --- |
+| `FULL\|u64\|hi\|t1\|medium` | +9.7% | **-2.9%** | **+12.6%** |
+| `RIGHT\|u64\|hi\|t1\|medium` | +9.3% | -3.7% | +12.7% |
+| `FULL\|u64\|lo\|t1\|medium` | +5.4% | -44.8% | +5.9% |
+| `LEFT-ANTI\|u64\|hi\|t1\|small` | +7.1% | +19.1% | +19.1% |
+
+This is the leading Unit 1 claim, in the requester's schema:
+
+> Operation: **a separate full scan of the hash table to emit non-joined rows.**
+> It exists in `unified_hash` (`NonJoinedBlocksTransform`, per-cell
+> `map.offsetInternal(it.getPtr())` then `parent.isUsed(offset)`,
+> `UnifiedHashJoin/HashJoin.cpp:1515-1516`) and is, at one thread, effectively
+> absent in `hash`, which emits the same rows inline from `JoiningTransform`.
+> It consumes 14,888 us of the 108,055 us probe+non-joined phase
+> (**13.8%**) in cell `FULL|u64|hi|t1|medium`.
+
+Verdict is **not** claimed yet: the ablation (G1.2) and the codegen artifact
+(G1.1) are outstanding, and until the codegen diff exists this is a LEAD with a
+measured phase cost attached, not a CONFIRMED attribution.
+
+### Declared coverage gap found here
+
+At `small` and `medium` cardinality the non-joined scan is nearly empty: 2M probe
+rows over 10k/500k build keys match essentially every build key, so RIGHT/FULL
+there emit few non-joined rows (median 98 us and 7,311 us). The non-joined path is
+properly exercised only at `large` + `lo` (medians 2.4-3.0 s). The match-rate knob
+controls the fraction of *probe* rows that match, which is not the same as the
+fraction of *build* keys that go unmatched — those coincide only when the probe is
+not much larger than the build. Recorded as a declared gap; closing it needs a
+probe-rows-per-build-key knob, which is a harness change, not a re-measurement.
