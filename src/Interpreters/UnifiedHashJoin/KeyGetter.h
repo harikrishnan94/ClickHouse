@@ -174,13 +174,19 @@ struct LowCardinalityKeyGetterForJoin
         auto key_holder = base.getKeyHolder(row, pool);
         const auto key = keyHolderGetKey(key_holder);
 
-        auto it = saved_hash ? data.find(key, saved_hash[row]) : data.find(key);
+        /// The offset comes from the lookup itself, not from a follow-up call - see
+        /// `TwoLevelHashTable::Prober`.
+        size_t offset = 0;
+        auto it = [&]
+        {
+            if constexpr (use_offset)
+                return saved_hash ? data.findWithOffset(key, saved_hash[row], offset) : data.findWithOffset(key, offset);
+            else
+                return saved_hash ? data.find(key, saved_hash[row]) : data.find(key);
+        }();
 
         const bool found = it;
         Mapped * mapped = found ? &it->getMapped() : nullptr;
-        size_t offset = 0;
-        if constexpr (use_offset)
-            offset = found ? data.offsetInternal(it) : 0;
 
         visit_cache[row] = found ? 1 : 2;
         mapped_cache[row] = mapped;

@@ -108,6 +108,11 @@ private:
         /// `computeBucketPrefix`) leaves the flag unarmed, so the first `offset()` after it computes
         /// again; that is idempotent, and it is what keeps the recompute-after-growth contract
         /// working alongside the flag.
+        ///
+        /// This is for a caller that has no point at which it can say the inserting is over. A caller
+        /// that does - `Unified::HashJoin`, whose `freezeMapsForProbing` runs at build finish and
+        /// again after any post-build rewrite of the maps - reaches the prefix sums only through
+        /// `offsetInternalUnsafe` / `bucketPrefix`, and so never pays the once-flag check per row.
         template <typename BucketAt>
         size_t offset(UInt32 bucket_count, BucketAt && bucket_at, size_t buck, size_t cell_offset)
         {
@@ -523,17 +528,21 @@ public:
       * handle is exactly a single-level table's lookup.
       *
       * `has_sole` is fixed for the handle's lifetime and chosen once per probe block: with a sole
-      * bucket, `find` / `offsetInternal` / `prefetch` compile as the flat single-level forms (no
-      * per-row branch, no prefix add, no routing fields to spill). With many buckets the handle
-      * keeps the routed state across rows. Callers must pick the specialisation that matches the
-      * table (`withProber` does that); mixing them is a bug.
+      * bucket, `find` / `findWithOffset` / `prefetch` compile as the flat single-level forms (no
+      * per-row branch, no prefix add, no routing to carry). Callers must pick the specialisation
+      * that matches the table (`withProber` does that); mixing them is a bug.
       *
-      * `offsetInternal` answers about the cell the handle's last `find` returned. That is why the
-      * multi-bucket handle is stateful, and it is what makes an offset cheap: recovering the bucket
-      * from the cell instead means re-hashing the key, which for a cell that does not save its hash
-      * is the whole hash again. A handle therefore belongs to one thread, and is valid only while
-      * the table's buckets keep their buffers - that is, for as long as nothing inserts into the
-      * table.
+      * A caller that needs a matched cell's global offset asks for it from the same call
+      * (`findWithOffset`) rather than afterwards. That is not a convenience: which bucket a lookup
+      * routed to is not recoverable from the cell pointer - recovering it means re-hashing the key,
+      * which for a cell that does not save its hash is the whole hash again - so answering
+      * afterwards means the handle holds the routing across the call. Holding it means storing it,
+      * and a per-row store to a `size_t` field the compiler cannot separate from the prefix array
+      * forces the handle's invariants to be reloaded per row as well. Reporting both at once leaves
+      * the handle read-only, so all of it stays in registers.
+      *
+      * A handle belongs to one thread, and is valid only while the table's buckets keep their
+      * buffers - that is, for as long as nothing inserts into the table.
       */
     template <bool has_sole>
     class Prober
@@ -556,39 +565,47 @@ public:
 
         size_t ALWAYS_INLINE hash(const Key & x) const { return table->hash(x); }
 
-        ConstLookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
+        ConstLookupResult ALWAYS_INLINE find(Key x, size_t hash_value) const
+        {
+            if constexpr (has_sole)
+                return state.sole->find(x, hash_value);
+            else
+                return routedBucket(x, hash_value)->find(x, hash_value);
+        }
+
+        ConstLookupResult ALWAYS_INLINE find(Key x) const { return find(x, hash(x)); }
+
+        /// `find`, also reporting the global cell offset of the cell it returns, as
+        /// `TwoLevelHashTable` numbers them; zero when nothing was found. Zero is reserved for the
+        /// zero-key cell, in every bucket, exactly as a single-level table reserves it - only one
+        /// bucket can hold that cell, since the zero key routes like any other. With a sole bucket
+        /// the offset is the flat one: the bucket prefix is identically zero, so there is nothing to
+        /// add. See the class comment for why this is one call and not two.
+        ///
+        /// Precondition, inherited from `bucketPrefix()`: `computeBucketPrefix()` has been called
+        /// since the last change to any bucket's capacity.
+        ConstLookupResult ALWAYS_INLINE findWithOffset(Key x, size_t hash_value, size_t & offset) const
         {
             if constexpr (has_sole)
             {
-                return state.sole->find(x, hash_value);
+                const ConstLookupResult ptr = state.sole->find(x, hash_value);
+                offset = ptr ? state.sole->offsetInternal(ptr) : 0;
+                return ptr;
             }
             else
             {
-                const size_t bucket = (table->bucketRoutingHash(x, hash_value) >> state.shift) & state.max_bucket;
-                state.routed = state.buckets + bucket;
-                state.routed_prefix = state.prefix[bucket];
-                return state.routed->find(x, hash_value);
+                const size_t bucket = routedBucketIndex(x, hash_value);
+                const Impl * routed = state.buckets + bucket;
+                const ConstLookupResult ptr = routed->find(x, hash_value);
+                const size_t offset_in_bucket = ptr ? routed->offsetInternal(ptr) : 0;
+                offset = offset_in_bucket ? state.prefix[bucket] + offset_in_bucket : 0;
+                return ptr;
             }
         }
 
-        ConstLookupResult ALWAYS_INLINE find(Key x) { return find(x, hash(x)); }
-
-        /// The global cell offset of the cell the last `find` returned, as `TwoLevelHashTable`
-        /// numbers them. Zero is reserved for the zero-key cell, in every bucket, exactly as a
-        /// single-level table reserves it - only one bucket can hold that cell, since the zero key
-        /// routes like any other. With a sole bucket the offset is the flat one: the bucket prefix
-        /// is identically zero, so there is nothing to add.
-        size_t ALWAYS_INLINE offsetInternal(ConstLookupResult ptr) const
+        ConstLookupResult ALWAYS_INLINE findWithOffset(Key x, size_t & offset) const
         {
-            if constexpr (has_sole)
-            {
-                return state.sole->offsetInternal(ptr);
-            }
-            else
-            {
-                const size_t offset_in_bucket = state.routed->offsetInternal(ptr);
-                return offset_in_bucket ? state.routed_prefix + offset_in_bucket : 0;
-            }
+            return findWithOffset(x, hash(x), offset);
         }
 
         /// Same contract as `TwoLevelHashTable::prefetch`, and declared under the same constraint so
@@ -600,17 +617,27 @@ public:
             const auto & key = keyHolderGetKey(key_holder);
             const auto key_hash = hash(key);
             if constexpr (has_sole)
-            {
                 state.sole->prefetchByHash(key_hash);
-            }
             else
-            {
-                state.buckets[(table->bucketRoutingHash(key, key_hash) >> state.shift) & state.max_bucket].prefetchByHash(key_hash);
-            }
+                routedBucket(key, key_hash)->prefetchByHash(key_hash);
             keyHolderDiscardKey(key_holder);
         }
 
     private:
+        template <typename K>
+        size_t ALWAYS_INLINE routedBucketIndex(const K & key, size_t hash_value) const
+        requires(!has_sole)
+        {
+            return (table->bucketRoutingHash(key, hash_value) >> state.shift) & state.max_bucket;
+        }
+
+        template <typename K>
+        const Impl * ALWAYS_INLINE routedBucket(const K & key, size_t hash_value) const
+        requires(!has_sole)
+        {
+            return state.buckets + routedBucketIndex(key, hash_value);
+        }
+
         struct SoleState
         {
             explicit SoleState(const Self & table_)
@@ -622,11 +649,12 @@ public:
             const Impl * sole;
         };
 
+        /// Read-only for the handle's lifetime, which is what lets the per-row loop keep all of it in
+        /// registers - see the class comment.
         struct RoutedState
         {
             explicit RoutedState(const Self & table_)
                 : buckets(table_.impls.bucketsData())
-                , routed(buckets)
                 , prefix(table_.impls.bucketPrefix())
                 , shift(table_.impls.bucketShift())
                 , max_bucket(table_.impls.maxBucket())
@@ -635,9 +663,8 @@ public:
             }
 
             const Impl * buckets;
-            /// The bucket the last `find` routed to, and where its cells start in the global numbering.
-            const Impl * routed;
-            size_t routed_prefix = 0;
+            /// Where each bucket's cells start in the global numbering. Only `findWithOffset` reads
+            /// it, so a probe that does not ask for offsets never touches it.
             const size_t * prefix;
             UInt32 shift;
             UInt32 max_bucket;
@@ -659,8 +686,8 @@ public:
     }
 
     /// Pick `Prober<true>` or `Prober<false>` once from the table's layout and invoke `f` with it.
-    /// The probe block's row loop then sees a specialised `offsetInternal` (and `find` / `prefetch`)
-    /// with no residual sole branch.
+    /// The probe block's row loop then sees a specialised `find` / `findWithOffset` / `prefetch` with
+    /// no residual sole branch.
     template <typename F>
     decltype(auto) withProber(F && f) const
     requires(isRuntimeStorage())
