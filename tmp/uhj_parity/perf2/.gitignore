@@ -1,0 +1,6 @@
+# Binaries and raw logs are reproducible artefacts, not source. They are named in
+# the worklog with the command that regenerates them.
+bin/
+logs/
+tmp/
+*.jsonl
