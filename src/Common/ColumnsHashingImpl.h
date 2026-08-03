@@ -470,8 +470,8 @@ protected:
     /// Whether `data` can report a matched cell's offset from the lookup itself, rather than from a
     /// follow-up `offsetInternal`.
     template <typename Data, typename Key>
-    static constexpr bool has_fused_offset_lookup = FindResult::has_offset
-        && requires(Data & data, Key key, size_t & offset) { data.findWithOffset(key, offset); };
+    static constexpr bool has_fused_offset_lookup
+        = FindResult::has_offset && requires(Data & data, Key key, size_t & offset) { data.findWithOffset(key, offset); };
 
     template <typename Data, typename Key>
     ALWAYS_INLINE FindResult findKeyImpl(Key key, Data & data)

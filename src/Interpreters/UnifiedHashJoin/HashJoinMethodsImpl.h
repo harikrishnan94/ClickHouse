@@ -110,13 +110,33 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>, needs_offset>::Type>( \
-                join, *maps.TYPE, bucket, block_key_getter, key_columns, key_sizes, stored_block_no, selector.getRange(), \
-                null_map, join_mask, pool, result); \
+                join, \
+                *maps.TYPE, \
+                bucket, \
+                block_key_getter, \
+                key_columns, \
+                key_sizes, \
+                stored_block_no, \
+                selector.getRange(), \
+                null_map, \
+                join_mask, \
+                pool, \
+                result); \
         else \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>, needs_offset>::Type>( \
-                join, *maps.TYPE, bucket, block_key_getter, key_columns, key_sizes, stored_block_no, selector.getIndexes(), \
-                null_map, join_mask, pool, result); \
+                join, \
+                *maps.TYPE, \
+                bucket, \
+                block_key_getter, \
+                key_columns, \
+                key_sizes, \
+                stored_block_no, \
+                selector.getIndexes(), \
+                null_map, \
+                join_mask, \
+                pool, \
+                result); \
         break;
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
@@ -340,10 +360,7 @@ KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, bool is_asof_join>
 KeyGetter & HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::blockKeyGetter(
-    BlockKeyGetter & block_key_getter,
-    std::optional<KeyGetter> & own,
-    const ColumnRawPtrs & key_columns,
-    const Sizes & key_sizes)
+    BlockKeyGetter & block_key_getter, std::optional<KeyGetter> & own, const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
 {
     const auto create = [&] { return createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes); };
 
