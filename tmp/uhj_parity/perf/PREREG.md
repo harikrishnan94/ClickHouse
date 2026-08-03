@@ -224,6 +224,11 @@ mode this ordering prevents.
   `build/reldeb` binary stays available as the unmodified side of every
   before/after codegen diff, and so no ablation can leak into the delivered tree.
 - `llvm-mca` is **not available** on this host (`llvm-objdump`/`llvm-nm` v22 are).
+  > **FALSE — superseded by WORKLOG E13.** It is at `/opt/llvm-22/bin/llvm-mca`,
+  > v22.1.8, aarch64 by default, models `-mcpu=neoverse-v2`. I checked only the
+  > default `PATH`. Left unedited because a pre-registration is a record of what
+  > was believed at the time; the correction amends forward. This error is why
+  > A7's bound was extrapolated from an instruction ratio and came out 6x wrong.
   Throughput analysis of loop bodies is therefore out of reach; instruction counts,
   loads/stores, branch and spill density, and inlining decisions are all still
   available and are what the gate actually requires. Recorded as a tooling
