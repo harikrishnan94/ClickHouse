@@ -1,4 +1,5 @@
 #include <Interpreters/RowRefs.h>
+#include <Common/JoinLockProbe.h>   /// INSTRUMENTATION
 
 #include <Interpreters/HashJoin/ScatteredBlock.h>
 #include <Columns/ColumnDecimal.h>
@@ -273,6 +274,7 @@ void throwRowRefOutOfRange(size_t block_no, size_t row_no)
 UInt32 StoredColumnsIndex::add(const StoredBlock * block)
 {
     std::lock_guard guard(mutex);
+    JoinLockProbe::HoldTimer probe_t(JoinLockProbe::SCI_ADD);   /// INSTRUMENTATION
     if (blocks.size() > RowRef::BLOCK_NO_MASK)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Too many stored blocks in HashJoin: {}", blocks.size());
     blocks.push_back(block);
@@ -301,6 +303,7 @@ void StoredColumnsIndex::resolveEmitColumns(
     std::vector<const ColumnReplicated * const *> & out_replicated)
 {
     std::lock_guard guard(mutex);
+    JoinLockProbe::HoldTimer probe_t(JoinLockProbe::SCI_RESOLVE);   /// INSTRUMENTATION
 
     if (emit_generation != blocks_generation)
     {
