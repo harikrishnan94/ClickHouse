@@ -91,25 +91,39 @@ def body(binary, addr, size):
             if not re.match(r'^(b|bl|blr|br|b\.[a-z]+|cbz|cbnz|tbz|tbnz)$', op):
                 t = re.sub(r'\s*<[^>]*>', '', t)
 
-            # An address is materialised as `adrp xN, <page>` + `add xN, xN, #lowbits`
-            # (or a load/store off xN with that offset). Both halves move together when
-            # the data section shifts, with no code change. The page half is already
-            # normalised above by length; the low half is a SHORT hex immediate and must
-            # be normalised too -- but only when it belongs to such a pair, so that a
-            # genuine small immediate like `mov w9, #0x1` is still compared.
-            reg = None
+            # An address is materialised as `adrp xN, <page>` plus a second instruction supplying
+            # the low bits off xN. Both halves move together when the data section shifts, with no
+            # code change. The page half is already normalised above by length; the low half is a
+            # SHORT hex immediate and must be normalised too -- but only when it belongs to such a
+            # pair, so that a genuine small immediate like `mov w9, #0x1` is still compared.
+            #
+            # The low half is written either as `add xN, xN, #lo` or as a load/store THROUGH the
+            # register, `ldr xM, [xN, #lo]` -- which is how a GOT entry is read. An earlier version
+            # matched the base register only outside brackets, so it never saw the second form: it
+            # reported `DB::HashJoin::addBlockToJoin` as 35 differing instructions in a function of
+            # identical length whose source had not changed, every one of them a GOT offset. A
+            # validity check that cries wolf is as useless as one that cannot see the change it
+            # exists to confirm; both directions have now been wrong once. See WORKLOG F7/F9.
+            #
+            # A register stays paired until something other than a paired use redefines it, so one
+            # `adrp` feeding several loads is handled, while a field offset off a long-lived register
+            # (`ldr x10, [x22, #0x48]`) is still compared -- x22 was never set by an `adrp`.
+            paired = None
             mreg = re.match(r'^adrp\s+(x\d+)', t)
             if mreg:
                 adrp_regs.add(mreg.group(1))
             else:
-                mu = re.match(r'^(add|ldr\w*|str\w*|ldp|stp)\s+\w+,\s*(x\d+)', t)
-                if mu and mu.group(2) in adrp_regs:
-                    reg = mu.group(2)
+                through = re.search(r'\[(x\d+),\s*#0x[0-9a-f]+\]', t)
+                added = re.match(r'^add\s+x\d+,\s*(x\d+),\s*#0x[0-9a-f]+$', t)
+                if through and through.group(1) in adrp_regs:
+                    paired = through.group(1)
+                elif added and added.group(1) in adrp_regs:
+                    paired = added.group(1)
+                if paired is not None:
                     t = re.sub(r'#0x[0-9a-f]+', '#RELOC_LO', t)
-                    adrp_regs.discard(reg)
                 # a redefinition of the register by anything else clears the pairing
                 mdef = re.match(r'^\w+\s+(x\d+),', t)
-                if mdef and mdef.group(1) in adrp_regs and reg is None:
+                if mdef and mdef.group(1) in adrp_regs and mdef.group(1) != paired:
                     adrp_regs.discard(mdef.group(1))
             ops.append(re.sub(r'\s+', ' ', t))
     return ops
@@ -136,14 +150,22 @@ def main():
     removed = set(bn) - set(an)
     resized = {n for n in set(bn) & set(an) if bn[n][1] != an[n][1]}
 
+    # Linker-generated range-extension thunks (`__AArch64ADRPThunk_<callee>`) have no source of
+    # their own: the linker emits, drops and resizes them purely because code moved, so any edit
+    # that changes the image size churns hundreds of them. Counting them as "outside the region the
+    # edit was allowed to touch" made the verdict RED for an edit that had perturbed no baseline
+    # instruction, which is a false alarm rather than a finding. They are reported separately rather
+    # than dropped, because "the linker rearranged its thunks" is itself worth seeing.
+    thunk = re.compile(r'^__AArch64ADRPThunk_')
+
     def split(names):
         ok = [n for n in names if allowed.search(n)]
-        bad = [n for n in names if not allowed.search(n)]
-        return ok, bad
+        rest = [n for n in names if not allowed.search(n)]
+        return ok, [n for n in rest if not thunk.search(n)], [n for n in rest if thunk.search(n)]
 
-    add_ok, add_bad = split(added)
-    rem_ok, rem_bad = split(removed)
-    res_ok, res_bad = split(resized)
+    add_ok, add_bad, add_thunk = split(added)
+    rem_ok, rem_bad, rem_thunk = split(removed)
+    res_ok, res_bad, res_thunk = split(resized)
 
     # Re-classify "bad" resized/removed names that merely stopped (or started) sharing
     # an address with another name: ICF de-folding, not a code change.
@@ -162,10 +184,12 @@ def main():
     print(f"text symbols: {len(bn)} -> {len(an)}")
     print(f"allowed-to-change regex: {a.expect_changed_regex!r}")
     print()
-    print(f"  added   : {len(added):6d}  ({len(add_ok)} allowed, {len(add_bad)} OUTSIDE)")
-    print(f"  removed : {len(removed):6d}  ({len(rem_ok)} allowed, {len(rem_bad)} OUTSIDE)")
+    print(f"  added   : {len(added):6d}  ({len(add_ok)} allowed, {len(add_bad)} OUTSIDE, "
+          f"{len(add_thunk)} linker thunks)")
+    print(f"  removed : {len(removed):6d}  ({len(rem_ok)} allowed, {len(rem_bad)} OUTSIDE, "
+          f"{len(rem_thunk)} linker thunks)")
     print(f"  resized : {len(resized):6d}  ({len(res_ok)} allowed, {len(res_real)} OUTSIDE, "
-          f"{len(res_icf)} explained by ICF de/re-folding)")
+          f"{len(res_icf)} explained by ICF de/re-folding, {len(res_thunk)} linker thunks)")
 
     for label, names in (("added OUTSIDE", add_bad), ("removed OUTSIDE", rem_bad),
                          ("resized OUTSIDE", res_real)):
