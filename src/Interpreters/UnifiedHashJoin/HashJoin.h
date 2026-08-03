@@ -734,7 +734,10 @@ private:
     /// blocks. Set under `blocks_mutex`, but read without it on the per-block path, where a stale
     /// `false` only means one more block is stored unshrunk before the next one shrinks it.
     std::atomic<bool> shrink_blocks = false;
-    Int64 memory_usage_before_adding_blocks = 0;
+    /// The query's tracked memory usage as it stood before this join stored its first block. Atomic
+    /// so that the per-block path can sample it - once per join, on whichever build thread gets
+    /// there first - without taking `blocks_mutex`, which the reading does not need.
+    std::atomic<Int64> memory_usage_before_adding_blocks = 0;
 
     /// Track if conversion to fixed hash map was already attempted to prevent repeated checks.
     bool conversion_to_fixed_hash_map_attempted = false;
