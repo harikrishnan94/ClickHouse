@@ -261,3 +261,60 @@ If the deficit genuinely does not reproduce in most cells, the honest deliverabl
 is a deficit map that says so plus attribution of the cells where it does — not a
 manufactured gap. That outcome is explicitly acceptable and is recorded here in
 advance so it cannot later be dressed up as a disappointment or padded out.
+
+---
+
+## P1.3 — ABLATION A1: the separate non-joined scan (setting-level, no rebuild)
+
+Registered **before the run**. This commit is the ordering proof.
+
+### The operation
+
+At 1 thread, `unified_hash` emits RIGHT/FULL non-joined rows from a separate
+`NonJoinedBlocksTransform`; `hash` emits the same rows inline from
+`JoiningTransform`. Measured cost: 14,888 us of a 108,055 us probe+non-joined
+phase (13.8%) on `FULL|u64|hi|t1|medium`, whose cell wall delta is +9.7%.
+
+### Why it is ablatable without touching `src/`
+
+`QueryPipelineBuilder.cpp:578,584` selects the pipeline from
+`join->supportParallelNonJoinedBlocksProcessing()`. When true,
+`joining_finish_counter` is `nullptr`, which disables non-joined emission inside
+`JoiningTransform` and hands it to the separate transform.
+
+`UnifiedHashJoin/HashJoin.cpp:1583-1588` returns
+`table_join->allowParallelNonJoinedRowsProcessing() && ...`, i.e. the setting
+`parallel_non_joined_rows_processing`. The baseline does **not** override the
+`IJoin` default (`IJoin.h:158`, `return false`), so `hash` always takes the inline
+path and is **setting-independent** — a built-in control arm.
+
+So `parallel_non_joined_rows_processing=0` puts `unified_hash` on exactly the
+baseline's pipeline shape. No patch, no rebuild, no ablation binary.
+
+### Pre-registered predictions
+
+| # | Prediction | Refuted if |
+| --- | --- | --- |
+| A1-a | With the setting off, the 1-thread RIGHT/FULL deficit vs `hash` **shrinks to within the noise band** (from +9.7%/+9.3% to under 5%). | The deficit is unchanged => the separate transform is not the cost, and A1 is REFUTED. |
+| A1-b | **Control**: `hash`'s own numbers are **unchanged** by the setting (within noise), because it never consults it. | If `hash` moves, the setting has a side effect beyond the pipeline shape and the ablation is confounded => result VOID. |
+| A1-c | **Reverse direction**: at 16/64 threads, turning the setting off makes `unified_hash` **slower** on RIGHT/FULL, because it loses the parallelism the separate transform buys. | If it gets faster or does not move at 16/64, then the separate transform is not buying anything there either, and the 1-thread result would need re-interpretation. |
+| A1-d | **Structural check (replaces the G1.4 codegen validity check for this ablation)**: with the setting off, `NonJoinedBlocksTransform` is **absent** from `system.processors_profile_log` for `unified_hash`, and its `JoiningTransform` `output_rows` rises by exactly the non-joined row count. | If the transform is still present, the ablation did not take effect and any null result is **VOID**, not evidence. |
+
+A1-d is what makes a null interpretable here, and it is stronger than a codegen
+diff for this particular ablation: it observes the pipeline that actually ran
+rather than inferring from instructions.
+
+### Gate invocation
+
+```
+python3 tmp/uhj_parity/perf/ablate_a1.py
+```
+
+Exits non-zero unless A1-d holds. Prints the four arms with medians, deltas and
+the noise band, interleaved A/B, 7 reps.
+
+### What would make this CONFIRMED
+
+A1-a beyond the noise band **and** A1-b flat **and** A1-d confirming the transform
+is gone. Absent any of those, the claim stays SUPPORTED or is REFUTED per G1.5;
+it is not written up as a measured percentage either way.
