@@ -59,7 +59,7 @@ ICF = {"G4", "P7"}
 # mechanically below rather than asserted.
 SHARED_FILE = {
     "B0": "src/Interpreters/JoinUtils.cpp",
-    "B1": "src/Interpreters/NullableUtils.cpp",
+    "B1": "src/DataTypes/NullableUtils.cpp",
     "B13": "src/Common/HashTable/HashTable.h",
     "B14": "src/Interpreters/RowRefs.h",
     "G5": "src/Interpreters/HashJoin/ScatteredBlock.h",

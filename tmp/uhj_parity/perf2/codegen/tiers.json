@@ -7,9 +7,9 @@
  },
  {
   "loop": "B1",
-  "tier": "T2 IDENTICAL?",
+  "tier": "T1 SHARED",
   "impls": "hash,para,unif",
-  "evidence": "UNEXPECTED: 0 copies []"
+  "evidence": "single file src/DataTypes/NullableUtils.cpp, no per-tree copy -> same instructions"
  },
  {
   "loop": "B2",

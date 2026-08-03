@@ -1,0 +1,8 @@
+PREREG P3.3 -- loop P2, prefetch on/off, FULL|u64|hi|t1|medium, 7 reps, wall ms
+  prefetch        hash   unified    gap%
+  on             265.0     273.0    3.0%
+  off            290.0     320.0   10.3%
+  hash           prefetch off vs on:   +9.4%
+  unified_hash   prefetch off vs on:  +17.2%
+
+  gap with prefetch on 3.0%, off 10.3% -> gap does NOT close, P2 is not a source of the deficit

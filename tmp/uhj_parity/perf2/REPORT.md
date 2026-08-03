@@ -34,6 +34,34 @@ Baselines pristine at delivery (G5.1 green). Nothing pushed; no PR.
 
 ---
 
+## 1b. Independent verification, and what it changed
+
+A verifier that did not do the work was given this brief and the artefacts and told to
+refute them. **Its independence was degraded**: it could not execute shell commands in
+its session, so items requiring re-runs came back INCONCLUSIVE. It nonetheless read the
+artefacts adversarially and returned **REWORK** with five findings. Four were correct and
+are fixed here; the fifth I accept as a limitation rather than fix.
+
+| finding | assessment | what changed |
+| --- | --- | --- |
+| **G3.2 was reported GREEN while its own scorer prints `NEITHER registered signature cleanly`** — a failed pre-registered discriminator converted into a positive causal claim | **Correct, and the most serious of the five.** The registered "instructions up >10%" threshold was not met (+6.7%) | Headline (iii) rewritten. **A5's refutation stands** — it rests on its own registered condition (IPC down >10%), and IPC moved −1.3%. The positive attribution is **downgraded from MEASURED to SUPPORTED**, and the scorer's verdict is now quoted in the report rather than only in the worklog |
+| **The counters are whole-query, not probe-isolated**, so a per-probe mechanism should not be stated as measured | **Correct** | Stated in the tier and in §10; the claim is now about the *mechanism class*, which is what the counters can settle |
+| **`tiers.json` records `B1` as `UNEXPECTED: 0 copies []` while the report asserts T1** | **Correct — a real reporting error.** The path was `src/DataTypes/NullableUtils.cpp`, not `src/Interpreters/`. The tool was right and the report had not read its output | Path fixed, `tier.py` re-run, B1 is genuinely T1. Tier totals now T0=2 T1=7 T3=8 T4=15 T5=14 |
+| **`K = 2·bit_ceil(T)` overclaimed as FUNDAMENTAL** — the ablation shows one alternative is worse, not that the constant is required | **Correct** | Downgraded to **CONTINGENT** in §5, with the untested alternatives named |
+| **UNSETTLED rows with checkable-but-unrun experiments available here** | **Correct for P2**, which was separable by a setting with no rebuild | **P2 run** (PREREG P3.3): prefetch off costs `hash` +9.4% and `unified_hash` +17.2%, and the gap **widens** 3.0% → 10.3%. P2 is now MEASURED and is **not** a deficit source |
+| Several NEUTRAL rows lacked numeric detection bounds | **Correct for P10, B19, B21, L4, A1, A2, A4** | Bounds added to each. For the identity-proven rows (T0/T1/T2) the bound is *delta exactly zero by identity*, which is stated explicitly since it is stronger than a numeric bound |
+
+**Not fixed, accepted as limitations:** the remaining UNSETTLED rows (the per-bucket
+lock's necessity under TSan; P9's residual-filter matrix; probe-phase counter isolation)
+each need a build or a harness extension rather than a setting, and are carried into §11
+as the ranked handoff. The verifier is right that they are available in principle; they
+are not free, and they are named rather than hidden.
+
+**Verification verdict after these fixes: FIX-THEN-RESHIP, fixes landed.** Independence
+was degraded (no command execution), which is disclosed here as the mission requires.
+
+---
+
 ## 2. Headline results
 
 **Three findings, in order of value.**
@@ -57,14 +85,27 @@ slot, `hash` one per block. The profiler independently puts **67%** of `unified_
 in-join samples in that packing at 64 threads with composite keys, against **0%** for the
 single-UInt64 key which packs nothing.
 
-**(iii) The one-thread deficit is an instruction-count cause, and the standing
-cache-footprint candidate is refuted.** On `FULL|u64|hi|t1|medium` — a used-flag kind,
-where the deficit actually lives — hardware counters reproduce it at **+8.1% cycles per
-probe row** and account for it completely: **+6.7% instructions at −1.3% IPC**
-(1.067 / 0.987 = 1.081), with cache misses +1.4%, **dTLB misses −1.2%** and branch misses
-−1.2%, all inside the run-to-run spread. Candidate **A5** — `per_offset_flags` being
-wider and sparser on the partitioned map — required IPC to fall by more than 10% and is
-**REFUTED**. The codegen story stands: the `Prober` does not stay in registers.
+**(iii) The standing cache-footprint candidate for the one-thread deficit is REFUTED;
+the instruction-count explanation is SUPPORTED but not MEASURED, and the difference
+matters.** On `FULL|u64|hi|t1|medium` — a used-flag kind, where the deficit actually lives
+— hardware counters reproduce the deficit at **+8.1% cycles per probe row**, with
+**+6.7% instructions at −1.3% IPC**, cache misses +1.4%, **dTLB misses −1.2%** and branch
+misses −1.2%.
+
+*What follows and what does not.* Candidate **A5** — `per_offset_flags` being wider and
+sparser on the partitioned map — was pre-registered as refuted if IPC fell by less than
+10% while instructions rose. IPC moved **−1.3%**. **A5 is REFUTED**, and that conclusion
+rests directly on the condition as registered.
+
+The positive half does **not** clear its own bar. PREREG P3.2 registered the
+instruction-count signature as "instructions/row up **>10%**", and the measurement is
+**+6.7%** — the scorer in `results/g32_full.txt` prints `NOT MET` and
+`VERDICT: NEITHER registered signature cleanly`. The arithmetic does close
+(1.067 / 0.987 = 1.081, against the measured 1.081), and the memory counters are flat, so
+the instruction-count story is **strongly SUPPORTED** — but I set that threshold above the
+size of the effect being explained, and re-reading a failed threshold as a pass afterwards
+is precisely the move this mission bans. **Tier: SUPPORTED, not MEASURED.** What *is*
+measured is the refutation of A5 and the +8.1% cycles/row deficit itself.
 
 **(iv) The obvious lever for (ii) does not work, and knowing that is worth as much as the
 finding.** A pre-registered ablation halving the bucket count predicted −34% and measured
@@ -94,15 +135,15 @@ Codegen-evidence tiers (`codegen/tiers.json`, generated by `tier.py`):
 | loop | sub-phase | multiplicity | present in | codegen delta | mca | verdict |
 | --- | --- | --- | --- | --- | --- | --- |
 | **P1** probe main per-row loop | probe lookup | `R` | all 3 | **T3.** base 123 insns / 29 ld / 5 st / 28 br / 0 spill-st / 2 spill-ld / dep-load depth **3**; unified 172 / 44 / 7 / 36 / **2 spill-st / 9 spill-ld** / depth **5**. Hot path only (matched row, first-probe hit), prefetch on: base 59, unified 85 | base **10.41** cyc/iter, IPC 5.57, RThr 10.2; unified **15.79** cyc/iter, IPC 5.32, RThr 15.2. Both dispatch-width-limited (RThroughput = uops/6 exactly), most-pressed port `V2UnitL01`. **Lower bound**: two calls dropped identically on both sides | **NEGATIVE at 1 thread on used-flag kinds, MEASURED: +8.1% cycles/row** on `FULL|u64|hi|t1|medium`, of which +6.7% is instructions at −1.3% IPC (G3.2, §9). mca predicted +5.4 cyc/row on the loop body; the whole query moved +17.0 cyc/row, so **mca's loop-body figure is 32% of the query-level delta** — consistent, since the loop is part of the query. NEUTRAL on `INNER` (+2.1% cycles, +0.5% instructions — measured, and matching the map's +0.64% median) |
-| **P2** adaptive lookahead prefetch | probe lookup | `R` | all 3 | T3, fused into P1. Prefetch adds 14 insns base / 20 unified | included above | UNSETTLED — separable only by the `enable_software_prefetch_in_join` setting, not run |
+| **P2** adaptive lookahead prefetch | probe lookup | `R` | all 3 | T3, fused into P1. Prefetch adds 14 insns base / 20 unified | included above | **POSITIVE for both, MEASURED, and NOT a deficit source** (PREREG P3.3, settings-only, no rebuild). Turning it off costs `hash` **+9.4%** and `unified_hash` **+17.2%** wall, and the gap **widens** from 3.0% to 10.3% — so P2 does not cause the deficit, and `unified_hash` depends on prefetch *more*, which is what a deeper dependent-load chain predicts |
 | **P3** key extract + hash + find | probe lookup | `R` | all 3 | **T3, the divergence point.** Baseline reads `mask`/`buf` from `[x22,#0x48]`/`[x22,#0x20]` off a register live across the whole loop. Unified reloads `shift`/`max_bucket` (`ldp [sp,#0x10]`) and `prefix` (`ldr [sp]`) **per row**, stores `routed_prefix` (`str [sp,#0x28]`), and computes `add x21, x28, x10, lsl #7` so the sub-table pointer **depends on the hash** | this is the 3→5 dependent-load-depth change; see P1 | **NEGATIVE at 1 thread on used-flag kinds, MEASURED via P1** — and the counters say *this* mechanism rather than cache footprint: instructions moved, memory did not |
-| **P4** per-matched-row `offsetInternal` | probe match | `M` | all 3 | **T3.** `Prober::offsetInternal` is 8 insns and 3 loads (one a spill reload) against the baseline's single `add x8, x9, #1`, **and is paid even on the `sole != nullptr` fast path** | +29% on the `sole` path | **NEGATIVE at 1 thread on used-flag kinds, BOUNDED** (not separately ablated). This answers the inherited open question: the `sole` short-circuit is **not** free |
+| **P4** per-matched-row `offsetInternal` | probe match | `M` | all 3 | **T3.** `Prober::offsetInternal` is 8 insns and 3 loads (one a spill reload) against the baseline's single `add x8, x9, #1`, **and is paid even on the `sole != nullptr` fast path** | not separately modelled; folded into P1's +5.4 cyc/row | **NEGATIVE at 1 thread on used-flag kinds, BOUNDED** (not separately ablated, so no percentage is stated for it). This answers the inherited open question: the `sole` short-circuit is **not** free — it still executes 8 instructions and 3 loads where the baseline executes one `add` |
 | **P5** per-matched-row `setUsed` | probe match | `M` | all 3 | T3; relaxed load + relaxed store, identical logic both trees | — | **NEUTRAL**, detection bound: the counters would have shown it as raised cache misses on the flag array, and cache-misses/row moved **+1.4%** with dTLB **−1.2%** on the kind that exercises flags most (`FULL`). An effect larger than ~1.5% of memory traffic on the flag array would have been detected |
 | **P6** `addFoundRowAll` list walk | probe match | `M` | all 3 | **T2. 196 insns each side, byte-identical after normalising the self-referential branch target** | n/a — identical | **NEUTRAL**, delta exactly 0 |
 | **P7** `appendFromBlock` | probe match | `M`(×cols) | all 3 | **T0 ICF — one address holds both names** | n/a | **NEUTRAL**, delta exactly 0 |
 | **P0/P8** per-block probe setup, `joinBlockImpl` | probe lookup | `B·C` | all 3 | **T2.** 687 insns each side; 44 aligned differences, all struct field offsets, **plus 2 `ldar` where the baseline uses `ldr`** — two fields are atomic in unified | not modelled | **UNSETTLED** — 2 acquire loads per block is almost certainly negligible but has no bound |
 | **P9** additional-filter loops | probe match | `R + ΣM` | all 3 | T5 | — | **UNSETTLED** — not exercised by this matrix (no residual filter) |
-| **P10** per-block `Prober` construction | probe lookup | `B·C` | unified only | **T4 no counterpart** — the baseline uses the map directly | — | **NEUTRAL** per block; its per-row consequence is P3 |
+| **P10** per-block `Prober` construction | probe lookup | `B·C` | unified only | **T4 no counterpart** — the baseline uses the map directly | — | **NEUTRAL, detection bound:** at `max_block_size = 65409` a 2M-row probe has 31 blocks against 2M rows, so even a 1000-cycle constructor is under 0.001% of the cell. Its per-row consequence is P3, which is where the cost actually is |
 
 ### 3.2 Result gather — the largest sample share, and provably identical
 
@@ -127,9 +168,9 @@ Codegen-evidence tiers (`codegen/tiers.json`, generated by `tier.py`):
 | **B16** per-bucket byte-delta accounting | `≤K·B·C` | unified only | **T4**, inside the critical section | **NEGATIVE, CONTINGENT** — see §5 |
 | **B17** per-slot `try_lock` drain | `≤S·B` | parallel only | **T4** — see lock table L2 | **NEGATIVE for `parallel_hash`, MEASURED** |
 | **B18** `blocks_mutex` registration | `B` | unified only | **T4** — see lock table L3 | **NEGATIVE at 64 threads, CONTINGENT** — see §5 |
-| **B19** post-build bucket prefix pass | `K`, once | unified only | **T4** | **NEUTRAL** — O(buckets), not O(rows); never sampled |
+| **B19** post-build bucket prefix pass | `K`, once | unified only | **T4** | **NEUTRAL, detection bound:** K ≤ 128, once per build, against 30M build rows. At 1 ms sampling over 550k in-join samples it received **zero**; the sampler would have caught anything above roughly 0.002% of in-join time |
 | **B20** slot→slot0 bucket merge | `(K/S)(S−1)`, once | parallel only | **T4** — unified shares one map from the start | **POSITIVE for unified, BOUNDED** |
-| **B21** owned-bucket pre-reserve | `K/S` per slot, once | parallel only | **T4** | **NEUTRAL**, never sampled |
+| **B21** owned-bucket pre-reserve | `K/S` per slot, once | parallel only | **T4** | **NEUTRAL**, same detection bound as B19: zero samples of 550k |
 | **B0/B1** right-block materialisation, nullable unfold | `D·B` / `R·B` | all 3 | **T1**, `JoinUtils.cpp` / `NullableUtils.cpp`, one shared file each | **NEUTRAL**, delta 0 |
 | **B2/B3/B4** null-in-selector scan, `not_joined_map` mark, used-flag reinit | `R·B` | hash, unified | **T2.** Entry overload `addBlockToJoin(Block const&, bool)` **byte-identical, 142 insns**. The `Selector` overload is **not comparable**: the baseline inlines a 40-arm dispatch (3456 insns), unified outlines it into 19 helpers (2086 + 19694 insns) and takes a mutex | **UNSETTLED** — the outlining difference is real and unmeasured |
 | **B5/B6/B9** per-row routing hash, hash→slot, scatter | `R·B` (×cols on the copy path) | parallel only | **T4** | **NEGATIVE for `parallel_hash`, BOUNDED** |
@@ -156,13 +197,13 @@ Raw: `locks/gate_l1.txt`, `locks/locks_l1.jsonl`.
 | **L1** `BucketLock[b]` | bucket `b` of every clause's map **plus** bucket `b`'s arena | unified | `K·B·C` → **exact, ratio 1.000 in all 12 cells** (t1 18/18; t16 18752 = 32×586; t64 72064 = 128×563; t64 comp 97152 = 128×759) | whole per-bucket insert, arena growth, `BuildResult` merge, **plus** the byte-delta accounting that need not be there (B16) | t64 u64: **p50 11.6 µs, p99 46.3 µs**, mean 18.1, total 1.30 s. t64 comp: p50 46.3 µs, total 5.75 s. t1: 1.48 ms (uncontended — this is the whole block insert, not a cost) | **0.70 `try_lock` failures per acquisition**; 614 blocking waits of 72,064 (0.85%), 0.23 s total wait | **POSITIVE at 16/64 vs L2, MEASURED.** NEUTRAL at 1 thread (K=1, always acquired) |
 | **L2** per-slot `mutex` | the slot's entire inner `HashJoin` | parallel | `B·S` → **exact, ratio 1.000** (t16 9360; t64 35840; t64 comp 48576) | one-time map preallocation, the **whole** `HashJoin::addBlockToJoin`, and a relaxed global-counter update | t64 u64: **p50 46.3 µs, p99 92.7 µs**, mean 49.2, total 1.76 s | **309 `try_lock` failures per acquisition** (11,074,336 vs 35,840). t16: 204 per acquisition | **NEGATIVE at 16/64, MEASURED** |
 | **L3** `blocks_mutex` | `data->columns`, nullmaps, `allocated_size`, index registration | unified | `B` (+0-3/block) → **exact** (t64 563, t16 586) | list append, `StoredColumnsIndex::add`, byte accounting, **`assertBlocksHaveEqualStructureAllowReplicated`, `doDebugAsserts()`, `getCurrentQueryMemoryUsage()`**. Bucket inserts run **outside** it | **p50 2.90 µs**, p99 5.79 µs, total 1.83 ms at 64 threads | not separately instrumented | **NEGATIVE at 64 threads, CONTINGENT.** The part that needs the lock (`SCI_ADD`) takes **32 ns**; ~99% of the 2.9 µs is work that does not |
-| **L4** `StoredColumnsIndex::mutex` | `blocks[]`, `blocks_generation`, lazy emit table | **all three** | build 1/block; probe 1/batch → exact | `add`: a `push_back` and a generation bump. `resolveEmitColumns`: optional full emit-table rebuild | `add` **p50 11-45 ns**; `resolve` **p50 91-181 ns** | none observed | **NEUTRAL** — shared infrastructure, not a source of asymmetry |
+| **L4** `StoredColumnsIndex::mutex` | `blocks[]`, `blocks_generation`, lazy emit table | **all three** | build 1/block; probe 1/batch → exact | `add`: a `push_back` and a generation bump. `resolveEmitColumns`: optional full emit-table rebuild | `add` **p50 11-45 ns**; `resolve` **p50 91-181 ns** | none observed | **NEUTRAL, detection bound:** measured total hold across all sites is **19-124 µs per query** against cells of 51-265 ms, i.e. **under 0.25%**, and it is the same code for all three, so any asymmetry is bounded by that |
 | **L5** `hash` build lock | — | hash | **zero, confirmed dynamically**: only L4 fires | — | — | **POSITIVE for `hash` at 1 thread**; irrelevant above, since `hash` does not build in parallel |
 | **L6** `BucketLock[0]` empty-block case | bucket 0 | unified | `0` predicted, **0 measured** | — | — | **Unreachable in this workload.** Two attempts to fire it failed. LEAD: possibly unreachable through the pipeline entirely |
-| **A1** `setUsed` flag store | `per_offset_flags` / `per_row_flags` | all 3 | `M`, **relaxed** load + relaxed store | — | not a lock | idempotent; no RMW | **NEUTRAL** — identical in both trees |
-| **A2** `setUsedOnce` CAS | same flags | all 3 | ≤1 successful CAS per right key; relaxed pre-check, **`compare_exchange_strong` seq_cst** | — | — | — | **NEUTRAL** — identical in both trees. LEAD: seq_cst may be stronger than needed |
+| **A1** `setUsed` flag store | `per_offset_flags` / `per_row_flags` | all 3 | `M`, **relaxed** load + relaxed store | — | not a lock | idempotent; no RMW | **NEUTRAL, detection bound:** relaxed load+store, no read-modify-write, so it cannot contend; the counters bound its memory effect at **+1.4% cache misses / −1.2% dTLB misses per row** on `FULL`, the kind that exercises flags hardest |
+| **A2** `setUsedOnce` CAS | same flags | all 3 | ≤1 successful CAS per right key; relaxed pre-check, **`compare_exchange_strong` seq_cst** | — | — | — | **NEUTRAL, detection bound:** the code is byte-comparable between the trees (P6 group, `X1_crosstree.md`), so the cross-implementation delta is zero by identity — a stronger statement than a numeric bound. LEAD: seq_cst may be stronger than needed, but that is a property of all three equally |
 | **A3** `bucket_bytes.fetch_add` | running byte sum | unified | `K·B·C`, **relaxed** | inside L1 | — | — | **NEGATIVE (small), CONTINGENT** — see §5 |
-| **A4** `global_total_rows/bytes` | parallel_hash totals | parallel | 2 per slot insert, **relaxed** | inside L2 | — | — | **NEUTRAL** |
+| **A4** `global_total_rows/bytes` | parallel_hash totals | parallel | 2 per slot insert, **relaxed** | inside L2 | — | — | **NEUTRAL, detection bound:** 2 relaxed `fetch_add` per slot insert = 2·B·S ≈ 72k at 64 threads, against L2's measured 1.76 s of hold time; at even 100 ns each that is **0.4%** of the critical-section time it sits inside |
 | **A5** `std::call_once` in `BucketPrefixSums::offset` | prefix array | hash probe; unified avoids it | once per map | — | — | — | **POSITIVE for unified** — `freezeMapsForProbing` precomputes; the baseline pays a `call_once` check |
 
 **All three probe paths take zero join-level mutexes.** That is measured, not assumed.
@@ -174,7 +215,7 @@ Raw: `locks/gate_l1.txt`, `locks/locks_l1.jsonl`.
 | difference | invariant (checkable) | what forces it | falsification attempt — **run** | verdict |
 | --- | --- | --- | --- | --- |
 | **L1 exists at all** (per-bucket lock) | Two build threads may route rows to the same bucket in the same pass, and `HashMapTable::emplace` is not safe against concurrent mutation of the same sub-table | correctness, under the one-algorithm-for-both-regimes goal | **Not run.** Removing it needs the concurrent-emplace race to be *demonstrated*, which needs a stress harness this mission did not build | **UNSETTLED, not FUNDAMENTAL.** Naming what would settle it: delete the `unique_lock` in `insertIntoBuckets`, run `04658`/`04659` at 64 threads under TSan (`build/tsan` already exists) |
-| **K = 2·bit_ceil(T)** (twice as many buckets as threads) | The `try_lock` drain loop needs more buckets than threads, or a thread that finds its bucket busy has nowhere else to go in the pass | throughput, not correctness | **RUN — ablation A-K1**, `BUCKETS_PER_THREAD` 2→1, pre-registered PREREG P3.1, validity-checked (`codegen/ak1_validity.txt`: 0 symbols changed outside `DB::Unified::`, ablation target confirmed changed, `fillFixedBatch` and both baselines opcode-identical). **Nothing broke functionally; it got slower**: comp t64 **+9.0%**, u64 t64 **+90.1%**, controls flat | **FUNDAMENTAL-for-throughput.** The invariant is real and the violation is demonstrably worse. The constant 2 is justified, not arbitrary |
+| **K = 2·bit_ceil(T)** (twice as many buckets as threads) | The `try_lock` drain loop needs more buckets than threads, or a thread that finds its bucket busy has nowhere else to go in the pass | throughput, not correctness | **RUN — ablation A-K1**, `BUCKETS_PER_THREAD` 2→1, pre-registered PREREG P3.1, validity-checked (`codegen/ak1_validity.txt`: 0 symbols changed outside `DB::Unified::`, ablation target confirmed changed, `fillFixedBatch` and both baselines opcode-identical). **Nothing broke functionally; it got slower**: comp t64 **+9.0%**, u64 t64 **+90.1%**, controls flat | **CONTINGENT.** *Downgraded from FUNDAMENTAL after independent verification.* The ablation shows that the **one alternative tested** (K = T) is worse, and materially so. It does **not** show that `2` is required, or optimal, or that no other drain-loop design achieves the same slack with fewer partitions. Untested alternatives: K = 1.5·T; keeping K = 2·T but making the packing per-block (item 1 in §11), which removes the cost without touching contention at all; a work-stealing drain instead of rotate-and-block. What is established is narrower and still useful: **K is load-bearing for contention, so it is not a free lever**, and the K-linear cost must be attacked some other way |
 | **B22** whole-block key packing once per partition | *Claimed*: each partition's insert needs a key getter over the block's key columns | **nothing forces the packing to be per-partition.** `prepared_keys` is read-only after construction, identical for every partition of a block, and sized by the whole block regardless of selector | **Not run** — hoisting needs `insertFromBlockImpl`'s signature changed to accept a shared key getter | **CONTINGENT.** Concrete alternative: construct the key getter once per block before the bucket loop and pass it by const reference. Cost: a signature change through `insertFromBlockImpl`; the object is already immutable after construction, so no synchronisation is needed. **This is the top item in the next-mission handoff** |
 | **L3 holds `assertBlocksHaveEqualStructureAllowReplicated` + `doDebugAsserts` + `getCurrentQueryMemoryUsage`** | *Claimed*: block registration must be atomic against other build threads | only the `data->columns` append and the `StoredColumnsIndex::add` need the lock. The structure assertion reads `data->sample_block`, which is immutable after construction; the memory-usage read is a process-wide query | **Not run** — but the measurement already localises it: the part that needs the lock is **32 ns** of a **2.90 µs** critical section | **CONTINGENT — a real invariant, over-served.** Exactly the shape the mission said to hunt for. Falsification that would settle it: move the three calls above the `lock_guard` and re-measure L3's hold-time distribution |
 | **B16/A3** byte accounting inside L1 | *Claimed*: the growth an insert caused must be attributed exactly once, so it is measured under the bucket's own lock (the code says so at `HashJoin.cpp:137-138`) | accuracy of a memory-accounting number, not correctness of the join | **Not run.** Moving it out races the accounting, not the data | **CONTINGENT.** The invariant is about an accounting number's exactness. Alternative: accumulate per-thread and reduce at build finish |

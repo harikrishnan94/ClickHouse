@@ -292,3 +292,24 @@ contradicted by the counters is REFUTED or downgraded, not accepted with a cavea
 **Also possible and registered in advance:** both signatures together (instructions up
 *and* IPC down). That is not a fudge — it would mean both mechanisms are live, and the
 report must then say the split is unresolved rather than pick one.
+
+---
+
+## P3.3 — Loop P2 (software prefetch): a settings-only ablation, no rebuild
+
+Raised as a blocking finding by the independent verifier: P2 was UNSETTLED while a
+checkable experiment was available in this environment. Registered before running it.
+
+`enable_software_prefetch_in_join` turns the per-row prefetch (loop P2) off for all
+three implementations without a rebuild, so nothing can leak into the tree.
+
+**Prediction.** The codegen artefact says prefetch costs 14 instructions per row on the
+baseline and 20 on unified — so if prefetch were pure overhead, disabling it would make
+both faster and unified faster by more. It is not overhead: it exists to hide hash-table
+misses, and the medium cell's table (1M rows x ~48 B) is far larger than the 2 MiB L2.
+**I predict disabling it makes BOTH slower, and that the `hash`-to-`unified_hash` gap
+does not close** — i.e. P2 is not a source of the one-thread deficit.
+
+**Refuted if** the gap closes materially with prefetch off (that would make P2 a
+contributor), or if disabling prefetch makes either implementation faster (that would
+mean the prefetch is mistuned for this cell).
