@@ -1,5 +1,4 @@
 #include <any>
-#include <Common/JoinLockProbe.h>   /// INSTRUMENTATION
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1180,7 +1179,6 @@ JoinResultPtr HashJoin::joinScatteredBlock(ScatteredBlock block)
 
 HashJoin::~HashJoin()
 {
-    JoinLockProbe::dump("hash");   /// INSTRUMENTATION
     if (!data)
     {
         LOG_TEST(log, "{}Join data has been already released", instance_log_id);

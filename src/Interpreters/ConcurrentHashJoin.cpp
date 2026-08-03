@@ -1,5 +1,4 @@
 #include <Columns/ColumnSparse.h>
-#include <Common/JoinLockProbe.h>   /// INSTRUMENTATION
 #include <Columns/FilterDescription.h>
 #include <Columns/IColumn.h>
 #include <Core/Names.h>
@@ -255,7 +254,6 @@ ConcurrentHashJoin::ConcurrentHashJoin(
 
 ConcurrentHashJoin::~ConcurrentHashJoin()
 {
-    JoinLockProbe::dump("parallel_hash");   /// INSTRUMENTATION
     try
     {
         if (!build_phase_finished || !hash_joins[0]->data->twoLevelMapIsUsed())
@@ -339,13 +337,9 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
                     /// if current hash_join is already processed by another thread, skip it and try later
                     std::unique_lock<std::mutex> lock(hash_join->mutex, std::try_to_lock);
                     if (!lock.owns_lock())
-                    {
-                        JoinLockProbe::countTryFailure(JoinLockProbe::PAR_SLOT_TRY);   /// INSTRUMENTATION
                         continue;
-                    }
 
                     made_progress = true;
-                    JoinLockProbe::HoldTimer probe_t(JoinLockProbe::PAR_SLOT_TRY);   /// INSTRUMENTATION
 
                     if (!hash_join->space_was_preallocated && hash_join->data->twoLevelMapIsUsed())
                     {
