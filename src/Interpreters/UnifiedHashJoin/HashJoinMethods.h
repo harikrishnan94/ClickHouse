@@ -10,6 +10,9 @@
 #include <Interpreters/castColumn.h>
 #include <base/types.h>
 
+#include <memory>
+#include <typeinfo>
+
 namespace DB
 {
 namespace Unified
@@ -78,6 +81,38 @@ struct Inserter
         return inserted;
     }
 };
+/// The key getter for one block, built once and handed to everything that reads that block's keys.
+///
+/// Building one is not free: `HashMethodKeysFixed` packs the whole block's fixed-width keys in its
+/// constructor - sized by the key column, not by the selector it will be used with - so a build that
+/// splits the block by bucket would otherwise repack every row of it once per bucket. On the build
+/// path the getters a join can reach write nothing after their constructor (the last-element cache
+/// is compiled out, and the LowCardinality getter's probe cache is untouched by `emplaceKey`), so
+/// one instance answers for every bucket.
+///
+/// The type is not known where the holder is created - it follows from the join's map kind, which is
+/// a runtime value - so it is erased here and recovered by the caller that knows it. Every user of
+/// one holder asks for the same type, because they all derive it from the same map.
+class BlockKeyGetter
+{
+public:
+    template <typename KeyGetter, typename Build>
+    KeyGetter & getOrBuild(Build && build)
+    {
+        if (!getter)
+        {
+            getter = std::make_shared<KeyGetter>(build());
+            built_type = &typeid(KeyGetter);
+        }
+        chassert(*built_type == typeid(KeyGetter));
+        return *static_cast<KeyGetter *>(getter.get());
+    }
+
+private:
+    std::shared_ptr<void> getter;
+    const std::type_info * built_type = nullptr;
+};
+
 /// MapsTemplate is one of MapsOne, MapsAll and MapsAsof
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods
@@ -93,11 +128,16 @@ public:
     /// Insert `selector`'s rows into `bucket` of every map in `maps`. The caller routed those rows
     /// there (see `scatterByBucket`) and holds that bucket's lock, so the insert addresses the
     /// bucket's cells directly rather than re-deriving the bucket from each row's key.
+    ///
+    /// `block_key_getter` belongs to the block, not to the bucket: the caller passes the same one to
+    /// every bucket of a block and to the scatter pass that split it, so the block's keys are read
+    /// once. See `BlockKeyGetter`.
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
         MapsTemplate & maps,
         size_t bucket,
+        BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         UInt32 stored_block_no,
@@ -113,6 +153,7 @@ public:
     static std::vector<ScatteredBlock::Selector> scatterByBucket(
         HashJoin::Type type,
         MapsTemplate & maps,
+        BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         const ScatteredBlock::Selector & selector,
@@ -138,11 +179,17 @@ private:
     template <typename KeyGetter, bool is_asof_join>
     static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range = {});
 
+    /// The block's key getter, built on first use and then reused - see `BlockKeyGetter`.
+    template <typename KeyGetter, bool is_asof_join>
+    static KeyGetter & blockKeyGetter(
+        BlockKeyGetter & block_key_getter, const ColumnRawPtrs & key_columns, const Sizes & key_sizes);
+
     template <typename KeyGetter, typename HashMap, typename Selector>
     static void insertFromBlockImplTypeCase(
         HashJoin & join,
         HashMap & map,
         size_t bucket,
+        BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         UInt32 stored_block_no,
@@ -155,6 +202,7 @@ private:
     template <typename KeyGetter, typename HashMap>
     static std::vector<ScatteredBlock::Selector> scatterByBucketTypeCase(
         const HashMap & map,
+        BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         const ScatteredBlock::Selector & selector,
