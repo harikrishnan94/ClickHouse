@@ -603,10 +603,7 @@ public:
             }
         }
 
-        ConstLookupResult ALWAYS_INLINE findWithOffset(Key x, size_t & offset) const
-        {
-            return findWithOffset(x, hash(x), offset);
-        }
+        ConstLookupResult ALWAYS_INLINE findWithOffset(Key x, size_t & offset) const { return findWithOffset(x, hash(x), offset); }
 
         /// Same contract as `TwoLevelHashTable::prefetch`, and declared under the same constraint so
         /// that callers testing for the member only see it when the underlying table can prefetch.

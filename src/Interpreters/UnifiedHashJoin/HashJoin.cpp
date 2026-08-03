@@ -148,8 +148,19 @@ BuildResult insertIntoBuckets(
 
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
-            join, type, map, bucket, block_key_getter, key_columns, key_sizes, stored_block_no,
-            *per_bucket[bucket], null_map, join_mask, *pools[bucket], bucket_result);
+            join,
+            type,
+            map,
+            bucket,
+            block_key_getter,
+            key_columns,
+            key_sizes,
+            stored_block_no,
+            *per_bucket[bucket],
+            null_map,
+            join_mask,
+            *pools[bucket],
+            bucket_result);
 
         bytes_added += map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes() - bytes_before;
 
@@ -1005,8 +1016,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     else
                     {
                         scattered = Methods::scatterByBucket(
-                            data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx],
-                            stored_columns->selector, buckets);
+                            data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx], stored_columns->selector, buckets);
                         for (size_t bucket = 0; bucket < buckets; ++bucket)
                             per_bucket[bucket] = &scattered[bucket];
                     }

@@ -201,10 +201,7 @@ private:
     /// reused, or one constructed into `own` - see `shareKeyGetterAcrossBuckets`.
     template <typename KeyGetter, bool is_asof_join>
     static KeyGetter & blockKeyGetter(
-        BlockKeyGetter & block_key_getter,
-        std::optional<KeyGetter> & own,
-        const ColumnRawPtrs & key_columns,
-        const Sizes & key_sizes);
+        BlockKeyGetter & block_key_getter, std::optional<KeyGetter> & own, const ColumnRawPtrs & key_columns, const Sizes & key_sizes);
 
     template <typename KeyGetter, typename HashMap, typename Selector>
     static void insertFromBlockImplTypeCase(
