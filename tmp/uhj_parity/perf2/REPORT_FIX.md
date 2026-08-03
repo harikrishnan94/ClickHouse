@@ -448,3 +448,55 @@ The one-thread deficit is **not** one thing:
 Fixing the harness so `hash`'s non-joined work is attributable (§11.1) is a prerequisite for
 3, and is cheap: the phase map needs a `hash`-specific entry, or the comparison needs to use
 `probe + nonjoined` throughout, as this section does.
+
+### 11.5 The multi-threaded side: no losses, and one coverage hole
+
+Of the 48 cells at 16 and 64 threads that have a comparator, **none loses on wall time or on
+CPU**. The margins:
+
+| metric | best | p25 | median | p75 | worst |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| wall | −52.0% | −45.0% | **−27.0%** | −7.9% | **−2.0%** |
+| CPU | −33.1% | −15.6% | −12.1% | −6.2% | **−0.3%** |
+| build | −60.0% | −33.4% | −20.5% | −4.2% | +2.1% |
+| probe + non-joined | −12.8% | −9.7% | −7.1% | −3.1% | +4.9% |
+
+**Three cells of 48 exceed +2% on any phase, and all three still win the whole query:**
+
+| cell | wall | CPU | build | probe+nj |
+| --- | ---: | ---: | ---: | ---: |
+| `INNER\|str\|lo\|t16\|large` | −2.0% | −0.3% | −1.3% | **+4.9%** |
+| `INNER\|str\|lo\|t64\|large` | −39.2% | −7.3% | −15.0% | **+3.4%** |
+| `INNER\|str\|hi\|t16\|large` | −6.5% | −6.2% | **+2.1%** | −8.3% |
+
+**Why those two probe cells, and why `lo`.** `unified_hash`'s probe advantage over
+`parallel_hash` is concentrated in the *matched-row* path, and splitting the 48 cells by match
+rate shows it directly:
+
+| | A ns/row | delta ns/row | delta % |
+| --- | ---: | ---: | ---: |
+| match `hi` (90% of probe rows match) | 198.6 | **−19.07** | **−9.7%** |
+| match `lo` (10% match) | 129.4 | −4.83 | −3.3% |
+
+`parallel_hash` probes one merged 256-bucket map and recovers a matched cell's bucket by
+re-hashing it, plus the `std::call_once` check in `BucketPrefixSums::offset`, once per matched
+row; `unified_hash` reads a precomputed prefix (§5). On a **miss** there is no offset to
+produce, so that advantage is simply absent while the fixed per-row overhead of §11.3 remains.
+`INNER` with `match=lo` is the leanest loop in the multi-threaded matrix - 90% of rows miss,
+and an `INNER` miss emits nothing at all - so it is the one place the overhead shows through.
+It is the same mechanism as `LEFT SEMI`/`LEFT ANTI` at one thread: smallest denominator.
+
+**Why the build cells are all `str` at 16 threads.** `HashMethodString` packs nothing, so B22
+gave it nothing, and what remains of `unified_hash`'s build advantage there is the locking
+difference, which is smaller at 16 threads than at 64 (`str` build vs `parallel_hash`: −1.4% at
+t16 against −19.5% at t64). These are cells where the two implementations' builds are near
+parity to begin with, so ±2% is where they sit.
+
+**The real multi-threaded gap is coverage, not loss.** The other **24 of 48** cells at 16/64 -
+every `LEFT SEMI` and `LEFT ANTI` cell - have **no comparator at all**:
+`allowParallelHashJoin()` is false for SEMI/ANTI, so `parallel_hash` cannot run them. For a
+quarter of the multi-threaded matrix `unified_hash` is the only parallel implementation, so
+there is nothing to lose to - and equally nothing is measured. The alternative a user actually
+gets for those kinds today is `hash`, with a serial build, and that comparison has never been
+run at 16 or 64 threads. It is a one-setting harness change (`comparator_for` returning `hash`
+where `parallel_hash` is unavailable) and it is the cheapest open item in this report.
