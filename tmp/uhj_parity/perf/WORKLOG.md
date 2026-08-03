@@ -1218,3 +1218,61 @@ counts only. No cycle or wall-time claim follows from -32%; the -10% is the meas
 one. The checker also did not independently confirm the pristine binary's build
 commit — its whole-binary symbol comparison is the argument that the two differ by
 exactly this change.
+
+---
+
+## E13 — CORRECTION: `llvm-mca` was available all along (amends E9/E11/E12 forward)
+
+**Trigger.** The requester pointed at `/opt/llvm-22/bin/`. `llvm-mca` is there,
+version 22.1.8, default target `aarch64-unknown-linux-gnu`, and it models
+`-mcpu=neoverse-v2`.
+
+I recorded it as "not available" after finding it absent from the default `PATH`
+and from `/usr/local/bin/llvm-*-22`. I did not look further. That was a
+tool-discovery failure reported as an environment limitation, and it is the most
+consequential mistake in this mission — not because the tool is nice to have, but
+because **it is the origin that converts an instruction count into cycles**, and
+its supposed absence is exactly why A7's bound was extrapolated from a 39-vs-102
+instruction ratio and came out **6x too large**.
+
+**Demonstration that it would have caught the error.** Run on the dead-`crc32cx`
+routing sequence that the A7 fix removed:
+
+```
+$ /opt/llvm-22/bin/llvm-mca -mcpu=neoverse-v2 -mtriple=aarch64-unknown-linux-gnu \
+    -iterations=100 mca_probe.s
+Iterations:        100      Instructions:      600
+Total Cycles:      129      Total uOps:        700
+Dispatch Width:    6        uOps Per Cycle:    5.43
+IPC:               4.65     Block RThroughput: 1.2
+```
+
+Six instructions, **1.2 cycles of throughput**, IPC 4.65. mca says plainly that this
+sequence is superscalar-absorbed and nearly free. Had that run before the fix was
+built, the ~80% bound would never have been written.
+
+**It agrees with the measurement, independently.** From the measured recovery:
+
+```
+1,479 us recovered / 500,000 populated cells = 2.96 ns/cell
+  = ~8.3 cycles/cell at 2.8 GHz  (~8.9 at 3.0 GHz)
+33 instructions removed / ~8.6 cycles  =>  the removed code ran at IPC ~3.7-4.0
+```
+
+So the measured IPC of the removed code (~3.7-4.0) and mca's static estimate for its
+hot subsequence (4.65) tell the same story from two directions. **The lesson is not
+"instructions are not cycles" in the abstract — it is that a cycle model was on the
+disk and I did not use it.**
+
+Actions taken: wrappers for the full LLVM 22 toolchain (`llvm-mca`, `objdump`, `nm`,
+`readobj`, `dwarfdump`, `size`) now live in `tmp/uhj_parity/perf/bin/` pointing at
+`/opt/llvm-22/bin/`; the false limitation is corrected in `REPORT.md` §8 item 3 and
+flagged in the follow-on mission prompt as a named trap ("check before declaring a
+tool absent").
+
+**One trap for whoever uses it next:** `llvm-mca` will not consume `llvm-objdump`
+output as-is. The file header, the `<symbol>:` label lines, and
+`--symbolize-operands`' `<L1>` branch targets all fail to assemble, and stripping
+those targets naively leaves `b.hs` with no operand. A real extraction step is
+needed — strip the header and address column, turn `<Lnn>` into local labels, or
+drop branches and analyse the straight-line body while saying that you did.
