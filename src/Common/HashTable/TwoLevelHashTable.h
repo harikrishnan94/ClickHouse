@@ -522,15 +522,25 @@ public:
       * nothing to route - a single bucket, or buckets sharing one cell buffer - a lookup through the
       * handle is exactly a single-level table's lookup.
       *
+      * `has_sole` is fixed for the handle's lifetime and chosen once per probe block: with a sole
+      * bucket, `find` / `offsetInternal` / `prefetch` compile as the flat single-level forms (no
+      * per-row branch, no prefix add, no routing fields to spill). With many buckets the handle
+      * keeps the routed state across rows. Callers must pick the specialisation that matches the
+      * table (`withProber` does that); mixing them is a bug.
+      *
       * `offsetInternal` answers about the cell the handle's last `find` returned. That is why the
-      * handle is stateful, and it is what makes an offset cheap: recovering the bucket from the cell
-      * instead means re-hashing the key, which for a cell that does not save its hash is the whole
-      * hash again. A handle therefore belongs to one thread, and is valid only while the table's
-      * buckets keep their buffers - that is, for as long as nothing inserts into the table.
+      * multi-bucket handle is stateful, and it is what makes an offset cheap: recovering the bucket
+      * from the cell instead means re-hashing the key, which for a cell that does not save its hash
+      * is the whole hash again. A handle therefore belongs to one thread, and is valid only while
+      * the table's buckets keep their buffers - that is, for as long as nothing inserts into the
+      * table.
       */
+    template <bool has_sole>
     class Prober
     {
     public:
+        static constexpr bool is_sole = has_sole;
+
         using key_type = typename Self::key_type;
         using mapped_type = typename Self::mapped_type;
         using value_type = typename Self::value_type;
@@ -540,12 +550,7 @@ public:
 
         explicit Prober(const Self & table_)
             : table(&table_)
-            , buckets(table_.impls.bucketsData())
-            , sole(table_.impls.soleBucket())
-            , routed(sole)
-            , prefix(sole ? nullptr : table_.impls.bucketPrefix())
-            , shift(table_.impls.bucketShift())
-            , max_bucket(table_.impls.maxBucket())
+            , state(table_)
         {
         }
 
@@ -553,13 +558,17 @@ public:
 
         ConstLookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
         {
-            if (sole)
-                return sole->find(x, hash_value);
-
-            const size_t bucket = (table->bucketRoutingHash(x, hash_value) >> shift) & max_bucket;
-            routed = buckets + bucket;
-            routed_prefix = prefix[bucket];
-            return routed->find(x, hash_value);
+            if constexpr (has_sole)
+            {
+                return state.sole->find(x, hash_value);
+            }
+            else
+            {
+                const size_t bucket = (table->bucketRoutingHash(x, hash_value) >> state.shift) & state.max_bucket;
+                state.routed = state.buckets + bucket;
+                state.routed_prefix = state.prefix[bucket];
+                return state.routed->find(x, hash_value);
+            }
         }
 
         ConstLookupResult ALWAYS_INLINE find(Key x) { return find(x, hash(x)); }
@@ -567,11 +576,19 @@ public:
         /// The global cell offset of the cell the last `find` returned, as `TwoLevelHashTable`
         /// numbers them. Zero is reserved for the zero-key cell, in every bucket, exactly as a
         /// single-level table reserves it - only one bucket can hold that cell, since the zero key
-        /// routes like any other.
+        /// routes like any other. With a sole bucket the offset is the flat one: the bucket prefix
+        /// is identically zero, so there is nothing to add.
         size_t ALWAYS_INLINE offsetInternal(ConstLookupResult ptr) const
         {
-            const size_t offset_in_bucket = routed->offsetInternal(ptr);
-            return offset_in_bucket ? routed_prefix + offset_in_bucket : 0;
+            if constexpr (has_sole)
+            {
+                return state.sole->offsetInternal(ptr);
+            }
+            else
+            {
+                const size_t offset_in_bucket = state.routed->offsetInternal(ptr);
+                return offset_in_bucket ? state.routed_prefix + offset_in_bucket : 0;
+            }
         }
 
         /// Same contract as `TwoLevelHashTable::prefetch`, and declared under the same constraint so
@@ -582,33 +599,75 @@ public:
         {
             const auto & key = keyHolderGetKey(key_holder);
             const auto key_hash = hash(key);
-            if (sole)
-                sole->prefetchByHash(key_hash);
+            if constexpr (has_sole)
+            {
+                state.sole->prefetchByHash(key_hash);
+            }
             else
-                buckets[(table->bucketRoutingHash(key, key_hash) >> shift) & max_bucket].prefetchByHash(key_hash);
+            {
+                state.buckets[(table->bucketRoutingHash(key, key_hash) >> state.shift) & state.max_bucket].prefetchByHash(key_hash);
+            }
             keyHolderDiscardKey(key_holder);
         }
 
     private:
+        struct SoleState
+        {
+            explicit SoleState(const Self & table_)
+                : sole(table_.impls.soleBucket())
+            {
+                chassert(sole);
+            }
+
+            const Impl * sole;
+        };
+
+        struct RoutedState
+        {
+            explicit RoutedState(const Self & table_)
+                : buckets(table_.impls.bucketsData())
+                , routed(buckets)
+                , prefix(table_.impls.bucketPrefix())
+                , shift(table_.impls.bucketShift())
+                , max_bucket(table_.impls.maxBucket())
+            {
+                chassert(!table_.impls.soleBucket());
+            }
+
+            const Impl * buckets;
+            /// The bucket the last `find` routed to, and where its cells start in the global numbering.
+            const Impl * routed;
+            size_t routed_prefix = 0;
+            const size_t * prefix;
+            UInt32 shift;
+            UInt32 max_bucket;
+        };
+
         /// Only for the hash functions, which are stateless, so this costs no load.
         const Self * table;
-        const Impl * buckets;
-        /// Non-null when routing is a no-op, and then it is the table every lookup goes to.
-        const Impl * sole;
-        /// The bucket the last `find` routed to, and where its cells start in the global numbering.
-        const Impl * routed;
-        size_t routed_prefix = 0;
-        const size_t * prefix;
-        UInt32 shift;
-        UInt32 max_bucket;
+        std::conditional_t<has_sole, SoleState, RoutedState> state;
     };
 
     /// Precondition: `computeBucketPrefix()` has been called since the last change to any bucket's
-    /// capacity, as for `offsetInternalUnsafe()`.
-    Prober prober() const
+    /// capacity, as for `offsetInternalUnsafe()`. `has_sole` must match whether this table has a
+    /// sole bucket; prefer `withProber` at call sites that decide once per block.
+    template <bool has_sole>
+    Prober<has_sole> prober() const
     requires(isRuntimeStorage())
     {
-        return Prober(*this);
+        return Prober<has_sole>(*this);
+    }
+
+    /// Pick `Prober<true>` or `Prober<false>` once from the table's layout and invoke `f` with it.
+    /// The probe block's row loop then sees a specialised `offsetInternal` (and `find` / `prefetch`)
+    /// with no residual sole branch.
+    template <typename F>
+    decltype(auto) withProber(F && f) const
+    requires(isRuntimeStorage())
+    {
+        if (impls.soleBucket())
+            return std::forward<F>(f)(Prober<true>(*this));
+        return std::forward<F>(f)(Prober<false>(*this));
     }
 
 protected:
@@ -892,7 +951,7 @@ public:
     /// (Re)compute the bucket prefix sums `offsetInternal` relies on. Call this once, after the
     /// last insert that may have changed a bucket's capacity, and before anything that reads the
     /// prefix sums without checking whether they are there: `offsetInternalUnsafe`, which skips the
-    /// "already computed" check `offsetInternal` pays on every call, and `prober()`.
+    /// "already computed" check `offsetInternal` pays on every call, and `prober` / `withProber`.
     void computeBucketPrefix() const { impls.computeBucketPrefix(); }
 
     /// Lazily computes the prefix sums on first use, then reuses them - it does NOT notice later

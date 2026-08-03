@@ -207,14 +207,17 @@ TEST(TwoLevelHashTableDynamic, DirectBucketInsertIsFoundByRoutedLookup)
 
     ASSERT_EQ(map.size(), num_keys);
     map.computeBucketPrefix();
-    auto prober = map.prober();
-    for (UInt64 key = 1; key <= num_keys; ++key)
-    {
-        auto * it = map.find(key);
-        ASSERT_NE(it, nullptr) << "key " << key << " inserted into its bucket but not found";
-        ASSERT_EQ(it->getMapped(), key * 7);
-        ASSERT_EQ(prober.find(key), it) << "key " << key;
-    }
+    map.withProber(
+        [&](auto prober)
+        {
+            for (UInt64 key = 1; key <= num_keys; ++key)
+            {
+                auto * it = map.find(key);
+                ASSERT_NE(it, nullptr) << "key " << key << " inserted into its bucket but not found";
+                ASSERT_EQ(it->getMapped(), key * 7);
+                ASSERT_EQ(prober.find(key), it) << "key " << key;
+            }
+        });
 }
 
 TEST(TwoLevelHashTableDynamic, SizeHintReservesPerBucket)
@@ -362,14 +365,17 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
     /// A probe handle resolves the routing once, after the build, so it must find everything the
     /// bucket-parallel build inserted and number the cells exactly as the table itself does.
     map.computeBucketPrefix();
-    auto prober = map.prober();
-    for (UInt64 key = 1; key <= num_threads * keys_per_thread; ++key)
-    {
-        const auto * cell = prober.find(key);
-        ASSERT_NE(cell, nullptr) << "key " << key << " not found through the probe handle";
-        ASSERT_EQ(cell->getMapped(), key * 5) << "key " << key;
-        ASSERT_EQ(prober.offsetInternal(cell), map.offsetInternal(cell)) << "key " << key;
-    }
+    map.withProber(
+        [&](auto prober)
+        {
+            for (UInt64 key = 1; key <= num_threads * keys_per_thread; ++key)
+            {
+                const auto * cell = prober.find(key);
+                ASSERT_NE(cell, nullptr) << "key " << key << " not found through the probe handle";
+                ASSERT_EQ(cell->getMapped(), key * 5) << "key " << key;
+                ASSERT_EQ(prober.offsetInternal(cell), map.offsetInternal(cell)) << "key " << key;
+            }
+        });
 }
 
 TEST(TwoLevelHashTableDynamic, ProberMatchesTheTableAtEveryBucketCount)
@@ -384,23 +390,25 @@ TEST(TwoLevelHashTableDynamic, ProberMatchesTheTableAtEveryBucketCount)
             insertKeyValue(map, key, key * 3);
 
         map.computeBucketPrefix();
-        auto prober = map.prober();
+        map.withProber(
+            [&](auto prober)
+            {
+                std::unordered_set<size_t> offsets;
+                for (UInt64 key = 1; key <= num_keys; ++key)
+                {
+                    const auto * cell = prober.find(key);
+                    ASSERT_NE(cell, nullptr) << num_buckets << " buckets, key " << key;
+                    ASSERT_EQ(cell, map.find(key)) << num_buckets << " buckets, key " << key;
+                    ASSERT_EQ(cell->getMapped(), key * 3) << num_buckets << " buckets, key " << key;
 
-        std::unordered_set<size_t> offsets;
-        for (UInt64 key = 1; key <= num_keys; ++key)
-        {
-            const auto * cell = prober.find(key);
-            ASSERT_NE(cell, nullptr) << num_buckets << " buckets, key " << key;
-            ASSERT_EQ(cell, map.find(key)) << num_buckets << " buckets, key " << key;
-            ASSERT_EQ(cell->getMapped(), key * 3) << num_buckets << " buckets, key " << key;
+                    const size_t offset = prober.offsetInternal(cell);
+                    ASSERT_EQ(offset, map.offsetInternal(cell)) << num_buckets << " buckets, key " << key;
+                    ASSERT_TRUE(offsets.insert(offset).second) << num_buckets << " buckets, duplicate offset for key " << key;
+                }
 
-            const size_t offset = prober.offsetInternal(cell);
-            ASSERT_EQ(offset, map.offsetInternal(cell)) << num_buckets << " buckets, key " << key;
-            ASSERT_TRUE(offsets.insert(offset).second) << num_buckets << " buckets, duplicate offset for key " << key;
-        }
-
-        for (UInt64 key = num_keys + 1; key <= num_keys + 1000; ++key)
-            ASSERT_EQ(prober.find(key), nullptr) << num_buckets << " buckets, key " << key << " should be missing";
+                for (UInt64 key = num_keys + 1; key <= num_keys + 1000; ++key)
+                    ASSERT_EQ(prober.find(key), nullptr) << num_buckets << " buckets, key " << key << " should be missing";
+            });
     }
 }
 
