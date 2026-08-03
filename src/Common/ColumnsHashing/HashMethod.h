@@ -408,6 +408,12 @@ struct HashMethodKeysFixed
     static constexpr bool has_cheap_key_calculation = true;
     static constexpr bool has_pre_computed_hashes = false;
 
+    /// Constructing one reads every row of the key columns, not just a few pointers off them: it
+    /// packs the keys (`prepared_keys`, below) or builds the shuffle masks. A caller that would
+    /// otherwise construct one per partition of a block should construct one for the block instead -
+    /// the packing is sized by the key column and takes no notice of any selector.
+    static constexpr bool reads_whole_block_at_construction = true;
+
     LowCardinalityKeys<has_low_cardinality> low_cardinality_keys;
     Sizes key_sizes;
     size_t keys_size;

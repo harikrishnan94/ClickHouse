@@ -11,6 +11,7 @@
 #include <base/types.h>
 
 #include <memory>
+#include <optional>
 #include <typeinfo>
 
 namespace DB
@@ -81,14 +82,18 @@ struct Inserter
         return inserted;
     }
 };
-/// The key getter for one block, built once and handed to everything that reads that block's keys.
+/// A key getter for one block, built once and handed to everything that reads that block's keys.
 ///
-/// Building one is not free: `HashMethodKeysFixed` packs the whole block's fixed-width keys in its
-/// constructor - sized by the key column, not by the selector it will be used with - so a build that
-/// splits the block by bucket would otherwise repack every row of it once per bucket. On the build
-/// path the getters a join can reach write nothing after their constructor (the last-element cache
-/// is compiled out, and the LowCardinality getter's probe cache is untouched by `emplaceKey`), so
-/// one instance answers for every bucket.
+/// Only for a getter whose construction reads the whole block: `HashMethodKeysFixed` packs the
+/// block's fixed-width keys in its constructor - sized by the key column, taking no notice of the
+/// selector it will be used with - so a build that splits the block by bucket would otherwise repack
+/// every row of it once per bucket. A getter that only latches a couple of column pointers is built
+/// per bucket, because a shared one has to live behind a pointer and buys nothing to pay for it. See
+/// `shareKeyGetterAcrossBuckets`.
+///
+/// Sharing is safe on the build path: the getters a join can reach write nothing after their
+/// constructor (the last-element cache is compiled out for every join key getter, and the
+/// LowCardinality getter's probe caches are read by `findKey` only, never by `emplaceKey`).
 ///
 /// The type is not known where the holder is created - it follows from the join's map kind, which is
 /// a runtime value - so it is erased here and recovered by the caller that knows it. Every user of
@@ -112,6 +117,19 @@ private:
     std::shared_ptr<void> getter;
     const std::type_info * built_type = nullptr;
 };
+
+/// Whether a block's buckets share one key getter or each build their own. Sharing removes a
+/// per-bucket pass over the block's keys, and costs one allocation per block plus a pointer
+/// indirection the row loop cannot always see through, so it is worth it exactly when construction
+/// is what reads the block.
+template <typename KeyGetter>
+constexpr bool shareKeyGetterAcrossBuckets()
+{
+    if constexpr (requires { KeyGetter::reads_whole_block_at_construction; })
+        return KeyGetter::reads_whole_block_at_construction;
+    else
+        return false;
+}
 
 /// MapsTemplate is one of MapsOne, MapsAll and MapsAsof
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
@@ -179,10 +197,14 @@ private:
     template <typename KeyGetter, bool is_asof_join>
     static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range = {});
 
-    /// The block's key getter, built on first use and then reused - see `BlockKeyGetter`.
+    /// The key getter for this block's keys: `block_key_getter`'s, built on first use and then
+    /// reused, or one constructed into `own` - see `shareKeyGetterAcrossBuckets`.
     template <typename KeyGetter, bool is_asof_join>
     static KeyGetter & blockKeyGetter(
-        BlockKeyGetter & block_key_getter, const ColumnRawPtrs & key_columns, const Sizes & key_sizes);
+        BlockKeyGetter & block_key_getter,
+        std::optional<KeyGetter> & own,
+        const ColumnRawPtrs & key_columns,
+        const Sizes & key_sizes);
 
     template <typename KeyGetter, typename HashMap, typename Selector>
     static void insertFromBlockImplTypeCase(

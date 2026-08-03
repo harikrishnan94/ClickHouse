@@ -168,7 +168,8 @@ std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemp
         static_assert(!KeyGetter::has_pre_computed_hashes, "Bucket routing assumes the map computes the hash it places by");
 
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
-    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, key_columns, key_sizes);
+    std::optional<KeyGetter> own_key_getter;
+    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, own_key_getter, key_columns, key_sizes);
 
     /// Key holders are only read here, never persisted into the map, so nothing allocated through
     /// this outlives the call. String key holders do not touch it at all.
@@ -339,10 +340,21 @@ KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, bool is_asof_join>
 KeyGetter & HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::blockKeyGetter(
-    BlockKeyGetter & block_key_getter, const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
+    BlockKeyGetter & block_key_getter,
+    std::optional<KeyGetter> & own,
+    const ColumnRawPtrs & key_columns,
+    const Sizes & key_sizes)
 {
-    return block_key_getter.getOrBuild<KeyGetter>(
-        [&] { return createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes); });
+    const auto create = [&] { return createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes); };
+
+    /// A getter whose construction reads the whole block is shared with the block's other buckets and
+    /// with the scatter pass that routed the rows to them. One that only latches a few column
+    /// pointers is built into `own`, on the caller's stack, where the row loop can see through it -
+    /// there is nothing to save by sharing it. See `shareKeyGetterAcrossBuckets`.
+    if constexpr (shareKeyGetterAcrossBuckets<KeyGetter>())
+        return block_key_getter.getOrBuild<KeyGetter>(create);
+    else
+        return own.emplace(create());
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
@@ -368,10 +380,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     if constexpr (is_asof_join)
         asof_column = key_columns.back();
 
-    /// Shared with this block's other buckets and with the scatter pass that routed the rows here:
-    /// building one packs the whole block's keys, so a getter per bucket would repack the block once
-    /// per bucket. See `BlockKeyGetter`.
-    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, key_columns, key_sizes);
+    std::optional<KeyGetter> own_key_getter;
+    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, own_key_getter, key_columns, key_sizes);
 
     /// Every row here routes to `bucket`, so its cells are addressed once instead of once per row.
     /// `find` routes by the same function `scatterByBucket` used, so what lands here is what lookups
