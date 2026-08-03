@@ -368,8 +368,17 @@ Every one of these is measured and documented rather than silent.
    up.
 2. **G0.4 left RED.** The brief says never to close a unit on red. It is red, it is
    reported as red, and the one-build experiment that would settle it is named.
-3. **`llvm-mca` is unavailable** on this host, so loop-body throughput analysis is
-   out of reach. Instruction, branch and spill counts are not affected.
+3. **CORRECTION — `llvm-mca` was reported unavailable, and it is not.** It is at
+   `/opt/llvm-22/bin/llvm-mca`, targets `aarch64` by default, and models
+   `-mcpu=neoverse-v2`. It was merely off `PATH`, and I recorded "unavailable"
+   without checking beyond the default `PATH`. This is the most consequential
+   mistake in the mission: mca is the origin that converts an instruction
+   difference into cycles, and its absence is precisely why A7's bound was
+   extrapolated from a 39-vs-102 instruction ratio and came out **6x wrong**.
+   Run on the removed `crc32cx` sequence it reports **IPC 4.65 and a `Block
+   RThroughput` of 1.2 cycles for 6 instructions** — it would have predicted the
+   small payoff before the fix was built. Wrappers for the whole LLVM 22 toolchain
+   are now at `tmp/uhj_parity/perf/bin/`.
 4. **G1.3 hardware counters were never gathered.** `perf stat` was not run. This
    is the single most costly omission: it is the discriminating test between A7
    (instruction count — would show ~2.6x instructions/row at flat IPC) and A5

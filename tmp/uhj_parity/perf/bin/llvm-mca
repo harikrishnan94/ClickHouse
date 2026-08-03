@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/llvm-22/bin/llvm-mca "$@"
