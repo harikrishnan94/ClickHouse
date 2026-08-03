@@ -268,3 +268,292 @@ SKIPPED for the `parallel_hash` comparison.
 (separate from the timed runs, so it cannot perturb them). G0.5's tolerance is
 declared as two separate checks — an exact accounting identity plus a 20%
 build-only cross-check — rather than one vague "phases sum to total".
+
+---
+
+## E2 — BLOCKING: a second agent session is running this same mission in this same working tree
+
+**Goal.** Commit the Unit 0 pre-registration before any harness code, per the
+mission's ordering requirement.
+
+**What happened instead.** The commit succeeded, but `git log` showed a commit I
+did not create sitting between the mission-start commit and mine:
+
+```
+$ git log --oneline -3
+51013b1eac9 uhj-perf: pre-register Unit 0 before the harness exists          <- mine
+b8452c4f70b uhj-perf: pre-register Unit 0 and record the environment of record  <- NOT mine
+0945a745399 uhj_parity: record post-mission performance snapshot as OPERATIONAL context
+$ git reflog --date=iso | head -3
+51013b1eac9 HEAD@{2026-08-03 10:36:26 +0530}: commit: uhj-perf: pre-register Unit 0 before the harness exists
+b8452c4f70b HEAD@{2026-08-03 10:35:33 +0530}: commit: uhj-perf: pre-register Unit 0 and record the environment of record
+0945a745399 HEAD@{2026-08-03 10:22:48 +0530}: checkout: moving from uhj-parity to uhj-perf-attribution
+```
+
+`b8452c4f70b` landed 53 seconds before mine, on the branch I created at 10:22:48,
+and committed four paths: `perf/PREREG.md` (121 lines), `perf/WORKLOG.md` (270),
+`perf/start_server.sh` (117), `perf/artifacts/E1_commands.txt` (7). The last three
+are byte-for-byte the files **I** had just written. The first is **not mine** — I
+wrote `PREREG.md` exactly once, in a single write, at ~246 lines.
+
+**Evidence that it is a second agent on the same mission, not a stale artifact.**
+The other `PREREG.md` is preserved at
+`tmp/uhj_parity/perf/artifacts/PREREG_from_b8452c4f70b.md`. It is independent prose
+reaching the same design conclusions I reached: cardinality expressed as build-table
+row count with unique keys, the same 10,000 / 1,000,000 / 50,000,000 levels, the same
+0.9 / 0.1 match rates, the same 1 / 16 / 64 thread counts — and it refers to
+`sweep.py`, `matrix.py` and `artifacts/CANDIDATE_INVENTORY.md`, the last being the
+exact path my own background subagent is writing to right now.
+
+Confirmed *not* the cause: there is only one `clickhouse` server running (mine,
+pid 2095410, port 9111), and no competing benchmark load.
+
+**Damage so far, stated plainly.** My `Write` of `PREREG.md` overwrote theirs on
+disk; my commit `51013b1eac9` consequently reads as "136 insertions, 110 deletions"
+against a pre-registration I never authored. Their content is not lost — it is in
+`b8452c4f70b` and copied to `artifacts/`. No `src/` file is affected and the
+baselines remain pristine.
+
+**Why this stops the mission rather than being worked around.** Three reasons, in
+order of severity:
+
+1. **Every measurement would be invalid.** Two agents are each about to run a
+   96-core sweep on one 96-CPU host. Concurrent sweeps make wall and CPU numbers
+   meaningless, and Gate G0.3's A/A calibration — the one check that distinguishes
+   an instrument measuring the join from one measuring scheduling drift — would
+   either fail or, far worse, pass spuriously while every A/B is contaminated.
+   The mission's entire value rests on measurement validity.
+2. **The audit trail is already corrupted.** The history now implies I revised a
+   pre-registration when I in fact overwrote a different agent's. Pre-registration
+   ordering is a checked acceptance criterion; two interleaved authors on one
+   branch destroy its meaning.
+3. **Resolving it unilaterally is destructive and irreversible.** Every option —
+   reverting their commit, moving my work to a fresh branch, killing their session,
+   abandoning mine — either discards another agent's work or forks the deliverable.
+
+The mission's ambiguity rule reserves exactly this class of decision: "except for
+decisions that are irreversible, destructive, production-facing, security-relevant,
+or materially scope-changing: stop, ask, and wait for an answer. An irreversible
+step never proceeds past an unanswered question."
+
+**Action taken:** none that is destructive. Their `PREREG.md` preserved to
+`artifacts/PREREG_from_b8452c4f70b.md`; nothing reverted, no history rewritten, no
+process killed, benchmark data generation NOT started. Asking the requester, who
+this mission states is available.
+
+**Not done, deliberately:** did not start the data generation or the sweep, because
+starting a multi-hour 96-core job while a second agent may be doing the same is the
+single fastest way to produce numbers that look fine and mean nothing.
+
+---
+
+## E3 — CORRECTION to E1: the sub-table count was wrong (amends E1 forward)
+
+**Trigger.** The requester rejected the claim in E1 and in commit `b8452c4f70b`'s
+message that `parallel_hash` has 4096 sub-tables at 16 threads: "parallel_hash has
+4096 sub-tables but only always 256 of them is utilized." Checked, and the
+requester is right. E1's table is wrong and is corrected here rather than edited
+away.
+
+**What I got wrong.** I counted bucket *objects* (`slots x 256`) and called them
+sub-tables. Only 256 of them ever hold a row.
+
+**Evidence.** `ConcurrentHashJoin.cpp:582-596`:
+
+```cpp
+selector[i] = hash_table.getBucketFromHash(hashes[i]) & (num_shards - 1);
+```
+
+The slot a row is scattered to is *derived from the bucket index it will occupy*,
+so shard `i` only ever populates buckets `j` with `j % slots == i`. The merge in
+`onBuildPhaseFinish` (`ConcurrentHashJoin.cpp:817-834`) relies on exactly this and
+throws `"Unexpected non-empty map"` if it is ever violated:
+
+```cpp
+for (size_t j = idx; j < lhs_map.numBuckets(); j += slots)
+{
+    if (!lhs_map.impls[j].empty())
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected non-empty map");
+    lhs_map.impls[j] = std::move(rhs_map.impls[j]);
+}
+```
+
+`slots` is additionally capped: `slots(toPowerOfTwo(std::min<UInt32>(slots_, 256)))`
+(`ConcurrentHashJoin.cpp:197`).
+
+**Corrected table — partitions of the data that actually hold rows:**
+
+| max_threads | `unified_hash` | `parallel_hash` | ratio |
+| --- | --- | --- | --- |
+| 1 | 1 | n/a (comparator is `hash`, one flat map) | — |
+| 16 | 32 | **256** | UHJ has **8x fewer** |
+| 64 | 128 | **256** | UHJ has **2x fewer** |
+
+(Previously stated, wrongly, as 4096 and 16384, i.e. "128x fewer".)
+
+**What survives, what does not.**
+
+- *Survives:* `unified_hash` still partitions into **fewer** sub-tables than
+  `parallel_hash` at both thread counts. So inherited LEAD (1) as literally worded
+  — that UHJ's cost is having *more* per-bucket sub-tables to miss the cache on —
+  still does not follow from the structure. It remains a hypothesis I expect to
+  refute.
+- *Does not survive, and this is the substantive part:* the magnitude collapses
+  from 128x to 8x, and more importantly **the cache mechanism plausibly runs the
+  other way**. Because UHJ splits the same rows into 8x fewer partitions, each of
+  its sub-tables is **8x larger** than a `parallel_hash` bucket. A build insert
+  into a big sub-table misses more than one into a small sub-table that still fits
+  in cache. So there may well be a real sub-table cache effect behind the build CPU
+  excess — with the **opposite sign** to LEAD (1): the problem would be too *few*
+  buckets, not too many.
+
+  This is a better hypothesis than the one it replaces and it is directly testable
+  with the knob that already exists: raising `BUCKETS_PER_THREAD` should *shrink*
+  the gap if this mechanism is real, and do nothing if it is not. Registered as a
+  Unit 1 ablation before any measurement.
+
+**Also corrected: `parallel_hash` is not sharded at probe time.**
+`onBuildPhaseFinish` consolidates every slot's buckets into slot 0's map and shares
+it, so the probe walks **one shared 256-bucket map**, structurally the same shape
+as `unified_hash`'s one shared 32-bucket map. The sharding is a build-phase
+property only. The brief's "shards into independent per-stream `HashJoin`
+instances" is therefore true of the build and false of the probe.
+
+**Status of commit `b8452c4f70b`.** Its message states the wrong 4096/128x figure.
+History is never rewritten on this branch, so the commit stands and this entry is
+the correction of record; `REPORT.md` will carry the corrected table.
+
+---
+
+## E4 — a benchmark design flaw caught before it produced a number
+
+**Trigger.** The candidate-cause inventory flagged that the `range8_key32 ..
+range18_key64` direct-addressed maps are reached by a *post-build conversion*, not
+by column type. Checked against my own data generator, and it would have silently
+corrupted a quarter of the matrix.
+
+**The flaw.** `gendata.py` gave build tables keys `0 .. N-1` — a dense range.
+`HashJoin::canConvertToFixedHashMap` (`UnifiedHashJoin/HashJoin.cpp:2077-2081`)
+fires for `key32`/`key64` when `enable_join_fixed_hash_table_conversion` is on,
+which it is **by default** (`Settings.cpp:8257`, default `true`). The fixed maps
+top out at `range18`, i.e. a key range of 2^18 = 262,144.
+
+My declared cardinalities against that threshold:
+
+| cardinality | keys | dense range | converts? |
+| --- | --- | --- | --- |
+| small | 10,000 | 10,000 | **YES** |
+| medium | 1,000,000 | 1,000,000 | no |
+| large | 30,000,000 | 30,000,000 | no |
+
+So every `small` cell — a quarter of the matrix, and precisely the cells meant to
+isolate cheap-lookup indirection with a cache-resident table — would have compared
+two *direct-addressed array* implementations, not two hash tables, while being
+labelled a hash-join comparison. It would also have left the small-cardinality hash
+path with **zero** coverage.
+
+**Fix.** Build keys become non-dense: `k = number * 2654435761` (odd multiplier,
+wraps over the full `UInt64` range), so the key range is astronomically larger than
+2^18 and no conversion can fire at any cardinality. Probe keys are derived from the
+same mapping so match rates are unchanged. `enable_join_fixed_hash_table_conversion`
+is left at its realistic default rather than pinned off, and the harness asserts
+per cell that conversion did **not** fire, so this cannot silently return.
+
+**Not discarded — promoted.** The conversion is a real capability asymmetry worth
+reporting rather than engineering away: `canConvertToFixedHashMap` requires
+`key32`/`key64`, and `parallel_hash` can never satisfy it, while `unified_hash`
+converts at any thread count. That is a cell where `unified_hash` should *win*, and
+the mission explicitly wants those reported. Recorded as a declared extra axis
+(`dense` key type) to be measured separately, so the win is attributed rather than
+accidentally averaged into the general case.
+
+---
+
+## E5 — two instrument decisions forced by what the debug log showed
+
+Running the pilot with `--send_logs_level=debug` surfaced two things that no
+amount of reading the matrix definition would have.
+
+### E5.1 The `dense` axis is dropped — UNSETTLED, with the settling experiment named
+
+The conversion I predicted in P0.7 **does not fire**, on either `hash` or
+`unified_hash`, for dense keys `0..9999`:
+
+```
+$ clickhouse client --port 9111 --send_logs_level=debug -q \
+  "SELECT count() FROM p_dense_hi AS l INNER JOIN b_dense AS r ON l.k = r.k
+   SETTINGS join_algorithm='unified_hash', max_threads=16, ..." 2>&1 | grep -i Converted
+(no output)
+```
+
+Every precondition I can read is satisfied: `enable_join_fixed_hash_table_conversion`
+is `1` on the server, the key is `UInt64` (`Type::key64`), `data->maps.size()==1`,
+strictness is not `Asof`, `source_map.size()` is 10,000 which is under
+`MAX_RANGE = 1<<18`, and `runPostBuildPhase` does call `tryConvertToFixedHashMap`
+(`UnifiedHashJoin/HashJoin.cpp:2519`). So the guard that actually rejects it is one
+I have not identified.
+
+**Decision: drop `dense` from the matrix** and record this as UNSETTLED rather than
+keep spending the instrument budget on an axis the mission lists as optional
+context. This does **not** weaken the core matrix — the reason `dense` existed at
+all was to keep the conversion from contaminating the `small` cells, and that is
+already handled by spreading the keys (E4). Matrix returns to the 144 cells
+pre-registered in P0.
+
+**P0.7 is therefore not scored.** It is neither confirmed nor refuted; the premise
+("the conversion fires") is unverified. Recording it as a met or missed prediction
+either way would be dishonest.
+
+**The experiment that would settle it**, for whoever picks it up: build with a
+breakpoint or a temporary `LOG_DEBUG` on each early-return in
+`canConvertToFixedHashMap` and `tryConvertToFixedHashMapImpl`, run the query above,
+and read which guard rejects. One rebuild, one query. It is checkable in this
+environment; I am choosing not to spend the rebuild on an optional axis, and that
+choice is the deviation, not an inability.
+
+**Kept as an OPERATIONAL observation** (from the same pilot, `10,000`-row build):
+reported in-memory build size differs by 36x across implementations —
+`hash` 1,128,704 B, `parallel_hash` **16,859,264 B**, `unified_hash` 473,344 B.
+`parallel_hash` pays 256 sub-table minimum capacities whether or not it has rows to
+put in them. At small cardinality that is a real `parallel_hash` cost and a
+`unified_hash` advantage, and it is the first direct evidence that the sub-table
+count trade runs in `unified_hash`'s favour at the small end. Not a timing claim —
+memory, from `query_log.memory_usage`, recorded on every run for later use.
+
+### E5.2 Unique build keys silently changed the algorithm under test
+
+All three implementations logged:
+
+```
+HashJoin: Promoting join strictness to RightAny, because all values in the right table are unique
+```
+
+My build tables had exactly one row per key, so **every cell in the matrix was
+about to measure the `RightAny`/`MapsOne` path** while being labelled `INNER JOIN`,
+`LEFT JOIN` and so on — i.e. the `ALL` strictness that those SQL forms actually
+mean would never have executed. `MapsAll` and its `RowRefList` chains would have
+had zero coverage.
+
+The comparison would still have been *fair* (all three promote identically), so no
+gate would have caught it. It is a coverage defect, not a validity defect, which is
+exactly the kind that survives to the report.
+
+It also matters for attribution specifically: candidate cause #6 in the inventory
+is "per-bucket arenas fragmenting `RowRefList` allocation", and per-bucket arenas
+are a `unified_hash`-only structure. That candidate **cannot exist** in a workload
+where no `RowRefList` ever chains. Measuring only the promoted path would have
+made a real candidate unfalsifiable by construction.
+
+**Fix: two rows per distinct key.** Build tables now generate `2 x cardinality`
+rows, with `ordinal = intDiv(number, 2)` so each key appears exactly twice and the
+payload `v` still differs per row. This defeats the promotion, exercises `MapsAll`
+with chains of length 2, keeps output size linear (2x per matched probe row), and
+brings the harness into line with the mission's own wording — it says
+"cardinalities (**distinct build-side keys**) ... capped at 1M build **rows**",
+which already distinguishes the two quantities. Cardinality stays the number of
+distinct keys; build rows are twice that.
+
+The unique-key / `RightAny` regime is now a **declared coverage gap** rather than
+the accidental default: it is a real and common shape (primary-key joins) and is
+listed in REPORT.md as a named gap with the cheap experiment to close it (re-run
+the sweep with one row per key).
