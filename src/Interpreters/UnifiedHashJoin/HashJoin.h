@@ -568,8 +568,10 @@ public:
         /// per block.
         std::atomic<size_t> keys_to_join = 0;
         /// Bytes owned by the buckets - their map buffers plus their arenas. Seeded with the maps'
-        /// initial size and then advanced by the delta each insert produced, measured under that
-        /// bucket's lock, for the same reason as `keys_to_join`.
+        /// initial size and then advanced by the delta each block's inserts produced, measured
+        /// bucket by bucket under that bucket's lock, for the same reason as `keys_to_join`. The
+        /// deltas of one block's buckets are summed by the inserting thread and added here once,
+        /// after it has let go of the last bucket lock (see `insertIntoBuckets`).
         std::atomic<size_t> bucket_bytes = 0;
 
         /// Whether the right table reranged by key

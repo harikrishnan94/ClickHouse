@@ -132,6 +132,13 @@ BuildResult insertIntoBuckets(
 
     const size_t num_buckets = per_bucket.size();
 
+    /// Summed here and published once below rather than added to the shared counter per bucket: the
+    /// counter is one cache line every build thread writes, and at `K` buckets per block that is `K`
+    /// times as many round trips of it as there are blocks. Nothing reads the total between the
+    /// buckets of one block - the size-limit check runs once the block is in - so one add per block
+    /// reports the same numbers.
+    size_t bytes_added = 0;
+
     auto insert_bucket = [&](size_t bucket)
     {
         /// Measured under the bucket's own lock, so the growth this insert caused is attributed
@@ -143,8 +150,7 @@ BuildResult insertIntoBuckets(
             join, type, map, bucket, key_columns, key_sizes, stored_block_no,
             *per_bucket[bucket], null_map, join_mask, *pools[bucket], bucket_result);
 
-        const size_t bytes_after = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
-        bucket_bytes.fetch_add(bytes_after - bytes_before, std::memory_order_relaxed);
+        bytes_added += map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes() - bytes_before;
 
         result.is_inserted |= bucket_result.is_inserted;
         result.all_values_unique &= bucket_result.all_values_unique;
@@ -167,8 +173,11 @@ BuildResult insertIntoBuckets(
     /// again. Run the (empty) insert once rather than trying to predict its answer here.
     if (buckets_left == 0)
     {
-        std::lock_guard lock(locks[0].mutex);
-        insert_bucket(0);
+        {
+            std::lock_guard lock(locks[0].mutex);
+            insert_bucket(0);
+        }
+        bucket_bytes.fetch_add(bytes_added, std::memory_order_relaxed);
         return result;
     }
 
@@ -213,6 +222,7 @@ BuildResult insertIntoBuckets(
         }
     }
 
+    bucket_bytes.fetch_add(bytes_added, std::memory_order_relaxed);
     return result;
 }
 
