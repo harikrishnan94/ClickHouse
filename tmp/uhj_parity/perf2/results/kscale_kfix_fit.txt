@@ -1,0 +1,50 @@
+key   algo             t    K  build_us(med)  stdev%  ns/buildrow  cpu_us(med)
+u64   hash             4    1         815772    12.4        27.19      3618554
+u64   hash             8    1         838546     4.5        27.95      3660407
+u64   hash            16    1         905288     3.3        30.18      3807384
+u64   hash            32    1         896974     2.4        29.90      3970006
+u64   hash            64    1         940931     0.8        31.36      4630487
+u64   parallel_hash    4    4        1054735     2.6        35.16      4018867
+u64   parallel_hash    8    8        1103596     2.1        36.79      4181308
+u64   parallel_hash   16   16        1287337     5.0        42.91      4564547
+u64   parallel_hash   32   32        1454714     5.5        48.49      4967143
+u64   parallel_hash   64   64        2166697     9.0        72.22      6463887
+u64   unified_hash     4    8         984732     6.3        32.82      3772159
+u64   unified_hash     8   16        1377501     5.4        45.92      4086883
+u64   unified_hash    16   32        1233445     2.4        41.11      4218968
+u64   unified_hash    32   64        1744158     6.2        58.14      4688739
+u64   unified_hash    64  128        1597608     5.8        53.25      5242907
+comp  hash             4    1        1229955     3.5        41.00      4771966
+comp  hash             8    1        1151569     2.7        38.39      4797215
+comp  hash            16    1        1213917     3.5        40.46      4933049
+comp  hash            32    1        1203049     1.6        40.10      5256266
+comp  hash            64    1        1192531     0.6        39.75      6212842
+comp  parallel_hash    4    4        1632431     1.4        54.41      5489528
+comp  parallel_hash    8    8        1825213    55.6        60.84      6021833
+comp  parallel_hash   16   16        2354390     2.6        78.48      6678374
+comp  parallel_hash   32   32        2933600     4.4        97.79      7640449
+comp  parallel_hash   64   64        4915172     4.0       163.84     11108896
+comp  unified_hash     4    8        1351139     5.6        45.04      5012972
+comp  unified_hash     8   16        1843497     3.7        61.45      5526245
+comp  unified_hash    16   32        1696451     2.9        56.55      5563351
+comp  unified_hash    32   64        2646496     5.5        88.22      6695329
+comp  unified_hash    64  128        2159654     3.2        71.99      7267414
+
+least-squares fit of  ns_per_build_row = a + b*K   (b = per-partition cost)
+key   algo             a (ns/row)   b (ns/row/part)     R^2   n
+comp  hash                  39.94            0.0000   0.000   5
+comp  parallel_hash         46.47            1.7986   0.993   5
+comp  unified_hash          54.33            0.2080   0.385   5
+u64   hash                  29.32            0.0000   0.000   5
+u64   parallel_hash         31.97            0.6105   0.986   5
+u64   unified_hash          39.06            0.1449   0.504   5
+
+PREREG P1.2 predictions, scored:
+  unified_hash   b(comp)=0.2080  b(u64)=0.1449  ratio=1.43
+  parallel_hash  b(comp)=1.7986  b(u64)=0.6105  ratio=2.95
+  hash           b(comp)=0.0000  b(u64)=0.0000  ratio=inf
+
+  (1) comp+unified has b > 0 outside noise            : b=0.2080 ns/row/partition
+  (2) comp coefficient >= 4x the u64 one              : ratio=1.43  NOT MET
+  (3) hash shows no K term (u64 )                  : b=0.0000 (K is constant 1 for hash, so this fit is degenerate by construction)
+  (3) hash shows no K term (comp)                  : b=0.0000 (K is constant 1 for hash, so this fit is degenerate by construction)

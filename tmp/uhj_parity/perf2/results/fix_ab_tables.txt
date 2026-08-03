@@ -1,0 +1,674 @@
+=== grouped roll-up, bold1 -> bnew2 ===
+
+=== wall_ms ===
+all keys, t1                                         n= 72  B_new/B_old   +0.0% [  -6.9 ..   +6.2]   vs A: old   +3.9% new   +4.1%   >+2%: 5
+all keys, t16                                        n= 36  B_new/B_old   -1.5% [ -25.7 ..   +0.8]   vs A: old   -5.7% new   -8.0%   >+2%: 0
+all keys, t64                                        n= 36  B_new/B_old   -0.9% [ -49.7 ..   +2.5]   vs A: old  -36.1% new  -45.0%   >+2%: 1
+u64 key, t16                                         n= 12  B_new/B_old   -0.7% [  -2.3 ..   +0.8]   vs A: old   -7.3% new   -7.9%   >+2%: 0
+u64 key, t64                                         n= 12  B_new/B_old   +0.0% [  -1.1 ..   +2.5]   vs A: old  -43.2% new  -43.1%   >+2%: 1
+str key, t16                                         n= 12  B_new/B_old   -1.1% [  -2.9 ..   +0.3]   vs A: old   -6.0% new   -5.9%   >+2%: 0
+str key, t64                                         n= 12  B_new/B_old   -0.7% [  -3.0 ..   +1.8]   vs A: old  -41.7% new  -41.7%   >+2%: 0
+comp key, t16                                        n= 12  B_new/B_old  -16.0% [ -25.7 ..   -8.8]   vs A: old   -3.5% new  -16.4%   >+2%: 0
+comp key, t64                                        n= 12  B_new/B_old  -34.5% [ -49.7 ..  -20.5]   vs A: old  -25.7% new  -48.4%   >+2%: 0
+t1, used-flag kinds (RIGHT/FULL/SEMI/ANTI)           n= 48  B_new/B_old   +0.0% [  -6.9 ..   +6.2]   vs A: old   +4.6% new   +4.6%   >+2%: 3
+t1, INNER/LEFT                                       n= 24  B_new/B_old   +0.5% [  -4.6 ..   +2.2]   vs A: old   +3.7% new   +3.4%   >+2%: 2
+
+=== cpu_us ===
+all keys, t1                                         n= 72  B_new/B_old   +0.1% [  -7.1 ..   +2.7]   vs A: old   +3.9% new   +4.0%   >+2%: 4
+all keys, t16                                        n= 36  B_new/B_old   -1.1% [ -26.7 ..   +0.5]   vs A: old   -4.1% new   -6.2%   >+2%: 0
+all keys, t64                                        n= 36  B_new/B_old   -0.7% [ -54.0 ..   +0.4]   vs A: old  -10.9% new  -13.9%   >+2%: 0
+u64 key, t16                                         n= 12  B_new/B_old   -0.3% [  -1.4 ..   +0.5]   vs A: old   -5.9% new   -5.9%   >+2%: 0
+u64 key, t64                                         n= 12  B_new/B_old   -0.0% [  -0.7 ..   +0.4]   vs A: old  -13.4% new  -13.8%   >+2%: 0
+str key, t16                                         n= 12  B_new/B_old   -0.7% [  -2.3 ..   -0.1]   vs A: old   -4.9% new   -5.4%   >+2%: 0
+str key, t64                                         n= 12  B_new/B_old   -0.5% [  -3.0 ..   -0.0]   vs A: old  -11.2% new  -11.6%   >+2%: 0
+comp key, t16                                        n= 12  B_new/B_old  -16.2% [ -26.7 ..  -10.0]   vs A: old   -2.1% new  -15.7%   >+2%: 0
+comp key, t64                                        n= 12  B_new/B_old  -37.3% [ -54.0 ..  -28.3]   vs A: old   +7.5% new  -29.2%   >+2%: 0
+t1, used-flag kinds (RIGHT/FULL/SEMI/ANTI)           n= 48  B_new/B_old   -0.1% [  -7.1 ..   +2.1]   vs A: old   +4.2% new   +4.4%   >+2%: 2
+t1, INNER/LEFT                                       n= 24  B_new/B_old   +0.5% [  -4.6 ..   +2.7]   vs A: old   +3.5% new   +3.3%   >+2%: 2
+
+=== build_us ===
+all keys, t1                                         n= 72  B_new/B_old   +0.3% [  -7.6 ..   +4.8]   vs A: old   +0.6% new   +0.9%   >+2%: 16
+all keys, t16                                        n= 36  B_new/B_old   -1.5% [ -46.3 ..   +3.7]   vs A: old   +0.1% new   -5.0%   >+2%: 2
+all keys, t64                                        n= 36  B_new/B_old   -1.2% [ -71.8 ..   +1.5]   vs A: old  -16.5% new  -27.5%   >+2%: 0
+u64 key, t16                                         n= 12  B_new/B_old   -0.7% [  -4.1 ..   +3.7]   vs A: old   -4.9% new   -5.0%   >+2%: 2
+u64 key, t64                                         n= 12  B_new/B_old   +0.1% [  -2.8 ..   +1.5]   vs A: old  -25.0% new  -24.7%   >+2%: 0
+str key, t16                                         n= 12  B_new/B_old   -1.2% [  -3.2 ..   +1.6]   vs A: old   +0.1% new   -1.4%   >+2%: 0
+str key, t64                                         n= 12  B_new/B_old   -0.3% [  -1.9 ..   +1.2]   vs A: old  -19.5% new  -19.5%   >+2%: 0
+comp key, t16                                        n= 12  B_new/B_old  -43.2% [ -46.3 ..  -40.7]   vs A: old  +17.4% new  -33.5%   >+2%: 0
+comp key, t64                                        n= 12  B_new/B_old  -67.8% [ -71.8 ..  -66.7]   vs A: old  +31.1% new  -57.4%   >+2%: 0
+t1, used-flag kinds (RIGHT/FULL/SEMI/ANTI)           n= 48  B_new/B_old   +0.2% [  -7.6 ..   +4.8]   vs A: old   +0.6% new   +0.9%   >+2%: 11
+t1, INNER/LEFT                                       n= 24  B_new/B_old   +0.4% [  -3.7 ..   +3.3]   vs A: old   +0.7% new   +0.9%   >+2%: 5
+
+=== probe_us ===
+all keys, t1                                         n= 72  B_new/B_old   +0.0% [  -9.4 ..   +3.3]   vs A: old   +6.0% new   +5.3%   >+2%: 7
+all keys, t16                                        n= 36  B_new/B_old   -1.1% [  -4.7 ..   +1.0]   vs A: old   -6.0% new   -5.9%   >+2%: 0
+all keys, t64                                        n= 36  B_new/B_old   -0.6% [  -4.4 ..   +0.5]   vs A: old   -8.7% new   -9.1%   >+2%: 0
+u64 key, t16                                         n= 12  B_new/B_old   -0.6% [  -3.4 ..   +0.5]   vs A: old   -5.7% new   -5.8%   >+2%: 0
+u64 key, t64                                         n= 12  B_new/B_old   -0.3% [  -1.3 ..   +0.5]   vs A: old   -9.1% new   -9.0%   >+2%: 0
+str key, t16                                         n= 12  B_new/B_old   -1.6% [  -4.7 ..   -0.1]   vs A: old   -4.5% new   -5.3%   >+2%: 0
+str key, t64                                         n= 12  B_new/B_old   -1.3% [  -4.4 ..   -0.3]   vs A: old   -6.5% new   -7.3%   >+2%: 0
+comp key, t16                                        n= 12  B_new/B_old   -0.4% [  -2.8 ..   +1.0]   vs A: old   -7.8% new   -9.5%   >+2%: 0
+comp key, t64                                        n= 12  B_new/B_old   -0.3% [  -1.9 ..   +0.5]   vs A: old   -9.9% new  -10.3%   >+2%: 0
+t1, used-flag kinds (RIGHT/FULL/SEMI/ANTI)           n= 48  B_new/B_old   -0.1% [  -9.4 ..   +3.3]   vs A: old   +6.2% new   +6.1%   >+2%: 4
+t1, INNER/LEFT                                       n= 24  B_new/B_old   +0.5% [  -8.2 ..   +3.3]   vs A: old   +5.0% new   +4.7%   >+2%: 3
+
+=== nonjoined_us ===
+all keys, t1                                         n= 24  B_new/B_old   +0.0% [  -9.4 ..   +5.0]   vs A: old      -% new      -%   >+2%: 3
+all keys, t16                                        n= 12  B_new/B_old   -0.0% [  -0.5 ..   +0.4]   vs A: old   -4.7% new   -4.4%   >+2%: 0
+all keys, t64                                        n= 12  B_new/B_old   -0.3% [  -1.5 ..   +0.3]   vs A: old   -7.4% new   -7.8%   >+2%: 0
+u64 key, t16                                         n=  4  B_new/B_old   -0.0% [  -0.3 ..   +0.3]   vs A: old   -4.0% new   -3.7%   >+2%: 0
+u64 key, t64                                         n=  4  B_new/B_old   -0.2% [  -0.3 ..   -0.1]   vs A: old   -8.2% new   -8.0%   >+2%: 0
+str key, t16                                         n=  4  B_new/B_old   +0.0% [  -0.0 ..   +0.1]   vs A: old   -5.0% new   -4.8%   >+2%: 0
+str key, t64                                         n=  4  B_new/B_old   -0.0% [  -0.3 ..   +0.3]   vs A: old   -7.2% new   -7.3%   >+2%: 0
+comp key, t16                                        n=  4  B_new/B_old   -0.1% [  -0.5 ..   +0.4]   vs A: old   -4.6% new   -4.5%   >+2%: 0
+comp key, t64                                        n=  4  B_new/B_old   -1.2% [  -1.5 ..   -0.6]   vs A: old   -7.4% new   -8.2%   >+2%: 0
+t1, used-flag kinds (RIGHT/FULL/SEMI/ANTI)           n= 24  B_new/B_old   +0.0% [  -9.4 ..   +5.0]   vs A: old      -% new      -%   >+2%: 3
+t1, INNER/LEFT                                        (no cells)
+
+=== per-cell wall_ms ===
+metric=wall_ms (in ms); A = cell comparator; before=bold1 after=bnew2
+cell                                   cmp                A_old     A_new     B_old     B_new B_new/B_old  B_old/A  B_new/A  A drift
+INNER|u64|hi|t1|small                  hash                49.0      50.0      50.0      51.0        +2.0     +2.0     +2.0     +2.0
+INNER|u64|hi|t1|medium                 hash               108.0     110.0     112.0     114.0        +1.8     +3.7     +3.6     +1.9
+INNER|u64|hi|t16|large                 parallel_hash      263.0     263.0     240.0     242.0        +0.8     -8.7     -8.0     +0.0
+INNER|u64|hi|t64|large                 parallel_hash      150.0     150.0      97.0      97.0        +0.0    -35.3    -35.3     +0.0
+INNER|u64|lo|t1|small                  hash                21.0      22.0      23.0      23.0        +0.0     +9.5     +4.5     +4.8
+INNER|u64|lo|t1|medium                 hash                70.0      72.0      73.0      74.0        +1.4     +4.3     +2.8     +2.9
+INNER|u64|lo|t16|large                 parallel_hash      157.0     156.0     148.0     146.0        -1.4     -5.7     -6.4     -0.6
+INNER|u64|lo|t64|large                 parallel_hash      113.0     114.0      67.0      67.0        +0.0    -40.7    -41.2     +0.9
+INNER|str|hi|t1|small                  hash               100.0     102.0     102.0     104.0        +2.0     +2.0     +2.0     +2.0
+INNER|str|hi|t1|medium                 hash               298.0     301.0     305.0     307.0        +0.7     +2.3     +2.0     +1.0
+INNER|str|hi|t16|large                 parallel_hash      616.0     616.0     582.0     576.0        -1.0     -5.5     -6.5     +0.0
+INNER|str|hi|t64|large                 parallel_hash      298.0     299.0     194.0     191.0        -1.5    -34.9    -36.1     +0.3
+INNER|str|lo|t1|small                  hash                72.0      72.0      74.0      73.0        -1.4     +2.8     +1.4     +0.0
+INNER|str|lo|t1|medium                 hash               211.0     202.0     218.0     208.0        -4.6     +3.3     +3.0     -4.3
+INNER|str|lo|t16|large                 parallel_hash      410.0     408.0     411.0     400.0        -2.7     +0.2     -2.0     -0.5
+INNER|str|lo|t64|large                 parallel_hash      241.0     240.0     147.0     146.0        -0.7    -39.0    -39.2     -0.4
+INNER|comp|hi|t1|small                 hash                77.0      78.0      79.0      79.0        +0.0     +2.6     +1.3     +1.3
+INNER|comp|hi|t1|medium                hash               152.0     152.0     155.0     156.0        +0.6     +2.0     +2.6     +0.0
+INNER|comp|hi|t16|large                parallel_hash      384.0     383.0     370.0     312.0       -15.7     -3.6    -18.5     -0.3
+INNER|comp|hi|t64|large                parallel_hash      226.0     232.0     190.0     127.0       -33.2    -15.9    -45.3     +2.7
+INNER|comp|lo|t1|small                 hash                43.0      43.0      46.0      47.0        +2.2     +7.0     +9.3     +0.0
+INNER|comp|lo|t1|medium                hash               109.0     111.0     113.0     115.0        +1.8     +3.7     +3.6     +1.8
+INNER|comp|lo|t16|large                parallel_hash      265.0     264.0     275.0     219.0       -20.4     +3.8    -17.0     -0.4
+INNER|comp|lo|t64|large                parallel_hash      186.0     193.0     160.0      96.0       -40.0    -14.0    -50.3     +3.8
+LEFT|u64|hi|t1|small                   hash                55.0      56.0      57.0      58.0        +1.8     +3.6     +3.6     +1.8
+LEFT|u64|hi|t1|medium                  hash               113.0     113.0     117.0     118.0        +0.9     +3.5     +4.4     +0.0
+LEFT|u64|hi|t16|large                  parallel_hash      275.0     273.0     256.0     252.0        -1.6     -6.9     -7.7     -0.7
+LEFT|u64|hi|t64|large                  parallel_hash      154.0     154.0     100.0     100.0        +0.0    -35.1    -35.1     +0.0
+LEFT|u64|lo|t1|small                   hash                43.0      43.0      46.0      47.0        +2.2     +7.0     +9.3     +0.0
+LEFT|u64|lo|t1|medium                  hash                90.0      90.0      96.0      96.0        +0.0     +6.7     +6.7     +0.0
+LEFT|u64|lo|t16|large                  parallel_hash      240.0     241.0     225.0     225.0        +0.0     -6.2     -6.6     +0.4
+LEFT|u64|lo|t64|large                  parallel_hash      139.0     139.0      89.0      88.0        -1.1    -36.0    -36.7     +0.0
+LEFT|str|hi|t1|small                   hash               108.0     108.0     112.0     110.0        -1.8     +3.7     +1.9     +0.0
+LEFT|str|hi|t1|medium                  hash               306.0     306.0     316.0     317.0        +0.3     +3.3     +3.6     +0.0
+LEFT|str|hi|t16|large                  parallel_hash      633.0     626.0     590.0     592.0        +0.3     -6.8     -5.4     -1.1
+LEFT|str|hi|t64|large                  parallel_hash      302.0     302.0     195.0     195.0        +0.0    -35.4    -35.4     +0.0
+LEFT|str|lo|t1|small                   hash                89.0      91.0      94.0      94.0        +0.0     +5.6     +3.3     +2.2
+LEFT|str|lo|t1|medium                  hash               227.0     226.0     238.0     236.0        -0.8     +4.8     +4.4     -0.4
+LEFT|str|lo|t16|large                  parallel_hash      511.0     510.0     492.0     490.0        -0.4     -3.7     -3.9     -0.2
+LEFT|str|lo|t64|large                  parallel_hash      268.0     267.0     170.0     169.0        -0.6    -36.6    -36.7     -0.4
+LEFT|comp|hi|t1|small                  hash                82.0      82.0      84.0      84.0        +0.0     +2.4     +2.4     +0.0
+LEFT|comp|hi|t1|medium                 hash               154.0     155.0     159.0     160.0        +0.6     +3.2     +3.2     +0.6
+LEFT|comp|hi|t16|large                 parallel_hash      394.0     396.0     383.0     321.0       -16.2     -2.8    -18.9     +0.5
+LEFT|comp|hi|t64|large                 parallel_hash      230.0     236.0     192.0     130.0       -32.3    -16.5    -44.9     +2.6
+LEFT|comp|lo|t1|small                  hash                63.0      64.0      67.0      67.0        +0.0     +6.3     +4.7     +1.6
+LEFT|comp|lo|t1|medium                 hash               130.0     129.0     135.0     135.0        +0.0     +3.8     +4.7     -0.8
+LEFT|comp|lo|t16|large                 parallel_hash      356.0     355.0     355.0     299.0       -15.8     -0.3    -15.8     -0.3
+LEFT|comp|lo|t64|large                 parallel_hash      210.0     218.0     179.0     115.0       -35.8    -14.8    -47.2     +3.8
+RIGHT|u64|hi|t1|small                  hash                51.0      51.0      54.0      53.0        -1.9     +5.9     +3.9     +0.0
+RIGHT|u64|hi|t1|medium                 hash               126.0     126.0     136.0     136.0        +0.0     +7.9     +7.9     +0.0
+RIGHT|u64|hi|t16|large                 parallel_hash      511.0     505.0     467.0     465.0        -0.4     -8.6     -7.9     -1.2
+RIGHT|u64|hi|t64|large                 parallel_hash      381.0     382.0     202.0     207.0        +2.5    -47.0    -45.8     +0.3
+RIGHT|u64|lo|t1|small                  hash                22.0      22.0      24.0      24.0        +0.0     +9.1     +9.1     +0.0
+RIGHT|u64|lo|t1|medium                 hash               126.0     127.0     132.0     135.0        +2.3     +4.8     +6.3     +0.8
+RIGHT|u64|lo|t16|large                 parallel_hash      370.0     379.0     352.0     344.0        -2.3     -4.9     -9.2     +2.4
+RIGHT|u64|lo|t64|large                 parallel_hash      341.0     342.0     174.0     173.0        -0.6    -49.0    -49.4     +0.3
+RIGHT|str|hi|t1|small                  hash               106.0     106.0     110.0     111.0        +0.9     +3.8     +4.7     +0.0
+RIGHT|str|hi|t1|medium                 hash               356.0     349.0     364.0     362.0        -0.5     +2.2     +3.7     -2.0
+RIGHT|str|hi|t16|large                 parallel_hash      959.0     957.0     890.0     883.0        -0.8     -7.2     -7.7     -0.2
+RIGHT|str|hi|t64|large                 parallel_hash      593.0     597.0     330.0     329.0        -0.3    -44.4    -44.9     +0.7
+RIGHT|str|lo|t1|small                  hash                72.0      74.0      75.0      75.0        +0.0     +4.2     +1.4     +2.8
+RIGHT|str|lo|t1|medium                 hash               310.0     315.0     318.0     320.0        +0.6     +2.6     +1.6     +1.6
+RIGHT|str|lo|t16|large                 parallel_hash      769.0     768.0     736.0     727.0        -1.2     -4.3     -5.3     -0.1
+RIGHT|str|lo|t64|large                 parallel_hash      542.0     541.0     290.0     286.0        -1.4    -46.5    -47.1     -0.2
+RIGHT|comp|hi|t1|small                 hash                80.0      82.0      83.0      84.0        +1.2     +3.8     +2.4     +2.5
+RIGHT|comp|hi|t1|medium                hash               176.0     178.0     183.0     186.0        +1.6     +4.0     +4.5     +1.1
+RIGHT|comp|hi|t16|large                parallel_hash      679.0     682.0     640.0     581.0        -9.2     -5.7    -14.8     +0.4
+RIGHT|comp|hi|t64|large                parallel_hash      493.0     487.0     317.0     252.0       -20.5    -35.7    -48.3     -1.2
+RIGHT|comp|lo|t1|small                 hash                45.0      44.0      47.0      47.0        +0.0     +4.4     +6.8     -2.2
+RIGHT|comp|lo|t1|medium                hash               183.0     183.0     187.0     189.0        +1.1     +2.2     +3.3     +0.0
+RIGHT|comp|lo|t16|large                parallel_hash      529.0     527.0     511.0     456.0       -10.8     -3.4    -13.5     -0.4
+RIGHT|comp|lo|t64|large                parallel_hash      438.0     446.0     279.0     214.0       -23.3    -36.3    -52.0     +1.8
+FULL|u64|hi|t1|small                   hash                56.0      56.0      58.0      58.0        +0.0     +3.6     +3.6     +0.0
+FULL|u64|hi|t1|medium                  hash               130.0     130.0     140.0     141.0        +0.7     +7.7     +8.5     +0.0
+FULL|u64|hi|t16|large                  parallel_hash      519.0     523.0     479.0     476.0        -0.6     -7.7     -9.0     +0.8
+FULL|u64|hi|t64|large                  parallel_hash      386.0     384.0     210.0     211.0        +0.5    -45.6    -45.1     -0.5
+FULL|u64|lo|t1|small                   hash                44.0      44.0      47.0      47.0        +0.0     +6.8     +6.8     +0.0
+FULL|u64|lo|t1|medium                  hash               148.0     148.0     156.0     155.0        -0.6     +5.4     +4.7     +0.0
+FULL|u64|lo|t16|large                  parallel_hash      467.0     458.0     425.0     422.0        -0.7     -9.0     -7.9     -1.9
+FULL|u64|lo|t64|large                  parallel_hash      365.0     365.0     197.0     197.0        +0.0    -46.0    -46.0     +0.0
+FULL|str|hi|t1|small                   hash               112.0     113.0     116.0     115.0        -0.9     +3.6     +1.8     +0.9
+FULL|str|hi|t1|medium                  hash               364.0     356.0     371.0     371.0        +0.0     +1.9     +4.2     -2.2
+FULL|str|hi|t16|large                  parallel_hash      977.0     977.0     904.0     899.0        -0.6     -7.5     -8.0     +0.0
+FULL|str|hi|t64|large                  parallel_hash      600.0     597.0     327.0     333.0        +1.8    -45.5    -44.2     -0.5
+FULL|str|lo|t1|small                   hash                91.0      91.0      96.0      96.0        +0.0     +5.5     +5.5     +0.0
+FULL|str|lo|t1|medium                  hash               340.0     337.0     348.0     350.0        +0.6     +2.4     +3.9     -0.9
+FULL|str|lo|t16|large                  parallel_hash      877.0     875.0     821.0     819.0        -0.2     -6.4     -6.4     -0.2
+FULL|str|lo|t64|large                  parallel_hash      570.0     567.0     312.0     312.0        +0.0    -45.3    -45.0     -0.5
+FULL|comp|hi|t1|small                  hash                85.0      86.0      88.0      89.0        +1.1     +3.5     +3.5     +1.2
+FULL|comp|hi|t1|medium                 hash               179.0     179.0     192.0     191.0        -0.5     +7.3     +6.7     +0.0
+FULL|comp|hi|t16|large                 parallel_hash      703.0     714.0     650.0     593.0        -8.8     -7.5    -16.9     +1.6
+FULL|comp|hi|t64|large                 parallel_hash      491.0     491.0     320.0     253.0       -20.9    -34.8    -48.5     +0.0
+FULL|comp|lo|t1|small                  hash                65.0      65.0      68.0      68.0        +0.0     +4.6     +4.6     +0.0
+FULL|comp|lo|t1|medium                 hash               207.0     205.0     211.0     212.0        +0.5     +1.9     +3.4     -1.0
+FULL|comp|lo|t16|large                 parallel_hash      622.0     620.0     594.0     536.0        -9.8     -4.5    -13.5     -0.3
+FULL|comp|lo|t64|large                 parallel_hash      465.0     463.0     299.0     235.0       -21.4    -35.7    -49.2     -0.4
+LEFT-SEMI|u64|hi|t1|small              hash                18.0      18.0      20.0      20.0        +0.0    +11.1    +11.1     +0.0
+LEFT-SEMI|u64|hi|t1|medium             hash                43.0      43.0      46.0      46.0        +0.0     +7.0     +7.0     +0.0
+LEFT-SEMI|u64|hi|t16|large             None                   -         -     106.0     105.0        -0.9        -        -        -
+LEFT-SEMI|u64|hi|t64|large             None                   -         -      50.0      50.0        +0.0        -        -        -
+LEFT-SEMI|u64|lo|t1|small              hash                15.0      15.0      16.0      17.0        +6.2     +6.7    +13.3     +0.0
+LEFT-SEMI|u64|lo|t1|medium             hash                49.0      49.0      53.0      53.0        +0.0     +8.2     +8.2     +0.0
+LEFT-SEMI|u64|lo|t16|large             None                   -         -     106.0     105.5        -0.5        -        -        -
+LEFT-SEMI|u64|lo|t64|large             None                   -         -      50.0      51.0        +2.0        -        -        -
+LEFT-SEMI|str|hi|t1|small              hash                69.0      69.0      71.0      71.0        +0.0     +2.9     +2.9     +0.0
+LEFT-SEMI|str|hi|t1|medium             hash               183.0     200.0     193.0     196.0        +1.6     +5.5     -2.0     +9.3
+LEFT-SEMI|str|hi|t16|large             None                   -         -     391.0     385.0        -1.5        -        -        -
+LEFT-SEMI|str|hi|t64|large             None                   -         -     138.0     137.0        -0.7        -        -        -
+LEFT-SEMI|str|lo|t1|small              hash                60.0      59.0      62.0      61.0        -1.6     +3.3     +3.4     -1.7
+LEFT-SEMI|str|lo|t1|medium             hash               169.0     168.0     174.0     170.0        -2.3     +3.0     +1.2     -0.6
+LEFT-SEMI|str|lo|t16|large             None                   -         -     340.0     330.0        -2.9        -        -        -
+LEFT-SEMI|str|lo|t64|large             None                   -         -     125.0     123.0        -1.6        -        -        -
+LEFT-SEMI|comp|hi|t1|small             hash                40.0      41.0      42.0      42.0        +0.0     +5.0     +2.4     +2.5
+LEFT-SEMI|comp|hi|t1|medium            hash                77.0      77.0      80.0      80.0        +0.0     +3.9     +3.9     +0.0
+LEFT-SEMI|comp|hi|t16|large            None                   -         -     223.0     168.0       -24.7        -        -        -
+LEFT-SEMI|comp|hi|t64|large            None                   -         -     150.0      77.0       -48.7        -        -        -
+LEFT-SEMI|comp|lo|t1|small             hash                37.0      36.0      38.0      38.0        +0.0     +2.7     +5.6     -2.7
+LEFT-SEMI|comp|lo|t1|medium            hash                86.0      85.0      90.0      89.0        -1.1     +4.7     +4.7     -1.2
+LEFT-SEMI|comp|lo|t16|large            None                   -         -     227.0     177.0       -22.0        -        -        -
+LEFT-SEMI|comp|lo|t64|large            None                   -         -     150.0      78.0       -48.0        -        -        -
+LEFT-ANTI|u64|hi|t1|small              hash                14.0      14.0      15.0      15.0        +0.0     +7.1     +7.1     +0.0
+LEFT-ANTI|u64|hi|t1|medium             hash                41.0      40.0      42.0      43.0        +2.4     +2.4     +7.5     -2.4
+LEFT-ANTI|u64|hi|t16|large             None                   -         -      98.0      98.0        +0.0        -        -        -
+LEFT-ANTI|u64|hi|t64|large             None                   -         -      46.5      46.0        -1.1        -        -        -
+LEFT-ANTI|u64|lo|t1|small              hash                20.0      20.0      22.0      22.0        +0.0    +10.0    +10.0     +0.0
+LEFT-ANTI|u64|lo|t1|medium             hash                52.0      51.0      57.0      56.0        -1.8     +9.6     +9.8     -1.9
+LEFT-ANTI|u64|lo|t16|large             None                   -         -     112.0     111.0        -0.9        -        -        -
+LEFT-ANTI|u64|lo|t64|large             None                   -         -      54.0      54.0        +0.0        -        -        -
+LEFT-ANTI|str|hi|t1|small              hash                60.0      60.0      63.0      62.0        -1.6     +5.0     +3.3     +0.0
+LEFT-ANTI|str|hi|t1|medium             hash               164.0     165.0     177.0     175.0        -1.1     +7.9     +6.1     +0.6
+LEFT-ANTI|str|hi|t16|large             None                   -         -     362.5     353.0        -2.6        -        -        -
+LEFT-ANTI|str|hi|t64|large             None                   -         -     132.0     128.0        -3.0        -        -        -
+LEFT-ANTI|str|lo|t1|small              hash                69.0      68.0      71.0      71.0        +0.0     +2.9     +4.4     -1.4
+LEFT-ANTI|str|lo|t1|medium             hash               193.0     180.0     203.0     189.0        -6.9     +5.2     +5.0     -6.7
+LEFT-ANTI|str|lo|t16|large             None                   -         -     359.0     352.0        -1.9        -        -        -
+LEFT-ANTI|str|lo|t64|large             None                   -         -     131.0     130.0        -0.8        -        -        -
+LEFT-ANTI|comp|hi|t1|small             hash                34.0      35.0      36.0      36.0        +0.0     +5.9     +2.9     +2.9
+LEFT-ANTI|comp|hi|t1|medium            hash                73.0      73.0      74.0      75.0        +1.4     +1.4     +2.7     +0.0
+LEFT-ANTI|comp|hi|t16|large            None                   -         -     214.0     159.0       -25.7        -        -        -
+LEFT-ANTI|comp|hi|t64|large            None                   -         -     145.0      73.0       -49.7        -        -        -
+LEFT-ANTI|comp|lo|t1|small             hash                40.0      40.0      42.0      42.0        +0.0     +5.0     +5.0     +0.0
+LEFT-ANTI|comp|lo|t1|medium            hash                91.0      90.0      94.0      94.0        +0.0     +3.3     +4.4     -1.1
+LEFT-ANTI|comp|lo|t16|large            None                   -         -     233.0     184.0       -21.0        -        -        -
+LEFT-ANTI|comp|lo|t64|large            None                   -         -     154.0      82.0       -46.8        -        -        -
+
+cells=144  B_new vs B_old: median -0.12% min -49.66% max +6.25%
+comparator drift A_new vs A_old: median +0.00% min -6.74% max +9.29%
+cells where B_new is slower than A: 71 of 144
+
+=== per-cell cpu_us ===
+metric=cpu_us (in ms); A = cell comparator; before=bold1 after=bnew2
+cell                                   cmp                A_old     A_new     B_old     B_new B_new/B_old  B_old/A  B_new/A  A drift
+INNER|u64|hi|t1|small                  hash                48.9      49.9      50.8      51.8        +1.9     +3.9     +3.6     +2.1
+INNER|u64|hi|t1|medium                 hash               108.7     110.7     112.5     114.2        +1.4     +3.6     +3.1     +1.9
+INNER|u64|hi|t16|large                 parallel_hash     3935.6    3920.9    3668.7    3655.5        -0.4     -6.8     -6.8     -0.4
+INNER|u64|hi|t64|large                 parallel_hash     5841.3    5844.0    5103.2    5068.3        -0.7    -12.6    -13.3     +0.0
+INNER|u64|lo|t1|small                  hash                21.7      22.2      23.0      23.6        +2.7     +6.0     +6.4     +2.3
+INNER|u64|lo|t1|medium                 hash                70.9      72.2      73.2      74.5        +1.8     +3.4     +3.2     +1.9
+INNER|u64|lo|t16|large                 parallel_hash     2272.7    2266.6    2219.5    2189.4        -1.4     -2.3     -3.4     -0.3
+INNER|u64|lo|t64|large                 parallel_hash     3681.4    3691.8    3332.6    3321.4        -0.3     -9.5    -10.0     +0.3
+INNER|str|hi|t1|small                  hash               100.3     102.3     102.9     104.8        +1.9     +2.6     +2.5     +2.0
+INNER|str|hi|t1|medium                 hash               298.4     301.8     305.2     307.8        +0.8     +2.3     +2.0     +1.1
+INNER|str|hi|t16|large                 parallel_hash     9501.0    9489.8    8999.2    8902.8        -1.1     -5.3     -6.2     -0.1
+INNER|str|hi|t64|large                 parallel_hash    12391.7   12397.1   11014.8   10926.7        -0.8    -11.1    -11.9     +0.0
+INNER|str|lo|t1|small                  hash                72.3      72.1      74.2      73.7        -0.7     +2.7     +2.2     -0.2
+INNER|str|lo|t1|medium                 hash               211.7     202.3     218.2     208.3        -4.6     +3.1     +2.9     -4.4
+INNER|str|lo|t16|large                 parallel_hash     6229.3    6203.9    6291.0    6188.2        -1.6     +1.0     -0.3     -0.4
+INNER|str|lo|t64|large                 parallel_hash     8744.1    8767.7    8187.9    8127.8        -0.7     -6.4     -7.3     +0.3
+INNER|comp|hi|t1|small                 hash                76.9      78.1      79.2      79.2        -0.1     +3.0     +1.4     +1.5
+INNER|comp|hi|t1|medium                hash               152.3     152.5     155.6     156.2        +0.4     +2.2     +2.4     +0.2
+INNER|comp|hi|t16|large                parallel_hash     5849.1    5836.6    5650.3    4768.9       -15.6     -3.4    -18.3     -0.2
+INNER|comp|hi|t64|large                parallel_hash    10064.9   10072.5   10992.5    7045.0       -35.9     +9.2    -30.1     +0.1
+INNER|comp|lo|t1|small                 hash                43.3      43.6      46.3      47.3        +2.1     +6.9     +8.4     +0.8
+INNER|comp|lo|t1|medium                hash               109.5     111.1     113.5     115.5        +1.8     +3.7     +4.0     +1.5
+INNER|comp|lo|t16|large                parallel_hash     3971.2    3936.8    4195.5    3288.8       -21.6     +5.6    -16.5     -0.9
+INNER|comp|lo|t64|large                parallel_hash     7562.9    7577.2    9054.2    5069.0       -44.0    +19.7    -33.1     +0.2
+LEFT|u64|hi|t1|small                   hash                55.6      56.4      57.8      58.3        +1.0     +3.8     +3.4     +1.4
+LEFT|u64|hi|t1|medium                  hash               113.2     113.6     117.0     118.4        +1.2     +3.4     +4.2     +0.3
+LEFT|u64|hi|t16|large                  parallel_hash     4122.4    4095.6    3865.3    3834.7        -0.8     -6.2     -6.4     -0.7
+LEFT|u64|hi|t64|large                  parallel_hash     6009.4    6019.5    5256.2    5247.5        -0.2    -12.5    -12.8     +0.2
+LEFT|u64|lo|t1|small                   hash                43.6      43.8      46.5      46.9        +0.9     +6.6     +7.2     +0.4
+LEFT|u64|lo|t1|medium                  hash                90.6      90.3      96.1      96.2        +0.1     +6.1     +6.5     -0.3
+LEFT|u64|lo|t16|large                  parallel_hash     3581.7    3592.4    3390.7    3384.1        -0.2     -5.3     -5.8     +0.3
+LEFT|u64|lo|t64|large                  parallel_hash     5166.7    5161.7    4582.3    4584.5        +0.0    -11.3    -11.2     -0.1
+LEFT|str|hi|t1|small                   hash               108.7     108.3     112.4     110.6        -1.6     +3.4     +2.2     -0.4
+LEFT|str|hi|t1|medium                  hash               306.5     306.3     316.8     317.7        +0.3     +3.4     +3.7     -0.0
+LEFT|str|hi|t16|large                  parallel_hash     9751.8    9678.2    9175.6    9121.4        -0.6     -5.9     -5.8     -0.8
+LEFT|str|hi|t64|large                  parallel_hash    12585.5   12550.2   11159.1   11139.1        -0.2    -11.3    -11.2     -0.3
+LEFT|str|lo|t1|small                   hash                89.8      91.5      94.8      94.0        -0.9     +5.6     +2.7     +1.9
+LEFT|str|lo|t1|medium                  hash               227.5     226.7     238.1     235.9        -0.9     +4.7     +4.1     -0.3
+LEFT|str|lo|t16|large                  parallel_hash     7839.2    7806.5    7558.0    7553.3        -0.1     -3.6     -3.2     -0.4
+LEFT|str|lo|t64|large                  parallel_hash    10502.6   10463.3    9546.6    9545.8        -0.0     -9.1     -8.8     -0.4
+LEFT|comp|hi|t1|small                  hash                82.3      82.5      84.8      84.2        -0.7     +3.0     +2.1     +0.2
+LEFT|comp|hi|t1|medium                 hash               154.2     155.1     158.9     159.8        +0.5     +3.1     +3.0     +0.6
+LEFT|comp|hi|t16|large                 parallel_hash     6024.9    6036.2    5856.0    4958.3       -15.3     -2.8    -17.9     +0.2
+LEFT|comp|hi|t64|large                 parallel_hash    10262.0   10280.4   11160.6    7231.1       -35.2     +8.8    -29.7     +0.2
+LEFT|comp|lo|t1|small                  hash                63.5      64.3      67.2      67.2        +0.0     +5.8     +4.5     +1.3
+LEFT|comp|lo|t1|medium                 hash               129.8     129.7     134.9     135.7        +0.6     +4.0     +4.6     -0.1
+LEFT|comp|lo|t16|large                 parallel_hash     5418.0    5393.6    5452.7    4540.9       -16.7     +0.6    -15.8     -0.4
+LEFT|comp|lo|t64|large                 parallel_hash     9107.5    9111.5   10284.5    6298.8       -38.8    +12.9    -30.9     +0.0
+RIGHT|u64|hi|t1|small                  hash                51.1      51.8      54.0      53.9        -0.2     +5.7     +4.0     +1.4
+RIGHT|u64|hi|t1|medium                 hash               126.5     126.6     136.3     135.9        -0.3     +7.7     +7.4     +0.0
+RIGHT|u64|hi|t16|large                 parallel_hash     6651.3    6647.6    6214.6    6244.7        +0.5     -6.6     -6.1     -0.1
+RIGHT|u64|hi|t64|large                 parallel_hash     8998.6    9003.2    7604.9    7607.0        +0.0    -15.5    -15.5     +0.1
+RIGHT|u64|lo|t1|small                  hash                22.0      22.4      24.1      24.5        +1.6     +9.8     +9.4     +2.0
+RIGHT|u64|lo|t1|medium                 hash               126.2     127.4     132.2     134.9        +2.1     +4.7     +5.9     +1.0
+RIGHT|u64|lo|t16|large                 parallel_hash     4572.6    4584.1    4426.7    4411.5        -0.3     -3.2     -3.8     +0.3
+RIGHT|u64|lo|t64|large                 parallel_hash     6724.6    6679.6    5715.3    5717.0        +0.0    -15.0    -14.4     -0.7
+RIGHT|str|hi|t1|small                  hash               106.8     106.6     110.1     111.5        +1.3     +3.1     +4.6     -0.2
+RIGHT|str|hi|t1|medium                 hash               356.2     349.2     363.9     362.6        -0.3     +2.2     +3.9     -2.0
+RIGHT|str|hi|t16|large                 parallel_hash    13677.9   13714.9   12891.1   12820.8        -0.5     -5.8     -6.5     +0.3
+RIGHT|str|hi|t64|large                 parallel_hash    17610.1   17564.5   15277.5   15229.5        -0.3    -13.2    -13.3     -0.3
+RIGHT|str|lo|t1|small                  hash                72.9      74.4      75.0      75.3        +0.4     +2.8     +1.2     +2.0
+RIGHT|str|lo|t1|medium                 hash               310.6     315.6     318.2     320.3        +0.6     +2.5     +1.5     +1.6
+RIGHT|str|lo|t16|large                 parallel_hash    10757.0   10748.4   10460.3   10391.0        -0.7     -2.8     -3.3     -0.1
+RIGHT|str|lo|t64|large                 parallel_hash    14403.2   14278.7   12874.8   12799.1        -0.6    -10.6    -10.4     -0.9
+RIGHT|comp|hi|t1|small                 hash                80.6      82.6      83.0      83.9        +1.1     +3.0     +1.6     +2.5
+RIGHT|comp|hi|t1|medium                hash               176.3     178.5     182.8     186.7        +2.1     +3.7     +4.6     +1.2
+RIGHT|comp|hi|t16|large                parallel_hash     9300.8    9333.6    9002.0    8038.7       -10.7     -3.2    -13.9     +0.4
+RIGHT|comp|hi|t64|large                parallel_hash    14315.5   14178.4   14505.8   10301.6       -29.0     +1.3    -27.3     -1.0
+RIGHT|comp|lo|t1|small                 hash                45.2      44.8      47.8      47.3        -1.2     +5.7     +5.4     -0.9
+RIGHT|comp|lo|t1|medium                hash               183.3     183.1     187.7     189.0        +0.7     +2.4     +3.2     -0.1
+RIGHT|comp|lo|t16|large                parallel_hash     6955.2    6938.3    6987.8    6083.1       -12.9     +0.5    -12.3     -0.2
+RIGHT|comp|lo|t64|large                parallel_hash    11510.8   11485.4   12225.9    8185.5       -33.0     +6.2    -28.7     -0.2
+FULL|u64|hi|t1|small                   hash                56.2      56.4      58.3      58.2        -0.1     +3.6     +3.2     +0.3
+FULL|u64|hi|t1|medium                  hash               130.5     130.6     140.1     141.7        +1.2     +7.4     +8.5     +0.1
+FULL|u64|hi|t16|large                  parallel_hash     6883.9    6868.0    6438.9    6452.2        +0.2     -6.5     -6.1     -0.2
+FULL|u64|hi|t64|large                  parallel_hash     9252.8    9251.8    7779.8    7807.8        +0.4    -15.9    -15.6     -0.0
+FULL|u64|lo|t1|small                   hash                44.3      44.3      47.4      47.3        -0.1     +6.8     +6.7     -0.0
+FULL|u64|lo|t1|medium                  hash               148.0     148.0     156.3     155.2        -0.7     +5.6     +4.9     -0.0
+FULL|u64|lo|t16|large                  parallel_hash     5972.5    5895.9    5641.0    5621.5        -0.3     -5.5     -4.7     -1.3
+FULL|u64|lo|t64|large                  parallel_hash     8167.7    8192.5    7017.5    7006.2        -0.2    -14.1    -14.5     +0.3
+FULL|str|hi|t1|small                   hash               112.0     113.4     116.1     115.5        -0.5     +3.7     +1.9     +1.3
+FULL|str|hi|t1|medium                  hash               364.1     355.9     371.5     371.3        -0.0     +2.0     +4.3     -2.2
+FULL|str|hi|t16|large                  parallel_hash    13871.4   13929.7   13096.3   13066.7        -0.2     -5.6     -6.2     +0.4
+FULL|str|hi|t64|large                  parallel_hash    17929.2   17765.1   15518.8   15486.5        -0.2    -13.4    -12.8     -0.9
+FULL|str|lo|t1|small                   hash                91.2      91.6      95.9      96.6        +0.7     +5.2     +5.5     +0.5
+FULL|str|lo|t1|medium                  hash               340.4     337.6     348.7     350.3        +0.5     +2.5     +3.8     -0.8
+FULL|str|lo|t16|large                  parallel_hash    12369.8   12405.9   11801.5   11773.3        -0.2     -4.6     -5.1     +0.3
+FULL|str|lo|t64|large                  parallel_hash    16114.1   16191.6   14224.2   14220.2        -0.0    -11.7    -12.2     +0.5
+FULL|comp|hi|t1|small                  hash                85.5      86.0      88.8      88.9        +0.2     +3.8     +3.4     +0.5
+FULL|comp|hi|t1|medium                 hash               179.5     179.5     192.2     191.2        -0.5     +7.1     +6.5     +0.0
+FULL|comp|hi|t16|large                 parallel_hash     9694.5    9815.0    9201.7    8281.3       -10.0     -5.1    -15.6     +1.2
+FULL|comp|hi|t64|large                 parallel_hash    14438.7   14431.7   14658.8   10506.8       -28.3     +1.5    -27.2     -0.0
+FULL|comp|lo|t1|small                  hash                65.5      65.3      68.7      68.4        -0.4     +4.8     +4.8     -0.4
+FULL|comp|lo|t1|medium                 hash               207.5     205.7     211.6     212.7        +0.5     +2.0     +3.4     -0.9
+FULL|comp|lo|t16|large                 parallel_hash     8391.2    8352.2    8270.1    7348.9       -11.1     -1.4    -12.0     -0.5
+FULL|comp|lo|t64|large                 parallel_hash    12984.3   13003.6   13482.1    9455.5       -29.9     +3.8    -27.3     +0.1
+LEFT-SEMI|u64|hi|t1|small              hash                18.8      18.6      20.4      20.4        -0.2     +8.4     +9.8     -1.5
+LEFT-SEMI|u64|hi|t1|medium             hash                43.3      43.5      46.6      46.6        -0.0     +7.7     +7.0     +0.6
+LEFT-SEMI|u64|hi|t16|large             None                   -         -    1502.0    1483.9        -1.2        -        -        -
+LEFT-SEMI|u64|hi|t64|large             None                   -         -    2295.5    2280.7        -0.6        -        -        -
+LEFT-SEMI|u64|lo|t1|small              hash                15.7      15.7      16.9      17.1        +1.0     +7.7     +8.5     +0.3
+LEFT-SEMI|u64|lo|t1|medium             hash                49.7      49.4      53.1      53.0        -0.2     +6.7     +7.2     -0.7
+LEFT-SEMI|u64|lo|t16|large             None                   -         -    1512.9    1513.7        +0.0        -        -        -
+LEFT-SEMI|u64|lo|t64|large             None                   -         -    2318.9    2327.4        +0.4        -        -        -
+LEFT-SEMI|str|hi|t1|small              hash                69.8      69.3      71.6      71.8        +0.2     +2.6     +3.6     -0.8
+LEFT-SEMI|str|hi|t1|medium             hash               183.1     200.3     193.6     196.3        +1.4     +5.8     -2.0     +9.4
+LEFT-SEMI|str|hi|t16|large             None                   -         -    5966.8    5924.5        -0.7        -        -        -
+LEFT-SEMI|str|hi|t64|large             None                   -         -    7655.6    7641.3        -0.2        -        -        -
+LEFT-SEMI|str|lo|t1|small              hash                60.7      59.7      62.1      61.2        -1.3     +2.2     +2.6     -1.7
+LEFT-SEMI|str|lo|t1|medium             hash               169.8     168.3     173.8     170.0        -2.2     +2.4     +1.0     -0.8
+LEFT-SEMI|str|lo|t16|large             None                   -         -    5169.7    5049.8        -2.3        -        -        -
+LEFT-SEMI|str|lo|t64|large             None                   -         -    6805.8    6715.6        -1.3        -        -        -
+LEFT-SEMI|comp|hi|t1|small             hash                40.6      41.2      42.2      42.0        -0.6     +4.2     +1.8     +1.7
+LEFT-SEMI|comp|hi|t1|medium            hash                77.2      77.1      80.2      80.7        +0.6     +3.8     +4.7     -0.2
+LEFT-SEMI|comp|hi|t16|large            None                   -         -    3328.0    2471.7       -25.7        -        -        -
+LEFT-SEMI|comp|hi|t64|large            None                   -         -    8479.8    4024.5       -52.5        -        -        -
+LEFT-SEMI|comp|lo|t1|small             hash                37.1      36.7      38.2      38.0        -0.5     +3.0     +3.4     -0.9
+LEFT-SEMI|comp|lo|t1|medium            hash                86.2      85.1      90.0      88.8        -1.3     +4.3     +4.4     -1.3
+LEFT-SEMI|comp|lo|t16|large            None                   -         -    3402.5    2601.3       -23.5        -        -        -
+LEFT-SEMI|comp|lo|t64|large            None                   -         -    8497.4    4100.2       -51.7        -        -        -
+LEFT-ANTI|u64|hi|t1|small              hash                14.5      14.4      15.6      15.4        -1.0     +7.4     +7.2     -0.8
+LEFT-ANTI|u64|hi|t1|medium             hash                41.0      40.4      42.8      43.0        +0.5     +4.3     +6.5     -1.5
+LEFT-ANTI|u64|hi|t16|large             None                   -         -    1396.2    1393.8        -0.2        -        -        -
+LEFT-ANTI|u64|hi|t64|large             None                   -         -    2066.0    2073.9        +0.4        -        -        -
+LEFT-ANTI|u64|lo|t1|small              hash                20.2      20.2      22.4      22.3        -0.2    +10.7    +10.1     +0.3
+LEFT-ANTI|u64|lo|t1|medium             hash                52.1      51.6      57.0      56.8        -0.3     +9.5    +10.2     -1.0
+LEFT-ANTI|u64|lo|t16|large             None                   -         -    1596.3    1586.9        -0.6        -        -        -
+LEFT-ANTI|u64|lo|t64|large             None                   -         -    2539.2    2537.0        -0.1        -        -        -
+LEFT-ANTI|str|hi|t1|small              hash                60.8      60.1      63.0      62.3        -1.2     +3.7     +3.6     -1.1
+LEFT-ANTI|str|hi|t1|medium             hash               164.3     165.3     176.8     175.2        -0.9     +7.6     +6.0     +0.6
+LEFT-ANTI|str|hi|t16|large             None                   -         -    5544.3    5416.0        -2.3        -        -        -
+LEFT-ANTI|str|hi|t64|large             None                   -         -    7237.1    7019.7        -3.0        -        -        -
+LEFT-ANTI|str|lo|t1|small              hash                69.5      68.6      71.2      71.0        -0.2     +2.4     +3.4     -1.2
+LEFT-ANTI|str|lo|t1|medium             hash               193.7     180.8     203.3     188.9        -7.1     +5.0     +4.5     -6.7
+LEFT-ANTI|str|lo|t16|large             None                   -         -    5477.5    5399.3        -1.4        -        -        -
+LEFT-ANTI|str|lo|t64|large             None                   -         -    7248.9    7163.6        -1.2        -        -        -
+LEFT-ANTI|comp|hi|t1|small             hash                34.7      34.9      36.1      36.1        +0.0     +3.9     +3.4     +0.5
+LEFT-ANTI|comp|hi|t1|medium            hash                72.9      73.1      73.8      75.2        +2.0     +1.3     +2.9     +0.3
+LEFT-ANTI|comp|hi|t16|large            None                   -         -    3201.7    2346.4       -26.7        -        -        -
+LEFT-ANTI|comp|hi|t64|large            None                   -         -    8155.9    3750.8       -54.0        -        -        -
+LEFT-ANTI|comp|lo|t1|small             hash                40.3      40.2      42.6      42.7        +0.3     +5.5     +6.0     -0.3
+LEFT-ANTI|comp|lo|t1|medium            hash                90.9      90.6      94.5      94.6        +0.1     +4.0     +4.4     -0.2
+LEFT-ANTI|comp|lo|t16|large            None                   -         -    3512.6    2710.7       -22.8        -        -        -
+LEFT-ANTI|comp|lo|t64|large            None                   -         -    8737.2    4342.1       -50.3        -        -        -
+
+cells=144  B_new vs B_old: median -0.32% min -54.01% max +2.74%
+comparator drift A_new vs A_old: median +0.01% min -6.66% max +9.39%
+cells where B_new is slower than A: 71 of 144
+
+=== per-cell build_us ===
+metric=build_us (in ms); A = cell comparator; before=bold1 after=bnew2
+cell                                   cmp                A_old     A_new     B_old     B_new B_new/B_old  B_old/A  B_new/A  A drift
+INNER|u64|hi|t1|small                  hash                 0.3       0.3       0.3       0.3        -0.6     -1.3     -2.5     +0.6
+INNER|u64|hi|t1|medium                 hash                13.5      13.7      13.9      14.3        +2.6     +3.2     +4.0     +1.8
+INNER|u64|hi|t16|large                 parallel_hash      833.5     825.0     802.7     832.0        +3.7     -3.7     +0.8     -1.0
+INNER|u64|hi|t64|large                 parallel_hash     1697.8    1682.9    1395.2    1378.6        -1.2    -17.8    -18.1     -0.9
+INNER|u64|lo|t1|small                  hash                 0.3       0.3       0.3       0.3        +0.0     +3.0     +1.6     +1.3
+INNER|u64|lo|t1|medium                 hash                13.5      13.8      13.8      14.1        +1.8     +2.8     +1.9     +2.6
+INNER|u64|lo|t16|large                 parallel_hash      824.0     825.1     810.9     790.4        -2.5     -1.6     -4.2     +0.1
+INNER|u64|lo|t64|large                 parallel_hash     1676.1    1694.4    1388.6    1400.4        +0.9    -17.2    -17.3     +1.1
+INNER|str|hi|t1|small                  hash                 0.6       0.6       0.6       0.6        +1.8     +3.1     +0.5     +4.4
+INNER|str|hi|t1|medium                 hash                43.1      43.4      42.9      43.8        +2.0     -0.5     +0.8     +0.8
+INNER|str|hi|t16|large                 parallel_hash     2395.8    2412.6    2447.9    2463.7        +0.6     +2.2     +2.1     +0.7
+INNER|str|hi|t64|large                 parallel_hash     3911.8    3932.2    3290.2    3330.0        +1.2    -15.9    -15.3     +0.5
+INNER|str|lo|t1|small                  hash                 0.6       0.6       0.6       0.6        +1.9     -1.5     +1.9     -1.5
+INNER|str|lo|t1|medium                 hash                45.0      43.6      44.9      43.6        -2.8     -0.4     +0.1     -3.3
+INNER|str|lo|t16|large                 parallel_hash     2391.6    2384.5    2429.6    2353.0        -3.2     +1.6     -1.3     -0.3
+INNER|str|lo|t64|large                 parallel_hash     3896.4    3890.2    3301.8    3304.8        +0.1    -15.3    -15.0     -0.2
+INNER|comp|hi|t1|small                 hash                 0.5       0.5       0.4       0.4        -3.7    -17.7    -20.1     -0.8
+INNER|comp|hi|t1|medium                hash                19.3      19.2      19.3      19.3        +0.0     +0.4     +0.7     -0.3
+INNER|comp|hi|t16|large                parallel_hash     1704.0    1700.1    2036.0    1137.0       -44.2    +19.5    -33.1     -0.2
+INNER|comp|hi|t64|large                parallel_hash     4313.1    4300.8    5902.6    1898.9       -67.8    +36.9    -55.8     -0.3
+INNER|comp|lo|t1|small                 hash                 0.5       0.5       0.4       0.4        +0.8    -19.1    -19.9     +1.8
+INNER|comp|lo|t1|medium                hash                19.0      19.2      19.2      19.8        +3.2     +1.1     +3.1     +1.1
+INNER|comp|lo|t16|large                parallel_hash     1676.1    1651.8    1997.9    1127.9       -43.5    +19.2    -31.7     -1.5
+INNER|comp|lo|t64|large                parallel_hash     4283.7    4291.7    5904.9    1899.6       -67.8    +37.8    -55.7     +0.2
+LEFT|u64|hi|t1|small                   hash                 0.3       0.3       0.3       0.3        -0.3     +1.0     +1.3     -0.6
+LEFT|u64|hi|t1|medium                  hash                13.5      13.9      13.8      14.3        +3.3     +2.1     +2.4     +3.0
+LEFT|u64|hi|t16|large                  parallel_hash      845.7     833.7     840.7     805.8        -4.1     -0.6     -3.3     -1.4
+LEFT|u64|hi|t64|large                  parallel_hash     1683.7    1674.9    1382.3    1394.2        +0.9    -17.9    -16.8     -0.5
+LEFT|u64|lo|t1|small                   hash                 0.3       0.3       0.3       0.3        +0.3     -2.5     +1.0     -3.2
+LEFT|u64|lo|t1|medium                  hash                13.6      13.4      13.7      13.8        +0.8     +0.8     +3.1     -1.4
+LEFT|u64|lo|t16|large                  parallel_hash      843.2     838.1     821.7     821.3        -0.0     -2.6     -2.0     -0.6
+LEFT|u64|lo|t64|large                  parallel_hash     1690.9    1688.6    1378.1    1380.7        +0.2    -18.5    -18.2     -0.1
+LEFT|str|hi|t1|small                   hash                 0.6       0.6       0.6       0.6        +1.0     +1.1     +1.9     +0.2
+LEFT|str|hi|t1|medium                  hash                42.9      43.7      43.8      43.8        -0.0     +2.0     +0.2     +1.8
+LEFT|str|hi|t16|large                  parallel_hash     2401.4    2394.7    2398.4    2437.4        +1.6     -0.1     +1.8     -0.3
+LEFT|str|hi|t64|large                  parallel_hash     3891.3    3870.6    3275.4    3253.9        -0.7    -15.8    -15.9     -0.5
+LEFT|str|lo|t1|small                   hash                 0.6       0.6       0.6       0.6        -0.3     +1.6     +0.3     +0.9
+LEFT|str|lo|t1|medium                  hash                43.0      43.5      43.2      43.4        +0.3     +0.6     -0.2     +1.1
+LEFT|str|lo|t16|large                  parallel_hash     2408.6    2370.9    2414.2    2387.6        -1.1     +0.2     +0.7     -1.6
+LEFT|str|lo|t64|large                  parallel_hash     3896.3    3906.0    3308.0    3266.5        -1.3    -15.1    -16.4     +0.3
+LEFT|comp|hi|t1|small                  hash                 0.5       0.5       0.4       0.4        +0.5    -20.0    -19.4     -0.2
+LEFT|comp|hi|t1|medium                 hash                19.1      19.0      19.3      19.3        +0.2     +1.1     +1.6     -0.2
+LEFT|comp|hi|t16|large                 parallel_hash     1691.9    1684.3    2049.9    1100.0       -46.3    +21.2    -34.7     -0.4
+LEFT|comp|hi|t64|large                 parallel_hash     4268.7    4287.3    5899.6    1915.3       -67.5    +38.2    -55.3     +0.4
+LEFT|comp|lo|t1|small                  hash                 0.5       0.5       0.4       0.4        -2.7    -16.8    -18.5     -0.6
+LEFT|comp|lo|t1|medium                 hash                18.9      19.0      18.9      19.4        +2.8     +0.3     +2.3     +0.7
+LEFT|comp|lo|t16|large                 parallel_hash     1684.6    1665.5    2048.8    1147.2       -44.0    +21.6    -31.1     -1.1
+LEFT|comp|lo|t64|large                 parallel_hash     4316.7    4316.9    5899.7    1899.5       -67.8    +36.7    -56.0     +0.0
+RIGHT|u64|hi|t1|small                  hash                 0.3       0.3       0.4       0.4        -1.7     +7.4     +3.2     +2.4
+RIGHT|u64|hi|t1|medium                 hash                14.8      14.8      15.3      15.3        -0.1     +3.9     +3.9     -0.1
+RIGHT|u64|hi|t16|large                 parallel_hash      945.3     963.3     879.5     907.0        +3.1     -7.0     -5.8     +1.9
+RIGHT|u64|hi|t64|large                 parallel_hash     2102.3    2106.4    1429.8    1450.6        +1.5    -32.0    -31.1     +0.2
+RIGHT|u64|lo|t1|small                  hash                 0.3       0.3       0.4       0.3        -2.3     +2.0     +3.0     -3.2
+RIGHT|u64|lo|t1|medium                 hash                14.8      14.8      15.2      15.4        +1.3     +3.1     +4.4     +0.0
+RIGHT|u64|lo|t16|large                 parallel_hash      934.4     946.5     877.0     881.9        +0.6     -6.1     -6.8     +1.3
+RIGHT|u64|lo|t64|large                 parallel_hash     2136.1    2116.9    1419.0    1420.1        +0.1    -33.6    -32.9     -0.9
+RIGHT|str|hi|t1|small                  hash                 0.6       0.6       0.6       0.6        +2.2     +1.4     -0.5     +4.1
+RIGHT|str|hi|t1|medium                 hash                45.2      45.3      44.8      44.8        +0.1     -1.0     -1.1     +0.2
+RIGHT|str|hi|t16|large                 parallel_hash     2567.7    2582.9    2510.1    2498.5        -0.5     -2.2     -3.3     +0.6
+RIGHT|str|hi|t64|large                 parallel_hash     4410.9    4395.7    3344.9    3369.8        +0.7    -24.2    -23.3     -0.3
+RIGHT|str|lo|t1|small                  hash                 0.6       0.6       0.6       0.6        +4.0     +0.0     +1.6     +2.3
+RIGHT|str|lo|t1|medium                 hash                45.4      46.1      44.9      45.7        +1.8     -1.2     -0.9     +1.6
+RIGHT|str|lo|t16|large                 parallel_hash     2567.5    2586.2    2502.6    2486.2        -0.7     -2.5     -3.9     +0.7
+RIGHT|str|lo|t64|large                 parallel_hash     4438.9    4394.9    3411.2    3345.6        -1.9    -23.2    -23.9     -1.0
+RIGHT|comp|hi|t1|small                 hash                 0.5       0.5       0.4       0.4        +2.6    -20.2    -19.0     +1.1
+RIGHT|comp|hi|t1|medium                hash                20.5      20.9      20.7      21.4        +3.0     +1.0     +2.0     +2.0
+RIGHT|comp|hi|t16|large                parallel_hash     1824.1    1848.1    2088.6    1220.7       -41.6    +14.5    -33.9     +1.3
+RIGHT|comp|hi|t64|large                parallel_hash     4920.7    4852.8    6019.4    1940.1       -67.8    +22.3    -60.0     -1.4
+RIGHT|comp|lo|t1|small                 hash                 0.5       0.5       0.4       0.4        +0.2    -19.2    -16.1     -3.4
+RIGHT|comp|lo|t1|medium                hash                20.4      20.4      20.5      20.9        +1.7     +0.6     +2.2     +0.1
+RIGHT|comp|lo|t16|large                parallel_hash     1819.6    1816.3    2023.0    1199.5       -40.7    +11.2    -34.0     -0.2
+RIGHT|comp|lo|t64|large                parallel_hash     4870.6    4844.0    5973.6    1967.5       -67.1    +22.6    -59.4     -0.5
+FULL|u64|hi|t1|small                   hash                 0.3       0.3       0.3       0.4        +3.5     +3.3     +7.2     -0.3
+FULL|u64|hi|t1|medium                  hash                14.7      14.6      15.3      15.6        +1.5     +4.3     +7.0     -1.1
+FULL|u64|hi|t16|large                  parallel_hash      944.9     951.1     886.6     870.3        -1.8     -6.2     -8.5     +0.7
+FULL|u64|hi|t64|large                  parallel_hash     2126.2    2126.1    1441.7    1434.2        -0.5    -32.2    -32.5     -0.0
+FULL|u64|lo|t1|small                   hash                 0.3       0.3       0.3       0.3        -0.6     -0.9     +1.2     -2.6
+FULL|u64|lo|t1|medium                  hash                14.7      14.7      15.4      15.1        -1.8     +4.7     +2.9     -0.1
+FULL|u64|lo|t16|large                  parallel_hash      948.2     934.9     864.4     855.9        -1.0     -8.8     -8.5     -1.4
+FULL|u64|lo|t64|large                  parallel_hash     2065.2    2114.5    1413.5    1407.5        -0.4    -31.6    -33.4     +2.4
+FULL|str|hi|t1|small                   hash                 0.6       0.6       0.6       0.6        -2.9     +2.0     +0.3     -1.3
+FULL|str|hi|t1|medium                  hash                46.3      44.9      45.4      45.3        -0.1     -2.1     +1.0     -3.1
+FULL|str|hi|t16|large                  parallel_hash     2541.5    2556.1    2552.3    2518.4        -1.3     +0.4     -1.5     +0.6
+FULL|str|hi|t64|large                  parallel_hash     4491.8    4384.9    3360.0    3389.9        +0.9    -25.2    -22.7     -2.4
+FULL|str|lo|t1|small                   hash                 0.6       0.6       0.6       0.6        +0.3     +1.5     +1.2     +0.7
+FULL|str|lo|t1|medium                  hash                45.3      44.6      45.2      45.3        +0.3     -0.1     +1.6     -1.4
+FULL|str|lo|t16|large                  parallel_hash     2539.2    2586.1    2520.2    2505.7        -0.6     -0.7     -3.1     +1.8
+FULL|str|lo|t64|large                  parallel_hash     4468.2    4438.8    3415.9    3417.0        +0.0    -23.6    -23.0     -0.7
+FULL|comp|hi|t1|small                  hash                 0.5       0.5       0.4       0.4        +1.6    -17.3    -16.6     +0.8
+FULL|comp|hi|t1|medium                 hash                20.6      20.6      21.0      21.2        +0.9     +2.2     +3.2     -0.1
+FULL|comp|hi|t16|large                 parallel_hash     1860.6    1903.7    2132.9    1220.5       -42.8    +14.6    -35.9     +2.3
+FULL|comp|hi|t64|large                 parallel_hash     4780.7    4810.8    6000.9    1984.5       -66.9    +25.5    -58.7     +0.6
+FULL|comp|lo|t1|small                  hash                 0.5       0.5       0.4       0.4        -1.6    -18.4    -18.3     -1.7
+FULL|comp|lo|t1|medium                 hash                20.6      20.5      20.9      21.4        +2.4     +1.5     +4.3     -0.4
+FULL|comp|lo|t16|large                 parallel_hash     1800.2    1795.0    2082.3    1205.9       -42.1    +15.7    -32.8     -0.3
+FULL|comp|lo|t64|large                 parallel_hash     4817.0    4830.9    5968.0    1990.3       -66.7    +23.9    -58.8     +0.3
+LEFT-SEMI|u64|hi|t1|small              hash                 0.3       0.3       0.3       0.3        +0.0     -0.4     +0.0     -0.4
+LEFT-SEMI|u64|hi|t1|medium             hash                11.2      11.3      11.2      11.2        -0.2     -0.1     -0.7     +0.3
+LEFT-SEMI|u64|hi|t16|large             None                   -         -     729.3     729.1        -0.0        -        -        -
+LEFT-SEMI|u64|hi|t64|large             None                   -         -    1138.2    1121.8        -1.4        -        -        -
+LEFT-SEMI|u64|lo|t1|small              hash                 0.3       0.3       0.3       0.3        -0.4     -0.4     +0.0     -0.8
+LEFT-SEMI|u64|lo|t1|medium             hash                11.0      10.9      11.1      11.0        -0.4     +0.3     +0.7     -0.9
+LEFT-SEMI|u64|lo|t16|large             None                   -         -     725.1     715.8        -1.3        -        -        -
+LEFT-SEMI|u64|lo|t64|large             None                   -         -    1119.4    1130.8        +1.0        -        -        -
+LEFT-SEMI|str|hi|t1|small              hash                 0.5       0.5       0.5       0.5        -3.0     +2.4     -0.4     -0.2
+LEFT-SEMI|str|hi|t1|medium             hash                38.4      40.2      38.6      39.6        +2.6     +0.4     -1.5     +4.6
+LEFT-SEMI|str|hi|t16|large             None                   -         -    2183.7    2156.1        -1.3        -        -        -
+LEFT-SEMI|str|hi|t64|large             None                   -         -    2958.5    2940.4        -0.6        -        -        -
+LEFT-SEMI|str|lo|t1|small              hash                 0.5       0.5       0.5       0.5        -2.7     +2.2     +0.8     -1.4
+LEFT-SEMI|str|lo|t1|medium             hash                39.7      38.0      39.2      38.1        -2.9     -1.1     +0.3     -4.2
+LEFT-SEMI|str|lo|t16|large             None                   -         -    2205.2    2168.8        -1.6        -        -        -
+LEFT-SEMI|str|lo|t64|large             None                   -         -    2950.1    2951.9        +0.1        -        -        -
+LEFT-SEMI|comp|hi|t1|small             hash                 0.3       0.3       0.3       0.3        -3.8     -1.4     -2.4     -2.9
+LEFT-SEMI|comp|hi|t1|medium            hash                17.4      17.4      17.4      17.7        +2.2     -0.0     +2.0     +0.1
+LEFT-SEMI|comp|hi|t16|large            None                   -         -    1937.9    1090.5       -43.7        -        -        -
+LEFT-SEMI|comp|hi|t64|large            None                   -         -    6155.4    1738.3       -71.8        -        -        -
+LEFT-SEMI|comp|lo|t1|small             hash                 0.3       0.3       0.3       0.3        -3.2     +4.6     +0.9     +0.3
+LEFT-SEMI|comp|lo|t1|medium            hash                17.5      17.3      17.2      17.6        +2.5     -1.5     +1.8     -0.8
+LEFT-SEMI|comp|lo|t16|large            None                   -         -    1917.9    1104.0       -42.4        -        -        -
+LEFT-SEMI|comp|lo|t64|large            None                   -         -    6110.6    1728.0       -71.7        -        -        -
+LEFT-ANTI|u64|hi|t1|small              hash                 0.3       0.3       0.3       0.3        +0.8     +1.2     +0.0     +1.9
+LEFT-ANTI|u64|hi|t1|medium             hash                11.2      11.1      11.0      11.1        +1.2     -1.3     +0.6     -0.8
+LEFT-ANTI|u64|hi|t16|large             None                   -         -     713.5     709.7        -0.5        -        -        -
+LEFT-ANTI|u64|hi|t64|large             None                   -         -    1139.6    1107.5        -2.8        -        -        -
+LEFT-ANTI|u64|lo|t1|small              hash                 0.3       0.3       0.3       0.3        +0.8     +0.8     +1.5     +0.0
+LEFT-ANTI|u64|lo|t1|medium             hash                11.1      11.0      11.0      11.1        +0.3     -0.6     +0.4     -0.7
+LEFT-ANTI|u64|lo|t16|large             None                   -         -     728.3     721.5        -0.9        -        -        -
+LEFT-ANTI|u64|lo|t64|large             None                   -         -    1127.9    1129.1        +0.1        -        -        -
+LEFT-ANTI|str|hi|t1|small              hash                 0.5       0.5       0.5       0.5        -3.5     +2.4     +2.9     -3.9
+LEFT-ANTI|str|hi|t1|medium             hash                38.5      38.2      38.8      38.5        -0.7     +0.7     +0.7     -0.8
+LEFT-ANTI|str|hi|t16|large             None                   -         -    2201.7    2174.6        -1.2        -        -        -
+LEFT-ANTI|str|hi|t64|large             None                   -         -    2995.6    2946.3        -1.6        -        -        -
+LEFT-ANTI|str|lo|t1|small              hash                 0.5       0.5       0.5       0.5        -4.8     +2.4     +1.4     -3.9
+LEFT-ANTI|str|lo|t1|medium             hash                40.9      38.5      41.6      38.5        -7.6     +1.7     -0.1     -5.9
+LEFT-ANTI|str|lo|t16|large             None                   -         -    2199.1    2158.0        -1.9        -        -        -
+LEFT-ANTI|str|lo|t64|large             None                   -         -    2970.3    2932.5        -1.3        -        -        -
+LEFT-ANTI|comp|hi|t1|small             hash                 0.3       0.3       0.3       0.3        -1.7     +1.8     -3.1     +3.2
+LEFT-ANTI|comp|hi|t1|medium            hash                17.2      17.3      17.1      17.9        +4.8     -0.5     +3.4     +0.9
+LEFT-ANTI|comp|hi|t16|large            None                   -         -    1955.4    1087.2       -44.4        -        -        -
+LEFT-ANTI|comp|hi|t64|large            None                   -         -    6102.5    1731.7       -71.6        -        -        -
+LEFT-ANTI|comp|lo|t1|small             hash                 0.3       0.3       0.3       0.3        -1.5     +1.8     -2.9     +3.3
+LEFT-ANTI|comp|lo|t1|medium            hash                17.3      17.3      17.3      17.8        +2.8     +0.2     +2.7     +0.3
+LEFT-ANTI|comp|lo|t16|large            None                   -         -    1895.2    1115.3       -41.2        -        -        -
+LEFT-ANTI|comp|lo|t64|large            None                   -         -    6132.9    1753.5       -71.4        -        -        -
+
+cells=144  B_new vs B_old: median -0.45% min -71.76% max +4.81%
+comparator drift A_new vs A_old: median -0.13% min -5.94% max +4.55%
+cells where B_new is slower than A: 53 of 144
+
+=== per-cell probe_us ===
+metric=probe_us (in ms); A = cell comparator; before=bold1 after=bnew2
+cell                                   cmp                A_old     A_new     B_old     B_new B_new/B_old  B_old/A  B_new/A  A drift
+INNER|u64|hi|t1|small                  hash                38.2      39.1      39.6      40.4        +2.1     +3.6     +3.4     +2.3
+INNER|u64|hi|t1|medium                 hash                72.9      73.8      75.7      76.7        +1.2     +3.9     +3.9     +1.2
+INNER|u64|hi|t16|large                 parallel_hash     2516.6    2518.1    2328.0    2303.6        -1.0     -7.5     -8.5     +0.1
+INNER|u64|hi|t64|large                 parallel_hash     3398.6    3411.0    3019.2    3009.9        -0.3    -11.2    -11.8     +0.4
+INNER|u64|lo|t1|small                  hash                14.2      14.4      15.5      15.6        +0.8     +8.9     +8.1     +1.6
+INNER|u64|lo|t1|medium                 hash                37.1      37.7      39.1      39.6        +1.4     +5.3     +5.1     +1.6
+INNER|u64|lo|t16|large                 parallel_hash      915.9     906.5     921.6     909.1        -1.4     +0.6     +0.3     -1.0
+INNER|u64|lo|t64|large                 parallel_hash     1324.8    1321.1    1331.1    1321.7        -0.7     +0.5     +0.0     -0.3
+INNER|str|hi|t1|small                  hash                61.1      62.9      63.4      64.9        +2.3     +3.8     +3.1     +3.0
+INNER|str|hi|t1|medium                 hash               192.2     191.5     198.8     197.1        -0.8     +3.4     +3.0     -0.4
+INNER|str|hi|t16|large                 parallel_hash     5678.6    5671.7    5284.6    5202.7        -1.6     -6.9     -8.3     -0.1
+INNER|str|hi|t64|large                 parallel_hash     6654.6    6641.8    6048.7    5950.0        -1.6     -9.1    -10.4     -0.2
+INNER|str|lo|t1|small                  hash                32.5      32.6      34.9      34.5        -1.3     +7.4     +5.9     +0.2
+INNER|str|lo|t1|medium                 hash               104.4      95.8     111.9     102.7        -8.2     +7.2     +7.1     -8.2
+INNER|str|lo|t16|large                 parallel_hash     2452.2    2437.3    2641.9    2555.7        -3.3     +7.7     +4.9     -0.6
+INNER|str|lo|t64|large                 parallel_hash     3067.4    3070.3    3263.5    3174.8        -2.7     +6.4     +3.4     +0.1
+INNER|comp|hi|t1|small                 hash                52.3      53.2      54.2      54.4        +0.4     +3.7     +2.3     +1.7
+INNER|comp|hi|t1|medium                hash                91.6      92.1      94.4      94.9        +0.6     +3.0     +3.0     +0.5
+INNER|comp|hi|t16|large                parallel_hash     3146.4    3142.0    2742.6    2738.6        -0.1    -12.8    -12.8     -0.1
+INNER|comp|hi|t64|large                parallel_hash     4468.9    4471.1    3911.9    3930.4        +0.5    -12.5    -12.1     +0.0
+INNER|comp|lo|t1|small                 hash                23.5      23.7      26.4      27.3        +3.3    +12.3    +14.9     +0.9
+INNER|comp|lo|t1|medium                hash                52.4      53.3      55.9      57.0        +1.9     +6.7     +6.9     +1.7
+INNER|comp|lo|t16|large                parallel_hash     1374.0    1362.1    1348.3    1346.3        -0.1     -1.9     -1.2     -0.9
+INNER|comp|lo|t64|large                parallel_hash     2114.6    2115.9    2084.0    2080.3        -0.2     -1.4     -1.7     +0.1
+LEFT|u64|hi|t1|small                   hash                44.6      45.1      46.2      46.8        +1.2     +3.6     +3.8     +1.1
+LEFT|u64|hi|t1|medium                  hash                77.0      76.9      79.9      80.3        +0.5     +3.8     +4.3     -0.0
+LEFT|u64|hi|t16|large                  parallel_hash     2697.8    2676.1    2518.8    2490.0        -1.1     -6.6     -7.0     -0.8
+LEFT|u64|hi|t64|large                  parallel_hash     3587.7    3593.8    3193.4    3183.3        -0.3    -11.0    -11.4     +0.2
+LEFT|u64|lo|t1|small                   hash                34.7      34.8      37.2      37.6        +1.0     +7.4     +8.1     +0.3
+LEFT|u64|lo|t1|medium                  hash                55.6      55.5      60.6      60.6        -0.0     +9.0     +9.0     -0.0
+LEFT|u64|lo|t16|large                  parallel_hash     2174.6    2189.7    2060.6    2060.6        +0.0     -5.2     -5.9     +0.7
+LEFT|u64|lo|t64|large                  parallel_hash     2760.9    2757.9    2551.2    2544.0        -0.3     -7.6     -7.8     -0.1
+LEFT|str|hi|t1|small                   hash                69.3      68.7      72.5      71.1        -2.0     +4.6     +3.4     -0.8
+LEFT|str|hi|t1|medium                  hash               199.0     198.0     207.8     208.7        +0.4     +4.4     +5.4     -0.5
+LEFT|str|hi|t16|large                  parallel_hash     5898.6    5869.4    5510.7    5444.5        -1.2     -6.6     -7.2     -0.5
+LEFT|str|hi|t64|large                  parallel_hash     6890.4    6860.6    6234.0    6193.0        -0.7     -9.5     -9.7     -0.4
+LEFT|str|lo|t1|small                   hash                49.7      50.8      53.4      52.8        -1.1     +7.3     +3.9     +2.1
+LEFT|str|lo|t1|medium                  hash               121.2     120.6     130.4     128.8        -1.2     +7.5     +6.8     -0.5
+LEFT|str|lo|t16|large                  parallel_hash     4000.1    3998.6    3890.9    3885.8        -0.1     -2.7     -2.8     -0.0
+LEFT|str|lo|t64|large                  parallel_hash     4724.0    4696.3    4571.7    4555.8        -0.3     -3.2     -3.0     -0.6
+LEFT|comp|hi|t1|small                  hash                57.7      57.6      59.8      59.2        -1.0     +3.6     +2.7     -0.2
+LEFT|comp|hi|t1|medium                 hash                94.0      94.7      97.5      98.4        +1.0     +3.8     +4.0     +0.8
+LEFT|comp|hi|t16|large                 parallel_hash     3339.8    3352.4    2931.0    2925.5        -0.2    -12.2    -12.7     +0.4
+LEFT|comp|hi|t64|large                 parallel_hash     4692.3    4691.1    4073.4    4095.6        +0.5    -13.2    -12.7     -0.0
+LEFT|comp|lo|t1|small                  hash                42.9      43.6      46.1      46.2        +0.3     +7.4     +6.0     +1.6
+LEFT|comp|lo|t1|medium                 hash                71.8      71.7      76.6      77.0        +0.5     +6.7     +7.3     -0.2
+LEFT|comp|lo|t16|large                 parallel_hash     2791.3    2797.1    2596.8    2575.7        -0.8     -7.0     -7.9     +0.2
+LEFT|comp|lo|t64|large                 parallel_hash     3576.7    3580.0    3281.3    3277.9        -0.1     -8.3     -8.4     +0.1
+RIGHT|u64|hi|t1|small                  hash                40.0      40.6      42.4      42.0        -0.8     +5.9     +3.5     +1.5
+RIGHT|u64|hi|t1|medium                 hash                88.5      88.9      83.7      83.6        -0.1     -5.4     -5.9     +0.4
+RIGHT|u64|hi|t16|large                 parallel_hash     3312.2    3299.9    3105.6    3111.0        +0.2     -6.2     -5.7     -0.4
+RIGHT|u64|hi|t64|large                 parallel_hash     3987.5    3982.5    3560.9    3578.2        +0.5    -10.7    -10.2     -0.1
+RIGHT|u64|lo|t1|small                  hash                14.2      14.5      15.8      16.1        +2.2    +11.3    +11.3     +2.2
+RIGHT|u64|lo|t1|medium                 hash                89.8      90.8      40.7      41.6        +2.2    -54.7    -54.2     +1.1
+RIGHT|u64|lo|t16|large                 parallel_hash     1065.6    1067.3    1098.6    1093.2        -0.5     +3.1     +2.4     +0.2
+RIGHT|u64|lo|t64|large                 parallel_hash     1465.3    1450.5    1464.6    1460.0        -0.3     -0.1     +0.7     -1.0
+RIGHT|str|hi|t1|small                  hash                67.1      66.9      69.9      71.1        +1.8     +4.1     +6.2     -0.3
+RIGHT|str|hi|t1|medium                 hash               243.5     240.3     235.3     234.4        -0.4     -3.4     -2.5     -1.3
+RIGHT|str|hi|t16|large                 parallel_hash     5984.8    5980.9    5632.5    5571.8        -1.1     -5.9     -6.8     -0.1
+RIGHT|str|hi|t64|large                 parallel_hash     7022.7    7033.8    6372.2    6311.0        -1.0     -9.3    -10.3     +0.2
+RIGHT|str|lo|t1|small                  hash                33.2      34.4      34.9      35.1        +0.5     +5.1     +2.2     +3.4
+RIGHT|str|lo|t1|medium                 hash               202.5     205.2     104.3     106.1        +1.7    -48.5    -48.3     +1.3
+RIGHT|str|lo|t16|large                 parallel_hash     2514.7    2513.2    2677.7    2613.0        -2.4     +6.5     +4.0     -0.1
+RIGHT|str|lo|t64|large                 parallel_hash     3179.6    3168.3    3329.8    3253.3        -2.3     +4.7     +2.7     -0.4
+RIGHT|comp|hi|t1|small                 hash                55.9      57.5      57.6      58.5        +1.5     +3.1     +1.6     +3.0
+RIGHT|comp|hi|t1|medium                hash               113.6     115.3     103.1     106.5        +3.3     -9.2     -7.6     +1.5
+RIGHT|comp|hi|t16|large                parallel_hash     4106.8    4106.5    3755.3    3651.6        -2.8     -8.6    -11.1     -0.0
+RIGHT|comp|hi|t64|large                parallel_hash     5294.4    5251.8    4681.9    4610.7        -1.5    -11.6    -12.2     -0.8
+RIGHT|comp|lo|t1|small                 hash                25.2      24.9      26.9      26.7        -0.7     +6.6     +7.1     -1.2
+RIGHT|comp|lo|t1|medium                hash               123.7     123.1      58.8      58.3        -0.8    -52.5    -52.6     -0.5
+RIGHT|comp|lo|t16|large                parallel_hash     1539.7    1534.4    1564.0    1541.5        -1.4     +1.6     +0.5     -0.3
+RIGHT|comp|lo|t64|large                parallel_hash     2256.8    2267.6    2252.9    2245.7        -0.3     -0.2     -1.0     +0.5
+FULL|u64|hi|t1|small                   hash                45.0      45.3      46.5      46.5        +0.0     +3.4     +2.7     +0.7
+FULL|u64|hi|t1|medium                  hash                93.0      93.0      87.7      88.6        +1.0     -5.6     -4.7     +0.0
+FULL|u64|hi|t16|large                  parallel_hash     3524.0    3522.7    3301.2    3317.7        +0.5     -6.3     -5.8     -0.0
+FULL|u64|hi|t64|large                  parallel_hash     4230.3    4244.5    3747.8    3762.1        +0.4    -11.4    -11.4     +0.3
+FULL|u64|lo|t1|small                   hash                35.2      35.2      37.4      37.4        +0.0     +6.3     +6.2     +0.1
+FULL|u64|lo|t1|medium                  hash               110.9     110.7      63.0      62.3        -1.1    -43.2    -43.7     -0.2
+FULL|u64|lo|t16|large                  parallel_hash     2403.7    2371.7    2286.9    2274.9        -0.5     -4.9     -4.1     -1.3
+FULL|u64|lo|t64|large                  parallel_hash     2927.0    2928.4    2715.5    2710.3        -0.2     -7.2     -7.4     +0.0
+FULL|str|hi|t1|small                   hash                72.6      73.8      75.7      75.5        -0.3     +4.3     +2.3     +1.7
+FULL|str|hi|t1|medium                  hash               252.5     247.6     242.7     242.8        +0.0     -3.9     -2.0     -1.9
+FULL|str|hi|t16|large                  parallel_hash     6202.0    6186.4    5828.0    5755.5        -1.2     -6.0     -7.0     -0.3
+FULL|str|hi|t64|large                  parallel_hash     7263.9    7263.2    6595.3    6529.5        -1.0     -9.2    -10.1     -0.0
+FULL|str|lo|t1|small                   hash                50.9      51.1      54.0      54.2        +0.4     +6.2     +6.1     +0.5
+FULL|str|lo|t1|medium                  hash               226.6     226.1     133.3     133.2        -0.1    -41.2    -41.1     -0.2
+FULL|str|lo|t16|large                  parallel_hash     4080.1    4073.7    3956.0    3922.9        -0.8     -3.0     -3.7     -0.2
+FULL|str|lo|t64|large                  parallel_hash     4834.0    4840.4    4645.0    4608.3        -0.8     -3.9     -4.8     +0.1
+FULL|comp|hi|t1|small                  hash                60.8      61.2      63.0      63.1        +0.1     +3.6     +3.1     +0.5
+FULL|comp|hi|t1|medium                 hash               117.1     116.6     111.9     110.6        -1.2     -4.5     -5.1     -0.5
+FULL|comp|hi|t16|large                 parallel_hash     4453.7    4482.4    3937.5    3921.2        -0.4    -11.6    -12.5     +0.6
+FULL|comp|hi|t64|large                 parallel_hash     5530.1    5510.2    4866.3    4771.9        -1.9    -12.0    -13.4     -0.4
+FULL|comp|lo|t1|small                  hash                44.9      44.4      46.9      46.7        -0.4     +4.3     +5.0     -1.0
+FULL|comp|lo|t1|medium                 hash               146.3     145.0      81.2      80.6        -0.7    -44.5    -44.4     -0.8
+FULL|comp|lo|t16|large                 parallel_hash     2971.3    2965.4    2806.2    2795.2        -0.4     -5.6     -5.7     -0.2
+FULL|comp|lo|t64|large                 parallel_hash     3758.0    3762.1    3469.7    3459.4        -0.3     -7.7     -8.0     +0.1
+LEFT-SEMI|u64|hi|t1|small              hash                10.3      10.2      11.7      11.6        -0.5    +13.0    +14.0     -1.3
+LEFT-SEMI|u64|hi|t1|medium             hash                21.0      21.2      23.7      23.8        +0.3    +12.9    +12.2     +0.9
+LEFT-SEMI|u64|hi|t16|large             None                   -         -     622.5     601.2        -3.4        -        -        -
+LEFT-SEMI|u64|hi|t64|large             None                   -         -     909.7     898.0        -1.3        -        -        -
+LEFT-SEMI|u64|lo|t1|small              hash                 8.9       9.0      10.3      10.4        +0.8    +15.9    +16.0     +0.6
+LEFT-SEMI|u64|lo|t1|medium             hash                28.0      27.6      31.3      31.4        +0.1    +12.1    +13.8     -1.4
+LEFT-SEMI|u64|lo|t16|large             None                   -         -     651.3     647.5        -0.6        -        -        -
+LEFT-SEMI|u64|lo|t64|large             None                   -         -     962.6     967.0        +0.5        -        -        -
+LEFT-SEMI|str|hi|t1|small              hash                32.3      31.8      34.1      34.1        +0.0     +5.6     +7.1     -1.3
+LEFT-SEMI|str|hi|t1|medium             hash                94.4     104.9     103.3     106.2        +2.8     +9.4     +1.2    +11.2
+LEFT-SEMI|str|hi|t16|large             None                   -         -    2890.9    2845.5        -1.6        -        -        -
+LEFT-SEMI|str|hi|t64|large             None                   -         -    3498.2    3473.0        -0.7        -        -        -
+LEFT-SEMI|str|lo|t1|small              hash                22.1      21.5      23.9      23.0        -3.4     +8.1     +7.2     -2.7
+LEFT-SEMI|str|lo|t1|medium             hash                79.0      78.7      83.2      81.0        -2.6     +5.4     +3.0     -0.4
+LEFT-SEMI|str|lo|t16|large             None                   -         -    2087.9    1990.0        -4.7        -        -        -
+LEFT-SEMI|str|lo|t64|large             None                   -         -    2663.2    2559.1        -3.9        -        -        -
+LEFT-SEMI|comp|hi|t1|small             hash                18.5      18.9      19.9      19.6        -1.5     +7.8     +4.0     +2.1
+LEFT-SEMI|comp|hi|t1|medium            hash                30.6      30.5      33.4      33.4        -0.0     +9.4     +9.4     -0.1
+LEFT-SEMI|comp|hi|t16|large            None                   -         -     861.1     843.8        -2.0        -        -        -
+LEFT-SEMI|comp|hi|t64|large            None                   -         -    1537.6    1526.1        -0.8        -        -        -
+LEFT-SEMI|comp|lo|t1|small             hash                18.1      17.7      19.4      19.1        -1.2     +7.3     +8.0     -1.8
+LEFT-SEMI|comp|lo|t1|medium            hash                40.2      39.8      44.0      43.4        -1.2     +9.3     +9.2     -1.2
+LEFT-SEMI|comp|lo|t16|large            None                   -         -    1006.0    1014.2        +0.8        -        -        -
+LEFT-SEMI|comp|lo|t64|large            None                   -         -    1662.8    1653.0        -0.6        -        -        -
+LEFT-ANTI|u64|hi|t1|small              hash                 6.7       6.6       7.8       7.7        -1.2    +15.9    +16.7     -1.8
+LEFT-ANTI|u64|hi|t1|medium             hash                19.0      18.7      21.2      21.3        +0.3    +12.0    +14.2     -1.6
+LEFT-ANTI|u64|hi|t16|large             None                   -         -     533.0     529.9        -0.6        -        -        -
+LEFT-ANTI|u64|hi|t64|large             None                   -         -     712.9     707.8        -0.7        -        -        -
+LEFT-ANTI|u64|lo|t1|small              hash                13.0      13.0      14.8      14.7        -0.3    +13.6    +13.3     -0.0
+LEFT-ANTI|u64|lo|t1|medium             hash                29.9      29.4      34.0      34.1        +0.3    +13.8    +16.0     -1.6
+LEFT-ANTI|u64|lo|t16|large             None                   -         -     714.4     705.6        -1.2        -        -        -
+LEFT-ANTI|u64|lo|t64|large             None                   -         -    1162.8    1153.2        -0.8        -        -        -
+LEFT-ANTI|str|hi|t1|small              hash                23.6      23.3      26.3      25.7        -2.3    +11.3    +10.6     -1.6
+LEFT-ANTI|str|hi|t1|medium             hash                75.1      76.4      86.1      85.3        -0.9    +14.6    +11.7     +1.7
+LEFT-ANTI|str|hi|t16|large             None                   -         -    2445.3    2361.4        -3.4        -        -        -
+LEFT-ANTI|str|hi|t64|large             None                   -         -    3023.8    2892.2        -4.4        -        -        -
+LEFT-ANTI|str|lo|t1|small              hash                30.0      29.7      31.9      31.8        -0.3     +6.2     +7.1     -1.2
+LEFT-ANTI|str|lo|t1|medium             hash               100.9      90.5     108.2      98.0        -9.4     +7.2     +8.3    -10.3
+LEFT-ANTI|str|lo|t16|large             None                   -         -    2385.0    2322.3        -2.6        -        -        -
+LEFT-ANTI|str|lo|t64|large             None                   -         -    3069.0    2981.1        -2.9        -        -        -
+LEFT-ANTI|comp|hi|t1|small             hash                13.4      13.4      14.8      14.9        +0.5    +10.1    +11.1     -0.3
+LEFT-ANTI|comp|hi|t1|medium            hash                26.9      27.2      28.4      28.4        +0.0     +5.6     +4.5     +1.0
+LEFT-ANTI|comp|hi|t16|large            None                   -         -     743.8     735.4        -1.1        -        -        -
+LEFT-ANTI|comp|hi|t64|large            None                   -         -    1286.1    1280.5        -0.4        -        -        -
+LEFT-ANTI|comp|lo|t1|small             hash                20.8      20.7      22.8      22.8        +0.0     +9.2    +10.0     -0.7
+LEFT-ANTI|comp|lo|t1|medium            hash                45.1      44.7      48.3      47.9        -0.9     +7.2     +7.1     -0.8
+LEFT-ANTI|comp|lo|t16|large            None                   -         -    1088.0    1098.8        +1.0        -        -        -
+LEFT-ANTI|comp|lo|t64|large            None                   -         -    1853.6    1863.8        +0.5        -        -        -
+
+cells=144  B_new vs B_old: median -0.40% min -9.43% max +3.28%
+comparator drift A_new vs A_old: median -0.05% min -10.28% max +11.15%
+cells where B_new is slower than A: 69 of 144
