@@ -345,3 +345,106 @@ All on the final binary `bin/clickhouse.bnew2`:
 | `fba9bf00c89` | 1 / B22 | share a block's key getter only when construction reads the block |
 
 Task 7 (confirm P1) needed no code and is reported in §4.
+
+---
+
+## 11. Amendment: where the residual losses actually are
+
+Added after §1-§10, from a loss analysis of the `bnew2` sweep (`losses.py`). It corrects one
+number in §2.3 and one inherited framing.
+
+### 11.1 A harness limitation that makes §2.3's probe number wrong
+
+**`hash` has no `NonJoinedBlocksTransform`.** It emits a RIGHT/FULL join's non-joined rows
+inside its single `JoiningTransform`. Confirmed against the pipeline: the processor is present
+in **0 of 24** `hash` RIGHT/FULL cells at one thread, and in **12 of 12** `parallel_hash`
+cells at both 16 and 64 threads, and in all 24 unified cells.
+
+So `harness.py`'s `probe` and `nonjoined` columns are **not comparable between `hash` and
+`unified_hash`**, and §2.3's "+6.1% probe" was comparing unified's probe against `hash`'s
+probe *plus* its non-joined emission. That flatters unified on exactly the kinds that have a
+non-joined scan: on `FULL|u64|hi|t1|medium` unified's probe reads **−4.7%** while its
+`nonjoined` column has no comparator at all and its wall is **+8.5%**.
+
+The apples-to-apples quantity is `probe + nonjoined`. Corrected:
+
+| metric, 1 thread, used-flag kinds | B_old/A | B_new/A |
+| --- | ---: | ---: |
+| probe + non-joined (corrected) | +7.5% | **+7.2%** |
+| probe alone (§2.3, not comparable) | +6.2% | +6.1% |
+
+The conclusion of §4 is unchanged - the deficit did not move - but its size is 7.2%, not 6.1%.
+`parallel_hash` does have the transform, so nothing at 16 or 64 threads is affected.
+
+### 11.2 The loss count, by phase
+
+Comparable cells only (`LEFT SEMI`/`LEFT ANTI` above one thread have no comparator). A cell
+"loses" when it is more than 2% above its comparator:
+
+| phase | t1 | t16 | t64 |
+| --- | ---: | ---: | ---: |
+| **probe + non-joined** | **70 / 72** | 1 / 24 | 1 / 24 |
+| build | 20 / 72 (median +0.9%, inside a 14-37% A/A sd - not signal) | 1 / 24 | 0 / 24 |
+| wall | 61 / 72 | **0 / 24** | **0 / 24** |
+
+So: **the residual loss is one regime and one phase — the probe at one thread.** The build
+side is settled at every thread count, and above one thread there is nothing left.
+
+### 11.3 Its structure: a fixed part plus a proportional part
+
+Per **probe row** rather than as a percentage, which is what separates the two:
+
+| group | A ns/row | B ns/row | delta ns | delta % |
+| --- | ---: | ---: | ---: | ---: |
+| `LEFT ANTI` | 12.6 | 13.5 | +1.15 | **+10.9%** |
+| `LEFT SEMI` | 12.3 | 13.8 | +0.95 | +8.6% |
+| `INNER` | 26.6 | 27.9 | +1.18 | +4.5% |
+| `LEFT` | 31.6 | 32.9 | +1.53 | +4.9% |
+| `RIGHT` | 39.0 | 41.9 | +2.27 | +5.8% |
+| `FULL` | 41.7 | 44.4 | +2.14 | +5.5% |
+| small (10 k keys, L2-resident) | 17.3 | 18.3 | +0.95 | +6.8% |
+| medium (500 k keys) | 45.3 | 48.3 | +2.44 | +6.3% |
+| `u64` / `str` / `comp` | 18.2 / 37.6 / 24.5 | 19.4 / 39.2 / 25.6 | +1.31 / +1.57 / +1.42 | +8.4 / +5.5 / +6.4% |
+
+Least squares over all 72 one-thread cells:
+
+```
+delta_ns = 0.48 + 0.0422 * baseline_ns          R^2 = 0.645
+```
+
+**A fixed 0.48 ns per probe row — about 1.5 cycles — plus 4.2% of whatever the row already
+costs.** Those two numbers account for the whole 4.5%-10.9% spread:
+
+- the **proportional 4.2%** is the same effect the previous mission measured with hardware
+  counters as **+6.7% instructions/row at −1.3% IPC** on the whole query (F8), and it is why
+  the percentage barely moves between cardinalities (6.8% vs 6.3%) or key types. It is not
+  memory: a 10 k-key table is L2-resident and a 500 k-key table is not, and the percentage is
+  the same in both;
+- the **fixed 0.48 ns** is why the percentage is worst on `LEFT SEMI`/`LEFT ANTI`. Those are
+  `MapsOne` kinds that emit at most one row per left row and never walk a `RowRefList`, so
+  their baseline per-row cost is the smallest in the matrix (12.3 ns) and a constant is
+  3.9% of it. On the dearest cells it is 1.1%.
+
+`RIGHT`/`FULL` carry the largest *absolute* overhead (+2.1 to +2.3 ns/row), about +1 ns/row
+more than `INNER` on the same data. They are the kinds that also run the non-joined scan and
+maintain per-offset used flags, and the non-joined scan is the one loop group the previous
+mission left UNSETTLED (N1/N3/N4/N7: unified walks buckets through
+`beginOfNextNonEmptyBucket`, 4 calls, where the baseline uses `const_iterator::operator++`,
+1 call). That is now the best-supported lead for the `RIGHT`/`FULL` half of the residual, and
+it is a different lead from the proportional 4.2%.
+
+### 11.4 What this means for the next attempt
+
+The one-thread deficit is **not** one thing:
+
+1. **~4.2% proportional**, present on every kind, key and cardinality, and not memory-bound.
+   Needs per-phase instruction attribution, not more timing. The `Prober` is not it (§4).
+2. **~0.5 ns/row fixed**, visible only where per-row work is small (`SEMI`/`ANTI`). A
+   per-row constant on the cheapest path.
+3. **~1 ns/row extra on `RIGHT`/`FULL` specifically**, coincident with the non-joined scan and
+   the per-offset flags. Separable by a harness extension that varies the *unmatched build
+   key* fraction, which is exactly the coverage gap recorded as assumption 2 and still open.
+
+Fixing the harness so `hash`'s non-joined work is attributable (§11.1) is a prerequisite for
+3, and is cheap: the phase map needs a `hash`-specific entry, or the comparison needs to use
+`probe + nonjoined` throughout, as this section does.
