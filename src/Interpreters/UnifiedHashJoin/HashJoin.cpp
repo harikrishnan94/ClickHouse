@@ -860,26 +860,43 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
         StoredBlocksList::iterator stored_columns_it;
         size_t data_allocated_bytes = 0;
         {
+            /** We do not allocate memory for stored blocks inside HashJoin, only for hash table.
+              * In case when we have all the blocks allocated before the first `addBlockToJoin` call, will already be quite high.
+              * In that case memory consumed by stored blocks will be underestimated.
+              *
+              * Sampled once per join, by whichever build thread registers a block first: a later
+              * sample would already include the blocks stored before it. It asks the query's memory
+              * tracker, not anything `blocks_mutex` guards, so it is answered outside that lock.
+              */
+            if (!memory_usage_before_adding_blocks.load(std::memory_order_relaxed))
+            {
+                Int64 unset = 0;
+                memory_usage_before_adding_blocks.compare_exchange_strong(
+                    unset, JoinCommon::getCurrentQueryMemoryUsage(), std::memory_order_relaxed);
+            }
+
+            /// Reads `data->sample_block`, which is fixed at construction, so no build thread can be
+            /// changing it while this runs.
+            assertBlocksHaveEqualStructureAllowReplicated(data->sample_block, block_to_save, "joined block");
+
+            /// Built here rather than in place under the lock: this copies the block's column
+            /// pointers, finds the replicated ones and measures the entry, none of which any other
+            /// build thread can see yet.
+            StoredBlock new_stored_columns(block_to_save.getColumns(), std::move(selector));
+            data_allocated_bytes = new_stored_columns.allocatedBytes();
+
+            /// What is left for the lock is only what another build thread can observe: the list
+            /// splice, the block number the index hands out, and the byte total.
             std::lock_guard lock(blocks_mutex);
 
             if (storage_join_lock)
                 throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "addBlockToJoin called when HashJoin locked to prevent updates");
 
-            /** We do not allocate memory for stored blocks inside HashJoin, only for hash table.
-              * In case when we have all the blocks allocated before the first `addBlockToJoin` call, will already be quite high.
-              * In that case memory consumed by stored blocks will be underestimated.
-              */
-            if (!memory_usage_before_adding_blocks)
-                memory_usage_before_adding_blocks = JoinCommon::getCurrentQueryMemoryUsage();
-
-            assertBlocksHaveEqualStructureAllowReplicated(data->sample_block, block_to_save, "joined block");
-
             doDebugAsserts();
-            data->columns.emplace_back(block_to_save.getColumns(), std::move(selector));
+            data->columns.push_back(std::move(new_stored_columns));
             stored_columns_it = std::prev(data->columns.end());
             stored_columns = &*stored_columns_it;
             stored_columns->block_no = data->stored_columns_index->add(stored_columns);
-            data_allocated_bytes = stored_columns->allocatedBytes();
             data->allocated_size += data_allocated_bytes;
             doDebugAsserts();
         }
@@ -1059,8 +1076,9 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
     std::lock_guard lock(blocks_mutex);
 
     Int64 current_memory_usage = JoinCommon::getCurrentQueryMemoryUsage();
-    Int64 query_memory_usage_delta = current_memory_usage - memory_usage_before_adding_blocks;
-    Int64 max_total_bytes_for_query = memory_usage_before_adding_blocks ? table_join->getMaxMemoryUsage() : 0;
+    Int64 memory_usage_before = memory_usage_before_adding_blocks.load(std::memory_order_relaxed);
+    Int64 query_memory_usage_delta = current_memory_usage - memory_usage_before;
+    Int64 max_total_bytes_for_query = memory_usage_before ? table_join->getMaxMemoryUsage() : 0;
 
     auto max_total_bytes_in_join = table_join->sizeLimits().max_bytes;
 
