@@ -1,121 +1,147 @@
-# PRE-REGISTRATION
+# PREREG — pre-registered predictions
 
-Written **before** the change it predicts. Git history is the proof of ordering:
-this file is committed before the harness / ablation it refers to. Orientation,
-profiling and exploratory runs done before an entry are orientation, not
-acceptance evidence, and are logged in `WORKLOG.md` instead.
+Rule: an entry here must exist **before** the change or measurement it predicts.
+The ordering is checkable in git history and the verifier checks it. Orientation,
+profiling and exploratory runs before pre-registering are orientation, not
+acceptance evidence.
 
-A prediction/result mismatch is a finding to investigate, never to rationalise
-afterwards. Where a prediction turned out wrong, the entry stays as written and
-the outcome is recorded beneath it.
+Each entry states: what is expected, the exact gate invocation that will prove it,
+and what result would refute it. A prediction/result mismatch is a finding to
+investigate, never to rationalize afterwards. Results are appended under the entry
+after the run, never edited into the prediction.
 
 ---
 
 ## P0 — Unit 0: the measurement instrument
 
-**Registered:** before writing `sweep.py` / `matrix.py` (commit ordering is the check).
+Registered before the harness exists. Written against commit `0945a745399` +
+worklog entries E0/E1 only.
 
-### What is being built
+### P0.0 Declared constants (fixed now, so they cannot be tuned to a result)
 
-A harness that measures, for every cell of a declared matrix, the wall time and
-CPU time of `unified_hash` against the correct comparator (`hash` at 1 thread,
-`parallel_hash` at 16 and 64 threads), split into build / probe / non-joined
-phases, and classifies each cell slower / faster / within noise.
+- **Noise band**: an effect is "no result" if it is within `max(5%, 1 sample
+  stdev)` of the comparator's median. No claim may be made inside it.
+- **Runs per point**: 7 timed runs, plus 1 untimed warmup, **A and B interleaved**
+  (run order `A B A B ...`, never all-A-then-all-B).
+- **Statistic**: median and sample stdev (n-1) over the 7 runs.
+- **Metrics**: wall = `query_log.query_duration_ms`; CPU =
+  `query_log.ProfileEvents['UserTimeMicroseconds']`; phases = summed
+  `processors_profile_log.elapsed_us` for `FillingRightJoinSide` (build),
+  `JoiningTransform` (probe), `DelayedJoinedBlocksWorkerTransform` +
+  `DelayedJoinedBlocksTransform` (non-joined).
+- **G0.5 reconciliation tolerance, declared up front**: two separate claims.
+  (a) *Accounting identity*: `build + probe + nonjoined + other` must equal the sum
+  of all processors' `elapsed_us` **exactly** (it is a partition of the same set;
+  any mismatch is a harness bug, tolerance 0).
+  (b) *Independent cross-check*: for the INNER cells, a build-only query variant
+  (probe side reduced to 1 row) must reproduce the full query's
+  `FillingRightJoinSide` figure within **max(15%, 1 stdev)**. 15% rather than the
+  5% noise band because the two queries genuinely differ (no probe-side
+  interleaving, different memory pressure); a looser band here is honest, and it
+  is a validity check on the phase source, not a source of any reported number.
+- **Pinned settings, recorded in every run**: `enable_join_runtime_filters=0`,
+  `max_bytes_before_external_join=0`, `max_block_size=65409`,
+  `max_joined_block_size_rows=65409`, `query_plan_join_swap_table=0`,
+  `parallel_hash_join_threshold=0`, `parallel_non_joined_rows_processing=1`,
+  `log_processors_profiles=1`, `max_threads=<T>`, `join_algorithm='<exactly one>'`.
 
-### Declared matrix
+### P0.1 Prediction — the deficit does NOT reproduce everywhere
 
-| Axis | Levels |
-| --- | --- |
-| join kind | `INNER`, `LEFT`, `RIGHT`, `FULL`, plus `LEFT SEMI` and `LEFT ANTI` |
-| key type | one representative per key-getter family enumerated from `KeyGetter.h` / `HashJoinMethods*.h` (see `artifacts/CANDIDATE_INVENTORY.md`); at minimum single fixed-width (`UInt64` -> `key64`), string (`String` -> `key_string`), multi-column composite (`(UInt64, UInt64)` -> `keys128`) |
-| thread count | 1, 16, 64 |
-| cardinality (distinct build keys) | 1 thread: small = 10,000 and medium = 1,000,000. 16/64 threads: large = 50,000,000 (under the 100M cap) |
-| match rate | high = 0.9, low = 0.1 (fraction of probe rows finding a match) |
+I predict, before running, that the matrix will **not** show a uniform
+`unified_hash` deficit, and I am recording the shape I expect so that a
+convenient result cannot be claimed as a confirmation afterwards:
 
-Cardinality is expressed as the **build table's row count with unique keys**, so
-that "distinct build-side keys" and "hash table size" are the same number and one
-probe row can produce at most one output row. Recorded as a deliberate call: it
-makes the cache-footprint axis clean at the cost of not exercising duplicate-key
-`RowRefList` chains, which is registered as a **known coverage gap** in the report.
+1. At **1 thread**, `unified_hash` is at parity with `hash` (inside the noise band)
+   on build-dominated INNER, or slower by a small single-digit percentage — because
+   `bucketCountForThreads(1) = 1`, so there is exactly one bucket and no scatter
+   pass. Any 1-thread deficit must therefore come from residual per-operation
+   indirection, not from bucket count or cache footprint.
+2. At **16/64 threads**, `unified_hash` is slower than `parallel_hash` on
+   **build CPU** by a clearly-beyond-noise margin.
+3. At **16/64 threads**, `unified_hash` is **faster** on at least one probe-bound
+   cell. The snapshot reports this and it is a wanted result, not an anomaly.
+4. **RIGHT/FULL with a non-joined scan** is `unified_hash`'s worst cell at 16/64
+   threads.
 
-Probe row counts: 2,000,000 at 1 thread; 50,000,000 at 16/64 threads.
+**Refuted if**: the sweep shows `unified_hash` uniformly slower across all cells
+including 1-thread probe-bound and 16-thread probe-bound (that would mean either a
+global regression I have not identified, or an instrument that is measuring
+something other than the join — and G0.3's A/A calibration is what tells the two
+apart).
 
-Cells = 6 kinds x 3 key types x 2 match rates x 4 (thread, cardinality) pairs = **144**.
+### P0.2 Prediction — inherited LEAD (1) points the wrong way
 
-### Pinned settings, recorded in every run
+Inherited LEAD (1) says the 16-thread build CPU excess is `unified_hash`'s
+"per-bucket sub-table cache footprint at `BUCKETS_PER_THREAD = 2`". From E1 I have
+already established from code, before measuring, that at 16 threads
+`unified_hash` has **32** sub-tables and `parallel_hash` has **4096**. I therefore
+predict this lead will be **REFUTED**, and that the real 16/64-thread candidates
+are per-operation costs that a sharded map does not pay at all:
 
-`enable_join_runtime_filters=0`, `max_bytes_before_external_join=0`,
-`max_block_size=65409`, `max_joined_block_size_rows=65409`,
-`query_plan_join_swap_table=0`, `parallel_hash_join_threshold=0`,
-`parallel_non_joined_rows_processing=1`, and `join_algorithm` set to exactly one
-algorithm per run.
+- per-bucket **mutex acquire/release** on a *shared* map during build insert;
+- the **global cell-offset prefix sum** (`offsetInternal`) used to index RIGHT/FULL
+  used flags, where `parallel_hash`'s flags are shard-local and flat.
 
-`join_algorithm` is set to a **single** algorithm rather than a list. Reason,
-established from `TableJoin.cpp:1293-1307` and `PlannerJoins.cpp:1244-1257`:
-`allowParallelHashJoin` returns false unless `PARALLEL_HASH` is in the list, so a
-single-valued `join_algorithm='hash'` cannot be silently upgraded to
-`ConcurrentHashJoin` — which it demonstrably could be otherwise, since
-`use_parallel_hash` is true whenever the RHS size estimate is missing.
+**Refuted if**: an ablation that removes the bucket-count effect (e.g. forcing
+`BUCKETS_PER_THREAD = 1`, or raising it) moves the 16-thread build CPU gap by more
+than the noise band in the direction LEAD (1) predicts, while a lock-removal
+ablation does not. That is the discriminating probe, and it belongs to Unit 1 —
+recorded here only so the prediction predates the evidence.
 
-### Predictions (direction and rough magnitude), before any measurement
+### P0.3 Gate invocations (the harness must make each of these runnable)
 
-| # | Prediction | Would refute it |
+Each gate is a subcommand of `tmp/uhj_parity/perf/harness/uhjbench.py`, exiting
+non-zero on failure and printing the raw evidence. Copy-paste re-runnable:
+
+| Gate | Invocation | Passes iff |
 | --- | --- | --- |
-| P0-a | Gate G0.3 (A/A) reports a delta **inside** the noise band `max(5%, 1 stdev)` in both the 1-thread and 64-thread calibration cells. | An A/A delta outside the band => the instrument measures scheduling drift, and every A/B from it is void until fixed. |
-| P0-b | Some cells show **no deficit**, and at least one cell shows `unified_hash` **ahead** — most likely a probe-bound cell at 16 threads, per the inherited snapshot. | Every cell slower would itself be suspicious and would prompt a check for a systematic harness bias (e.g. ordering, warm-up). |
-| P0-c | At **1 thread** the deficit, if present, is **small** (single-digit %), because `bucketCountForThreads(1) = 1` leaves `unified_hash` with one bucket and therefore no bucket-footprint or locking cost — only residual per-operation indirection. | A large (>15%) 1-thread deficit would mean the one-bucket path carries far more than indirection, redirecting Unit 1 away from the lock/offset candidates. |
-| P0-d | At **16/64 threads** the RIGHT/FULL non-joined shapes show the **largest** relative deficits, and build-bound INNER shows a CPU excess larger than its wall excess. | Deficits concentrated instead in probe-bound INNER would refute both inherited leads and redirect Unit 1 to the probe lookup path. |
-| P0-e | Gate G0.4 recovers both recorded snapshot effects in **direction**. Magnitude is registered as **uncertain**: the snapshot was produced by a binary predating `5362055b4ed` (see WORKLOG D1), which changed `unified_hash`'s non-joined path — exactly one of the two effects. | If direction is not recovered, the two candidate explanations ("instrument lacks power" vs "the code changed under the snapshot") must be separated before G0.4 is scored; scoring it green without separating them is a banned move. |
+| G0.1 | `python3 harness/uhjbench.py gate-algo` | every cell's profiled verification run shows the expected symbol-namespace fingerprint and no foreign one; build-side `input_rows` equals the expected build-table row count (no swap) |
+| G0.2 | `python3 harness/uhjbench.py gate-checksum` | for every cell, all measured algorithms return identical `(count, sum(cityHash64(all output cols)), groupBitXor(...))` |
+| G0.3 | `python3 harness/uhjbench.py gate-aa` | the A/A delta is inside the noise band for at least one 1-thread and one 64-thread cell, on both wall and CPU |
+| G0.4 | `python3 harness/uhjbench.py gate-signal` | the 16-thread build-bound CPU excess and the 16-thread RIGHT-non-joined wall excess reproduce in direction, and in rough magnitude |
+| G0.5 | `python3 harness/uhjbench.py gate-phases` | (a) the phase partition is exact; (b) the build-only cross-check agrees within max(15%, 1 stdev) |
+| G0.6 | `python3 harness/uhjbench.py gate-coverage` | every declared cell is MEASURED or SKIPPED-with-reason; zero silently missing |
+| G0.7 | `python3 harness/uhjbench.py deficit-map` | emits the full classification; this is the stop condition, not a pass/fail |
 
-### Gate invocations that will prove or refute the above
+### P0.4 Prediction — G0.3 A/A will pass, and this is the load-bearing one
 
-Each is copy-paste re-runnable from the repo root.
+I predict the A/A delta will be inside the noise band. **If it is not**, every A/B
+from this harness is invalid and the correct action is to fix the instrument
+(pin threads, drop caches consistently, increase run count, interleave harder),
+**not** to widen the noise band until A/A fits. Widening the band to make A/A pass
+is explicitly a banned move and I am recording that here so it is checkable.
 
-| Gate | Invocation | Expected result |
-| --- | --- | --- |
-| G0.1 | `python3 tmp/uhj_parity/perf/gates.py g01` | Every cell has a symbol-level proof row; 0 cells with `algo_verdict != requested`. |
-| G0.2 | `python3 tmp/uhj_parity/perf/gates.py g02` | 0 checksum mismatches across algorithms per cell. |
-| G0.3 | `python3 tmp/uhj_parity/perf/gates.py g03` | A/A delta within `max(5%, 1 stdev)` for the 1-thread and 64-thread calibration cells. |
-| G0.4 | `python3 tmp/uhj_parity/perf/gates.py g04` | Direction of both recorded effects recovered; magnitude reported, not asserted. |
-| G0.5 | `python3 tmp/uhj_parity/perf/gates.py g05` | Phase accounting identity exact; build-only cross-check within the declared tolerance (below). |
-| G0.6 | `python3 tmp/uhj_parity/perf/gates.py g06` | Declared matrix enumerated; every cell MEASURED or SKIPPED-with-reason; 0 missing. |
-| G0.7 | `python3 tmp/uhj_parity/perf/gates.py g07` | Deficit map emitted for every measured cell on both wall and CPU. |
+### P0.5 Prediction — G0.4 known-signal recovery, and its confound
 
-### Declared up front, so they cannot be tuned afterwards
+I predict the two snapshot effects reproduce in **direction**. I explicitly do
+**not** predict they reproduce in magnitude, and I am recording the reason before
+running rather than as an excuse afterwards: per worklog D1, the snapshot was
+produced by a binary that predates commit `5362055b4ed`, which changes
+`unified_hash`'s non-joined path — one of the two effects G0.4 tests. So:
 
-- **Noise band:** an effect is "no result" if it is within `max(5%, 1 sample stdev
-  of the comparator's runs)`. At least **7** runs per point; median and sample
-  stdev reported. A and B runs are **interleaved** (round-robin per repetition),
-  not batched, so drift cannot masquerade as an effect.
-- **G0.5 tolerance:** two separate checks. (i) The accounting identity
-  `build + probe + nonjoined + other == sum(all processors' elapsed_us)` must hold
-  **exactly** (it is a partition of the same set; any drift means rows were lost).
-  (ii) The **independent** cross-check: build phase measured by a build-only query
-  variant must agree with `FillingRightJoinSide` elapsed from the full query to
-  within **20%**. 20% rather than the noise band because the two differ
-  structurally (the build-only variant still runs the probe pipeline over a
-  near-empty left side); a disagreement larger than 20% means
-  `FillingRightJoinSide` is not the build phase and every build percentage is void.
-- **Phase sources:** build = `FillingRightJoinSide`, probe = `JoiningTransform`,
-  non-joined = `DelayedJoinedBlocksTransform` + `DelayedJoinedBlocksWorkerTransform`,
-  all from `system.processors_profile_log` with `log_processors_profiles=1`.
-  Verified present and non-trivial in a pilot (WORKLOG E2).
-- **G0.1 mechanism:** a dedicated **assertion run per cell**, separate from the 7
-  timed runs so it cannot perturb them, with the CPU query profiler on, asserting
-  from `system.trace_log` demangled stacks:
-  `parallel_hash` iff frames match `DB::ConcurrentHashJoin`;
-  `unified_hash` iff frames match `DB::Unified::HashJoin` and no
-  `DB::ConcurrentHashJoin`; `hash` iff frames match `DB::HashJoin::` and neither of
-  the other two. This is positive identification of the code that actually ran,
-  not an echo of the requested setting. Verified to discriminate in a pilot
-  (WORKLOG E2: 437/453, 414/430, 0/0 respectively).
+- If **direction** reproduces for both, G0.4 is green.
+- If the RIGHT-non-joined magnitude differs substantially, that is attributable to
+  `5362055b4ed` and is a finding, not a gate failure — but I must then demonstrate
+  the instrument still has power, by showing it resolves the *other* known effect
+  and passes A/A.
+- If **neither** effect reproduces in direction, G0.4 is **red** and Unit 1 does
+  not start: an instrument that cannot see effects known to exist has no power to
+  find new ones.
 
-### Known SKIPs predicted in advance, with reasons
+### P0.6 Expected SKIPs, declared in advance
 
-- `LEFT SEMI` and `LEFT ANTI` at 16 and 64 threads have **no `parallel_hash`
-  comparator**: `allowParallelHashJoin` (`TableJoin.cpp:1301-1303`) returns false
-  for any kind other than Left/Inner/Right/Full, so requesting `parallel_hash`
-  silently yields plain `hash`. These cells are recorded SKIPPED for the
-  `parallel_hash` comparison, with `unified_hash` vs `hash` still measured and
-  reported as context. Predicting this here so that discovering it later cannot be
-  presented as a finding.
+- Any cell whose join kind is not supported by an algorithm. From
+  `allowParallelHashJoin`, kinds outside {Left, Inner, Right, Full} cannot use
+  `parallel_hash`; `LEFT SEMI`/`LEFT ANTI` carry `kind() == Left` and so are
+  expected to be *supported*. If a SEMI/ANTI cell turns out to silently run as
+  `hash` at 16/64 threads, G0.1 will catch it and the cell is SKIPPED with that
+  reason rather than reported as a comparison.
+- `RIGHT`/`FULL` at the large cardinality emit a very large non-joined result;
+  if any such cell exceeds a wall-clock budget of 120 s per run it is SKIPPED with
+  the recorded reason and the cardinality it failed at, not silently shrunk.
+
+---
+
+## Results appended below after each gate runs
+
+(none yet — no gate has been run at the time of writing)
