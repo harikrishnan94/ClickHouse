@@ -1,0 +1,7 @@
+# E1 — commands used to confirm the three implementation shapes (orientation)
+rg -n "BUCKETS_PER_THREAD|BITS_FOR_BUCKET" src/Interpreters/UnifiedHashJoin/HashJoin.h
+rg -n "HashMap<|FixedHashMap|TwoLevelHashMap" src/Interpreters/HashJoin/HashJoin.h
+rg -n "use_two_level_maps" src/ --glob '!src/Interpreters/UnifiedHashJoin/*'
+rg -n "DEFAULT_BITS_FOR_BUCKET" src/Common/HashTable/TwoLevelHashTable.h
+rg -n -A12 "^size_t bucketCountForThreads" src/Interpreters/UnifiedHashJoin/HashJoin.cpp
+sed -n '205,240p' src/Interpreters/ConcurrentHashJoin.cpp
