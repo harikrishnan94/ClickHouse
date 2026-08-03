@@ -1,0 +1,22 @@
+G3.2 hardware counters, whole query on a PROBE-DOMINATED cell
+  cell INNER|u64|hi|t1|small: 20,000 build rows vs 2,000,000 probe rows
+  usable reps (all counters sane): hash 2/15, unified 6/15
+  counter multiplexing fraction (running/enabled): hash 4833419120584.35, unified 0.54 -- kernel-scaled; both measured identically, so the RATIO is fair
+
+  counter                             hash       unified    delta%
+  PerfCPUCycles                    37.1880        0.9243    -97.5%
+  PerfInstructions                112.5676        0.5943    -99.5%
+  PerfCacheMisses                   1.5792        0.0149    -99.1%
+  PerfCacheReferences              41.3256        1.0452    -97.5%
+  PerfDataTLBMisses                 1.2551        0.8681    -30.8%
+  PerfStalledCyclesBackend         17.8632        0.6192    -96.5%
+  PerfBranchMisses                  0.1203        0.0162    -86.5%
+  IPC                                3.027         0.643    -78.8%
+
+PREREG P3.2 scoring:
+  instructions/row up >10%        :   -99.5%   NOT MET
+  |IPC delta| < 10%               :   -78.8%   NOT MET
+  |cache-misses/row delta| < 20%  :   -99.1%   NOT MET
+  (dTLB-misses/row delta)         :   -30.8%
+
+  VERDICT: NEITHER signature clean -- UNSETTLED.

@@ -1,0 +1,1377 @@
+# BASELINE DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList>>::joinBlockImpl(DB::HashJoin const&, DB::ScatteredBlock, DB::Block const&, std::__1::vector<DB::HashJoin::MapsTemplate<DB::RowRefList> const*, std::__1::allocator<DB::HashJoin::MapsTemplate<DB::RowRefList> const*>> const&, bool)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 stp x29, x30, [sp, #-0x60]!
+    9 stp x28, x27, [sp, #0x10]
+   10 stp x26, x25, [sp, #0x20]
+   11 stp x24, x23, [sp, #0x30]
+   12 stp x22, x21, [sp, #0x40]
+   13 stp x20, x19, [sp, #0x50]
+   14 mov x29, sp
+   15 sub sp, sp, #0x4e0
+   16 ldr x25, [x0, #0x70]
+   17 mov x20, x0
+   18 str w4, [sp, #0x2c]
+   19 stp x3, x2, [sp, #0x18]
+   20 ldp x19, x8, [x25, #0xf8]
+   21 str x1, [sp, #0x30]
+   22 stp xzr, xzr, [x29, #-0x30]
+   23 stur xzr, [x29, #-0x20]
+   24 cmp x8, x19
+   25 b.eq <SELF+0x1ac>
+   26 ldr w8, [sp, #0x2c]
+   27 mov x23, #0xca1b
+   28 mov x22, #-ADDR
+   29 movk x23, #0x286b, lsl #16
+   30 mov x26, xzr
+   31 mov x27, xzr
+   32 tst w8, #0x1
+   33 mov w8, #0x18
+   34 movk x23, #0xa1af, lsl #32
+   35 mov x28, xzr
+   36 csel x21, x8, xzr, ne
+   37 movk x22, #0xaaab
+   38 movk x23, #0x86bc, lsl #48
+   39 b <SELF+0xc8>
+   40 ldp x19, x8, [x25, #0xf8]
+   41 add x28, x28, #0x1
+   42 add x27, x27, #0x18
+   43 add x21, x21, #0x98
+   44 add x26, x26, #0x98
+   45 sub x8, x8, x19
+   46 asr x8, x8, #3
+   47 mul x8, x8, x23
+   48 cmp x28, x8
+   49 b.hs <SELF+0x1ac>
+   50 add x8, sp, #0x2d8
+   51 add x0, x19, x26
+   52 bl <DB::TableJoin::JoinOnClause::condColumnNames() const>
+   53 ldp x8, x9, [x20, #0xd0]
+   54 sub x9, x9, x8
+   55 asr x9, x9, #3
+   56 mul x9, x9, x22
+   57 cmp x28, x9
+   58 b.hs <SELF+0x9bc>
+   59 ldr x9, [x20, #0xc0]
+   60 ldp x24, x10, [x29, #-0x28]
+   61 ldrb w9, [x9]
+   62 sub w9, w9, #0xb
+   63 cmp w9, #0x2
+   64 cset w11, lo
+   65 cmp x24, x10
+   66 strb w11, [sp, #0x258]
+   67 b.hs <SELF+0x18c>
+   68 cmp w9, #0x2
+   69 cset w5, lo
+   70 ldr x1, [sp, #0x30]
+   71 add x2, x19, x21
+   72 add x3, sp, #0x2d8
+   73 add x4, x8, x27
+   74 mov x0, x24
+   75 bl <DB::JoinOnKeyColumns::JoinOnKeyColumns(DB::ScatteredBlock const&, std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, bool)>
+   76 add x0, x24, #0x88
+   77 ldrsb w8, [sp, #0x307]
+   78 stur x0, [x29, #-0x28]
+   79 tbnz w8, #0x1f, <SELF+0x160>
+   80 ldrsb w8, [sp, #0x2ef]
+   81 tbz w8, #0x1f, <SELF+0xa0>
+   82 b <SELF+0x178>
+   83 nop
+   84 nop
+   85 nop
+   86 nop
+   87 nop
+   88 ldr x8, [sp, #0x300]
+   89 ldr x0, [sp, #0x2f0]
+   90 and x1, x8, #ADDR
+   91 bl <operator delete(void*, unsigned long)>
+   92 ldrsb w8, [sp, #0x2ef]
+   93 tbz w8, #0x1f, <SELF+0xa0>
+   94 ldr x8, [sp, #0x2e8]
+   95 ldr x0, [sp, #0x2d8]
+   96 and x1, x8, #ADDR
+   97 bl <operator delete(void*, unsigned long)>
+   98 b <SELF+0xa0>
+   99 ldr x1, [sp, #0x30]
+  100 sub x0, x29, #0x30
+  101 add x2, x19, x21
+  102 add x3, sp, #0x2d8
+  103 add x4, x8, x27
+  104 add x5, sp, #0x258
+  105 bl <DB::JoinOnKeyColumns* std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::__emplace_back_slow_path<DB::ScatteredBlock&, std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, bool>(DB::ScatteredBlock&, std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>&&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, bool&&)>
+  106 b <SELF+0x134>
+  107 ldr x8, [x20]
+  108 ldr x8, [x8, #0x108]
+  109 mov x0, x20
+  110 blr x8
+  111 ldr x25, [sp, #0x30]
+  112 ldr x8, [x20, #0x70]
+  113 mov x3, x0
+  114 ldp x6, x7, [x8, #0x110]
+  115 cbz x7, <SELF+0x1dc>
+  116 add x8, x7, #0x8
+  117 mov w9, #0x1
+  118 ldadd x9, x8, [x8]
+  119 add x8, x20, #0x280
+  120 ldr w9, [sp, #0x2c]
+  121 ldr x2, [sp, #0x20]
+  122 add x0, sp, #0x2d8
+  123 sub x5, x29, #0x30
+  124 mov x1, x25
+  125 mov x4, x20
+  126 and w9, w9, #0x1
+  127 strb wzr, [sp, #0x8]
+  128 strb w9, [sp, #0x10]
+  129 str x8, [sp]
+  130 bl <DB::AddedColumns<true>::AddedColumns(DB::ScatteredBlock const&, DB::Block const&, DB::Block const&, DB::HashJoin const&, std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>&&, std::__1::shared_ptr<DB::ExpressionActions>, std::__1::vector<std::__1::pair<unsigned long, unsigned long>, std::__1::allocator<std::__1::pair<unsigned long, unsigned long>>> const&, bool, bool)>
+  131 ldr x8, [x20, #0x210]
+  132 ldr x9, [x20, #0x208]
+  133 ldr x10, [x20, #0x298]
+  134 ldr x4, [x20, #0xb0]
+  135 cmp x8, x9
+  136 ldr x9, [x20, #0xc0]
+  137 cset w8, ne
+  138 cmp x10, #0x0
+  139 strb w8, [sp, #0x378]
+  140 csinv x8, x10, xzr, ne
+  141 str x8, [sp, #0x368]
+  142 ldp x5, x6, [x9, #0x168]
+  143 ldrb w3, [x9]
+  144 ldr x0, [sp, #0x18]
+  145 add x1, sp, #0x2d8
+  146 add x2, x25, #0x60
+  147 bl <unsigned long DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList>>::switchJoinRightColumns<DB::AddedColumns<true>>(std::__1::vector<DB::HashJoin::MapsTemplate<DB::RowRefList> const*, std::__1::allocator<DB::HashJoin::MapsTemplate<DB::RowRefList> const*>> const&, DB::AddedColumns<true>&, DB::detail::Selector const&, DB::HashJoin::Type, DB::JoinStuff::JoinUsedFlags&, DB::HashJoin::RightTableData::KeyRange)>
+  148 ldr x23, [sp, #0x340]
+  149 ldr x19, [sp, #0x338]
+  150 mov x22, x0
+  151 cmp x19, x23
+  152 b.eq <SELF+0x294>
+  153 nop
+  154 nop
+  155 nop
+  156 nop
+  157 nop
+  158 nop
+  159 nop
+  160 sub x23, x23, #0x88
+  161 mov x0, x23
+  162 bl <DB::JoinOnKeyColumns::~JoinOnKeyColumns()>
+  163 cmp x23, x19
+  164 b.ne <SELF+0x280>
+  165 add x23, sp, #0x1e0
+  166 str x19, [sp, #0x340]
+  167 strb wzr, [sp, #0x258]
+  168 strb wzr, [sp, #0x2d0]
+  169 cbz x22, <SELF+0x818>
+  170 ldrb w21, [x25, #0x70]
+  171 cmp w21, #0x1
+  172 b.eq <SELF+0x2cc>
+  173 cbnz w21, <SELF+0x9d0>
+  174 ldp x9, x8, [x25, #0x60]
+  175 sub x8, x8, x9
+  176 cmp x22, x8
+  177 b.lo <SELF+0x2e4>
+  178 b <SELF+0x818>
+  179 ldur x8, [x25, #0x60]
+  180 ldp x8, x9, [x8, #0x10]
+  181 sub x8, x9, x8
+  182 lsr x8, x8, #3
+  183 cmp x22, x8
+  184 b.hs <SELF+0x818>
+  185 ldp x8, x10, [x25, #0x18]
+  186 add x24, sp, #0xd0
+  187 ldr q0, [x25]
+  188 ldr x11, [x25, #0x10]
+  189 mov x9, x25
+  190 ldr x12, [x25, #0x30]
+  191 add x26, sp, #0x1e0
+  192 stp xzr, xzr, [x25]
+  193 str q0, [x24, #0x110]
+  194 ldr s0, [x25, #0x38]
+  195 add x13, x26, #0x28
+  196 stp x11, x8, [sp, #0x1f0]
+  197 ldr x11, [x9, #0x28]!
+  198 stp xzr, xzr, [x25, #0x18]
+  199 str xzr, [x25, #0x10]
+  200 str x10, [sp, #0x200]
+  201 str x11, [sp, #0x208]
+  202 str x12, [sp, #0x210]
+  203 str s0, [sp, #0x218]
+  204 cbz x12, <SELF+0x364>
+  205 sub x12, x10, #0x1
+  206 ldr x11, [x11, #0x8]
+  207 tst x10, x12
+  208 b.eq <SELF+0x358>
+  209 cmp x11, x10
+  210 b.lo <SELF+0x35c>
+  211 udiv x12, x11, x10
+  212 msub x11, x12, x10, x11
+  213 b <SELF+0x35c>
+  214 and x11, x11, x12
+  215 str x13, [x8, x11, lsl #3]
+  216 stp xzr, xzr, [x9]
+  217 ldr x9, [x25, #0x58]
+  218 ldr x8, [x25, #0x40]
+  219 ldur q0, [x25, #0x48]
+  220 stp xzr, xzr, [x25, #0x48]
+  221 str x9, [sp, #0x238]
+  222 add x9, x26, #0x60
+  223 str x8, [sp, #0x220]
+  224 mov w8, #0xff
+  225 str xzr, [x25, #0x58]
+  226 str x9, [sp, #0x130]
+  227 mov x9, x25
+  228 adrp x25, ADDR
+  229 add x25, x25, #RELOC_LO
+  230 strb w8, [sp, #0x250]
+  231 ldr x8, [x25, x21, lsl #3]
+  232 stur q0, [x23, #0x48]
+  233 strb wzr, [sp, #0x240]
+  234 add x0, sp, #0x130
+  235 add x1, x9, #0x60
+  236 blr x8
+  237 strb w21, [sp, #0x250]
+  238 add x8, sp, #0x1b0
+  239 add x0, x26, #0x60
+  240 mov x1, x22
+  241 bl <DB::detail::Selector::split(unsigned long)>
+  242 add x0, sp, #0xd0
+  243 add x1, sp, #0x1e0
+  244 bl <DB::Block::Block(DB::Block const&)>
+  245 ldrb w21, [sp, #0x1c0]
+  246 mov w8, #0xff
+  247 strb wzr, [sp, #0xb8]
+  248 strb w8, [sp, #0xc8]
+  249 cmp w21, #0xff
+  250 b.eq <SELF+0x408>
+  251 add x8, sp, #0xb8
+  252 ldr x9, [x25, w21, uxtw #3]
+  253 stur x8, [x29, #-0x18]
+  254 sub x0, x29, #0x18
+  255 add x1, sp, #0x1b0
+  256 blr x9
+  257 strb w21, [sp, #0xc8]
+  258 ldr q0, [x24]
+  259 ldp x8, x9, [sp, #0xe0]
+  260 ldp x10, x11, [sp, #0xf0]
+  261 ldr x12, [sp, #0x100]
+  262 str q0, [x24, #0x60]
+  263 ldr s0, [sp, #0x108]
+  264 stp x8, x9, [sp, #0x140]
+  265 add x8, sp, #0x130
+  266 stp xzr, xzr, [sp, #0xd0]
+  267 str xzr, [sp, #0xe0]
+  268 stp xzr, xzr, [sp, #0xe8]
+  269 stp x10, x11, [sp, #0x150]
+  270 str x12, [sp, #0x160]
+  271 str s0, [sp, #0x168]
+  272 cbz x12, <SELF+0x47c>
+  273 sub x14, x10, #0x1
+  274 ldr x12, [x11, #0x8]
+  275 add x13, x8, #0x28
+  276 tst x10, x14
+  277 add x11, sp, #0xd0
+  278 b.eq <SELF+0x470>
+  279 cmp x12, x10
+  280 b.lo <SELF+0x474>
+  281 udiv x14, x12, x10
+  282 msub x12, x14, x10, x12
+  283 b <SELF+0x474>
+  284 and x12, x12, x14
+  285 str x13, [x9, x12, lsl #3]
+  286 stp xzr, xzr, [x11, #0x28]
+  287 ldr x9, [sp, #0x110]
+  288 ldur q0, [x24, #0x48]
+  289 cmp w21, #0xff
+  290 ldr x10, [sp, #0x128]
+  291 stp xzr, xzr, [sp, #0x118]
+  292 str x9, [sp, #0x170]
+  293 mov w9, #0xff
+  294 stur q0, [x24, #0xa8]
+  295 str x10, [sp, #0x188]
+  296 str xzr, [sp, #0x128]
+  297 strb wzr, [sp, #0x190]
+  298 strb w9, [sp, #0x1a0]
+  299 b.eq <SELF+0x4cc>
+  300 add x8, x8, #0x60
+  301 ldr x9, [x25, w21, uxtw #3]
+  302 stur x8, [x29, #-0x18]
+  303 sub x0, x29, #0x18
+  304 add x1, sp, #0xb8
+  305 blr x9
+  306 strb w21, [sp, #0x1a0]
+  307 ldr x0, [sp, #0x30]
+  308 add x1, sp, #0x130
+  309 bl <DB::ScatteredBlock::operator=(DB::ScatteredBlock&&)>
+  310 add x0, sp, #0x130
+  311 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  312 ldrb w8, [sp, #0xc8]
+  313 adrp x22, ADDR
+  314 add x22, x22, #RELOC_LO
+  315 cmp x8, #0xff
+  316 b.eq <SELF+0x504>
+  317 ldr x8, [x22, x8, lsl #3]
+  318 sub x0, x29, #0x18
+  319 add x1, sp, #0xb8
+  320 blr x8
+  321 ldr x0, [sp, #0x118]
+  322 mov w8, #0xff
+  323 strb w8, [sp, #0xc8]
+  324 cbz x0, <SELF+0x524>
+  325 ldr x8, [sp, #0x128]
+  326 str x0, [sp, #0x120]
+  327 sub x1, x8, x0
+  328 bl <operator delete(void*, unsigned long)>
+  329 ldr x0, [sp, #0xf8]
+  330 cbnz x0, <SELF+0x5d0>
+  331 ldr x0, [sp, #0xe8]
+  332 str xzr, [sp, #0xe8]
+  333 cbz x0, <SELF+0x544>
+  334 ldr x8, [sp, #0xf0]
+  335 lsl x1, x8, #3
+  336 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  337 add x8, sp, #0xd0
+  338 sub x0, x29, #0x18
+  339 stur x8, [x29, #-0x18]
+  340 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+  341 ldp x8, x9, [sp, #0x1f8]
+  342 add x28, sp, #0x50
+  343 ldr q0, [x23]
+  344 ldr x12, [sp, #0x208]
+  345 add x27, x28, #0x28
+  346 ldr x11, [sp, #0x1f0]
+  347 ldr x10, [sp, #0x210]
+  348 ldr s1, [sp, #0x218]
+  349 stp xzr, xzr, [sp, #0x1e0]
+  350 str q0, [sp, #0x50]
+  351 stp xzr, xzr, [sp, #0x1f8]
+  352 str xzr, [sp, #0x1f0]
+  353 stp x11, x8, [sp, #0x60]
+  354 stp x9, x12, [sp, #0x70]
+  355 str x10, [sp, #0x80]
+  356 str s1, [sp, #0x88]
+  357 cbz x10, <SELF+0x60c>
+  358 sub x13, x9, #0x1
+  359 ldr x12, [x12, #0x8]
+  360 tst x9, x13
+  361 b.eq <SELF+0x5fc>
+  362 cmp x12, x9
+  363 b.lo <SELF+0x600>
+  364 udiv x13, x12, x9
+  365 msub x12, x13, x9, x12
+  366 b <SELF+0x600>
+  367 nop
+  368 mov w1, #0x30
+  369 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  370 mov x0, x19
+  371 cbz x19, <SELF+0x52c>
+  372 ldrsb w8, [x0, #0x27]
+  373 ldr x19, [x0]
+  374 tbz w8, #0x1f, <SELF+0x5c0>
+  375 ldr x8, [x0, #0x10]
+  376 ldr x9, [x0, #0x20]
+  377 mov x21, x0
+  378 and x1, x9, #ADDR
+  379 mov x0, x8
+  380 bl <operator delete(void*, unsigned long)>
+  381 mov x0, x21
+  382 b <SELF+0x5c0>
+  383 and x12, x12, x13
+  384 str x27, [x8, x12, lsl #3]
+  385 add x12, x26, #0x28
+  386 stp xzr, xzr, [x12]
+  387 mov x19, x22
+  388 ldr x12, [sp, #0x220]
+  389 ldrb w22, [sp, #0x1d8]
+  390 ldur q2, [x23, #0x48]
+  391 ldr x13, [sp, #0x238]
+  392 stp xzr, xzr, [x26, #0x50]
+  393 str x12, [sp, #0x90]
+  394 mov w12, #0xff
+  395 cmp w22, #0xff
+  396 stur xzr, [x26, #0x48]
+  397 add x26, sp, #0x1b0
+  398 stur q2, [sp, #0x98]
+  399 str x13, [sp, #0xa8]
+  400 strb wzr, [sp, #0x38]
+  401 strb w12, [sp, #0x48]
+  402 b.eq <SELF+0x67c>
+  403 add x8, sp, #0x38
+  404 ldr x9, [x25, w22, uxtw #3]
+  405 str x8, [sp, #0x130]
+  406 add x0, sp, #0x130
+  407 add x1, x26, #0x18
+  408 blr x9
+  409 ldp x11, x8, [sp, #0x60]
+  410 ldr q0, [sp, #0x50]
+  411 ldr x9, [sp, #0x70]
+  412 ldr x10, [sp, #0x80]
+  413 ldr s1, [sp, #0x88]
+  414 strb w22, [sp, #0x48]
+  415 movi v2.2d, #0000000000000000
+  416 ldr x12, [sp, #0x78]
+  417 stp x11, x8, [sp, #0x140]
+  418 add x11, sp, #0x130
+  419 str q0, [x24, #0x60]
+  420 str xzr, [sp, #0x70]
+  421 stp x9, x12, [sp, #0x150]
+  422 stp q2, q2, [sp, #0x50]
+  423 str x10, [sp, #0x160]
+  424 str s1, [sp, #0x168]
+  425 cbz x10, <SELF+0x6dc>
+  426 sub x13, x9, #0x1
+  427 ldr x10, [x12, #0x8]
+  428 add x12, x11, #0x28
+  429 tst x9, x13
+  430 b.eq <SELF+0x6d0>
+  431 cmp x10, x9
+  432 b.lo <SELF+0x6d4>
+  433 udiv x13, x10, x9
+  434 msub x10, x13, x9, x10
+  435 b <SELF+0x6d4>
+  436 and x10, x10, x13
+  437 str x12, [x8, x10, lsl #3]
+  438 stp xzr, xzr, [x27]
+  439 ldr x8, [sp, #0x90]
+  440 ldur q0, [sp, #0x98]
+  441 cmp w22, #0xff
+  442 ldr x9, [sp, #0xa8]
+  443 stp xzr, xzr, [x28, #0x50]
+  444 str x8, [sp, #0x170]
+  445 mov w8, #0xff
+  446 stur q0, [x24, #0xa8]
+  447 str x9, [sp, #0x188]
+  448 stur xzr, [x28, #0x48]
+  449 strb wzr, [sp, #0x190]
+  450 strb w8, [sp, #0x1a0]
+  451 b.eq <SELF+0x72c>
+  452 add x8, x11, #0x60
+  453 ldr x9, [x25, w22, uxtw #3]
+  454 stur x8, [x29, #-0x18]
+  455 sub x0, x29, #0x18
+  456 add x1, sp, #0x38
+  457 blr x9
+  458 strb w22, [sp, #0x1a0]
+  459 ldrb w8, [sp, #0x2d0]
+  460 add x0, sp, #0x258
+  461 add x1, sp, #0x130
+  462 cmp w8, #0x1
+  463 b.ne <SELF+0x748>
+  464 bl <DB::ScatteredBlock::operator=(DB::ScatteredBlock&&)>
+  465 b <SELF+0x754>
+  466 bl <DB::ScatteredBlock::ScatteredBlock(DB::ScatteredBlock&&)>
+  467 mov w8, #0x1
+  468 strb w8, [sp, #0x2d0]
+  469 ldr x25, [sp, #0x30]
+  470 add x0, sp, #0x130
+  471 mov x22, x19
+  472 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  473 ldrb w8, [sp, #0x48]
+  474 cmp x8, #0xff
+  475 b.eq <SELF+0x780>
+  476 ldr x8, [x22, x8, lsl #3]
+  477 sub x0, x29, #0x18
+  478 add x1, sp, #0x38
+  479 blr x8
+  480 ldr x0, [sp, #0x98]
+  481 mov w8, #0xff
+  482 strb w8, [sp, #0x48]
+  483 cbz x0, <SELF+0x7a0>
+  484 ldr x8, [sp, #0xa8]
+  485 str x0, [sp, #0xa0]
+  486 sub x1, x8, x0
+  487 bl <operator delete(void*, unsigned long)>
+  488 ldr x0, [sp, #0x78]
+  489 cbnz x0, <SELF+0x990>
+  490 ldr x0, [sp, #0x68]
+  491 str xzr, [sp, #0x68]
+  492 cbz x0, <SELF+0x7c0>
+  493 ldr x8, [sp, #0x70]
+  494 lsl x1, x8, #3
+  495 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  496 add x8, sp, #0x50
+  497 sub x0, x29, #0x18
+  498 stur x8, [x29, #-0x18]
+  499 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+  500 ldrb w8, [sp, #0x1d8]
+  501 cmp x8, #0xff
+  502 b.eq <SELF+0x7ec>
+  503 ldr x8, [x22, x8, lsl #3]
+  504 add x0, sp, #0x130
+  505 add x1, x26, #0x18
+  506 blr x8
+  507 ldrb w8, [sp, #0x1c0]
+  508 mov w9, #0xff
+  509 strb w9, [sp, #0x1d8]
+  510 cmp x8, #0xff
+  511 b.eq <SELF+0x810>
+  512 ldr x8, [x22, x8, lsl #3]
+  513 add x0, sp, #0x130
+  514 add x1, sp, #0x1b0
+  515 blr x8
+  516 add x0, sp, #0x1e0
+  517 bl <std::__1::pair<DB::Block, DB::detail::Selector>::~pair()>
+  518 ldr x8, [x20, #0xc0]
+  519 ldr x10, [x20, #0x70]
+  520 add x11, x20, #0x208
+  521 strb wzr, [sp, #0x210]
+  522 ldr x9, [x8, #0x150]
+  523 ldr x8, [x8, #0x140]
+  524 stp x10, x11, [sp, #0x1e0]
+  525 ldrb w10, [x20, #0x2a8]
+  526 cmp x9, #0x1
+  527 csinc x9, x9, xzr, hi
+  528 strb w10, [sp, #0x212]
+  529 add x10, x20, #0x2a9
+  530 udiv x8, x8, x9
+  531 ldr w9, [sp, #0x2c]
+  532 ldrh w10, [x10]
+  533 and w9, w9, #0x1
+  534 sturh w10, [x23, #0x33]
+  535 strb w9, [sp, #0x211]
+  536 add x9, x20, #0x298
+  537 ldr q0, [x9]
+  538 add x9, x20, #0x268
+  539 str x9, [sp, #0x1f0]
+  540 stur q0, [x23, #0x18]
+  541 str x8, [sp, #0x208]
+  542 add x8, sp, #0x2d8
+  543 add x0, x8, #0x108
+  544 add x1, x8, #0xa8
+  545 add x2, x8, #0xc0
+  546 add x3, x8, #0xd8
+  547 add x4, x8, #0xf0
+  548 add x6, sp, #0x1e0
+  549 mov x5, x25
+  550 bl <std::__1::unique_ptr<DB::HashJoinResult, std::__1::default_delete<DB::HashJoinResult>> std::__1::make_unique[abi:fqe220101]<DB::HashJoinResult, DB::LazyOutput, std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul>, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>, DB::ScatteredBlock, DB::HashJoinResult::Properties, 0>(DB::LazyOutput&&, std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&&, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>&&, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul>&&, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>&&, DB::ScatteredBlock&&, DB::HashJoinResult::Properties&&)>
+  551 ldrb w8, [sp, #0x2d0]
+  552 mov x20, x0
+  553 cmp w8, #0x1
+  554 b.ne <SELF+0x8cc>
+  555 add x1, sp, #0x258
+  556 mov x0, x20
+  557 bl <DB::HashJoinResult::setNextBlock(DB::ScatteredBlock&&)>
+  558 ldrb w8, [sp, #0x2d0]
+  559 cmp w8, #0x1
+  560 b.ne <SELF+0x8cc>
+  561 add x0, sp, #0x258
+  562 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  563 add x0, sp, #0x2d8
+  564 bl <DB::AddedColumns<true>::~AddedColumns()>
+  565 ldur x21, [x29, #-0x30]
+  566 cbz x21, <SELF+0x928>
+  567 ldur x19, [x29, #-0x28]
+  568 mov x0, x21
+  569 cmp x21, x19
+  570 b.eq <SELF+0x918>
+  571 nop
+  572 nop
+  573 nop
+  574 nop
+  575 nop
+  576 sub x19, x19, #0x88
+  577 mov x0, x19
+  578 bl <DB::JoinOnKeyColumns::~JoinOnKeyColumns()>
+  579 cmp x19, x21
+  580 b.ne <SELF+0x900>
+  581 ldur x0, [x29, #-0x30]
+  582 ldur x8, [x29, #-0x20]
+  583 stur x21, [x29, #-0x28]
+  584 sub x1, x8, x0
+  585 bl <operator delete(void*, unsigned long)>
+  586 mov x0, x20
+  587 add sp, sp, #0x4e0
+  588 ldp x20, x19, [sp, #0x50]
+  589 ldp x22, x21, [sp, #0x40]
+  590 ldp x24, x23, [sp, #0x30]
+  591 ldp x26, x25, [sp, #0x20]
+  592 ldp x28, x27, [sp, #0x10]
+  593 ldp x29, x30, [sp], #0x60
+  594 b <SELF+0x968>
+  595 nop
+  596 nop
+  597 nop
+  598 nop
+  599 nop
+  600 nop
+  601 nop
+  602 ret
+  603 nop
+  604 nop
+  605 nop
+  606 nop
+  607 nop
+  608 mov w1, #0x30
+  609 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  610 mov x0, x19
+  611 cbz x19, <SELF+0x7a8>
+  612 ldrsb w8, [x0, #0x27]
+  613 ldr x19, [x0]
+  614 tbz w8, #0x1f, <SELF+0x980>
+  615 ldr x8, [x0, #0x10]
+  616 ldr x9, [x0, #0x20]
+  617 mov x21, x0
+  618 and x1, x9, #ADDR
+  619 mov x0, x8
+  620 bl <operator delete(void*, unsigned long)>
+  621 mov x0, x21
+  622 b <SELF+0x980>
+  623 adrp x0, ADDR
+  624 add x0, x0, #RELOC_LO
+  625 adrp x1, ADDR
+  626 add x1, x1, #RELOC_LO
+  627 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  628 bl <std::__1::__throw_bad_variant_access[abi:fqe220101]()>
+  629 mov x19, x0
+  630 b <SELF+0xa90>
+  631 bl <__clang_call_terminate>
+  632 bl <__clang_call_terminate>
+  633 bl <__clang_call_terminate>
+  634 bl <__clang_call_terminate>
+  635 bl <__clang_call_terminate>
+  636 bl <__clang_call_terminate>
+  637 bl <__clang_call_terminate>
+  638 bl <__clang_call_terminate>
+  639 mov x19, x0
+  640 add x0, sp, #0x1b0
+  641 bl <std::__1::pair<DB::detail::Selector, DB::detail::Selector>::~pair()>
+  642 b <SELF+0xa10>
+  643 mov x19, x0
+  644 add x0, sp, #0x1e0
+  645 bl <std::__1::pair<DB::Block, DB::detail::Selector>::~pair()>
+  646 b <SELF+0xa40>
+  647 bl <__clang_call_terminate>
+  648 b <SELF+0xa3c>
+  649 ldr x8, [x20]
+  650 mov x19, x0
+  651 mov x0, x20
+  652 ldr x8, [x8, #0x8]
+  653 blr x8
+  654 b <SELF+0xa40>
+  655 mov x19, x0
+  656 ldrb w8, [sp, #0x2d0]
+  657 cmp w8, #0x1
+  658 b.ne <SELF+0xa5c>
+  659 add x0, sp, #0x258
+  660 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  661 b <SELF+0xa5c>
+  662 mov x19, x0
+  663 add x0, sp, #0x2d8
+  664 bl <DB::AddedColumns<true>::~AddedColumns()>
+  665 sub x0, x29, #0x30
+  666 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  667 mov x0, x19
+  668 bl <_Unwind_Resume>
+  669 mov x19, x0
+  670 sub x0, x29, #0x30
+  671 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  672 mov x0, x19
+  673 bl <_Unwind_Resume>
+  674 mov x19, x0
+  675 stur x24, [x29, #-0x28]
+  676 add x0, sp, #0x2d8
+  677 bl <avro::Name::~Name()>
+  678 sub x0, x29, #0x30
+  679 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  680 mov x0, x19
+  681 bl <_Unwind_Resume>
+  682 mov x19, x0
+  683 sub x0, x29, #0x30
+  684 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  685 mov x0, x19
+  686 bl <_Unwind_Resume>
+
+# UNIFIED DB::Unified::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList>>::joinBlockImpl(DB::Unified::HashJoin const&, DB::ScatteredBlock, DB::Block const&, std::__1::vector<DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> const*, std::__1::allocator<DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> const*>> const&, bool)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 stp x29, x30, [sp, #-0x60]!
+    9 stp x28, x27, [sp, #0x10]
+   10 stp x26, x25, [sp, #0x20]
+   11 stp x24, x23, [sp, #0x30]
+   12 stp x22, x21, [sp, #0x40]
+   13 stp x20, x19, [sp, #0x50]
+   14 mov x29, sp
+   15 sub sp, sp, #0x4e0
+   16 ldr x25, [x0, #0x70]
+   17 mov x20, x0
+   18 str w4, [sp, #0x2c]
+   19 stp x3, x2, [sp, #0x18]
+   20 ldp x19, x8, [x25, #0xf8]
+   21 str x1, [sp, #0x30]
+   22 stp xzr, xzr, [x29, #-0x30]
+   23 stur xzr, [x29, #-0x20]
+   24 cmp x8, x19
+   25 b.eq <SELF+0x1ac>
+   26 ldr w8, [sp, #0x2c]
+   27 mov x23, #0xca1b
+   28 mov x22, #-ADDR
+   29 movk x23, #0x286b, lsl #16
+   30 mov x26, xzr
+   31 mov x27, xzr
+   32 tst w8, #0x1
+   33 mov w8, #0x18
+   34 movk x23, #0xa1af, lsl #32
+   35 mov x28, xzr
+   36 csel x21, x8, xzr, ne
+   37 movk x22, #0xaaab
+   38 movk x23, #0x86bc, lsl #48
+   39 b <SELF+0xc8>
+   40 ldp x19, x8, [x25, #0xf8]
+   41 add x28, x28, #0x1
+   42 add x27, x27, #0x18
+   43 add x21, x21, #0x98
+   44 add x26, x26, #0x98
+   45 sub x8, x8, x19
+   46 asr x8, x8, #3
+   47 mul x8, x8, x23
+   48 cmp x28, x8
+   49 b.hs <SELF+0x1ac>
+   50 add x8, sp, #0x2d8
+   51 add x0, x19, x26
+   52 bl <DB::TableJoin::JoinOnClause::condColumnNames() const>
+   53 ldp x8, x9, [x20, #0x158]
+   54 sub x9, x9, x8
+   55 asr x9, x9, #3
+   56 mul x9, x9, x22
+   57 cmp x28, x9
+   58 b.hs <SELF+0x9bc>
+   59 ldr x9, [x20, #0x148]
+   60 ldp x24, x10, [x29, #-0x28]
+   61 ldrb w9, [x9, #0x8]
+   62 sub w9, w9, #0xb
+   63 cmp w9, #0x2
+   64 cset w11, lo
+   65 cmp x24, x10
+   66 strb w11, [sp, #0x258]
+   67 b.hs <SELF+0x18c>
+   68 cmp w9, #0x2
+   69 cset w5, lo
+   70 ldr x1, [sp, #0x30]
+   71 add x2, x19, x21
+   72 add x3, sp, #0x2d8
+   73 add x4, x8, x27
+   74 mov x0, x24
+   75 bl <DB::JoinOnKeyColumns::JoinOnKeyColumns(DB::ScatteredBlock const&, std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, bool)>
+   76 add x0, x24, #0x88
+   77 ldrsb w8, [sp, #0x307]
+   78 stur x0, [x29, #-0x28]
+   79 tbnz w8, #0x1f, <SELF+0x160>
+   80 ldrsb w8, [sp, #0x2ef]
+   81 tbz w8, #0x1f, <SELF+0xa0>
+   82 b <SELF+0x178>
+   83 nop
+   84 nop
+   85 nop
+   86 nop
+   87 nop
+   88 ldr x8, [sp, #0x300]
+   89 ldr x0, [sp, #0x2f0]
+   90 and x1, x8, #ADDR
+   91 bl <operator delete(void*, unsigned long)>
+   92 ldrsb w8, [sp, #0x2ef]
+   93 tbz w8, #0x1f, <SELF+0xa0>
+   94 ldr x8, [sp, #0x2e8]
+   95 ldr x0, [sp, #0x2d8]
+   96 and x1, x8, #ADDR
+   97 bl <operator delete(void*, unsigned long)>
+   98 b <SELF+0xa0>
+   99 ldr x1, [sp, #0x30]
+  100 sub x0, x29, #0x30
+  101 add x2, x19, x21
+  102 add x3, sp, #0x2d8
+  103 add x4, x8, x27
+  104 add x5, sp, #0x258
+  105 bl <DB::JoinOnKeyColumns* std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::__emplace_back_slow_path<DB::ScatteredBlock&, std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, bool>(DB::ScatteredBlock&, std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>&&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, bool&&)>
+  106 b <SELF+0x134>
+  107 ldr x8, [x20]
+  108 ldr x8, [x8, #0x108]
+  109 mov x0, x20
+  110 blr x8
+  111 ldr x25, [sp, #0x30]
+  112 ldr x8, [x20, #0x70]
+  113 mov x3, x0
+  114 ldp x6, x7, [x8, #0x110]
+  115 cbz x7, <SELF+0x1dc>
+  116 add x8, x7, #0x8
+  117 mov w9, #0x1
+  118 ldadd x9, x8, [x8]
+  119 add x8, x20, #0x308
+  120 ldr w9, [sp, #0x2c]
+  121 ldr x2, [sp, #0x20]
+  122 add x0, sp, #0x2d8
+  123 sub x5, x29, #0x30
+  124 mov x1, x25
+  125 mov x4, x20
+  126 and w9, w9, #0x1
+  127 strb wzr, [sp, #0x8]
+  128 strb w9, [sp, #0x10]
+  129 str x8, [sp]
+  130 bl <DB::AddedColumns<true>::AddedColumns(DB::ScatteredBlock const&, DB::Block const&, DB::Block const&, DB::HashJoin const&, std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>&&, std::__1::shared_ptr<DB::ExpressionActions>, std::__1::vector<std::__1::pair<unsigned long, unsigned long>, std::__1::allocator<std::__1::pair<unsigned long, unsigned long>>> const&, bool, bool)>
+  131 ldr x8, [x20, #0x298]
+  132 ldr x9, [x20, #0x290]
+  133 ldr x10, [x20, #0x320]
+  134 ldr x4, [x20, #0x138]
+  135 cmp x8, x9
+  136 ldr x9, [x20, #0x148]
+  137 cset w8, ne
+  138 cmp x10, #0x0
+  139 strb w8, [sp, #0x378]
+  140 csinv x8, x10, xzr, ne
+  141 str x8, [sp, #0x368]
+  142 ldp x5, x6, [x9, #0x128]
+  143 ldrb w3, [x9, #0x8]
+  144 ldr x0, [sp, #0x18]
+  145 add x1, sp, #0x2d8
+  146 add x2, x25, #0x60
+  147 bl <unsigned long DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList>>::switchJoinRightColumns<DB::AddedColumns<true>>(std::__1::vector<DB::HashJoin::MapsTemplate<DB::RowRefList> const*, std::__1::allocator<DB::HashJoin::MapsTemplate<DB::RowRefList> const*>> const&, DB::AddedColumns<true>&, DB::detail::Selector const&, DB::HashJoin::Type, DB::JoinStuff::JoinUsedFlags&, DB::HashJoin::RightTableData::KeyRange)>
+  148 ldr x23, [sp, #0x340]
+  149 ldr x19, [sp, #0x338]
+  150 mov x22, x0
+  151 cmp x19, x23
+  152 b.eq <SELF+0x294>
+  153 nop
+  154 nop
+  155 nop
+  156 nop
+  157 nop
+  158 nop
+  159 nop
+  160 sub x23, x23, #0x88
+  161 mov x0, x23
+  162 bl <DB::JoinOnKeyColumns::~JoinOnKeyColumns()>
+  163 cmp x23, x19
+  164 b.ne <SELF+0x280>
+  165 add x23, sp, #0x1e0
+  166 str x19, [sp, #0x340]
+  167 strb wzr, [sp, #0x258]
+  168 strb wzr, [sp, #0x2d0]
+  169 cbz x22, <SELF+0x818>
+  170 ldrb w21, [x25, #0x70]
+  171 cmp w21, #0x1
+  172 b.eq <SELF+0x2cc>
+  173 cbnz w21, <SELF+0x9d0>
+  174 ldp x9, x8, [x25, #0x60]
+  175 sub x8, x8, x9
+  176 cmp x22, x8
+  177 b.lo <SELF+0x2e4>
+  178 b <SELF+0x818>
+  179 ldur x8, [x25, #0x60]
+  180 ldp x8, x9, [x8, #0x10]
+  181 sub x8, x9, x8
+  182 lsr x8, x8, #3
+  183 cmp x22, x8
+  184 b.hs <SELF+0x818>
+  185 ldp x8, x10, [x25, #0x18]
+  186 add x24, sp, #0xd0
+  187 ldr q0, [x25]
+  188 ldr x11, [x25, #0x10]
+  189 mov x9, x25
+  190 ldr x12, [x25, #0x30]
+  191 add x26, sp, #0x1e0
+  192 stp xzr, xzr, [x25]
+  193 str q0, [x24, #0x110]
+  194 ldr s0, [x25, #0x38]
+  195 add x13, x26, #0x28
+  196 stp x11, x8, [sp, #0x1f0]
+  197 ldr x11, [x9, #0x28]!
+  198 stp xzr, xzr, [x25, #0x18]
+  199 str xzr, [x25, #0x10]
+  200 str x10, [sp, #0x200]
+  201 str x11, [sp, #0x208]
+  202 str x12, [sp, #0x210]
+  203 str s0, [sp, #0x218]
+  204 cbz x12, <SELF+0x364>
+  205 sub x12, x10, #0x1
+  206 ldr x11, [x11, #0x8]
+  207 tst x10, x12
+  208 b.eq <SELF+0x358>
+  209 cmp x11, x10
+  210 b.lo <SELF+0x35c>
+  211 udiv x12, x11, x10
+  212 msub x11, x12, x10, x11
+  213 b <SELF+0x35c>
+  214 and x11, x11, x12
+  215 str x13, [x8, x11, lsl #3]
+  216 stp xzr, xzr, [x9]
+  217 ldr x9, [x25, #0x58]
+  218 ldr x8, [x25, #0x40]
+  219 ldur q0, [x25, #0x48]
+  220 stp xzr, xzr, [x25, #0x48]
+  221 str x9, [sp, #0x238]
+  222 add x9, x26, #0x60
+  223 str x8, [sp, #0x220]
+  224 mov w8, #0xff
+  225 str xzr, [x25, #0x58]
+  226 str x9, [sp, #0x130]
+  227 mov x9, x25
+  228 adrp x25, ADDR
+  229 add x25, x25, #RELOC_LO
+  230 strb w8, [sp, #0x250]
+  231 ldr x8, [x25, x21, lsl #3]
+  232 stur q0, [x23, #0x48]
+  233 strb wzr, [sp, #0x240]
+  234 add x0, sp, #0x130
+  235 add x1, x9, #0x60
+  236 blr x8
+  237 strb w21, [sp, #0x250]
+  238 add x8, sp, #0x1b0
+  239 add x0, x26, #0x60
+  240 mov x1, x22
+  241 bl <DB::detail::Selector::split(unsigned long)>
+  242 add x0, sp, #0xd0
+  243 add x1, sp, #0x1e0
+  244 bl <DB::Block::Block(DB::Block const&)>
+  245 ldrb w21, [sp, #0x1c0]
+  246 mov w8, #0xff
+  247 strb wzr, [sp, #0xb8]
+  248 strb w8, [sp, #0xc8]
+  249 cmp w21, #0xff
+  250 b.eq <SELF+0x408>
+  251 add x8, sp, #0xb8
+  252 ldr x9, [x25, w21, uxtw #3]
+  253 stur x8, [x29, #-0x18]
+  254 sub x0, x29, #0x18
+  255 add x1, sp, #0x1b0
+  256 blr x9
+  257 strb w21, [sp, #0xc8]
+  258 ldr q0, [x24]
+  259 ldp x8, x9, [sp, #0xe0]
+  260 ldp x10, x11, [sp, #0xf0]
+  261 ldr x12, [sp, #0x100]
+  262 str q0, [x24, #0x60]
+  263 ldr s0, [sp, #0x108]
+  264 stp x8, x9, [sp, #0x140]
+  265 add x8, sp, #0x130
+  266 stp xzr, xzr, [sp, #0xd0]
+  267 str xzr, [sp, #0xe0]
+  268 stp xzr, xzr, [sp, #0xe8]
+  269 stp x10, x11, [sp, #0x150]
+  270 str x12, [sp, #0x160]
+  271 str s0, [sp, #0x168]
+  272 cbz x12, <SELF+0x47c>
+  273 sub x14, x10, #0x1
+  274 ldr x12, [x11, #0x8]
+  275 add x13, x8, #0x28
+  276 tst x10, x14
+  277 add x11, sp, #0xd0
+  278 b.eq <SELF+0x470>
+  279 cmp x12, x10
+  280 b.lo <SELF+0x474>
+  281 udiv x14, x12, x10
+  282 msub x12, x14, x10, x12
+  283 b <SELF+0x474>
+  284 and x12, x12, x14
+  285 str x13, [x9, x12, lsl #3]
+  286 stp xzr, xzr, [x11, #0x28]
+  287 ldr x9, [sp, #0x110]
+  288 ldur q0, [x24, #0x48]
+  289 cmp w21, #0xff
+  290 ldr x10, [sp, #0x128]
+  291 stp xzr, xzr, [sp, #0x118]
+  292 str x9, [sp, #0x170]
+  293 mov w9, #0xff
+  294 stur q0, [x24, #0xa8]
+  295 str x10, [sp, #0x188]
+  296 str xzr, [sp, #0x128]
+  297 strb wzr, [sp, #0x190]
+  298 strb w9, [sp, #0x1a0]
+  299 b.eq <SELF+0x4cc>
+  300 add x8, x8, #0x60
+  301 ldr x9, [x25, w21, uxtw #3]
+  302 stur x8, [x29, #-0x18]
+  303 sub x0, x29, #0x18
+  304 add x1, sp, #0xb8
+  305 blr x9
+  306 strb w21, [sp, #0x1a0]
+  307 ldr x0, [sp, #0x30]
+  308 add x1, sp, #0x130
+  309 bl <DB::ScatteredBlock::operator=(DB::ScatteredBlock&&)>
+  310 add x0, sp, #0x130
+  311 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  312 ldrb w8, [sp, #0xc8]
+  313 adrp x22, ADDR
+  314 add x22, x22, #RELOC_LO
+  315 cmp x8, #0xff
+  316 b.eq <SELF+0x504>
+  317 ldr x8, [x22, x8, lsl #3]
+  318 sub x0, x29, #0x18
+  319 add x1, sp, #0xb8
+  320 blr x8
+  321 ldr x0, [sp, #0x118]
+  322 mov w8, #0xff
+  323 strb w8, [sp, #0xc8]
+  324 cbz x0, <SELF+0x524>
+  325 ldr x8, [sp, #0x128]
+  326 str x0, [sp, #0x120]
+  327 sub x1, x8, x0
+  328 bl <operator delete(void*, unsigned long)>
+  329 ldr x0, [sp, #0xf8]
+  330 cbnz x0, <SELF+0x5d0>
+  331 ldr x0, [sp, #0xe8]
+  332 str xzr, [sp, #0xe8]
+  333 cbz x0, <SELF+0x544>
+  334 ldr x8, [sp, #0xf0]
+  335 lsl x1, x8, #3
+  336 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  337 add x8, sp, #0xd0
+  338 sub x0, x29, #0x18
+  339 stur x8, [x29, #-0x18]
+  340 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+  341 ldp x8, x9, [sp, #0x1f8]
+  342 add x28, sp, #0x50
+  343 ldr q0, [x23]
+  344 ldr x12, [sp, #0x208]
+  345 add x27, x28, #0x28
+  346 ldr x11, [sp, #0x1f0]
+  347 ldr x10, [sp, #0x210]
+  348 ldr s1, [sp, #0x218]
+  349 stp xzr, xzr, [sp, #0x1e0]
+  350 str q0, [sp, #0x50]
+  351 stp xzr, xzr, [sp, #0x1f8]
+  352 str xzr, [sp, #0x1f0]
+  353 stp x11, x8, [sp, #0x60]
+  354 stp x9, x12, [sp, #0x70]
+  355 str x10, [sp, #0x80]
+  356 str s1, [sp, #0x88]
+  357 cbz x10, <SELF+0x60c>
+  358 sub x13, x9, #0x1
+  359 ldr x12, [x12, #0x8]
+  360 tst x9, x13
+  361 b.eq <SELF+0x5fc>
+  362 cmp x12, x9
+  363 b.lo <SELF+0x600>
+  364 udiv x13, x12, x9
+  365 msub x12, x13, x9, x12
+  366 b <SELF+0x600>
+  367 nop
+  368 mov w1, #0x30
+  369 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  370 mov x0, x19
+  371 cbz x19, <SELF+0x52c>
+  372 ldrsb w8, [x0, #0x27]
+  373 ldr x19, [x0]
+  374 tbz w8, #0x1f, <SELF+0x5c0>
+  375 ldr x8, [x0, #0x10]
+  376 ldr x9, [x0, #0x20]
+  377 mov x21, x0
+  378 and x1, x9, #ADDR
+  379 mov x0, x8
+  380 bl <operator delete(void*, unsigned long)>
+  381 mov x0, x21
+  382 b <SELF+0x5c0>
+  383 and x12, x12, x13
+  384 str x27, [x8, x12, lsl #3]
+  385 add x12, x26, #0x28
+  386 stp xzr, xzr, [x12]
+  387 mov x19, x22
+  388 ldr x12, [sp, #0x220]
+  389 ldrb w22, [sp, #0x1d8]
+  390 ldur q2, [x23, #0x48]
+  391 ldr x13, [sp, #0x238]
+  392 stp xzr, xzr, [x26, #0x50]
+  393 str x12, [sp, #0x90]
+  394 mov w12, #0xff
+  395 cmp w22, #0xff
+  396 stur xzr, [x26, #0x48]
+  397 add x26, sp, #0x1b0
+  398 stur q2, [sp, #0x98]
+  399 str x13, [sp, #0xa8]
+  400 strb wzr, [sp, #0x38]
+  401 strb w12, [sp, #0x48]
+  402 b.eq <SELF+0x67c>
+  403 add x8, sp, #0x38
+  404 ldr x9, [x25, w22, uxtw #3]
+  405 str x8, [sp, #0x130]
+  406 add x0, sp, #0x130
+  407 add x1, x26, #0x18
+  408 blr x9
+  409 ldp x11, x8, [sp, #0x60]
+  410 ldr q0, [sp, #0x50]
+  411 ldr x9, [sp, #0x70]
+  412 ldr x10, [sp, #0x80]
+  413 ldr s1, [sp, #0x88]
+  414 strb w22, [sp, #0x48]
+  415 movi v2.2d, #0000000000000000
+  416 ldr x12, [sp, #0x78]
+  417 stp x11, x8, [sp, #0x140]
+  418 add x11, sp, #0x130
+  419 str q0, [x24, #0x60]
+  420 str xzr, [sp, #0x70]
+  421 stp x9, x12, [sp, #0x150]
+  422 stp q2, q2, [sp, #0x50]
+  423 str x10, [sp, #0x160]
+  424 str s1, [sp, #0x168]
+  425 cbz x10, <SELF+0x6dc>
+  426 sub x13, x9, #0x1
+  427 ldr x10, [x12, #0x8]
+  428 add x12, x11, #0x28
+  429 tst x9, x13
+  430 b.eq <SELF+0x6d0>
+  431 cmp x10, x9
+  432 b.lo <SELF+0x6d4>
+  433 udiv x13, x10, x9
+  434 msub x10, x13, x9, x10
+  435 b <SELF+0x6d4>
+  436 and x10, x10, x13
+  437 str x12, [x8, x10, lsl #3]
+  438 stp xzr, xzr, [x27]
+  439 ldr x8, [sp, #0x90]
+  440 ldur q0, [sp, #0x98]
+  441 cmp w22, #0xff
+  442 ldr x9, [sp, #0xa8]
+  443 stp xzr, xzr, [x28, #0x50]
+  444 str x8, [sp, #0x170]
+  445 mov w8, #0xff
+  446 stur q0, [x24, #0xa8]
+  447 str x9, [sp, #0x188]
+  448 stur xzr, [x28, #0x48]
+  449 strb wzr, [sp, #0x190]
+  450 strb w8, [sp, #0x1a0]
+  451 b.eq <SELF+0x72c>
+  452 add x8, x11, #0x60
+  453 ldr x9, [x25, w22, uxtw #3]
+  454 stur x8, [x29, #-0x18]
+  455 sub x0, x29, #0x18
+  456 add x1, sp, #0x38
+  457 blr x9
+  458 strb w22, [sp, #0x1a0]
+  459 ldrb w8, [sp, #0x2d0]
+  460 add x0, sp, #0x258
+  461 add x1, sp, #0x130
+  462 cmp w8, #0x1
+  463 b.ne <SELF+0x748>
+  464 bl <DB::ScatteredBlock::operator=(DB::ScatteredBlock&&)>
+  465 b <SELF+0x754>
+  466 bl <DB::ScatteredBlock::ScatteredBlock(DB::ScatteredBlock&&)>
+  467 mov w8, #0x1
+  468 strb w8, [sp, #0x2d0]
+  469 ldr x25, [sp, #0x30]
+  470 add x0, sp, #0x130
+  471 mov x22, x19
+  472 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  473 ldrb w8, [sp, #0x48]
+  474 cmp x8, #0xff
+  475 b.eq <SELF+0x780>
+  476 ldr x8, [x22, x8, lsl #3]
+  477 sub x0, x29, #0x18
+  478 add x1, sp, #0x38
+  479 blr x8
+  480 ldr x0, [sp, #0x98]
+  481 mov w8, #0xff
+  482 strb w8, [sp, #0x48]
+  483 cbz x0, <SELF+0x7a0>
+  484 ldr x8, [sp, #0xa8]
+  485 str x0, [sp, #0xa0]
+  486 sub x1, x8, x0
+  487 bl <operator delete(void*, unsigned long)>
+  488 ldr x0, [sp, #0x78]
+  489 cbnz x0, <SELF+0x990>
+  490 ldr x0, [sp, #0x68]
+  491 str xzr, [sp, #0x68]
+  492 cbz x0, <SELF+0x7c0>
+  493 ldr x8, [sp, #0x70]
+  494 lsl x1, x8, #3
+  495 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  496 add x8, sp, #0x50
+  497 sub x0, x29, #0x18
+  498 stur x8, [x29, #-0x18]
+  499 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+  500 ldrb w8, [sp, #0x1d8]
+  501 cmp x8, #0xff
+  502 b.eq <SELF+0x7ec>
+  503 ldr x8, [x22, x8, lsl #3]
+  504 add x0, sp, #0x130
+  505 add x1, x26, #0x18
+  506 blr x8
+  507 ldrb w8, [sp, #0x1c0]
+  508 mov w9, #0xff
+  509 strb w9, [sp, #0x1d8]
+  510 cmp x8, #0xff
+  511 b.eq <SELF+0x810>
+  512 ldr x8, [x22, x8, lsl #3]
+  513 add x0, sp, #0x130
+  514 add x1, sp, #0x1b0
+  515 blr x8
+  516 add x0, sp, #0x1e0
+  517 bl <std::__1::pair<DB::Block, DB::detail::Selector>::~pair()>
+  518 add x9, x20, #0x2f0
+  519 add x10, x20, #0x290
+  520 ldr x8, [x20, #0x70]
+  521 stp x10, x9, [sp, #0x1e8]
+  522 ldr q0, [x20, #0x320]
+  523 ldr x9, [x20, #0x148]
+  524 str x8, [sp, #0x1e0]
+  525 add x11, x20, #0x331
+  526 add x8, x9, #0xf8
+  527 stur q0, [x23, #0x18]
+  528 ldar x8, [x8]
+  529 ldr x9, [x20, #0x148]
+  530 add x9, x9, #0x108
+  531 ldar x9, [x9]
+  532 ldrb w10, [x20, #0x330]
+  533 strb wzr, [sp, #0x210]
+  534 cmp x9, #0x1
+  535 strb w10, [sp, #0x212]
+  536 csinc x9, x9, xzr, hi
+  537 udiv x8, x8, x9
+  538 ldr w9, [sp, #0x2c]
+  539 and w9, w9, #0x1
+  540 strb w9, [sp, #0x211]
+  541 ldrh w9, [x11]
+  542 sturh w9, [x23, #0x33]
+  543 str x8, [sp, #0x208]
+  544 add x8, sp, #0x2d8
+  545 add x0, x8, #0x108
+  546 add x1, x8, #0xa8
+  547 add x2, x8, #0xc0
+  548 add x3, x8, #0xd8
+  549 add x4, x8, #0xf0
+  550 add x6, sp, #0x1e0
+  551 mov x5, x25
+  552 bl <std::__1::unique_ptr<DB::HashJoinResult, std::__1::default_delete<DB::HashJoinResult>> std::__1::make_unique[abi:fqe220101]<DB::HashJoinResult, DB::LazyOutput, std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul>, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>, DB::ScatteredBlock, DB::HashJoinResult::Properties, 0>(DB::LazyOutput&&, std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&&, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>&&, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul>&&, DB::PODArray<unsigned long, 4096ul, Allocator<false, false>, 63ul, 64ul>&&, DB::ScatteredBlock&&, DB::HashJoinResult::Properties&&)>
+  553 ldrb w8, [sp, #0x2d0]
+  554 mov x20, x0
+  555 cmp w8, #0x1
+  556 b.ne <SELF+0x8d4>
+  557 add x1, sp, #0x258
+  558 mov x0, x20
+  559 bl <DB::HashJoinResult::setNextBlock(DB::ScatteredBlock&&)>
+  560 ldrb w8, [sp, #0x2d0]
+  561 cmp w8, #0x1
+  562 b.ne <SELF+0x8d4>
+  563 add x0, sp, #0x258
+  564 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  565 add x0, sp, #0x2d8
+  566 bl <DB::AddedColumns<true>::~AddedColumns()>
+  567 ldur x21, [x29, #-0x30]
+  568 cbz x21, <SELF+0x928>
+  569 ldur x19, [x29, #-0x28]
+  570 mov x0, x21
+  571 cmp x21, x19
+  572 b.eq <SELF+0x918>
+  573 nop
+  574 nop
+  575 nop
+  576 sub x19, x19, #0x88
+  577 mov x0, x19
+  578 bl <DB::JoinOnKeyColumns::~JoinOnKeyColumns()>
+  579 cmp x19, x21
+  580 b.ne <SELF+0x900>
+  581 ldur x0, [x29, #-0x30]
+  582 ldur x8, [x29, #-0x20]
+  583 stur x21, [x29, #-0x28]
+  584 sub x1, x8, x0
+  585 bl <operator delete(void*, unsigned long)>
+  586 mov x0, x20
+  587 add sp, sp, #0x4e0
+  588 ldp x20, x19, [sp, #0x50]
+  589 ldp x22, x21, [sp, #0x40]
+  590 ldp x24, x23, [sp, #0x30]
+  591 ldp x26, x25, [sp, #0x20]
+  592 ldp x28, x27, [sp, #0x10]
+  593 ldp x29, x30, [sp], #0x60
+  594 b <SELF+0x968>
+  595 nop
+  596 nop
+  597 nop
+  598 nop
+  599 nop
+  600 nop
+  601 nop
+  602 ret
+  603 nop
+  604 nop
+  605 nop
+  606 nop
+  607 nop
+  608 mov w1, #0x30
+  609 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  610 mov x0, x19
+  611 cbz x19, <SELF+0x7a8>
+  612 ldrsb w8, [x0, #0x27]
+  613 ldr x19, [x0]
+  614 tbz w8, #0x1f, <SELF+0x980>
+  615 ldr x8, [x0, #0x10]
+  616 ldr x9, [x0, #0x20]
+  617 mov x21, x0
+  618 and x1, x9, #ADDR
+  619 mov x0, x8
+  620 bl <operator delete(void*, unsigned long)>
+  621 mov x0, x21
+  622 b <SELF+0x980>
+  623 adrp x0, ADDR
+  624 add x0, x0, #RELOC_LO
+  625 adrp x1, ADDR
+  626 add x1, x1, #RELOC_LO
+  627 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  628 bl <std::__1::__throw_bad_variant_access[abi:fqe220101]()>
+  629 mov x19, x0
+  630 b <SELF+0xa90>
+  631 bl <__clang_call_terminate>
+  632 bl <__clang_call_terminate>
+  633 bl <__clang_call_terminate>
+  634 bl <__clang_call_terminate>
+  635 bl <__clang_call_terminate>
+  636 bl <__clang_call_terminate>
+  637 bl <__clang_call_terminate>
+  638 bl <__clang_call_terminate>
+  639 mov x19, x0
+  640 add x0, sp, #0x1b0
+  641 bl <std::__1::pair<DB::detail::Selector, DB::detail::Selector>::~pair()>
+  642 b <SELF+0xa10>
+  643 mov x19, x0
+  644 add x0, sp, #0x1e0
+  645 bl <std::__1::pair<DB::Block, DB::detail::Selector>::~pair()>
+  646 b <SELF+0xa40>
+  647 bl <__clang_call_terminate>
+  648 b <SELF+0xa3c>
+  649 ldr x8, [x20]
+  650 mov x19, x0
+  651 mov x0, x20
+  652 ldr x8, [x8, #0x8]
+  653 blr x8
+  654 b <SELF+0xa40>
+  655 mov x19, x0
+  656 ldrb w8, [sp, #0x2d0]
+  657 cmp w8, #0x1
+  658 b.ne <SELF+0xa5c>
+  659 add x0, sp, #0x258
+  660 bl <DB::ScatteredBlock::~ScatteredBlock()>
+  661 b <SELF+0xa5c>
+  662 mov x19, x0
+  663 add x0, sp, #0x2d8
+  664 bl <DB::AddedColumns<true>::~AddedColumns()>
+  665 sub x0, x29, #0x30
+  666 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  667 mov x0, x19
+  668 bl <_Unwind_Resume>
+  669 mov x19, x0
+  670 sub x0, x29, #0x30
+  671 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  672 mov x0, x19
+  673 bl <_Unwind_Resume>
+  674 mov x19, x0
+  675 stur x24, [x29, #-0x28]
+  676 add x0, sp, #0x2d8
+  677 bl <avro::Name::~Name()>
+  678 sub x0, x29, #0x30
+  679 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  680 mov x0, x19
+  681 bl <_Unwind_Resume>
+  682 mov x19, x0
+  683 sub x0, x29, #0x30
+  684 bl <std::__1::vector<DB::JoinOnKeyColumns, std::__1::allocator<DB::JoinOnKeyColumns>>::~vector[abi:fqe220101]()>
+  685 mov x0, x19
+  686 bl <_Unwind_Resume>

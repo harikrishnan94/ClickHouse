@@ -1,0 +1,23 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : N6 fillNullsFromBlocks
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x1429e740 size=1576
+  DB::NotJoinedHash::fillNullsFromBlocks(std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&, unsigned long&)
+UNIFIED   0x165e5100 size=1576
+  DB::Unified::NotJoinedHash::fillNullsFromBlocks(std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&, unsigned long&)
+
+instructions: baseline 394  unified 394  delta +0
+call/branch targets Unified-normalised: baseline 34, unified 34
+call/branch targets reached via a linker range thunk (followed): baseline 16, unified 16
+identical after normalisation: NO
+differing positions: 6 of 394
+  of which branch/call with a genuinely different target: 0
+  of which branch/call differing only in ICF alias naming: 0
+  callee multiset: 46 baseline calls to 17 targets, 46 unified calls to 17 targets; 0 targets baseline-only, 0 unified-only
+  aligned edit script: 388 instructions identical and in the same relative order, 6 replaced, 0 inserted by unified, 0 only in baseline
+         6  immediate or field offset only
+
+  first 6 aligned differences that are not just an immediate/offset (0 such):
+
+listings: codegen/xtree/N6.txt

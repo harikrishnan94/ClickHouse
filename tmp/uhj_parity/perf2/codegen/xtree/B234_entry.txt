@@ -1,0 +1,287 @@
+# BASELINE DB::HashJoin::addBlockToJoin(DB::Block const&, bool)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0x120
+    9 stp x29, x30, [sp, #0xe0]
+   10 str x28, [sp, #0xf0]
+   11 stp x22, x21, [sp, #0x100]
+   12 stp x20, x19, [sp, #0x110]
+   13 add x29, sp, #0xe0
+   14 mov x20, x0
+   15 add x0, sp, #0x20
+   16 mov w19, w2
+   17 bl <DB::Block::Block(DB::Block const&)>
+   18 sub x8, x29, #0x60
+   19 add x1, sp, #0x20
+   20 mov x0, x20
+   21 bl <DB::HashJoin::materializeColumnsFromRightBlock(DB::Block) const>
+   22 ldr x0, [sp, #0x68]
+   23 cbz x0, <SELF+0x70>
+   24 ldr x8, [sp, #0x78]
+   25 str x0, [sp, #0x70]
+   26 sub x1, x8, x0
+   27 bl <operator delete(void*, unsigned long)>
+   28 ldr x21, [sp, #0x48]
+   29 cbnz x21, <SELF+0x194>
+   30 ldr x0, [sp, #0x38]
+   31 str xzr, [sp, #0x38]
+   32 cbz x0, <SELF+0x90>
+   33 ldr x8, [sp, #0x40]
+   34 lsl x1, x8, #3
+   35 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   36 add x8, sp, #0x20
+   37 add x0, x29, #0x18
+   38 str x8, [x29, #0x18]
+   39 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+   40 sub x0, x29, #0x60
+   41 bl <DB::Block::rows() const>
+   42 stp xzr, x0, [sp, #0x8]
+   43 strb wzr, [sp, #0x18]
+   44 sub x1, x29, #0x60
+   45 add x2, sp, #0x8
+   46 and w3, w19, #0x1
+   47 mov x0, x20
+   48 bl <DB::HashJoin::addBlockToJoin(DB::Block const&, DB::detail::Selector, bool)>
+   49 ldrb w8, [sp, #0x18]
+   50 mov w19, w0
+   51 cmp x8, #0xff
+   52 b.eq <SELF+0xec>
+   53 adrp x9, ADDR
+   54 add x9, x9, #RELOC_LO
+   55 ldr x8, [x9, x8, lsl #3]
+   56 add x0, x29, #0x18
+   57 add x1, sp, #0x8
+   58 blr x8
+   59 ldur x0, [x29, #-0x18]
+   60 mov w8, #0xff
+   61 strb w8, [sp, #0x18]
+   62 cbz x0, <SELF+0x10c>
+   63 ldur x8, [x29, #-0x8]
+   64 stur x0, [x29, #-0x10]
+   65 sub x1, x8, x0
+   66 bl <operator delete(void*, unsigned long)>
+   67 ldur x0, [x29, #-0x38]
+   68 cbnz x0, <SELF+0x1d0>
+   69 ldur x0, [x29, #-0x48]
+   70 stur xzr, [x29, #-0x48]
+   71 cbz x0, <SELF+0x12c>
+   72 ldur x8, [x29, #-0x40]
+   73 lsl x1, x8, #3
+   74 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   75 sub x8, x29, #0x60
+   76 add x0, x29, #0x18
+   77 str x8, [x29, #0x18]
+   78 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+   79 and w0, w19, #0x1
+   80 ldp x20, x19, [sp, #0x110]
+   81 ldr x28, [sp, #0xf0]
+   82 ldp x22, x21, [sp, #0x100]
+   83 ldp x29, x30, [sp, #0xe0]
+   84 add sp, sp, #0x120
+   85 b <SELF+0x174>
+   86 nop
+   87 nop
+   88 nop
+   89 nop
+   90 nop
+   91 nop
+   92 nop
+   93 ret
+   94 nop
+   95 nop
+   96 mov x0, x21
+   97 mov w1, #0x30
+   98 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   99 mov x21, x22
+  100 cbz x22, <SELF+0x78>
+  101 ldrsb w8, [x21, #0x27]
+  102 ldr x22, [x21]
+  103 tbz w8, #0x1f, <SELF+0x180>
+  104 ldr x8, [x21, #0x20]
+  105 ldr x0, [x21, #0x10]
+  106 and x1, x8, #ADDR
+  107 bl <operator delete(void*, unsigned long)>
+  108 b <SELF+0x180>
+  109 nop
+  110 nop
+  111 nop
+  112 mov w1, #0x30
+  113 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  114 mov x0, x20
+  115 cbz x20, <SELF+0x114>
+  116 ldrsb w8, [x0, #0x27]
+  117 ldr x20, [x0]
+  118 tbz w8, #0x1f, <SELF+0x1c0>
+  119 ldr x8, [x0, #0x10]
+  120 ldr x9, [x0, #0x20]
+  121 mov x21, x0
+  122 and x1, x9, #ADDR
+  123 mov x0, x8
+  124 bl <operator delete(void*, unsigned long)>
+  125 mov x0, x21
+  126 b <SELF+0x1c0>
+  127 bl <__clang_call_terminate>
+  128 mov x19, x0
+  129 add x0, sp, #0x8
+  130 bl <DB::detail::Selector::~Selector()>
+  131 b <SELF+0x214>
+  132 mov x19, x0
+  133 sub x0, x29, #0x60
+  134 bl <DB::Block::~Block()>
+  135 mov x0, x19
+  136 bl <_Unwind_Resume>
+  137 mov x19, x0
+  138 add x0, sp, #0x20
+  139 bl <DB::Block::~Block()>
+  140 mov x0, x19
+  141 bl <_Unwind_Resume>
+
+# UNIFIED DB::Unified::HashJoin::addBlockToJoin(DB::Block const&, bool)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0x120
+    9 stp x29, x30, [sp, #0xe0]
+   10 str x28, [sp, #0xf0]
+   11 stp x22, x21, [sp, #0x100]
+   12 stp x20, x19, [sp, #0x110]
+   13 add x29, sp, #0xe0
+   14 mov x20, x0
+   15 add x0, sp, #0x20
+   16 mov w19, w2
+   17 bl <DB::Block::Block(DB::Block const&)>
+   18 sub x8, x29, #0x60
+   19 add x1, sp, #0x20
+   20 mov x0, x20
+   21 bl <DB::HashJoin::materializeColumnsFromRightBlock(DB::Block) const>
+   22 ldr x0, [sp, #0x68]
+   23 cbz x0, <SELF+0x70>
+   24 ldr x8, [sp, #0x78]
+   25 str x0, [sp, #0x70]
+   26 sub x1, x8, x0
+   27 bl <operator delete(void*, unsigned long)>
+   28 ldr x21, [sp, #0x48]
+   29 cbnz x21, <SELF+0x194>
+   30 ldr x0, [sp, #0x38]
+   31 str xzr, [sp, #0x38]
+   32 cbz x0, <SELF+0x90>
+   33 ldr x8, [sp, #0x40]
+   34 lsl x1, x8, #3
+   35 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   36 add x8, sp, #0x20
+   37 add x0, x29, #0x18
+   38 str x8, [x29, #0x18]
+   39 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+   40 sub x0, x29, #0x60
+   41 bl <DB::Block::rows() const>
+   42 stp xzr, x0, [sp, #0x8]
+   43 strb wzr, [sp, #0x18]
+   44 sub x1, x29, #0x60
+   45 add x2, sp, #0x8
+   46 and w3, w19, #0x1
+   47 mov x0, x20
+   48 bl <DB::HashJoin::addBlockToJoin(DB::Block const&, DB::detail::Selector, bool)>
+   49 ldrb w8, [sp, #0x18]
+   50 mov w19, w0
+   51 cmp x8, #0xff
+   52 b.eq <SELF+0xec>
+   53 adrp x9, ADDR
+   54 add x9, x9, #RELOC_LO
+   55 ldr x8, [x9, x8, lsl #3]
+   56 add x0, x29, #0x18
+   57 add x1, sp, #0x8
+   58 blr x8
+   59 ldur x0, [x29, #-0x18]
+   60 mov w8, #0xff
+   61 strb w8, [sp, #0x18]
+   62 cbz x0, <SELF+0x10c>
+   63 ldur x8, [x29, #-0x8]
+   64 stur x0, [x29, #-0x10]
+   65 sub x1, x8, x0
+   66 bl <operator delete(void*, unsigned long)>
+   67 ldur x0, [x29, #-0x38]
+   68 cbnz x0, <SELF+0x1d0>
+   69 ldur x0, [x29, #-0x48]
+   70 stur xzr, [x29, #-0x48]
+   71 cbz x0, <SELF+0x12c>
+   72 ldur x8, [x29, #-0x40]
+   73 lsl x1, x8, #3
+   74 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   75 sub x8, x29, #0x60
+   76 add x0, x29, #0x18
+   77 str x8, [x29, #0x18]
+   78 bl <std::__1::vector<DB::ColumnWithTypeAndName, AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>::__destroy_vector::operator()[abi:fqe220101]()>
+   79 and w0, w19, #0x1
+   80 ldp x20, x19, [sp, #0x110]
+   81 ldr x28, [sp, #0xf0]
+   82 ldp x22, x21, [sp, #0x100]
+   83 ldp x29, x30, [sp, #0xe0]
+   84 add sp, sp, #0x120
+   85 b <SELF+0x174>
+   86 nop
+   87 nop
+   88 nop
+   89 nop
+   90 nop
+   91 nop
+   92 nop
+   93 ret
+   94 nop
+   95 nop
+   96 mov x0, x21
+   97 mov w1, #0x30
+   98 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   99 mov x21, x22
+  100 cbz x22, <SELF+0x78>
+  101 ldrsb w8, [x21, #0x27]
+  102 ldr x22, [x21]
+  103 tbz w8, #0x1f, <SELF+0x180>
+  104 ldr x8, [x21, #0x20]
+  105 ldr x0, [x21, #0x10]
+  106 and x1, x8, #ADDR
+  107 bl <operator delete(void*, unsigned long)>
+  108 b <SELF+0x180>
+  109 nop
+  110 nop
+  111 nop
+  112 mov w1, #0x30
+  113 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  114 mov x0, x20
+  115 cbz x20, <SELF+0x114>
+  116 ldrsb w8, [x0, #0x27]
+  117 ldr x20, [x0]
+  118 tbz w8, #0x1f, <SELF+0x1c0>
+  119 ldr x8, [x0, #0x10]
+  120 ldr x9, [x0, #0x20]
+  121 mov x21, x0
+  122 and x1, x9, #ADDR
+  123 mov x0, x8
+  124 bl <operator delete(void*, unsigned long)>
+  125 mov x0, x21
+  126 b <SELF+0x1c0>
+  127 bl <__clang_call_terminate>
+  128 mov x19, x0
+  129 add x0, sp, #0x8
+  130 bl <DB::detail::Selector::~Selector()>
+  131 b <SELF+0x214>
+  132 mov x19, x0
+  133 sub x0, x29, #0x60
+  134 bl <DB::Block::~Block()>
+  135 mov x0, x19
+  136 bl <_Unwind_Resume>
+  137 mov x19, x0
+  138 add x0, sp, #0x20
+  139 bl <DB::Block::~Block()>
+  140 mov x0, x19
+  141 bl <_Unwind_Resume>

@@ -1,0 +1,278 @@
+[
+ {
+  "loop": "B0",
+  "tier": "T1 SHARED",
+  "impls": "hash,para,unif",
+  "evidence": "single file src/Interpreters/JoinUtils.cpp, no per-tree copy -> same instructions"
+ },
+ {
+  "loop": "B1",
+  "tier": "T2 IDENTICAL?",
+  "impls": "hash,para,unif",
+  "evidence": "UNEXPECTED: 0 copies []"
+ },
+ {
+  "loop": "B2",
+  "tier": "T5 TODO",
+  "impls": "hash,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "B3",
+  "tier": "T5 TODO",
+  "impls": "hash,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "B4",
+  "tier": "T5 TODO",
+  "impls": "hash,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "B5",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "para",
+  "evidence": "only in parallel_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B6",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "para",
+  "evidence": "only in parallel_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B7",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B8",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B9",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "para",
+  "evidence": "only in parallel_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B10",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B22",
+  "tier": "T1 SHARED",
+  "impls": "hash,para,unif",
+  "evidence": "single file src/Interpreters/AggregationCommon.h, no per-tree copy -> same instructions"
+ },
+ {
+  "loop": "B11",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "B12",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "B13",
+  "tier": "T1 SHARED",
+  "impls": "hash,para,unif",
+  "evidence": "single file src/Common/HashTable/HashTable.h, no per-tree copy -> same instructions"
+ },
+ {
+  "loop": "B14",
+  "tier": "T1 SHARED",
+  "impls": "hash,para,unif",
+  "evidence": "single file src/Interpreters/RowRefs.h, no per-tree copy -> same instructions"
+ },
+ {
+  "loop": "B15",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B16",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B17",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "para",
+  "evidence": "only in parallel_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B18",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B19",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "only in unified_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B20",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "para",
+  "evidence": "only in parallel_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "B21",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "para",
+  "evidence": "only in parallel_hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "P0",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "P1",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "P2",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "P3",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "P4",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "P5",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "P6",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "P7",
+  "tier": "T0 ICF",
+  "impls": "hash,para,unif",
+  "evidence": "one address holds both trees' symbols (codegen/icf_census.json)"
+ },
+ {
+  "loop": "P8",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "P9",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "P10",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md (+ no counterpart)"
+ },
+ {
+  "loop": "G1",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "G2",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "G3",
+  "tier": "T3 ANALYSED",
+  "impls": "hash,para,unif",
+  "evidence": "codegen/P1_G2_probe_and_gather.md"
+ },
+ {
+  "loop": "G4",
+  "tier": "T0 ICF",
+  "impls": "hash,para,unif",
+  "evidence": "one address holds both trees' symbols (codegen/icf_census.json)"
+ },
+ {
+  "loop": "G5",
+  "tier": "T1 SHARED",
+  "impls": "hash,para,unif",
+  "evidence": "single file src/Interpreters/HashJoin/ScatteredBlock.h, no per-tree copy -> same instructions"
+ },
+ {
+  "loop": "N1",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "N2",
+  "tier": "T4 NO-COUNTERPART",
+  "impls": "hash",
+  "evidence": "only in hash; artefact records what the others do instead"
+ },
+ {
+  "loop": "N3",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "N4",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "N5",
+  "tier": "T1 SHARED",
+  "impls": "hash,para,unif",
+  "evidence": "single file src/Interpreters/RowRefs.h, no per-tree copy -> same instructions"
+ },
+ {
+  "loop": "N6",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ },
+ {
+  "loop": "N7",
+  "tier": "T5 TODO",
+  "impls": "hash,para,unif",
+  "evidence": "no codegen artefact yet"
+ }
+]

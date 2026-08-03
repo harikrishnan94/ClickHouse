@@ -1,0 +1,30 @@
+G3.2  hardware counters -- `perf stat` LAUNCHING the process (follows all threads)
+  cell reproduced locally: INNER|u64|hi|t1|medium, 1M build rows, 2M probe rows,
+  3,600,000 output rows (identical to the server-side cell). 7 reps, interleaved.
+  process-startup control subtracted (median of `clickhouse local --query 'SELECT 1'`).
+
+  counter                      control       hash-ctl    unified-ctl   delta%  hash sd%
+  cycles                     304697151      360763589      368257285     2.1%      1.8%
+  instructions               675006878      753519747      757076854     0.5%      0.3%
+  cache-misses                 3147633        8141469        8254085     1.4%      0.8%
+  cache-references           197879244      280982819      287209998     2.2%      0.3%
+  dTLB-load-misses             2161872       11825003       11834322     0.1%      0.5%
+  branch-misses                1209592        2041728        2025331    -0.8%      1.1%
+
+  per probe row                    hash        unified   delta%
+  cycles                        180.382        184.129     2.1%
+  instructions                  376.760        378.538     0.5%
+  cache-misses                    4.071          4.127     1.4%
+  cache-references              140.491        143.605     2.2%
+  dTLB-load-misses                5.913          5.917     0.1%
+  branch-misses                   1.021          1.013    -0.8%
+  IPC                             2.089          2.056    -1.6%
+
+PREREG P3.2 scoring (thresholds registered before the run):
+  instructions/row up >10%       :     0.5%   NOT MET
+  |IPC delta| < 10%              :    -1.6%   MET
+  |cache-misses/row| < 20%       :     1.4%   MET
+  dTLB-load-misses/row           :     0.1%
+  cycles/row                     :     2.1%
+
+  VERDICT: NEITHER registered signature. Instructions essentially unchanged and IPC down means the extra cycles are NOT extra work but worse execution -- stalls. Report as a distinct third mechanism, not as either registered one.

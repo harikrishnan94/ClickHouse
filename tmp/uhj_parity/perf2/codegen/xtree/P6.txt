@@ -1,0 +1,395 @@
+# BASELINE void DB::addFoundRowAll<TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>, false, true, DB::AddedColumns<false>>(TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>::mapped_type const&, DB::AddedColumns<false>&, unsigned long&, DB::KnownRowsHolder<true>&, DB::JoinStuff::JoinUsedFlags*, bool)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0xa0
+    9 stp x29, x30, [sp, #0x40]
+   10 stp x28, x27, [sp, #0x50]
+   11 stp x26, x25, [sp, #0x60]
+   12 stp x24, x23, [sp, #0x70]
+   13 stp x22, x21, [sp, #0x80]
+   14 stp x20, x19, [sp, #0x90]
+   15 add x29, sp, #0x40
+   16 ldr x24, [x0]
+   17 mov w20, w5
+   18 mov x21, x4
+   19 mov x19, x3
+   20 mov x22, x2
+   21 mov x23, x1
+   22 stp xzr, xzr, [sp, #0x8]
+   23 str xzr, [sp, #0x18]
+   24 cbz x24, <SELF+0x9c>
+   25 tbnz x24, #0x3f, <SELF+0x110>
+   26 and x26, x24, #ADDR
+   27 ldr x8, [x26]
+   28 lsr x25, x8, #8
+   29 tbnz w8, #0x0, <SELF+0x124>
+   30 ubfx x8, x8, #1, #7
+   31 add x27, x26, #0x8
+   32 cmp x8, x25
+   33 b.ne <SELF+0x140>
+   34 mov x24, xzr
+   35 add x26, x27, x25, lsl #3
+   36 mov x28, xzr
+   37 mov w25, wzr
+   38 b <SELF+0x180>
+   39 mov w25, wzr
+   40 mov x27, xzr
+   41 mov x28, xzr
+   42 mov x26, xzr
+   43 mov x8, xzr
+   44 cbnz w25, <SELF+0x180>
+   45 tbz w20, #0x0, <SELF+0x2b8>
+   46 cbz x8, <SELF+0xd0>
+   47 ldr x9, [sp, #0x18]
+   48 mov x0, x8
+   49 str x8, [sp, #0x10]
+   50 sub x1, x9, x8
+   51 bl <operator delete(void*, unsigned long)>
+   52 ldp x20, x19, [sp, #0x90]
+   53 ldp x22, x21, [sp, #0x80]
+   54 ldp x24, x23, [sp, #0x70]
+   55 ldp x26, x25, [sp, #0x60]
+   56 ldp x28, x27, [sp, #0x50]
+   57 ldp x29, x30, [sp, #0x40]
+   58 add sp, sp, #0xa0
+   59 b <SELF+0x10c>
+   60 nop
+   61 nop
+   62 nop
+   63 nop
+   64 nop
+   65 nop
+   66 nop
+   67 ret
+   68 mov x27, xzr
+   69 mov x28, xzr
+   70 mov x26, xzr
+   71 mov w25, #0x1
+   72 b <SELF+0x180>
+   73 ldr x24, [x26, #0x8]
+   74 mov x27, xzr
+   75 mov x28, xzr
+   76 mov x26, xzr
+   77 mov x8, xzr
+   78 cbnz w25, <SELF+0x180>
+   79 b <SELF+0xb4>
+   80 ldr x28, [x26, #0x38]!
+   81 mov w25, wzr
+   82 mov x24, xzr
+   83 b <SELF+0x180>
+   84 mov x27, xzr
+   85 b <SELF+0x2ac>
+   86 add x0, sp, #0x20
+   87 bl <NFA*& std::__1::vector<NFA*, std::__1::allocator<NFA*>>::emplace_back<NFA*&>(NFA*&)::'lambda0'()::operator()() const>
+   88 ldur x8, [x29, #-0x8]
+   89 b <SELF+0x1ec>
+   90 nop
+   91 nop
+   92 nop
+   93 nop
+   94 nop
+   95 nop
+   96 mov x8, x24
+   97 cbz x27, <SELF+0x18c>
+   98 ldr x8, [x27]
+   99 str x8, [sp]
+  100 mov x1, sp
+  101 mov x0, x19
+  102 bl <bool DB::KnownRowsHolder<true>::isKnown<unsigned long>(unsigned long const&)>
+  103 tbnz w0, #0x0, <SELF+0x260>
+  104 ldr x1, [sp]
+  105 mov x0, x23
+  106 mov w2, wzr
+  107 bl <DB::AddedColumns<false>::appendFromBlock(unsigned long, bool)>
+  108 ldr x8, [x22]
+  109 add x8, x8, #0x1
+  110 str x8, [x22]
+  111 tbnz w20, #0x0, <SELF+0x1f0>
+  112 ldp x8, x9, [sp, #0x10]
+  113 sub x10, x29, #0x8
+  114 str x10, [sp, #0x20]
+  115 mov x10, sp
+  116 cmp x8, x9
+  117 add x9, sp, #0x8
+  118 stur x8, [x29, #-0x8]
+  119 stp x10, x9, [sp, #0x28]
+  120 b.hs <SELF+0x158>
+  121 ldr x9, [sp]
+  122 str x9, [x8], #0x8
+  123 str x8, [sp, #0x10]
+  124 cbz x21, <SELF+0x260>
+  125 ldp x8, x9, [x21, #0x18]
+  126 mov x10, #-ADDR
+  127 movk x10, #0xaaab
+  128 sub x9, x9, x8
+  129 asr x9, x9, #3
+  130 mul x11, x9, x10
+  131 ldr x9, [sp]
+  132 ubfx x10, x9, #32, #31
+  133 cmp x11, x10
+  134 b.ls <SELF+0x2d4>
+  135 mov w11, #0x18
+  136 mov w9, w9
+  137 umaddl x8, w10, w11, x8
+  138 ldp x8, x10, [x8]
+  139 sub x10, x10, x8
+  140 cmp x9, x10
+  141 b.hs <SELF+0x2d4>
+  142 ldrb w10, [x8, x9]
+  143 tbnz w10, #0x0, <SELF+0x260>
+  144 mov w10, wzr
+  145 add x8, x8, x9
+  146 mov w9, #0x1
+  147 casalb w10, w9, [x8]
+  148 nop
+  149 nop
+  150 nop
+  151 nop
+  152 cbz x27, <SELF+0x2a0>
+  153 add x27, x27, #0x8
+  154 cmp x27, x26
+  155 b.ne <SELF+0x2a8>
+  156 cbz x28, <SELF+0x150>
+  157 add x27, x28, #0x10
+  158 ldp x8, x28, [x28]
+  159 ubfx x8, x8, #1, #7
+  160 add x26, x27, x8, lsl #3
+  161 cbz x27, <SELF+0x2ac>
+  162 b <SELF+0x180>
+  163 nop
+  164 nop
+  165 nop
+  166 nop
+  167 nop
+  168 subs w25, w25, #0x1
+  169 cinc x24, x24, ne
+  170 cbnz x27, <SELF+0x180>
+  171 cbnz w25, <SELF+0x180>
+  172 ldr x8, [sp, #0x8]
+  173 tbnz w20, #0x0, <SELF+0xb8>
+  174 ldr x2, [sp, #0x10]
+  175 mov x0, x19
+  176 mov x1, x8
+  177 bl <void DB::KnownRowsHolder<true>::add<std::__1::__wrap_iter<unsigned long const*>>(std::__1::__wrap_iter<unsigned long const*>, std::__1::__wrap_iter<unsigned long const*>)>
+  178 ldr x8, [sp, #0x8]
+  179 cbnz x8, <SELF+0xbc>
+  180 b <SELF+0xd0>
+  181 adrp x0, ADDR
+  182 add x0, x0, #RELOC_LO
+  183 adrp x1, ADDR
+  184 add x1, x1, #RELOC_LO
+  185 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  186 b <SELF+0x2ec>
+  187 mov x19, x0
+  188 ldr x0, [sp, #0x8]
+  189 cbz x0, <SELF+0x308>
+  190 ldr x8, [sp, #0x18]
+  191 str x0, [sp, #0x10]
+  192 sub x1, x8, x0
+  193 bl <operator delete(void*, unsigned long)>
+  194 mov x0, x19
+  195 bl <_Unwind_Resume>
+
+# UNIFIED void DB::Unified::addFoundRowAll<TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>, false, true, DB::Unified::AddedColumns<false>>(TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>::mapped_type const&, DB::Unified::AddedColumns<false>&, unsigned long&, DB::Unified::KnownRowsHolder<true>&, DB::Unified::JoinStuff::JoinUsedFlags*, bool)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0xa0
+    9 stp x29, x30, [sp, #0x40]
+   10 stp x28, x27, [sp, #0x50]
+   11 stp x26, x25, [sp, #0x60]
+   12 stp x24, x23, [sp, #0x70]
+   13 stp x22, x21, [sp, #0x80]
+   14 stp x20, x19, [sp, #0x90]
+   15 add x29, sp, #0x40
+   16 ldr x24, [x0]
+   17 mov w20, w5
+   18 mov x21, x4
+   19 mov x19, x3
+   20 mov x22, x2
+   21 mov x23, x1
+   22 stp xzr, xzr, [sp, #0x8]
+   23 str xzr, [sp, #0x18]
+   24 cbz x24, <SELF+0x9c>
+   25 tbnz x24, #0x3f, <SELF+0x110>
+   26 and x26, x24, #ADDR
+   27 ldr x8, [x26]
+   28 lsr x25, x8, #8
+   29 tbnz w8, #0x0, <SELF+0x124>
+   30 ubfx x8, x8, #1, #7
+   31 add x27, x26, #0x8
+   32 cmp x8, x25
+   33 b.ne <SELF+0x140>
+   34 mov x24, xzr
+   35 add x26, x27, x25, lsl #3
+   36 mov x28, xzr
+   37 mov w25, wzr
+   38 b <SELF+0x180>
+   39 mov w25, wzr
+   40 mov x27, xzr
+   41 mov x28, xzr
+   42 mov x26, xzr
+   43 mov x8, xzr
+   44 cbnz w25, <SELF+0x180>
+   45 tbz w20, #0x0, <SELF+0x2b8>
+   46 cbz x8, <SELF+0xd0>
+   47 ldr x9, [sp, #0x18]
+   48 mov x0, x8
+   49 str x8, [sp, #0x10]
+   50 sub x1, x9, x8
+   51 bl <operator delete(void*, unsigned long)>
+   52 ldp x20, x19, [sp, #0x90]
+   53 ldp x22, x21, [sp, #0x80]
+   54 ldp x24, x23, [sp, #0x70]
+   55 ldp x26, x25, [sp, #0x60]
+   56 ldp x28, x27, [sp, #0x50]
+   57 ldp x29, x30, [sp, #0x40]
+   58 add sp, sp, #0xa0
+   59 b <SELF+0x10c>
+   60 nop
+   61 nop
+   62 nop
+   63 nop
+   64 nop
+   65 nop
+   66 nop
+   67 ret
+   68 mov x27, xzr
+   69 mov x28, xzr
+   70 mov x26, xzr
+   71 mov w25, #0x1
+   72 b <SELF+0x180>
+   73 ldr x24, [x26, #0x8]
+   74 mov x27, xzr
+   75 mov x28, xzr
+   76 mov x26, xzr
+   77 mov x8, xzr
+   78 cbnz w25, <SELF+0x180>
+   79 b <SELF+0xb4>
+   80 ldr x28, [x26, #0x38]!
+   81 mov w25, wzr
+   82 mov x24, xzr
+   83 b <SELF+0x180>
+   84 mov x27, xzr
+   85 b <SELF+0x2ac>
+   86 add x0, sp, #0x20
+   87 bl <NFA*& std::__1::vector<NFA*, std::__1::allocator<NFA*>>::emplace_back<NFA*&>(NFA*&)::'lambda0'()::operator()() const>
+   88 ldur x8, [x29, #-0x8]
+   89 b <SELF+0x1ec>
+   90 nop
+   91 nop
+   92 nop
+   93 nop
+   94 nop
+   95 nop
+   96 mov x8, x24
+   97 cbz x27, <SELF+0x18c>
+   98 ldr x8, [x27]
+   99 str x8, [sp]
+  100 mov x1, sp
+  101 mov x0, x19
+  102 bl <bool DB::KnownRowsHolder<true>::isKnown<unsigned long>(unsigned long const&)>
+  103 tbnz w0, #0x0, <SELF+0x260>
+  104 ldr x1, [sp]
+  105 mov x0, x23
+  106 mov w2, wzr
+  107 bl <DB::AddedColumns<false>::appendFromBlock(unsigned long, bool)>
+  108 ldr x8, [x22]
+  109 add x8, x8, #0x1
+  110 str x8, [x22]
+  111 tbnz w20, #0x0, <SELF+0x1f0>
+  112 ldp x8, x9, [sp, #0x10]
+  113 sub x10, x29, #0x8
+  114 str x10, [sp, #0x20]
+  115 mov x10, sp
+  116 cmp x8, x9
+  117 add x9, sp, #0x8
+  118 stur x8, [x29, #-0x8]
+  119 stp x10, x9, [sp, #0x28]
+  120 b.hs <SELF+0x158>
+  121 ldr x9, [sp]
+  122 str x9, [x8], #0x8
+  123 str x8, [sp, #0x10]
+  124 cbz x21, <SELF+0x260>
+  125 ldp x8, x9, [x21, #0x18]
+  126 mov x10, #-ADDR
+  127 movk x10, #0xaaab
+  128 sub x9, x9, x8
+  129 asr x9, x9, #3
+  130 mul x11, x9, x10
+  131 ldr x9, [sp]
+  132 ubfx x10, x9, #32, #31
+  133 cmp x11, x10
+  134 b.ls <SELF+0x2d4>
+  135 mov w11, #0x18
+  136 mov w9, w9
+  137 umaddl x8, w10, w11, x8
+  138 ldp x8, x10, [x8]
+  139 sub x10, x10, x8
+  140 cmp x9, x10
+  141 b.hs <SELF+0x2d4>
+  142 ldrb w10, [x8, x9]
+  143 tbnz w10, #0x0, <SELF+0x260>
+  144 mov w10, wzr
+  145 add x8, x8, x9
+  146 mov w9, #0x1
+  147 casalb w10, w9, [x8]
+  148 nop
+  149 nop
+  150 nop
+  151 nop
+  152 cbz x27, <SELF+0x2a0>
+  153 add x27, x27, #0x8
+  154 cmp x27, x26
+  155 b.ne <SELF+0x2a8>
+  156 cbz x28, <SELF+0x150>
+  157 add x27, x28, #0x10
+  158 ldp x8, x28, [x28]
+  159 ubfx x8, x8, #1, #7
+  160 add x26, x27, x8, lsl #3
+  161 cbz x27, <SELF+0x2ac>
+  162 b <SELF+0x180>
+  163 nop
+  164 nop
+  165 nop
+  166 nop
+  167 nop
+  168 subs w25, w25, #0x1
+  169 cinc x24, x24, ne
+  170 cbnz x27, <SELF+0x180>
+  171 cbnz w25, <SELF+0x180>
+  172 ldr x8, [sp, #0x8]
+  173 tbnz w20, #0x0, <SELF+0xb8>
+  174 ldr x2, [sp, #0x10]
+  175 mov x0, x19
+  176 mov x1, x8
+  177 bl <void DB::KnownRowsHolder<true>::add<std::__1::__wrap_iter<unsigned long const*>>(std::__1::__wrap_iter<unsigned long const*>, std::__1::__wrap_iter<unsigned long const*>)>
+  178 ldr x8, [sp, #0x8]
+  179 cbnz x8, <SELF+0xbc>
+  180 b <SELF+0xd0>
+  181 adrp x0, ADDR
+  182 add x0, x0, #RELOC_LO
+  183 adrp x1, ADDR
+  184 add x1, x1, #RELOC_LO
+  185 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  186 b <SELF+0x2ec>
+  187 mov x19, x0
+  188 ldr x0, [sp, #0x8]
+  189 cbz x0, <SELF+0x308>
+  190 ldr x8, [sp, #0x18]
+  191 str x0, [sp, #0x10]
+  192 sub x1, x8, x0
+  193 bl <operator delete(void*, unsigned long)>
+  194 mov x0, x19
+  195 bl <_Unwind_Resume>

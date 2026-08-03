@@ -1,0 +1,19 @@
+before: tmp/uhj_parity/perf2/bin/clickhouse.ref
+after : tmp/uhj_parity/perf2/bin/clickhouse.ak1
+text symbols: 619828 -> 619828
+allowed-to-change regex: 'DB::Unified::'
+
+  added   :      0  (0 allowed, 0 OUTSIDE)
+  removed :      0  (0 allowed, 0 OUTSIDE)
+  resized :      0  (0 allowed, 0 OUTSIDE, 0 explained by ICF de/re-folding)
+
+  expect-differ 'DB::Unified::HashJoin::HashJoin\\(std': 1 symbols, 1 DIFFER (required >=1) -> OK
+
+  byte-compare 'fillFixedBatch<unsigned long': 4 symbols, 4 opcode-identical, 0 DIFFER
+
+  byte-compare 'DB::ConcurrentHashJoin::addBlockToJoin': 1 symbols, 1 opcode-identical, 0 DIFFER
+
+  byte-compare 'DB::HashJoin::addBlockToJoin': 2 symbols, 2 opcode-identical, 0 DIFFER
+
+symdiff: GREEN
+JOB_EXIT=0

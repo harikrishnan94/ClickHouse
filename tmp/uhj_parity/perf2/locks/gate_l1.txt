@@ -1,0 +1,193 @@
+====================================================================================================
+G0.2  lock-enumeration completeness: does the instrumented set match the static one?
+====================================================================================================
+  hash           seen=['SCI_ADD', 'SCI_RESOLVE']
+                 predicted=['SCI_ADD', 'SCI_RESOLVE']  conditional_seen=[]  -> OK
+  parallel_hash  seen=['PAR_SLOT_TRY', 'SCI_ADD', 'SCI_RESOLVE']
+                 predicted=['PAR_SLOT_TRY', 'SCI_ADD', 'SCI_RESOLVE']  conditional_seen=[]  -> OK
+  unified_hash   seen=['SCI_ADD', 'SCI_RESOLVE', 'UNI_BLOCKS_MUTEX', 'UNI_BUCKET_BLOCK', 'UNI_BUCKET_TRY']
+                 predicted=['SCI_ADD', 'SCI_RESOLVE', 'UNI_BLOCKS_MUTEX', 'UNI_BUCKET_TRY']  conditional_seen=['UNI_BUCKET_BLOCK']  -> OK
+
+====================================================================================================
+G2.1  acquisition counts vs formula
+====================================================================================================
+  cell                           algo            B(meas)    K  bucket acq  K*B pred  ratio   tryfail  blocked
+  INNER|u64|hi|t1|medium         unified_hash         18    1          18        18  1.000         0        0
+  INNER|u64|hi|t16|large         unified_hash        586   32       18752     18752  1.000      9693      300
+  INNER|u64|hi|t64|large         unified_hash        563  128       72064     72064  1.000     50522      614
+  INNER|comp|hi|t1|medium        unified_hash         25    1          25        25  1.000         0        0
+  INNER|comp|hi|t16|large        unified_hash        768   32       24576     24576  1.000     15495      412
+  INNER|comp|hi|t64|large        unified_hash        759  128       97152     97152  1.000    102813      511
+  FULL|u64|hi|t1|medium          unified_hash         18    1          18        18  1.000         0        0
+  FULL|u64|hi|t16|large          unified_hash        585   32       18720     18720  1.000      9184      258
+  FULL|u64|hi|t64|large          unified_hash        562  128       71936     71936  1.000     51253      455
+  FULL|comp|hi|t1|medium         unified_hash         25    1          25        25  1.000         0        0
+  FULL|comp|hi|t16|large         unified_hash        768   32       24576     24576  1.000     16021      390
+  FULL|comp|hi|t64|large         unified_hash        759  128       97152     97152  1.000    100796      539
+
+  cell                           algo            B(SCI_ADD)  slot acq   ratio   tryfail
+  INNER|u64|hi|t1|medium         parallel_hash           18        18   1.000         0
+  INNER|u64|hi|t16|large         parallel_hash         9360      9360   1.000   1906605
+  INNER|u64|hi|t64|large         parallel_hash        35840     35840   1.000  11074336
+  INNER|comp|hi|t1|medium        parallel_hash           25        25   1.000         0
+  INNER|comp|hi|t16|large        parallel_hash        12288     12288   1.000   1678574
+  INNER|comp|hi|t64|large        parallel_hash        48576     48576   1.000  14064961
+  FULL|u64|hi|t1|medium          parallel_hash           18        18   1.000         0
+  FULL|u64|hi|t16|large          parallel_hash         9312      9312   1.000   1656527
+  FULL|u64|hi|t64|large          parallel_hash        35904     35904   1.000  27999865
+  FULL|comp|hi|t1|medium         parallel_hash           25        25   1.000         0
+  FULL|comp|hi|t16|large         parallel_hash        12288     12288   1.000   2276917
+  FULL|comp|hi|t64|large         parallel_hash        48576     48576   1.000  20967620
+
+====================================================================================================
+G2.2  hold-time distributions (MEASURED, from the log2 histogram)
+====================================================================================================
+  cell                       algo          site                      n    p50 ns     p99 ns   mean ns  total us
+  INNER|u64|hi|t1|medium     hash          SCI_ADD                  18        23        362       107         2
+  INNER|u64|hi|t1|medium     hash          SCI_RESOLVE              32        91        724       154         5
+  INNER|u64|hi|t1|medium     parallel_hash PAR_SLOT_TRY             18    741455    1482910    754421     13580
+  INNER|u64|hi|t1|medium     parallel_hash SCI_ADD                  18        45        362        92         2
+  INNER|u64|hi|t1|medium     parallel_hash SCI_RESOLVE              32       181       1448       196         6
+  INNER|u64|hi|t1|medium     unified_hash  UNI_BUCKET_TRY           18   1482910    2965821   1102546     19846
+  INNER|u64|hi|t1|medium     unified_hash  UNI_BLOCKS_MUTEX         18      2896       2896      2427        44
+  INNER|u64|hi|t1|medium     unified_hash  SCI_ADD                  18        45        362        79         1
+  INNER|u64|hi|t1|medium     unified_hash  SCI_RESOLVE              32        91       1448       165         5
+  INNER|u64|hi|t16|large     hash          SCI_ADD                 607        11        362        31        19
+  INNER|u64|hi|t16|large     hash          SCI_RESOLVE             603        91        724       151        91
+  INNER|u64|hi|t16|large     parallel_hash PAR_SLOT_TRY           9360     92682     370728    133338   1248044
+  INNER|u64|hi|t16|large     parallel_hash SCI_ADD                9360        11         45        16       146
+  INNER|u64|hi|t16|large     parallel_hash SCI_RESOLVE             563       181        724       425       239
+  INNER|u64|hi|t16|large     unified_hash  UNI_BUCKET_TRY        18752     23170      92682     43811    821551
+  INNER|u64|hi|t16|large     unified_hash  UNI_BUCKET_BLOCK        300     46341    2965821    188932     56680
+  INNER|u64|hi|t16|large     unified_hash  UNI_BLOCKS_MUTEX        586      2896       5793      2786      1633
+  INNER|u64|hi|t16|large     unified_hash  SCI_ADD                 586        11        362        33        19
+  INNER|u64|hi|t16|large     unified_hash  SCI_RESOLVE             555        91        724       146        81
+  INNER|u64|hi|t64|large     hash          SCI_ADD                 573        11        362        28        16
+  INNER|u64|hi|t64|large     hash          SCI_RESOLVE             572       181       1448       216       124
+  INNER|u64|hi|t64|large     parallel_hash PAR_SLOT_TRY          35840     46341      92682     49241   1764785
+  INNER|u64|hi|t64|large     parallel_hash SCI_ADD               35840        11         11        17       614
+  INNER|u64|hi|t64|large     parallel_hash SCI_RESOLVE             546        91       1448      1468       801
+  INNER|u64|hi|t64|large     unified_hash  UNI_BUCKET_TRY        72064     11585      46341     18103   1304559
+  INNER|u64|hi|t64|large     unified_hash  UNI_BUCKET_BLOCK        614     92682    2965821    380061    233358
+  INNER|u64|hi|t64|large     unified_hash  UNI_BLOCKS_MUTEX        563      2896       5793      3244      1827
+  INNER|u64|hi|t64|large     unified_hash  SCI_ADD                 563        11        362        32        18
+  INNER|u64|hi|t64|large     unified_hash  SCI_RESOLVE             535        91       1448       174        93
+  INNER|comp|hi|t1|medium    hash          SCI_ADD                  25        11        362        66         2
+  INNER|comp|hi|t1|medium    hash          SCI_RESOLVE              51        91       1448       150         8
+  INNER|comp|hi|t1|medium    parallel_hash PAR_SLOT_TRY             25    741455    2965821    755638     18891
+  INNER|comp|hi|t1|medium    parallel_hash SCI_ADD                  25        23        362        86         2
+  INNER|comp|hi|t1|medium    parallel_hash SCI_RESOLVE              51        91       2896       147         7
+  INNER|comp|hi|t1|medium    unified_hash  UNI_BUCKET_TRY           25   1482910    2965821   1067118     26678
+  INNER|comp|hi|t1|medium    unified_hash  UNI_BLOCKS_MUTEX         25      2896       2896      2962        74
+  INNER|comp|hi|t1|medium    unified_hash  SCI_ADD                  25        11        181        55         1
+  INNER|comp|hi|t1|medium    unified_hash  SCI_RESOLVE              51        91       1448       160         8
+  INNER|comp|hi|t16|large    hash          SCI_ADD                 768        11        362        39        30
+  INNER|comp|hi|t16|large    hash          SCI_RESOLVE             769        91        724       169       130
+  INNER|comp|hi|t16|large    parallel_hash PAR_SLOT_TRY          12288    185364     370728    174186   2140404
+  INNER|comp|hi|t16|large    parallel_hash SCI_ADD               12288        11         45        19       236
+  INNER|comp|hi|t16|large    parallel_hash SCI_RESOLVE             769        91        724       257       198
+  INNER|comp|hi|t16|large    unified_hash  UNI_BUCKET_TRY        24576     92682      92682     80913   1988528
+  INNER|comp|hi|t16|large    unified_hash  UNI_BUCKET_BLOCK        412     46341    2965821    280532    115579
+  INNER|comp|hi|t16|large    unified_hash  UNI_BLOCKS_MUTEX        768      2896      11585      3327      2555
+  INNER|comp|hi|t16|large    unified_hash  SCI_ADD                 768        11        362        45        35
+  INNER|comp|hi|t16|large    unified_hash  SCI_RESOLVE             769        91        724       144       110
+  INNER|comp|hi|t64|large    hash          SCI_ADD                 759        11        362        33        25
+  INNER|comp|hi|t64|large    hash          SCI_RESOLVE             761       181        724       173       131
+  INNER|comp|hi|t64|large    parallel_hash PAR_SLOT_TRY          48576     92682     185364     91950   4466557
+  INNER|comp|hi|t64|large    parallel_hash SCI_ADD               48576        11         11        14       695
+  INNER|comp|hi|t64|large    parallel_hash SCI_RESOLVE             761        91        724      1172       892
+  INNER|comp|hi|t64|large    unified_hash  UNI_BUCKET_TRY        97152     46341      92682     59199   5751307
+  INNER|comp|hi|t64|large    unified_hash  UNI_BUCKET_BLOCK        511     46341     370728     67769     34630
+  INNER|comp|hi|t64|large    unified_hash  UNI_BLOCKS_MUTEX        759      2896       5793      3679      2793
+  INNER|comp|hi|t64|large    unified_hash  SCI_ADD                 759        11        181        28        21
+  INNER|comp|hi|t64|large    unified_hash  SCI_RESOLVE             761        91       1448       214       163
+  FULL|u64|hi|t1|medium      hash          SCI_ADD                  18        11        362        80         1
+  FULL|u64|hi|t1|medium      hash          SCI_RESOLVE              32        91       1448       167         5
+  FULL|u64|hi|t1|medium      parallel_hash PAR_SLOT_TRY             18    741455    1482910    796388     14335
+  FULL|u64|hi|t1|medium      parallel_hash SCI_ADD                  18        23        362        87         2
+  FULL|u64|hi|t1|medium      parallel_hash SCI_RESOLVE              32        91       1448       161         5
+  FULL|u64|hi|t1|medium      unified_hash  UNI_BUCKET_TRY           18   1482910    2965821   1063419     19142
+  FULL|u64|hi|t1|medium      unified_hash  UNI_BLOCKS_MUTEX         18      2896       2896      2527        45
+  FULL|u64|hi|t1|medium      unified_hash  SCI_ADD                  18        23        362        95         2
+  FULL|u64|hi|t1|medium      unified_hash  SCI_RESOLVE              32        91       1448       163         5
+  FULL|u64|hi|t16|large      hash          SCI_ADD                 607        11        362        39        23
+  FULL|u64|hi|t16|large      hash          SCI_RESOLVE             603       181        724       194       117
+  FULL|u64|hi|t16|large      parallel_hash PAR_SLOT_TRY           9312     92682     370728    134151   1249211
+  FULL|u64|hi|t16|large      parallel_hash SCI_ADD                9312        11         23        19       174
+  FULL|u64|hi|t16|large      parallel_hash SCI_RESOLVE             556       181        724       299       166
+  FULL|u64|hi|t16|large      unified_hash  UNI_BUCKET_TRY        18720     23170      92682     42770    800650
+  FULL|u64|hi|t16|large      unified_hash  UNI_BUCKET_BLOCK        258     46341    2965821    321102     82844
+  FULL|u64|hi|t16|large      unified_hash  UNI_BLOCKS_MUTEX        585      2896       5793      2870      1679
+  FULL|u64|hi|t16|large      unified_hash  SCI_ADD                 585        11        362        29        17
+  FULL|u64|hi|t16|large      unified_hash  SCI_RESOLVE             561        91        724       147        83
+  FULL|u64|hi|t64|large      hash          SCI_ADD                 573        11        724        42        24
+  FULL|u64|hi|t64|large      hash          SCI_RESOLVE             572        91       1448       179       102
+  FULL|u64|hi|t64|large      parallel_hash PAR_SLOT_TRY          35904     46341    1482910    104791   3762422
+  FULL|u64|hi|t64|large      parallel_hash SCI_ADD               35904        11         11        20       713
+  FULL|u64|hi|t64|large      parallel_hash SCI_RESOLVE             539       181        724      1716       925
+  FULL|u64|hi|t64|large      unified_hash  UNI_BUCKET_TRY        71936     11585      46341     16836   1211079
+  FULL|u64|hi|t64|large      unified_hash  UNI_BUCKET_BLOCK        455     46341     741455    103407     47050
+  FULL|u64|hi|t64|large      unified_hash  UNI_BLOCKS_MUTEX        562      2896       5793      3129      1758
+  FULL|u64|hi|t64|large      unified_hash  SCI_ADD                 562        11        724        39        22
+  FULL|u64|hi|t64|large      unified_hash  SCI_RESOLVE             547       181       1448       212       116
+  FULL|comp|hi|t1|medium     hash          SCI_ADD                  25        11        362        74         2
+  FULL|comp|hi|t1|medium     hash          SCI_RESOLVE              51        91       1448       143         7
+  FULL|comp|hi|t1|medium     parallel_hash PAR_SLOT_TRY             25    741455    2965821    853040     21326
+  FULL|comp|hi|t1|medium     parallel_hash SCI_ADD                  25        23        362        95         2
+  FULL|comp|hi|t1|medium     parallel_hash SCI_RESOLVE              51       181       2896       229        12
+  FULL|comp|hi|t1|medium     unified_hash  UNI_BUCKET_TRY           25   1482910    5931642   1105796     27645
+  FULL|comp|hi|t1|medium     unified_hash  UNI_BLOCKS_MUTEX         25      2896       2896      3204        80
+  FULL|comp|hi|t1|medium     unified_hash  SCI_ADD                  25        11        362        76         2
+  FULL|comp|hi|t1|medium     unified_hash  SCI_RESOLVE              51        91       1448       149         8
+  FULL|comp|hi|t16|large     hash          SCI_ADD                 768        11        362        26        20
+  FULL|comp|hi|t16|large     hash          SCI_RESOLVE             769        91        724       181       139
+  FULL|comp|hi|t16|large     parallel_hash PAR_SLOT_TRY          12288    185364     370728    187417   2302979
+  FULL|comp|hi|t16|large     parallel_hash SCI_ADD               12288        11         45        16       194
+  FULL|comp|hi|t16|large     parallel_hash SCI_RESOLVE             769        91        724       264       203
+  FULL|comp|hi|t16|large     unified_hash  UNI_BUCKET_TRY        24576     92682      92682     80504   1978458
+  FULL|comp|hi|t16|large     unified_hash  UNI_BUCKET_BLOCK        390     46341    5931642    305408    119109
+  FULL|comp|hi|t16|large     unified_hash  UNI_BLOCKS_MUTEX        768      2896       5793      3256      2501
+  FULL|comp|hi|t16|large     unified_hash  SCI_ADD                 768        11        362        24        19
+  FULL|comp|hi|t16|large     unified_hash  SCI_RESOLVE             769        91        724       147       113
+  FULL|comp|hi|t64|large     hash          SCI_ADD                 759        11        362        37        28
+  FULL|comp|hi|t64|large     hash          SCI_RESOLVE             761        91       1448       179       137
+  FULL|comp|hi|t64|large     parallel_hash PAR_SLOT_TRY          48576     92682     741455    141606   6878632
+  FULL|comp|hi|t64|large     parallel_hash SCI_ADD               48576        11         45        45      2205
+  FULL|comp|hi|t64|large     parallel_hash SCI_RESOLVE             761       181        724      1329      1012
+  FULL|comp|hi|t64|large     unified_hash  UNI_BUCKET_TRY        97152     46341      92682     59180   5749415
+  FULL|comp|hi|t64|large     unified_hash  UNI_BUCKET_BLOCK        539     46341     185364     60490     32604
+  FULL|comp|hi|t64|large     unified_hash  UNI_BLOCKS_MUTEX        759      2896       5793      3667      2783
+  FULL|comp|hi|t64|large     unified_hash  SCI_ADD                 759        11        362        29        22
+  FULL|comp|hi|t64|large     unified_hash  SCI_RESOLVE             761        91        724       157       120
+
+====================================================================================================
+atomic RMW counters (per query)
+====================================================================================================
+  cell                           algo            ATOM_SET_USED ATOM_SET_USED_ONCE ATOM_SET_USED_ONCE_CAS_FAIL ATOM_BUCKET_BYTES
+  INNER|u64|hi|t1|medium         unified_hash                0              0              0             18
+  INNER|u64|hi|t16|large         unified_hash                0              0              0          18752
+  INNER|u64|hi|t64|large         unified_hash                0              0              0          72064
+  INNER|comp|hi|t1|medium        unified_hash                0              0              0             25
+  INNER|comp|hi|t16|large        unified_hash                0              0              0          24576
+  INNER|comp|hi|t64|large        unified_hash                0              0              0          97152
+  FULL|u64|hi|t1|medium          hash                  1800000              0              0              0
+  FULL|u64|hi|t1|medium          parallel_hash         1800000              0              0              0
+  FULL|u64|hi|t1|medium          unified_hash          1800000              0              0             18
+  FULL|u64|hi|t16|large          hash                 27000000              0              0              0
+  FULL|u64|hi|t16|large          parallel_hash        27000000              0              0              0
+  FULL|u64|hi|t16|large          unified_hash         27000000              0              0          18720
+  FULL|u64|hi|t64|large          hash                 27000000              0              0              0
+  FULL|u64|hi|t64|large          parallel_hash        27000000              0              0              0
+  FULL|u64|hi|t64|large          unified_hash         27000000              0              0          71936
+  FULL|comp|hi|t1|medium         hash                  1800000              0              0              0
+  FULL|comp|hi|t1|medium         parallel_hash         1800000              0              0              0
+  FULL|comp|hi|t1|medium         unified_hash          1800000              0              0             25
+  FULL|comp|hi|t16|large         hash                 27000000              0              0              0
+  FULL|comp|hi|t16|large         parallel_hash        27000000              0              0              0
+  FULL|comp|hi|t16|large         unified_hash         27000000              0              0          24576
+  FULL|comp|hi|t64|large         hash                 27000000              0              0              0
+  FULL|comp|hi|t64|large         parallel_hash        27000000              0              0              0
+  FULL|comp|hi|t64|large         unified_hash         27000000              0              0          97152
+
+
+G0.2/G2.1/G2.2: GREEN

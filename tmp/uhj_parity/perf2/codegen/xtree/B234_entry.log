@@ -1,0 +1,15 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : B2/B3/B4 addBlockToJoin (2-arg entry overload)
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x142899c0 size=568
+  DB::HashJoin::addBlockToJoin(DB::Block const&, bool)
+UNIFIED   0x165d4cc0 size=568
+  DB::Unified::HashJoin::addBlockToJoin(DB::Block const&, bool)
+
+instructions: baseline 142  unified 142  delta +0
+call/branch targets Unified-normalised: baseline 0, unified 2
+call/branch targets reached via a linker range thunk (followed): baseline 8, unified 8
+identical after normalisation: YES
+
+listings: codegen/xtree/B234_entry.txt

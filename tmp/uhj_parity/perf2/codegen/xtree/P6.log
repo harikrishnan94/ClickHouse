@@ -1,0 +1,15 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : P6 addFoundRowAll
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x16198840 size=784
+  void DB::addFoundRowAll<TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>, false, true, DB::AddedColumns<false>>(TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>::mapped_type const&, DB::AddedColumns<false>&, unsigned long&, DB::KnownRowsHolder<true>&, DB::JoinStuff::JoinUsedFlags*, bool)
+UNIFIED   0x17f42ac0 size=784
+  void DB::Unified::addFoundRowAll<TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>, false, true, DB::Unified::AddedColumns<false>>(TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>::mapped_type const&, DB::Unified::AddedColumns<false>&, unsigned long&, DB::Unified::KnownRowsHolder<true>&, DB::Unified::JoinStuff::JoinUsedFlags*, bool)
+
+instructions: baseline 196  unified 196  delta +0
+call/branch targets Unified-normalised: baseline 6, unified 7
+call/branch targets reached via a linker range thunk (followed): baseline 3, unified 3
+identical after normalisation: YES
+
+listings: codegen/xtree/P6.txt

@@ -1,0 +1,791 @@
+# BASELINE DB::NotJoinedHash::fillNullsFromBlocks(std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&, unsigned long&)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0xf0
+    9 stp x29, x30, [sp, #0x90]
+   10 stp x28, x27, [sp, #0xa0]
+   11 stp x26, x25, [sp, #0xb0]
+   12 stp x24, x23, [sp, #0xc0]
+   13 stp x22, x21, [sp, #0xd0]
+   14 stp x20, x19, [sp, #0xe0]
+   15 add x29, sp, #0x90
+   16 ldr x8, [x0, #0x20]
+   17 cbnz x8, <SELF+0x4ac>
+   18 ldrb w9, [x0, #0x60]
+   19 ldr x8, [x0, #0x8]
+   20 mov x21, x0
+   21 mov x20, x1
+   22 tbnz w9, #0x0, <SELF+0xac>
+   23 ldr x9, [x8, #0xc0]
+   24 mov x11, #-ADDR
+   25 movk x11, #0xc0c1
+   26 ldr x10, [x9, #0xb8]
+   27 ldp x12, x13, [x9, #0xa0]
+   28 umulh x11, x10, x11
+   29 cmp x12, x13
+   30 lsr x11, x11, #7
+   31 add x9, x12, x11, lsl #3
+   32 b.eq <SELF+0x9c>
+   33 mov w12, #0xaa
+   34 msub x10, x11, x12, x10
+   35 mov w11, #0x18
+   36 ldr x12, [x9]
+   37 madd x10, x10, x11, x12
+   38 b <SELF+0xa0>
+   39 mov x10, xzr
+   40 stp x9, x10, [x21, #0x50]
+   41 mov w9, #0x1
+   42 strb w9, [x21, #0x60]
+   43 ldr x9, [x8, #0xc0]
+   44 str x2, [sp, #0x8]
+   45 ldp x8, x10, [x9, #0xa0]
+   46 cmp x8, x10
+   47 b.eq <SELF+0x11c>
+   48 ldp x10, x9, [x9, #0xb8]
+   49 mov w11, #0xaa
+   50 add x9, x9, x10
+   51 mov x10, #-ADDR
+   52 movk x10, #0xc0c1
+   53 umulh x10, x9, x10
+   54 lsr x10, x10, #7
+   55 msub x9, x10, x11, x9
+   56 mov w11, #0x18
+   57 ldr x8, [x8, x10, lsl #3]
+   58 madd x8, x9, x11, x8
+   59 str x8, [sp]
+   60 movi v0.2d, #0000000000000000
+   61 ldr x19, [x21, #0x10]
+   62 stp q0, q0, [sp, #0x40]
+   63 str q0, [sp, #0x30]
+   64 cbnz x19, <SELF+0x134>
+   65 ldr x8, [sp, #0x58]
+   66 ldr x23, [sp, #0x48]
+   67 sub x8, x8, x23
+   68 cmp x19, x8, asr #2
+   69 b.hi <SELF+0x19c>
+   70 b <SELF+0x1f4>
+   71 str xzr, [sp]
+   72 movi v0.2d, #0000000000000000
+   73 ldr x19, [x21, #0x10]
+   74 stp q0, q0, [sp, #0x40]
+   75 str q0, [sp, #0x30]
+   76 cbz x19, <SELF+0x104>
+   77 lsr x8, x19, #61
+   78 cbnz x8, <SELF+0x5d4>
+   79 lsl x0, x19, #3
+   80 mov x1, xzr
+   81 bl <allocateWithMemoryTracking(unsigned long, unsigned long)>
+   82 ldp x22, x8, [sp, #0x30]
+   83 mov x23, x0
+   84 add x19, x0, x19, lsl #3
+   85 sub x2, x8, x22
+   86 mov x1, x22
+   87 sub x24, x0, x2
+   88 mov x0, x24
+   89 bl <?>
+   90 ldr x8, [sp, #0x40]
+   91 stp x24, x23, [sp, #0x30]
+   92 str x19, [sp, #0x40]
+   93 cbz x22, <SELF+0x184>
+   94 sub x1, x8, x22
+   95 mov x0, x22
+   96 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   97 ldr x19, [x21, #0x10]
+   98 ldr x8, [sp, #0x58]
+   99 ldr x23, [sp, #0x48]
+  100 sub x8, x8, x23
+  101 cmp x19, x8, asr #2
+  102 b.ls <SELF+0x1f4>
+  103 lsr x8, x19, #62
+  104 cbnz x8, <SELF+0x5d8>
+  105 ldr x24, [sp, #0x50]
+  106 lsl x0, x19, #2
+  107 mov x1, xzr
+  108 bl <allocateWithMemoryTracking(unsigned long, unsigned long)>
+  109 ldp x22, x8, [sp, #0x48]
+  110 sub x9, x24, x23
+  111 add x23, x0, x9
+  112 add x19, x0, x19, lsl #2
+  113 sub x2, x8, x22
+  114 mov x1, x22
+  115 sub x0, x23, x2
+  116 sub x24, x23, x2
+  117 bl <?>
+  118 ldr x8, [sp, #0x58]
+  119 stp x24, x23, [sp, #0x48]
+  120 str x19, [sp, #0x58]
+  121 cbz x22, <SELF+0x1f4>
+  122 sub x1, x8, x22
+  123 mov x0, x22
+  124 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  125 ldrb w8, [x21, #0x60]
+  126 cmp w8, #0x1
+  127 b.ne <SELF+0x4ec>
+  128 ldp x8, x19, [sp]
+  129 ldr x10, [x21, #0x58]
+  130 cmp x10, x8
+  131 b.eq <SELF+0x430>
+  132 add x9, sp, #0x30
+  133 ldr x8, [sp, #0x50]
+  134 sub x23, x29, #0x8
+  135 add x24, x9, #0x18
+  136 add x26, sp, #0x28
+  137 add x27, sp, #0x30
+  138 add x28, sp, #0x14
+  139 b <SELF+0x24c>
+  140 nop
+  141 nop
+  142 nop
+  143 nop
+  144 ldr x9, [sp]
+  145 cmp x10, x9
+  146 b.eq <SELF+0x430>
+  147 ldr x9, [sp, #0x48]
+  148 ldr x11, [x19]
+  149 sub x9, x8, x9
+  150 add x9, x11, x9, asr #2
+  151 ldr x11, [x21, #0x10]
+  152 cmp x9, x11
+  153 b.hs <SELF+0x430>
+  154 ldp x12, x22, [x10]
+  155 ldrb w11, [x12, #0x40]
+  156 add x9, x12, #0x30
+  157 stp xzr, x12, [sp, #0x20]
+  158 str x9, [sp, #0x18]
+  159 cmp w11, #0x1
+  160 b.eq <SELF+0x2a0>
+  161 cbnz w11, <SELF+0x5d0>
+  162 ldp x12, x13, [x12, #0x30]
+  163 sub x19, x13, x12
+  164 cbnz x19, <SELF+0x2b4>
+  165 b <SELF+0x404>
+  166 nop
+  167 nop
+  168 ldr x12, [x9]
+  169 ldp x12, x13, [x12, #0x10]
+  170 sub x12, x13, x12
+  171 lsr x19, x12, #3
+  172 cbz x19, <SELF+0x404>
+  173 mov x10, xzr
+  174 nop
+  175 nop
+  176 cbz w11, <SELF+0x300>
+  177 ldr x11, [x9]
+  178 ldp x11, x12, [x11, #0x10]
+  179 sub x12, x12, x11
+  180 cmp x10, x12, lsr #3
+  181 b.hs <SELF+0x500>
+  182 ldr x25, [x11, x10, lsl #3]
+  183 cbnz x22, <SELF+0x318>
+  184 b <SELF+0x370>
+  185 nop
+  186 nop
+  187 nop
+  188 nop
+  189 nop
+  190 nop
+  191 nop
+  192 ldp x11, x12, [x9]
+  193 sub x12, x12, x11
+  194 cmp x10, x12
+  195 b.hs <SELF+0x500>
+  196 add x25, x11, x10
+  197 cbz x22, <SELF+0x370>
+  198 ldr x11, [x22, #0x10]
+  199 ldrb w11, [x11, x25]
+  200 cbz w11, <SELF+0x370>
+  201 ldp x8, x9, [sp, #0x38]
+  202 stp x23, x26, [x29, #-0x28]
+  203 stur x27, [x29, #-0x18]
+  204 cmp x8, x9
+  205 stur x8, [x29, #-0x8]
+  206 b.hs <SELF+0x3cc>
+  207 ldr x9, [sp, #0x28]
+  208 str x9, [x8], #0x8
+  209 str x8, [sp, #0x38]
+  210 ldp x8, x9, [sp, #0x50]
+  211 str w25, [sp, #0x14]
+  212 stp x23, x28, [x29, #-0x28]
+  213 cmp x8, x9
+  214 stur x8, [x29, #-0x8]
+  215 stur x24, [x29, #-0x18]
+  216 b.hs <SELF+0x3dc>
+  217 str w25, [x8], #0x4
+  218 ldp x9, x10, [sp, #0x18]
+  219 str x8, [sp, #0x50]
+  220 ldrb w11, [x9, #0x10]
+  221 cmp w11, #0x1
+  222 b.eq <SELF+0x3a0>
+  223 cbnz w11, <SELF+0x5d0>
+  224 ldp x13, x12, [x9]
+  225 sub x12, x12, x13
+  226 b <SELF+0x3b0>
+  227 nop
+  228 nop
+  229 nop
+  230 nop
+  231 nop
+  232 ldr x12, [x9]
+  233 ldp x12, x13, [x12, #0x10]
+  234 sub x12, x13, x12
+  235 lsr x12, x12, #3
+  236 cmp x10, x12
+  237 b.hs <SELF+0x568>
+  238 add x10, x10, #0x1
+  239 cmp x10, x19
+  240 str x10, [sp, #0x20]
+  241 b.ne <SELF+0x2c0>
+  242 b <SELF+0x400>
+  243 sub x0, x29, #0x28
+  244 bl <long& std::__1::vector<long, AllocatorWithMemoryTracking<long>>::emplace_back<long const&>(long const&)::'lambda0'()::operator()() const>
+  245 ldur x8, [x29, #-0x8]
+  246 b <SELF+0x344>
+  247 sub x0, x29, #0x28
+  248 bl <int& std::__1::vector<int, AllocatorWithMemoryTracking<int>>::emplace_back<int const&>(int const&)::'lambda0'()::operator()() const>
+  249 ldur x8, [x29, #-0x8]
+  250 b <SELF+0x368>
+  251 nop
+  252 nop
+  253 nop
+  254 nop
+  255 nop
+  256 ldr x10, [x21, #0x58]
+  257 add x10, x10, #0x18
+  258 ldr x9, [x21, #0x50]
+  259 ldr x19, [sp, #0x8]
+  260 str x10, [x21, #0x58]
+  261 ldr x11, [x9]
+  262 sub x11, x10, x11
+  263 cmp x11, #0xff0
+  264 b.ne <SELF+0x240>
+  265 ldr x10, [x9, #0x8]!
+  266 stp x9, x10, [x21, #0x50]
+  267 b <SELF+0x240>
+  268 ldp x8, x9, [x20]
+  269 cmp x9, x8
+  270 b.eq <SELF+0x46c>
+  271 mov x21, xzr
+  272 ldr x0, [x8, x21, lsl #3]
+  273 ldr x8, [x0]
+  274 ldr x8, [x8, #0x328]
+  275 add x2, sp, #0x30
+  276 mov x1, x21
+  277 blr x8
+  278 ldp x8, x9, [x20]
+  279 add x21, x21, #0x1
+  280 sub x9, x9, x8
+  281 cmp x21, x9, asr #3
+  282 b.lo <SELF+0x440>
+  283 ldp x0, x8, [sp, #0x48]
+  284 ldr x9, [x19]
+  285 sub x8, x8, x0
+  286 add x8, x9, x8, asr #2
+  287 str x8, [x19]
+  288 cbz x0, <SELF+0x494>
+  289 ldr x8, [sp, #0x58]
+  290 str x0, [sp, #0x50]
+  291 sub x1, x8, x0
+  292 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  293 ldr x0, [sp, #0x30]
+  294 cbz x0, <SELF+0x4ac>
+  295 ldr x8, [sp, #0x40]
+  296 str x0, [sp, #0x38]
+  297 sub x1, x8, x0
+  298 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  299 ldp x20, x19, [sp, #0xe0]
+  300 ldp x22, x21, [sp, #0xd0]
+  301 ldp x24, x23, [sp, #0xc0]
+  302 ldp x26, x25, [sp, #0xb0]
+  303 ldp x28, x27, [sp, #0xa0]
+  304 ldp x29, x30, [sp, #0x90]
+  305 add sp, sp, #0xf0
+  306 b <SELF+0x4e8>
+  307 nop
+  308 nop
+  309 nop
+  310 nop
+  311 nop
+  312 nop
+  313 nop
+  314 ret
+  315 adrp x0, ADDR
+  316 add x0, x0, #RELOC_LO
+  317 adrp x1, ADDR
+  318 add x1, x1, #RELOC_LO
+  319 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  320 mov w0, #0x180
+  321 bl <__cxa_allocate_exception>
+  322 mov x19, x0
+  323 ldr x0, [sp, #0x18]
+  324 adrp x8, ADDR
+  325 add x8, x8, #RELOC_LO
+  326 mov w9, #0x1d
+  327 stp x8, x9, [x29, #-0x28]
+  328 stp x8, x9, [x29, #-0x18]
+  329 bl <DB::detail::Selector::size() const>
+  330 adrp x8, ADDR
+  331 ldr x8, [x8, #0xfc0]
+  332 stur x0, [x29, #-0x8]
+  333 ldr w1, [x8]
+  334 add x8, sp, #0x18
+  335 sub x2, x29, #0x28
+  336 sub x4, x29, #0x8
+  337 add x3, x8, #0x8
+  338 mov x0, x19
+  339 bl <DB::Exception::Exception<unsigned long const&, unsigned long>(int, FormatStringHelperImpl<std::__1::type_identity<unsigned long const&>::type, std::__1::type_identity<unsigned long>::type>, unsigned long const&, unsigned long&&)>
+  340 adrp x1, ADDR
+  341 adrp x2, ADDR
+  342 mov x0, x19
+  343 ldr x1, [x1, #0xef0]
+  344 ldr x2, [x2, #0xef8]
+  345 bl <__cxa_throw>
+  346 mov w0, #0x180
+  347 bl <__cxa_allocate_exception>
+  348 mov x19, x0
+  349 ldr x0, [sp, #0x18]
+  350 adrp x8, ADDR
+  351 add x8, x8, #RELOC_LO
+  352 mov w9, #0x1d
+  353 stp x8, x9, [x29, #-0x28]
+  354 stp x8, x9, [x29, #-0x18]
+  355 bl <DB::detail::Selector::size() const>
+  356 adrp x8, ADDR
+  357 ldr x8, [x8, #0xfc0]
+  358 stur x0, [x29, #-0x8]
+  359 ldr w1, [x8]
+  360 add x8, sp, #0x18
+  361 sub x2, x29, #0x28
+  362 sub x4, x29, #0x8
+  363 add x3, x8, #0x8
+  364 mov x0, x19
+  365 bl <DB::Exception::Exception<unsigned long&, unsigned long>(int, FormatStringHelperImpl<std::__1::type_identity<unsigned long&>::type, std::__1::type_identity<unsigned long>::type>, unsigned long&, unsigned long&&)>
+  366 adrp x1, ADDR
+  367 adrp x2, ADDR
+  368 mov x0, x19
+  369 ldr x1, [x1, #0xef0]
+  370 ldr x2, [x2, #0xef8]
+  371 bl <__cxa_throw>
+  372 bl <std::__1::__throw_bad_variant_access[abi:fqe220101]()>
+  373 bl <std::__1::vector<int, std::__1::allocator<int>>::__throw_length_error[abi:fqe220101]()>
+  374 bl <std::__1::vector<int, std::__1::allocator<int>>::__throw_length_error[abi:fqe220101]()>
+  375 b <SELF+0x5f4>
+  376 b <SELF+0x5f4>
+  377 b <SELF+0x5f4>
+  378 b <SELF+0x5f4>
+  379 b <SELF+0x5f4>
+  380 b <SELF+0x5f4>
+  381 mov x20, x0
+  382 add x0, sp, #0x30
+  383 bl <DB::QuantileLevels<double>::~QuantileLevels()>
+  384 mov x0, x20
+  385 bl <_Unwind_Resume>
+  386 b <SELF+0x60c>
+  387 mov x20, x0
+  388 mov x0, x19
+  389 bl <__cxa_free_exception>
+  390 add x0, sp, #0x30
+  391 bl <DB::QuantileLevels<double>::~QuantileLevels()>
+  392 mov x0, x20
+  393 bl <_Unwind_Resume>
+
+# UNIFIED DB::Unified::NotJoinedHash::fillNullsFromBlocks(std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&, unsigned long&)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0xf0
+    9 stp x29, x30, [sp, #0x90]
+   10 stp x28, x27, [sp, #0xa0]
+   11 stp x26, x25, [sp, #0xb0]
+   12 stp x24, x23, [sp, #0xc0]
+   13 stp x22, x21, [sp, #0xd0]
+   14 stp x20, x19, [sp, #0xe0]
+   15 add x29, sp, #0x90
+   16 ldr x8, [x0, #0x20]
+   17 cbnz x8, <SELF+0x4ac>
+   18 ldrb w9, [x0, #0x60]
+   19 ldr x8, [x0, #0x8]
+   20 mov x21, x0
+   21 mov x20, x1
+   22 tbnz w9, #0x0, <SELF+0xac>
+   23 ldr x9, [x8, #0x148]
+   24 mov x11, #-ADDR
+   25 movk x11, #0xc0c1
+   26 ldr x10, [x9, #0xc0]
+   27 ldp x12, x13, [x9, #0xa8]
+   28 umulh x11, x10, x11
+   29 cmp x12, x13
+   30 lsr x11, x11, #7
+   31 add x9, x12, x11, lsl #3
+   32 b.eq <SELF+0x9c>
+   33 mov w12, #0xaa
+   34 msub x10, x11, x12, x10
+   35 mov w11, #0x18
+   36 ldr x12, [x9]
+   37 madd x10, x10, x11, x12
+   38 b <SELF+0xa0>
+   39 mov x10, xzr
+   40 stp x9, x10, [x21, #0x50]
+   41 mov w9, #0x1
+   42 strb w9, [x21, #0x60]
+   43 ldr x9, [x8, #0x148]
+   44 str x2, [sp, #0x8]
+   45 ldp x8, x10, [x9, #0xa8]
+   46 cmp x8, x10
+   47 b.eq <SELF+0x11c>
+   48 ldp x10, x9, [x9, #0xc0]
+   49 mov w11, #0xaa
+   50 add x9, x9, x10
+   51 mov x10, #-ADDR
+   52 movk x10, #0xc0c1
+   53 umulh x10, x9, x10
+   54 lsr x10, x10, #7
+   55 msub x9, x10, x11, x9
+   56 mov w11, #0x18
+   57 ldr x8, [x8, x10, lsl #3]
+   58 madd x8, x9, x11, x8
+   59 str x8, [sp]
+   60 movi v0.2d, #0000000000000000
+   61 ldr x19, [x21, #0x10]
+   62 stp q0, q0, [sp, #0x40]
+   63 str q0, [sp, #0x30]
+   64 cbnz x19, <SELF+0x134>
+   65 ldr x8, [sp, #0x58]
+   66 ldr x23, [sp, #0x48]
+   67 sub x8, x8, x23
+   68 cmp x19, x8, asr #2
+   69 b.hi <SELF+0x19c>
+   70 b <SELF+0x1f4>
+   71 str xzr, [sp]
+   72 movi v0.2d, #0000000000000000
+   73 ldr x19, [x21, #0x10]
+   74 stp q0, q0, [sp, #0x40]
+   75 str q0, [sp, #0x30]
+   76 cbz x19, <SELF+0x104>
+   77 lsr x8, x19, #61
+   78 cbnz x8, <SELF+0x5d4>
+   79 lsl x0, x19, #3
+   80 mov x1, xzr
+   81 bl <allocateWithMemoryTracking(unsigned long, unsigned long)>
+   82 ldp x22, x8, [sp, #0x30]
+   83 mov x23, x0
+   84 add x19, x0, x19, lsl #3
+   85 sub x2, x8, x22
+   86 mov x1, x22
+   87 sub x24, x0, x2
+   88 mov x0, x24
+   89 bl <?>
+   90 ldr x8, [sp, #0x40]
+   91 stp x24, x23, [sp, #0x30]
+   92 str x19, [sp, #0x40]
+   93 cbz x22, <SELF+0x184>
+   94 sub x1, x8, x22
+   95 mov x0, x22
+   96 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+   97 ldr x19, [x21, #0x10]
+   98 ldr x8, [sp, #0x58]
+   99 ldr x23, [sp, #0x48]
+  100 sub x8, x8, x23
+  101 cmp x19, x8, asr #2
+  102 b.ls <SELF+0x1f4>
+  103 lsr x8, x19, #62
+  104 cbnz x8, <SELF+0x5d8>
+  105 ldr x24, [sp, #0x50]
+  106 lsl x0, x19, #2
+  107 mov x1, xzr
+  108 bl <allocateWithMemoryTracking(unsigned long, unsigned long)>
+  109 ldp x22, x8, [sp, #0x48]
+  110 sub x9, x24, x23
+  111 add x23, x0, x9
+  112 add x19, x0, x19, lsl #2
+  113 sub x2, x8, x22
+  114 mov x1, x22
+  115 sub x0, x23, x2
+  116 sub x24, x23, x2
+  117 bl <?>
+  118 ldr x8, [sp, #0x58]
+  119 stp x24, x23, [sp, #0x48]
+  120 str x19, [sp, #0x58]
+  121 cbz x22, <SELF+0x1f4>
+  122 sub x1, x8, x22
+  123 mov x0, x22
+  124 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  125 ldrb w8, [x21, #0x60]
+  126 cmp w8, #0x1
+  127 b.ne <SELF+0x4ec>
+  128 ldp x8, x19, [sp]
+  129 ldr x10, [x21, #0x58]
+  130 cmp x10, x8
+  131 b.eq <SELF+0x430>
+  132 add x9, sp, #0x30
+  133 ldr x8, [sp, #0x50]
+  134 sub x23, x29, #0x8
+  135 add x24, x9, #0x18
+  136 add x26, sp, #0x28
+  137 add x27, sp, #0x30
+  138 add x28, sp, #0x14
+  139 b <SELF+0x24c>
+  140 nop
+  141 nop
+  142 nop
+  143 nop
+  144 ldr x9, [sp]
+  145 cmp x10, x9
+  146 b.eq <SELF+0x430>
+  147 ldr x9, [sp, #0x48]
+  148 ldr x11, [x19]
+  149 sub x9, x8, x9
+  150 add x9, x11, x9, asr #2
+  151 ldr x11, [x21, #0x10]
+  152 cmp x9, x11
+  153 b.hs <SELF+0x430>
+  154 ldp x12, x22, [x10]
+  155 ldrb w11, [x12, #0x40]
+  156 add x9, x12, #0x30
+  157 stp xzr, x12, [sp, #0x20]
+  158 str x9, [sp, #0x18]
+  159 cmp w11, #0x1
+  160 b.eq <SELF+0x2a0>
+  161 cbnz w11, <SELF+0x5d0>
+  162 ldp x12, x13, [x12, #0x30]
+  163 sub x19, x13, x12
+  164 cbnz x19, <SELF+0x2b4>
+  165 b <SELF+0x404>
+  166 nop
+  167 nop
+  168 ldr x12, [x9]
+  169 ldp x12, x13, [x12, #0x10]
+  170 sub x12, x13, x12
+  171 lsr x19, x12, #3
+  172 cbz x19, <SELF+0x404>
+  173 mov x10, xzr
+  174 nop
+  175 nop
+  176 cbz w11, <SELF+0x300>
+  177 ldr x11, [x9]
+  178 ldp x11, x12, [x11, #0x10]
+  179 sub x12, x12, x11
+  180 cmp x10, x12, lsr #3
+  181 b.hs <SELF+0x500>
+  182 ldr x25, [x11, x10, lsl #3]
+  183 cbnz x22, <SELF+0x318>
+  184 b <SELF+0x370>
+  185 nop
+  186 nop
+  187 nop
+  188 nop
+  189 nop
+  190 nop
+  191 nop
+  192 ldp x11, x12, [x9]
+  193 sub x12, x12, x11
+  194 cmp x10, x12
+  195 b.hs <SELF+0x500>
+  196 add x25, x11, x10
+  197 cbz x22, <SELF+0x370>
+  198 ldr x11, [x22, #0x10]
+  199 ldrb w11, [x11, x25]
+  200 cbz w11, <SELF+0x370>
+  201 ldp x8, x9, [sp, #0x38]
+  202 stp x23, x26, [x29, #-0x28]
+  203 stur x27, [x29, #-0x18]
+  204 cmp x8, x9
+  205 stur x8, [x29, #-0x8]
+  206 b.hs <SELF+0x3cc>
+  207 ldr x9, [sp, #0x28]
+  208 str x9, [x8], #0x8
+  209 str x8, [sp, #0x38]
+  210 ldp x8, x9, [sp, #0x50]
+  211 str w25, [sp, #0x14]
+  212 stp x23, x28, [x29, #-0x28]
+  213 cmp x8, x9
+  214 stur x8, [x29, #-0x8]
+  215 stur x24, [x29, #-0x18]
+  216 b.hs <SELF+0x3dc>
+  217 str w25, [x8], #0x4
+  218 ldp x9, x10, [sp, #0x18]
+  219 str x8, [sp, #0x50]
+  220 ldrb w11, [x9, #0x10]
+  221 cmp w11, #0x1
+  222 b.eq <SELF+0x3a0>
+  223 cbnz w11, <SELF+0x5d0>
+  224 ldp x13, x12, [x9]
+  225 sub x12, x12, x13
+  226 b <SELF+0x3b0>
+  227 nop
+  228 nop
+  229 nop
+  230 nop
+  231 nop
+  232 ldr x12, [x9]
+  233 ldp x12, x13, [x12, #0x10]
+  234 sub x12, x13, x12
+  235 lsr x12, x12, #3
+  236 cmp x10, x12
+  237 b.hs <SELF+0x568>
+  238 add x10, x10, #0x1
+  239 cmp x10, x19
+  240 str x10, [sp, #0x20]
+  241 b.ne <SELF+0x2c0>
+  242 b <SELF+0x400>
+  243 sub x0, x29, #0x28
+  244 bl <long& std::__1::vector<long, AllocatorWithMemoryTracking<long>>::emplace_back<long const&>(long const&)::'lambda0'()::operator()() const>
+  245 ldur x8, [x29, #-0x8]
+  246 b <SELF+0x344>
+  247 sub x0, x29, #0x28
+  248 bl <int& std::__1::vector<int, AllocatorWithMemoryTracking<int>>::emplace_back<int const&>(int const&)::'lambda0'()::operator()() const>
+  249 ldur x8, [x29, #-0x8]
+  250 b <SELF+0x368>
+  251 nop
+  252 nop
+  253 nop
+  254 nop
+  255 nop
+  256 ldr x10, [x21, #0x58]
+  257 add x10, x10, #0x18
+  258 ldr x9, [x21, #0x50]
+  259 ldr x19, [sp, #0x8]
+  260 str x10, [x21, #0x58]
+  261 ldr x11, [x9]
+  262 sub x11, x10, x11
+  263 cmp x11, #0xff0
+  264 b.ne <SELF+0x240>
+  265 ldr x10, [x9, #0x8]!
+  266 stp x9, x10, [x21, #0x50]
+  267 b <SELF+0x240>
+  268 ldp x8, x9, [x20]
+  269 cmp x9, x8
+  270 b.eq <SELF+0x46c>
+  271 mov x21, xzr
+  272 ldr x0, [x8, x21, lsl #3]
+  273 ldr x8, [x0]
+  274 ldr x8, [x8, #0x328]
+  275 add x2, sp, #0x30
+  276 mov x1, x21
+  277 blr x8
+  278 ldp x8, x9, [x20]
+  279 add x21, x21, #0x1
+  280 sub x9, x9, x8
+  281 cmp x21, x9, asr #3
+  282 b.lo <SELF+0x440>
+  283 ldp x0, x8, [sp, #0x48]
+  284 ldr x9, [x19]
+  285 sub x8, x8, x0
+  286 add x8, x9, x8, asr #2
+  287 str x8, [x19]
+  288 cbz x0, <SELF+0x494>
+  289 ldr x8, [sp, #0x58]
+  290 str x0, [sp, #0x50]
+  291 sub x1, x8, x0
+  292 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  293 ldr x0, [sp, #0x30]
+  294 cbz x0, <SELF+0x4ac>
+  295 ldr x8, [sp, #0x40]
+  296 str x0, [sp, #0x38]
+  297 sub x1, x8, x0
+  298 bl <deallocateWithMemoryTracking(void*, unsigned long)>
+  299 ldp x20, x19, [sp, #0xe0]
+  300 ldp x22, x21, [sp, #0xd0]
+  301 ldp x24, x23, [sp, #0xc0]
+  302 ldp x26, x25, [sp, #0xb0]
+  303 ldp x28, x27, [sp, #0xa0]
+  304 ldp x29, x30, [sp, #0x90]
+  305 add sp, sp, #0xf0
+  306 b <SELF+0x4e8>
+  307 nop
+  308 nop
+  309 nop
+  310 nop
+  311 nop
+  312 nop
+  313 nop
+  314 ret
+  315 adrp x0, ADDR
+  316 add x0, x0, #RELOC_LO
+  317 adrp x1, ADDR
+  318 add x1, x1, #RELOC_LO
+  319 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  320 mov w0, #0x180
+  321 bl <__cxa_allocate_exception>
+  322 mov x19, x0
+  323 ldr x0, [sp, #0x18]
+  324 adrp x8, ADDR
+  325 add x8, x8, #RELOC_LO
+  326 mov w9, #0x1d
+  327 stp x8, x9, [x29, #-0x28]
+  328 stp x8, x9, [x29, #-0x18]
+  329 bl <DB::detail::Selector::size() const>
+  330 adrp x8, ADDR
+  331 ldr x8, [x8, #0xfc0]
+  332 stur x0, [x29, #-0x8]
+  333 ldr w1, [x8]
+  334 add x8, sp, #0x18
+  335 sub x2, x29, #0x28
+  336 sub x4, x29, #0x8
+  337 add x3, x8, #0x8
+  338 mov x0, x19
+  339 bl <DB::Exception::Exception<unsigned long const&, unsigned long>(int, FormatStringHelperImpl<std::__1::type_identity<unsigned long const&>::type, std::__1::type_identity<unsigned long>::type>, unsigned long const&, unsigned long&&)>
+  340 adrp x1, ADDR
+  341 adrp x2, ADDR
+  342 mov x0, x19
+  343 ldr x1, [x1, #0xef0]
+  344 ldr x2, [x2, #0xef8]
+  345 bl <__cxa_throw>
+  346 mov w0, #0x180
+  347 bl <__cxa_allocate_exception>
+  348 mov x19, x0
+  349 ldr x0, [sp, #0x18]
+  350 adrp x8, ADDR
+  351 add x8, x8, #RELOC_LO
+  352 mov w9, #0x1d
+  353 stp x8, x9, [x29, #-0x28]
+  354 stp x8, x9, [x29, #-0x18]
+  355 bl <DB::detail::Selector::size() const>
+  356 adrp x8, ADDR
+  357 ldr x8, [x8, #0xfc0]
+  358 stur x0, [x29, #-0x8]
+  359 ldr w1, [x8]
+  360 add x8, sp, #0x18
+  361 sub x2, x29, #0x28
+  362 sub x4, x29, #0x8
+  363 add x3, x8, #0x8
+  364 mov x0, x19
+  365 bl <DB::Exception::Exception<unsigned long&, unsigned long>(int, FormatStringHelperImpl<std::__1::type_identity<unsigned long&>::type, std::__1::type_identity<unsigned long>::type>, unsigned long&, unsigned long&&)>
+  366 adrp x1, ADDR
+  367 adrp x2, ADDR
+  368 mov x0, x19
+  369 ldr x1, [x1, #0xef0]
+  370 ldr x2, [x2, #0xef8]
+  371 bl <__cxa_throw>
+  372 bl <std::__1::__throw_bad_variant_access[abi:fqe220101]()>
+  373 bl <std::__1::vector<int, std::__1::allocator<int>>::__throw_length_error[abi:fqe220101]()>
+  374 bl <std::__1::vector<int, std::__1::allocator<int>>::__throw_length_error[abi:fqe220101]()>
+  375 b <SELF+0x5f4>
+  376 b <SELF+0x5f4>
+  377 b <SELF+0x5f4>
+  378 b <SELF+0x5f4>
+  379 b <SELF+0x5f4>
+  380 b <SELF+0x5f4>
+  381 mov x20, x0
+  382 add x0, sp, #0x30
+  383 bl <DB::QuantileLevels<double>::~QuantileLevels()>
+  384 mov x0, x20
+  385 bl <_Unwind_Resume>
+  386 b <SELF+0x60c>
+  387 mov x20, x0
+  388 mov x0, x19
+  389 bl <__cxa_free_exception>
+  390 add x0, sp, #0x30
+  391 bl <DB::QuantileLevels<double>::~QuantileLevels()>
+  392 mov x0, x20
+  393 bl <_Unwind_Resume>

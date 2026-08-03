@@ -1,0 +1,56 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : B11/B12 insert (two-level vs two-level)
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x14a2d640 size=1300
+  void DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList>>::insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodOneNumber<PairNoInit<unsigned long, DB::RowRefList>, DB::RowRefList, unsigned long, false, true, false>, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>, DB::ColumnVector<unsigned long>>(DB::HashJoin&, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>&, std::__1::vector<DB::IColumn const*, std::__1::allocator<DB::IColumn const*>> const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, unsigned int, DB::ColumnVector<unsigned long> const&, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul> const*, DB::JoinCommon::JoinMask const&, DB::Arena&, bool&, bool&)
+UNIFIED   0x16c30580 size=1412
+  void DB::Unified::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList>>::insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodOneNumber<PairNoInit<unsigned long, DB::RowRefList>, DB::RowRefList, unsigned long, false, false, false>, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>, DB::ColumnVector<unsigned long>>(DB::Unified::HashJoin&, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>&, unsigned long, std::__1::vector<DB::IColumn const*, std::__1::allocator<DB::IColumn const*>> const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, unsigned int, DB::ColumnVector<unsigned long> const&, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul> const*, DB::JoinCommon::JoinMask const&, DB::Arena&, DB::Unified::BuildResult&)
+
+instructions: baseline 325  unified 353  delta +28
+call/branch targets Unified-normalised: baseline 3, unified 4
+call/branch targets reached via a linker range thunk (followed): baseline 16, unified 17
+identical after normalisation: NO
+differing positions: 340 of 353
+  of which branch/call with a genuinely different target: 4 -> indices [91, 252, 310, 317]
+  of which branch/call differing only in ICF alias naming: 10
+  opcode histogram delta (unified - baseline), largest first:
+    add          +6   (baseline 25, unified 31)
+    cmp          +3   (baseline 15, unified 18)
+    sub          +3   (baseline 5, unified 8)
+    mov          +3   (baseline 44, unified 47)
+    lsr          -2   (baseline 5, unified 3)
+    b.ne         +2   (baseline 4, unified 6)
+    adrp         +2   (baseline 4, unified 6)
+    stur         +2   (baseline 2, unified 4)
+    b            +2   (baseline 12, unified 14)
+    bl           +1   (baseline 20, unified 21)
+    ldp          -1   (baseline 13, unified 12)
+    asr          +1   (baseline 0, unified 1)
+    lsl          +1   (baseline 8, unified 9)
+    cbz          +1   (baseline 5, unified 6)
+    b.ls         +1   (baseline 0, unified 1)
+  callee multiset: 32 baseline calls to 20 targets, 35 unified calls to 20 targets; 0 targets baseline-only, 2 unified-only
+    UNIFIED-ONLY callee x2: SELF
+    UNIFIED-ONLY callee x1: std::__1::__libcpp_verbose_abort(char const*, ...)
+  aligned edit script: 150 instructions identical and in the same relative order, 224 replaced, 6 inserted by unified, 2 only in baseline
+        86  insert/delete
+        57  different opcode
+        46  same opcode, different operands
+        43  immediate or field offset only
+
+  first 6 aligned differences that are not just an immediate/offset (57 such):
+    [  19] base    stp xzr, xzr, [x29, #-0x10]
+           unified stur xzr, [x29, #-0x8]
+    [  29] base    stur x0, [x29, #-0x28]
+           unified str x0, [sp, #0x30]
+    [  30] base    ldr x9, [x29, #0x68]
+           unified ldp x26, x8, [x24, #0x10]
+    [  32] base    str x9, [sp, #0x38]
+           unified ldur x10, [x29, #-0x18]
+    [  34] base    ldur x9, [x29, #-0x18]
+           unified ldrb w8, [x25, #0x333]
+    [  35] base    ldrb w8, [x24, #0x2ab]
+           unified ldp x22, x21, [x10, #0x10]
+
+listings: codegen/xtree/B11_2L.txt
