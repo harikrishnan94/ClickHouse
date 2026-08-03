@@ -557,3 +557,168 @@ The unique-key / `RightAny` regime is now a **declared coverage gap** rather tha
 the accidental default: it is a real and common shape (primary-key joins) and is
 listed in REPORT.md as a named gap with the cheap experiment to close it (re-run
 the sweep with one row per key).
+
+---
+
+## E6 — Unit 0 sweep run, and the deficit map it produced
+
+144 cells, 7 interleaved reps per point, ~2,500 runs, 12 minutes wall.
+`SWEEP_DONE ... JOB_EXIT=0`.
+
+**Gate results (first pass):** G0.1 GREEN (264/264 assertion runs identified the
+requested implementation from demangled stacks, 0 mismatches, 0 unknowns),
+G0.2 GREEN (144/144 cells checksum-identical across algorithms), G0.3 GREEN
+(A/A within 2.1% against a 5% band), G0.6 GREEN (144 declared, 144 covered,
+0 missing, 48 (cell,algo) SKIPPED with the pre-registered SEMI/ANTI reason),
+G0.4 **RED**, G0.5 **RED**. Both reds are worked below and are not carried
+silently.
+
+### The deficit map
+
+| threads | comparator | metric | faster | within noise | slower |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `hash` | wall | 0 | 59 | **13** |
+| 1 | `hash` | CPU | 0 | 59 | **13** |
+| 16 | `parallel_hash` | wall | **17** | 7 | 0 |
+| 16 | `parallel_hash` | CPU | 5 | 19 | 0 |
+| 64 | `parallel_hash` | wall | **24** | 0 | 0 |
+| 64 | `parallel_hash` | CPU | 16 | 3 | **5** |
+
+**The mission's premise does not hold at 16 and 64 threads.** `unified_hash` is
+never slower on wall there, and at 64 threads it wins every single cell.
+P0.1's third clause and P1.2 both predicted this shape before the sweep ran.
+
+Two real deficits remain, and they are the Unit 1 targets:
+
+1. **1 thread vs `hash`: 13 cells, +4.9% to +14.3% wall.** Concentrated in the
+   kinds that maintain used-flags (`RIGHT`, `FULL`, `LEFT SEMI`, `LEFT ANTI`) and
+   at small/medium cardinality. Several are probe-dominated (`LEFT-ANTI|u64|hi|t1|small`
+   probe +18.6%, `LEFT-ANTI|str|hi|t1|small` +12.2%). Prediction P0-c said any
+   1-thread deficit would be small and single-digit; 12 of 13 are, one is +14.3%,
+   so P0-c is **substantially met but not exactly** — recorded as a partial miss.
+2. **64 threads, composite keys: build CPU +23% to +37%** on 5 cells
+   (`INNER|comp|lo|t64|large` CPU +18.4% / build +37.1%,
+   `LEFT|comp|lo|t64|large` +12.0% / +35.6%, and three more), *while wall is
+   15-37% better*. `unified_hash` buys wall time with CPU here. This is the only
+   place the inherited "parallel build CPU excess" story survives, and it is
+   key-type-specific in a way the inherited lead did not predict.
+
+### G0.4 RED — neither recorded snapshot effect reproduces
+
+```
+(a) 16t INNER build CPU   parallel_hash=1724591 unified=1655285  delta=-4.0%  within_noise
+(b) 16t RIGHT wall        parallel_hash=382     unified=352      delta=-7.9%  faster
+```
+
+Both were expected at +25% and +40%. Both now show `unified_hash` at parity or
+ahead. Per P0.5 the two explanations must be separated before this is scored, and
+they can be:
+
+- *Instrument lacks power* — **rejected.** The same harness resolves A/A to within
+  2.1%, and in the same sweep it detects effects of +5% to +18% (the 13 one-thread
+  cells) and -37% (the 64-thread wins). An instrument that resolves +5% would not
+  miss +40%.
+- *The code changed since the snapshot* — **supported, and specifically.** WORKLOG
+  D1 established that the snapshot binary predates commit `5362055b4ed`, whose
+  subject is "Give `unified_hash` the parallel non-joined path" — i.e. it changes
+  exactly the mechanism behind effect (b), the RIGHT non-joined shape.
+
+G0.4 stays **RED as defined**, because its pre-registered criterion is recovery of
+the recorded effects and they were not recovered. It is not re-scored green by
+argument. What the evidence does establish is that the red is a property of the
+*reference*, not of the instrument, and P0.5 pre-committed to exactly that
+distinction. The decisive experiment — rebuild at `5362055b4ed^` and re-measure
+cell (b) — is named in E8 and is runnable in this environment.
+
+---
+
+## E7 — two instrument defects found AFTER the sweep, both invisible to the gates
+
+Recorded prominently because both are the dangerous kind: they leave every gate
+green-able while corrupting the numbers underneath.
+
+### E7.1 The non-joined phase was mapped to the wrong processors
+
+`PHASE_PROCESSORS["nonjoined"]` listed `DelayedJoinedBlocksTransform` and
+`DelayedJoinedBlocksWorkerTransform`. Both read **zero** on these queries. The
+RIGHT/FULL non-joined scan is `NonJoinedBlocksTransform`:
+
+```
+$ ... WHERE query_id LIKE 'u0full-RIGHT_u64_lo_t1_small-unified_hash-timed-3%'
+JoiningTransform            15533 us
+MergeTreeSelect              4712 us
+NonJoinedBlocksTransform      429 us   <- the phase that was being reported as 0
+FillingRightJoinSide          357 us
+```
+
+So every RIGHT and FULL cell reported a non-joined phase of exactly 0 — for the
+shape the mission most wants attributed.
+
+**Gate G0.5 did not catch it**, and the reason is worth stating: its accounting
+identity `build + probe + nonjoined + other == total` holds perfectly when a phase
+is zero and its work is sitting in `other`. A partition check cannot detect a
+mis-partition. That is a genuine weakness in how I wrote the gate, not a fluke.
+
+Fixed, and the phase split **re-derived from the raw log rather than re-measured**
+(`rederive.py`): the measurements were correct, only the bookkeeping was wrong, and
+re-running would have discarded the numbers the gates were already run against.
+Median join-phase share rose from 73.5% to 82.0%, and 504 of 1,848 timed runs now
+carry a non-zero non-joined phase.
+
+### E7.2 Duplicate `query_id`s across sweep attempts, silently double-counting
+
+Check (iii) below flagged two cells where the processor-derived build phase was
+**exactly 2.004x** the internal timer. An exact factor of two is not noise.
+
+Cause: the first `u0full` sweep attempt was killed after 6 cells (backgrounding
+with a plain `&` — the job dies when the tool call's shell returns; `setsid` is
+required). I relaunched under the *same* `--run-tag`, and the query-id sequence
+counter restarts at 0 in a new process, so the second attempt regenerated
+**identical query ids** for those first cells. Any readback that groups the
+`system.*` logs by `query_id` then sums two different executions together.
+
+```
+$ SELECT count() FROM (SELECT query_id, count() c FROM system.query_log
+    WHERE query_id LIKE 'u0full-%' GROUP BY query_id HAVING c > 1)
+166
+```
+
+166 contaminated ids. Fixed by adding a per-process token to every query id, and
+the whole sweep re-run from clean (`--run-tag u0v2`); the contaminated file is
+kept as `results/runs_u0full_dupcontaminated.jsonl` rather than deleted.
+
+Note again what did *not* catch it: the accounting identity still held (everything
+doubled together), and the deficit map's percentages were roughly unaffected
+(both algorithms doubled equally). Only an origin that fails differently exposed
+it.
+
+### E7.3 What actually validates the phase split: check (iii)
+
+The build-only cross-check (ii) is systematically biased for `parallel_hash` —
+its build-only figure reads high (24.7%, 11.4%, 10.5% on three cells) while `hash`
+and `unified_hash` sit under 3% on most. Plausibly because `ConcurrentHashJoin`'s
+try-lock drain loop yields differently with no probe-side work competing.
+
+Rather than widen the tolerance — a banned move — I added a **third origin that
+fails differently**: `ConcurrentHashJoin` instruments its own build with
+`ProfileEvents['ConcurrentHashJoinBuildMicroseconds']`, measured inside the
+implementation, sharing no machinery with the pipeline's processor accounting.
+
+```
+RIGHT|str|lo|t64|large   internal 4,496,011 / 4,382,120 / 4,525,652 us
+                         processor (FillingRightJoinSide) 4,503,634 us
+48 cells checked, median deviation 0.4%
+```
+
+So `FillingRightJoinSide` **is** the build phase, confirmed to 0.4% by independent
+instrumentation. It is the build-only *query variant* that misrepresents
+`parallel_hash`, not the phase source.
+
+**G0.5 therefore stays RED as pre-registered** (1 of 29 pairs over the 20%
+tolerance on check (ii)), while the property the gate exists to protect — that the
+phase denominators are real — is affirmed by check (iii). Both are reported; the
+tolerance is not touched. Consequence carried into Unit 1: any build-phase
+percentage taken against `parallel_hash` via the build-only route carries a stated
+caveat, whereas cell-level wall and CPU (from `query_duration_ms` and
+`UserTimeMicroseconds`) are independent of processor attribution entirely and are
+unaffected.

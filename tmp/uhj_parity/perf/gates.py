@@ -229,6 +229,37 @@ def g05(recs):
         print(f"      {cell_id:34s} {algo:14s} buildonly={bo_us:9.0f} "
               f"full={bf_us:9.0f} dev={dev:5.1f}% {flag}")
 
+    # (iii) An origin that fails differently from both of the above:
+    # ConcurrentHashJoin instruments its own build with
+    # ProfileEvents['ConcurrentHashJoinBuildMicroseconds'], measured inside the
+    # implementation rather than by the pipeline. Where it agrees with
+    # FillingRightJoinSide, the phase source is confirmed by a mechanism that
+    # shares no machinery with the processor accounting.
+    print(f"\n(iii) independent instrumentation cross-check (parallel_hash only): "
+          f"ConcurrentHashJoinBuildMicroseconds vs FillingRightJoinSide, tolerance 20%")
+    iii_rows, iii_bad = [], []
+    for (cell_id,), rs in sorted(by([r for r in t if r["algo"] == "parallel_hash"],
+                                    "cell_id").items()):
+        internal = [r["ch_build_us"] for r in rs if r.get("ch_build_us")]
+        if not internal:
+            continue
+        mi, mf = H.median(internal), H.median([r["build_us"] for r in rs])
+        if mf <= 0:
+            continue
+        dev = abs(mi - mf) / mf * 100.0
+        iii_rows.append((cell_id, mi, mf, dev))
+        if dev > 20.0:
+            iii_bad.append((cell_id, mi, mf, dev))
+    if iii_rows:
+        devs = [r[3] for r in iii_rows]
+        print(f"    cells checked: {len(iii_rows)}   over tolerance: {len(iii_bad)}   "
+              f"median dev {H.median(devs):.1f}%  max {max(devs):.1f}%")
+        for cell_id, mi, mf, dev in iii_bad[:8]:
+            print(f"      OVER {cell_id:38s} internal={mi:10.0f} processor={mf:10.0f} "
+                  f"dev={dev:.1f}%")
+    else:
+        print("    no ch_build_us recorded (older runs.jsonl); re-run sweep to populate")
+
     # Report, not assert: how much of the query the join phases actually are.
     shares = [(r["build_us"] + r["probe_us"] + r["nonjoined_us"]) / r["total_proc_us"]
               for r in t if r["total_proc_us"] > 0]

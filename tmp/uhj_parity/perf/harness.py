@@ -261,7 +261,14 @@ def settings_for(cell: Cell, algo: str, extra: dict | None = None) -> dict:
 PHASE_PROCESSORS = {
     "build": ("FillingRightJoinSide",),
     "probe": ("JoiningTransform",),
-    "nonjoined": ("DelayedJoinedBlocksTransform", "DelayedJoinedBlocksWorkerTransform"),
+    # `NonJoinedBlocksTransform` is the RIGHT/FULL non-joined scan. The
+    # `DelayedJoinedBlocks*` pair is the delayed-blocks plumbing and reads 0 on
+    # these queries; an earlier version of this mapping listed only those two and
+    # therefore reported a zero non-joined phase for every RIGHT and FULL cell.
+    # The accounting identity in G0.5 did not catch it, because zero is a
+    # perfectly valid member of a partition -- see WORKLOG E7.
+    "nonjoined": ("NonJoinedBlocksTransform",
+                  "DelayedJoinedBlocksTransform", "DelayedJoinedBlocksWorkerTransform"),
 }
 
 
@@ -277,7 +284,9 @@ def read_run(query_id: str) -> dict:
                ProfileEvents['UserTimeMicroseconds'],
                ProfileEvents['SystemTimeMicroseconds'],
                memory_usage,
-               result_rows
+               result_rows,
+               ProfileEvents['ConcurrentHashJoinBuildMicroseconds'],
+               ProfileEvents['ConcurrentHashJoinProbeMicroseconds']
         FROM system.query_log
         WHERE query_id = '{query_id}' AND type = 'QueryFinish'
         LIMIT 1 FORMAT TSV
@@ -285,7 +294,7 @@ def read_run(query_id: str) -> dict:
     ).strip()
     if not row:
         raise QueryError(f"no query_log row for {query_id}")
-    wall_ms, user_us, sys_us, mem, rrows = row.split("\t")
+    (wall_ms, user_us, sys_us, mem, rrows, ch_build, ch_probe) = row.split("\t")
 
     proc = run_query(
         f"""
@@ -318,6 +327,10 @@ def read_run(query_id: str) -> dict:
         "cpu_us": int(user_us) + int(sys_us),
         "memory_usage": int(mem),
         "result_rows": int(rrows),
+        # parallel_hash's own internal timers: an origin for the phase split that
+        # fails differently from the pipeline's processor accounting (G0.5 iii).
+        "ch_build_us": int(ch_build),
+        "ch_probe_us": int(ch_probe),
         **{f"{k}_us": v for k, v in phases.items()},
     }
 

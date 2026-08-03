@@ -34,12 +34,19 @@ RUNS_PATH = os.path.join(RESULTS_DIR, "runs.jsonl")
 SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 _seq = itertools.count()
+# A per-process token, because the sequence counter restarts at 0 in every new
+# sweep process. Without it, re-running a sweep under the same --run-tag produces
+# the SAME query ids as the previous attempt, and any readback that groups
+# system.* logs by query_id silently sums the two runs together. That happened
+# once (a killed sweep's first six cells came back doubled) and is exactly the
+# kind of defect that leaves the accounting identity intact while corrupting
+# every absolute number -- see WORKLOG E7.
+_TOKEN = f"{os.getpid():x}{int(time.time()) & 0xffff:04x}"
 
 
 def qid(*parts) -> str:
-    """Query ids must be globally unique: the server rejects a duplicate that is
-    still running, and a reused id would also make the log readback ambiguous."""
-    return SAFE.sub("_", "-".join(str(p) for p in parts)) + f".{next(_seq)}"
+    """Globally unique per query, across processes and re-runs."""
+    return SAFE.sub("_", "-".join(str(p) for p in parts)) + f".{_TOKEN}.{next(_seq)}"
 
 
 def algos_for(cell: H.Cell, with_context: bool) -> list[str]:
