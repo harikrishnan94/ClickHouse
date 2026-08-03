@@ -500,3 +500,70 @@ there is nothing to lose to - and equally nothing is measured. The alternative a
 gets for those kinds today is `hash`, with a serial build, and that comparison has never been
 run at 16 or 64 threads. It is a one-setting harness change (`comparator_for` returning `hash`
 where `parallel_hash` is unavailable) and it is the cheapest open item in this report.
+
+### 11.6 Correction: the fixed per-row cost is the two-level layer, and `unified_hash` pays a third of what the baseline's own two-level map pays
+
+§11.3 fitted a fixed 0.48 ns/row against `hash` at one thread and §11.5 carried it forward as
+though it were a `unified_hash` property. That was wrong, and the premise behind it is false:
+**`hash` and `unified_hash` do not use the same table.**
+
+```
+$ rg -n 'use_two_level_maps' src/Interpreters/HashJoin/ src/Interpreters/ConcurrentHashJoin.cpp
+ConcurrentHashJoin.cpp:230:   /*use_two_level_maps*/ true
+HashJoin/HashJoin.h:115:      bool use_two_level_maps_ = false,
+```
+
+| implementation | map |
+| --- | --- |
+| `hash` (the one-thread comparator) | **single-level** `HashMapTable` |
+| `parallel_hash` (the 16/64 comparator) | two-level, **fixed 256** buckets |
+| `unified_hash` | two-level, **runtime** bucket count (1 at one thread) |
+
+So the one-thread deficit is a partitioned map measured against an unpartitioned one, and the
+fixed term is a candidate cost of *being two-level at all* - which `parallel_hash` also pays.
+
+**Settings-only experiment, no rebuild.** `parallel_hash` at `max_threads=1` is the baseline's
+own code with a two-level map and one slot; `hash` at `max_threads=1` is the same code with a
+single-level map. The difference between them is the two-level layer, measured with
+`unified_hash` out of the picture entirely:
+
+| cell | `hash` | `parallel_hash` | `unified_hash` | par/hash | uni/hash | uni/par |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `INNER\|u64\|hi\|t1\|small` | 19.1 | 21.3 | 19.7 | **+11.7%** | +3.3% | −7.6% |
+| `INNER\|u64\|hi\|t1\|medium` | 35.8 | 39.9 | 37.1 | **+11.4%** | +3.6% | −7.0% |
+| `INNER\|str\|hi\|t1\|small` | 30.8 | 34.7 | 31.7 | +12.7% | +2.8% | −8.8% |
+| `INNER\|str\|hi\|t1\|medium` | 94.9 | 113.9 | 97.8 | **+20.0%** | +3.0% | −14.1% |
+| `FULL\|u64\|hi\|t1\|small` | 22.4 | 23.9 | 23.4 | +6.7% | +4.6% | −2.0% |
+| `FULL\|u64\|hi\|t1\|medium` | 46.3 | 56.6 | 50.2 | +22.0% | +8.3% | −11.3% |
+| `FULL\|str\|hi\|t1\|small` | 36.5 | 39.1 | 37.9 | +7.4% | +3.9% | −3.3% |
+| `FULL\|str\|hi\|t1\|medium` | 125.8 | 136.2 | 130.1 | +8.2% | +3.4% | −4.5% |
+| **median** | | | | **+11.6%** | **+3.5%** | **−7.3%** |
+
+ns per probe row, `probe + nonjoined`, 7 interleaved reps, algorithm order rotated. The four
+`INNER` rows carry the conclusion on their own and are free of any non-joined-scan asymmetry,
+since `INNER` has no non-joined scan.
+
+**So the per-row overhead is the two-level layer, and `unified_hash` pays about a third of what
+the baseline's own two-level implementation pays for it.** `parallel_hash` at one slot still has
+256 buckets: every probe row routes, lands in one of 256 sub-tables rather than one, and a
+matched row's offset costs a re-hash of the cell plus the `call_once` check.
+`unified_hash` at one bucket takes `Prober<true>` - `sole->find`, the flat `offsetInternal`, no
+routing at all - which is why it is +3.5% and not +11.6%.
+
+This also explains §11.5's match-rate split from the other side: unified's advantage over
+`parallel_hash` is concentrated in matched rows because that is where `parallel_hash`'s
+two-level offset path is dear, so on a miss-dominated loop the advantage shrinks to nearly
+nothing and the residual layer cost shows.
+
+**What it changes about the handoff.** The one-thread deficit is not a `Prober` problem and not
+a micro-optimisation problem - §4 already showed the sole-path code is byte-identical before and
+after this series, and §11.3's proportional 4.2% is unexplained. The structural lever is to stop
+being two-level when there is one bucket: let `num_buckets == 1` select a single-level storage
+rather than a one-bucket `RuntimeStorage`. The measured headroom is the **+3.5%** above, i.e.
+most of the one-thread probe deficit on these cells, and it is a bigger lever than anything in
+this fix list. It is also a real design question rather than a free win, because
+`StorageJoin` hands one `RightTableData` to joins built with different `max_threads`, so the
+storage kind cannot simply follow the thread count of whoever probes.
+
+Raw: `/tmp/twolevel_probe.py` in the session; re-runnable against the harness with
+`H.Cell(kind, key, match, 1, card)` and `settings_for(cell, "parallel_hash")`.
