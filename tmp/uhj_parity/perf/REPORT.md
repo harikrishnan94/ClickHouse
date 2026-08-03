@@ -13,7 +13,7 @@ Server: `127.0.0.1:9111`, started by `tmp/uhj_parity/perf/start_server.sh`
 | Unit | Verdict |
 | --- | --- |
 | **Unit 0 — the measurement instrument** | **GREEN on 5 of 6 gates; G0.4 RED** (see §5). The deficit map is complete: 144/144 cells measured or SKIPPED with a reason. |
-| **Unit 1 — attribution** | **PARTIAL.** One pre-registered ablation ran and **refuted** its claim; the cost is now localised to the probe phase but **not attributed**. No claim reaches CONFIRMED; the residual is 100%. See §3 and §7. |
+| **Unit 1 — attribution** | **PARTIAL.** One pre-registered ablation ran and **refuted** its claim (A1, placement). A second cause (A7) was **CONFIRMED and fixed** — commit `aeddef94b15`, targeted phase -10%, correctness re-verified — but it accounts for only ~2.3pp of a ~12.6pp gap. The bulk of the 1-thread deficit stays **UNSETTLED** as claim A6. See §3 and §7. |
 
 ### The headline, stated plainly
 
@@ -185,12 +185,26 @@ been exactly the move the brief bans. It is struck.
 | # | Operation | Which impl | Sub-phase / cell | Cost | Ablation | Codegen | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **A6** | **Per-matched-row used-flag maintenance** — `offsetInternal` then `setUsed` — on `unified_hash`'s partitioned map versus `hash`'s flat one. Present for every kind that needs flags (RIGHT/FULL/SEMI/ANTI); absent for INNER, which is at parity. | differs in kind (partitioned vs flat addressing) | **probe**, 1 thread | probe **+8.1% to +14.0%** with the pipeline shape equalised; cell wall +7.1% to +11.1% | not run | not yet produced | **UNSETTLED** (localised, not attributed) |
-| **A7** | **The non-joined scan's per-cell cost.** `unified_hash` reaches the used flag through an **out-of-line** `offsetInternal` that re-hashes the cell key with `crc32cx` (a result provably **0** at 1 thread, one bucket), does two bounds-checked indexed loads, and stores a `std::call_once` closure — to compute the same `(ptr-buf)+1` the baseline gets inlined in 6 instructions. | differs in kind | post-join scan, 1 thread | **102 vs 39 instructions/cell (x2.6)**; bounded estimate ~9,200 us of the 11,342 us probe gap on `FULL\|u64\|hi\|t1\|medium`, i.e. an **upper bound of order 80%** — inferred from an instruction ratio, **not measured** | **not run.** A1 moved the scan, it did not remove it. | `codegen/N1_nonjoined_scan.md` | **SUPPORTED** |
+| **A7** | **The non-joined scan's per-cell `offsetInternal`.** It recovered the cell's bucket by re-hashing the key with `crc32cx` (provably **0** at 1 thread — one bucket) and went through `BucketPrefixSums::offset`, storing a `std::call_once` closure and taking an acquire-load every cell, to reach the same `(ptr-buf)+1` the flat baseline computes inline. | in UHJ; absent in `hash` | post-join scan, 1 thread | **FIXED.** Targeted phase **-10.0%/-11.1%** at high match (14,794 -> 13,315 us, ~10 sd), only **-2/-3%** at low match. Closes **~2.3pp of a 12.6pp** probe+non-joined gap. | **FIXED AND RE-MEASURED** (commit `aeddef94b15`): bidirectional in effect — the dose-response splits high vs low match exactly as the mechanism predicts. | `codegen/N1_nonjoined_scan.md` | **CONFIRMED — real, but small** |
 | ~~A1~~ | ~~The *placement* of the non-joined scan in a separate `NonJoinedBlocksTransform`~~ | in UHJ only | post-join | the transform is real, but its **placement** does not cause the gap | **RAN.** Removing it closes at most **2.3 of 12.2** points; one cell got worse. A1-d PASS => valid null. | `codegen/N1_nonjoined_scan.md` | **REFUTED** |
 | A2 | 64-thread composite-key **build** CPU excess | UHJ vs `parallel_hash` | build, 5 `comp\|t64\|large` cells | build CPU **+21% to +38%**, cell CPU +5.9% to +18.5%, wall **-15% to -37%** | not run | not produced | **UNSETTLED** |
 | A3 | per-bucket **mutex acquire/release** in `insertIntoBuckets` (`HashJoin.cpp:187,207`); no counterpart in `hash` | UHJ only | build | not measured | not run | not produced | **UNSETTLED (LEAD)** |
 | A4 | per-row bucket routing + `prefix[bucket]` load in `Prober::find` (`TwoLevelHashTable.h:554-563`) | UHJ | probe | not measured; expected ~0 at 1 thread (the `sole` short-circuit) | not run | not produced | **UNSETTLED (LEAD)** |
 | A5 | `per_offset_flags` sized from **summed** bucket capacities, wider and sparser than the baseline's | UHJ | probe + post-join | not measured | infeasible in isolation (consequence of the map layout) | not produced | **UNSETTLED (LEAD)** |
+
+**A7's earlier bound was wrong by about 6x, and the fix is what proved it.** This
+report previously carried A7 as SUPPORTED with "an upper bound of order 80% of the
+probe gap", extrapolated from the 39-vs-102 instruction ratio. The fix recovered
+**1,479 us, not ~9,200 us**. Instructions are not cycles, and the 102 covered the
+whole per-cell emitting path while the fix removes only the re-hash and the
+`call_once`, leaving the bucket-aware iterator and the out-of-line frame. The
+estimate is struck, not adjusted. It is the clearest evidence in this report for why
+an instruction ratio may not be written as a percentage.
+
+Consequence: **A7 is confirmed and fixed, and it does not explain the 1-thread
+deficit.** The non-joined phase is about a tenth of these queries, so the 13
+one-thread cells classified slower improve only from a mean +7.28% to +6.54%
+(13 cells -> 10). Claim A6 remains the open target.
 
 A6's probe deltas are measured with the pipeline shape **equalised on both sides**
 (`parallel_non_joined_rows_processing=0`), so they are not an artefact of the
@@ -348,7 +362,8 @@ of this mission is that four fifths of the presumed problem is not there.**
 
 | Rank | Target | Headroom | Tier | Risk of removing it |
 | --- | --- | --- | --- | --- |
-| 1 | The non-joined scan's per-cell `offsetInternal` (claim A7) — out-of-line call, a CRC32 re-hash that is dead at 1 thread, and `call_once` closure stores, for a value the baseline computes inline | **x2.6 instructions/cell**; bounded upper estimate ~80% of the 1-thread probe gap | **SUPPORTED** (codegen; no ablation) | Low — swap to `offsetInternalUnsafe`; `freezeMapsForProbing` already establishes the precondition. One incremental rebuild would move this to CONFIRMED. |
+| 1 | **Claim A6 — per-matched-row used-flag maintenance** (`offsetInternal` + `setUsed`) on the partitioned vs flat map. The 1-thread gap is in the probe (+8.1%..+14.0%) with the build at only +3.1%..+4.4%, and INNER — which keeps no flags — is at parity. | the whole remaining 1-thread deficit, ~5-9% wall on 10 cells | **UNSETTLED** | Unknown. Start with `perf stat`: it separates an instruction-count cause from a flag-array-layout cause before any code is touched. |
+| 2 | ~~A7, the non-joined scan's `offsetInternal`~~ | **DONE** — commit `aeddef94b15`, phase -10%, ~2.3pp of gap | **CONFIRMED** | Shipped; comparators proven inert. |
 | 2 | 64-thread composite-key build CPU (claim A2) | +21% to +38% build CPU | UNSETTLED | Unclear — it currently coexists with a large wall win, so a naive fix could trade latency for CPU in the wrong direction. |
 | 3 | `BUCKETS_PER_THREAD` sizing | Unknown; the 3-way probe in P0.2R bounds it in one sweep | UNSETTLED | Low — it is already a tunable constant. |
 | 4 | Baseline's unconditional `use_offset = true` | Would *remove* a `unified_hash` advantage, so measure before touching anything else, or every other attribution is netted against a moving baseline | LEAD | n/a — this is a baseline property, not a UHJ defect. |
