@@ -64,7 +64,7 @@ constexpr Int32 BITS_FOR_BUCKET = -1;
 /// Raising it trades that per-row cost for tolerance of key skew: each bucket is a sub-table with a
 /// minimum capacity, and the per-offset used flags are sized from the capacity summed over all
 /// buckets.
-constexpr size_t BUCKETS_PER_THREAD = 2;
+constexpr size_t BUCKETS_PER_THREAD = 1;   /// ABLATION A-K1
 
 /// Bucket count for a join whose right side is built by `max_threads` threads. The result is a
 /// power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.
