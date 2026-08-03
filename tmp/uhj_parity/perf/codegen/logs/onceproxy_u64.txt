@@ -1,0 +1,107 @@
+=== Target ===
+Function: void std::__1::__call_once_proxy[abi:fqe220101]<std::__1::tuple<TwoLevelHashTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true> >, -1, void>::BucketPrefixSums::offset<TwoLevelHashTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true> >, -1, void>::RuntimeStorage::offsetInternal(HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> > const*, unsigned long) const::{lambda(unsigned int)#1} const&>(unsigned int, TwoLevelHashTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true> >, -1, void>::RuntimeStorage::offsetInternal(HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> > const*, unsigned long) const::{lambda(unsigned int)#1} const&, unsigned long, unsigned long)::{lambda()#1}&&> >(void*)
+Binary: build/reldeb/programs/clickhouse
+Format: ELF
+Arch: aarch64
+Build ID: b7980f6e38fd7fcc...
+Address: 0x165f0880..0x165f0998 (280 bytes)
+Resolution confidence: high
+
+=== Metrics ===
+Instructions: 70
+Byte size: 280
+Branch density: 8.6% (6 branches)
+Call density: 4.3% (3 calls)
+Spill density: 8.6% (3 stores + 3 loads)
+Basic blocks: 12
+Loops detected: 1
+Max block spill density: 50.0%
+Max block branch density: 100.0%
+
+=== Findings ===
+No findings exceed configured thresholds.
+
+=== Disassembly (70 of 70 instructions) ===
+  0x165f0880: b <L0>
+  0x165f0884: nop 
+  0x165f0888: nop 
+  0x165f088c: nop 
+  0x165f0890: nop 
+  0x165f0894: nop 
+  0x165f0898: nop 
+  0x165f089c: nop 
+  0x165f08a0: stp x29, x30, [sp, #-0x30]!
+  0x165f08a4: str x21, [sp, #0x10]
+  0x165f08a8: stp x20, x19, [sp, #0x20]
+  0x165f08ac: mov x29, sp
+  0x165f08b0: ldr x8, [x0]
+  0x165f08b4: add x2, x29, #0x18
+  0x165f08b8: str xzr, [x29, #0x18]
+  0x165f08bc: ldr x8, [x8]
+  0x165f08c0: ldp x9, x21, [x8]
+  0x165f08c4: ldr x19, [x8, #0x10]
+  0x165f08c8: mov x0, x19
+  0x165f08cc: ldr w20, [x9]
+  0x165f08d0: mov x1, x20
+  0x165f08d4: bl <_ZNSt3__16vectorImNS_9allocatorImEEE6assignEmRKm>
+  0x165f08d8: cbz w20,  <L2>
+  0x165f08dc: ldp x10, x11, [x19]
+  0x165f08e0: mov x8, xzr
+  0x165f08e4: ldr x12, [x21]
+  0x165f08e8: mov x9, xzr
+  0x165f08ec: mov w13, #0x40              // =64
+  0x165f08f0: mov w14, #0x1               // =1
+  0x165f08f4: sub x11, x11, x10
+  0x165f08f8: asr x11, x11, #3
+  0x165f08fc: nop 
+  0x165f0900: cmp x11, x8
+  0x165f0904: b.eq <L4>
+  0x165f0908: ldp x15, x16, [x12, #0x10]
+  0x165f090c: str x9, [x10, x8, lsl #3]
+  0x165f0910: sub x16, x16, x15
+  0x165f0914: cmp x8, x16, asr #7
+  0x165f0918: b.hs <L5>
+  0x165f091c: ldrb w15, [x15, x13]
+  0x165f0920: add x8, x8, #0x1
+  0x165f0924: add x13, x13, #0x80
+  0x165f0928: cmp x20, x8
+  0x165f092c: lsl x15, x14, x15
+  0x165f0930: add x9, x15, x9
+  0x165f0934: b.ne <L1>
+  0x165f0938: mov w8, #0x1                // =1
+  0x165f093c: strb w8, [x19, #0x20]
+  0x165f0940: ldp x20, x19, [sp, #0x20]
+  0x165f0944: ldr x21, [sp, #0x10]
+  0x165f0948: ldp x29, x30, [sp], #0x30
+  0x165f094c: b <L3>
+  0x165f0950: nop 
+  0x165f0954: nop 
+  0x165f0958: nop 
+  0x165f095c: nop 
+  0x165f0960: nop 
+  0x165f0964: nop 
+  0x165f0968: nop 
+  0x165f096c: ret 
+  0x165f0970: adrp x0, 0x1ec1000 <_ZN6replxx12_GLOBAL__N_112action_names9LINE_NEXTE+0x169b>
+  0x165f0974: add x0, x0, #0x1ef
+  0x165f0978: adrp x1, 0x1dc5000 <_ZN6replxx12_GLOBAL__N_112action_names26HISTORY_INCREMENTAL_SEARCHE+0x1fc0>
+  0x165f097c: add x1, x1, #0x5e1
+  0x165f0980: bl <__AArch64ADRPThunk__ZNSt3__122__libcpp_verbose_abortEPKcz>
+  0x165f0984: adrp x0, 0x1ec1000 <_ZN6replxx12_GLOBAL__N_112action_names9LINE_NEXTE+0x169b>
+  0x165f0988: add x0, x0, #0x1ef
+  0x165f098c: adrp x1, 0x1bad000 <_ZZN6replxx12_GLOBAL__N_112is_timestampERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEEE17TIMESTAMP_PATTERN+0x1a62>
+  0x165f0990: add x1, x1, #0x8a4
+  0x165f0994: bl <__AArch64ADRPThunk__ZNSt3__122__libcpp_verbose_abortEPKcz>
+
+=== Notes ===
+  static-only ranking; runtime impact unknown
+
+=== Timing ===
+  probe: 7ms
+  inspect: 13ms
+  resolve: 2256ms
+  disassemble: 2378ms
+  cfg: 0ms
+  metrics: 0ms
+  findings: 0ms
+

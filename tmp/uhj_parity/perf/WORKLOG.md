@@ -919,3 +919,95 @@ path **off** costs roughly **5-6x wall** at 16 and 64 threads
 setting, not an attribution, and it is why commit `5362055b4ed` giving
 `unified_hash` this path plausibly erased the snapshot's 16-thread RIGHT deficit
 (Gate G0.4).
+
+---
+
+## E11 — CORRECTION to E10: what ablation A1 actually removed (amends E10 forward)
+
+The codegen artifact (`codegen/N1_nonjoined_scan.md`) forced a re-reading of E10,
+and E10's conclusion was stated too broadly.
+
+### What the codegen says
+
+Per non-joined cell, `max_threads=1`, u64 / `RowRefList`, emitting path:
+
+| metric | `hash` | `unified_hash` | delta |
+| --- | ---: | ---: | ---: |
+| hot-path instructions | 39 | **102** (61 caller + 41 callee) | +63, **x2.6** |
+| loads | 15 | 28 | +13 |
+| stores | 1 | 8 | +7 |
+| branches | 6 | 16 | +10 |
+| spills / reloads | 0 st / 2 ld | 7 st / 5 ld | +7 st / +3 ld |
+| calls executed | 1 (`collect`) | 2 (`offsetInternal`, `collect`) | +1 |
+| dep-load chain (as scheduled) | 4 | 7 | +3 |
+| inlining | `offsetInternal` fully inlined, 12 insns | **out-of-line**, 236 B frame | — |
+
+The per-cell sequence `unified_hash` runs and the baseline does not:
+
+1. `ldr x8,[x1]; mov w9,#-1; crc32cx w8,w9,x8; ldp w10,w9,[x22,#4]; lsr; and w2`
+   — **a full CRC32 re-hash of the cell's key, plus bucket routing, whose result
+   is provably 0 at one thread** because there is exactly one bucket. Dead work,
+   unconditionally executed.
+2. `bl RuntimeStorage::offsetInternal` — 41 instructions to compute the same
+   `(ptr - buf) + 1` the baseline gets from `sub/asr/csinc`. Includes 4
+   unconditional `std::call_once` closure stores and an `ldapr` acquire-load of
+   the once flag. `std::__call_once` itself is emitted on the path but
+   **branch-skipped after the first cell**; the closure stores and the acquire
+   load are paid on **every** cell.
+3. A bucket-aware iterator: an 18-instruction bucket-exhaustion check re-deriving
+   `buckets[bucket]` through a bounds-checked indexed load, against 11
+   straight-line instructions on the baseline.
+
+### The correction
+
+E10 concluded "the separate non-joined scan is NOT the cause". That is **too
+strong**, and the reason is a flaw in what A1-d verified.
+
+`JoiningTransform` calls the **same** `join->getNonJoinedBlocks(...)`
+(`JoiningTransform.cpp:167`, `:630`) that `NonJoinedBlocksTransform` calls. So
+setting `parallel_non_joined_rows_processing=0` changed **where the scan runs**,
+not **what it costs per cell**. The 102-instruction per-cell path is present in
+*both* arms of the ablation.
+
+A1-d confirmed the transform disappeared — which is true, and is what makes the
+null valid for the claim it was aimed at — but the *work* was never removed. So:
+
+- **A1 as pre-registered — "the separate transform *placement* causes the 1-thread
+  deficit" — is REFUTED, and the null is valid.** That stands.
+- **The broader claim — "the non-joined scan's per-cell cost causes it" — was
+  never tested.** It is a different claim, it now has unconditional codegen
+  evidence, and it is registered as **A7**.
+
+Stating this rather than letting "A1 REFUTED" quietly read as "the scan is
+innocent" is the whole point of the distinction.
+
+### A7 — bounded estimate (SUPPORTED tier, explicitly NOT a measured percentage)
+
+Consistency arithmetic, labelled as inference:
+
+- `unified_hash` non-joined phase on `FULL|u64|hi|t1|medium`: **14,888 us**.
+- At 39/102 of the instruction count, a baseline-shaped scan over the same cells
+  would be roughly **5,700 us**, i.e. an excess of about **9,200 us**.
+- Measured probe gap in the pipeline-equalised arm: 105,257 − 93,915 =
+  **11,342 us**.
+
+So the scan's per-cell excess could account for on the order of **80%** of the
+1-thread probe gap in that cell. This is an **upper-bound estimate from an
+instruction ratio**, not a measurement: instructions are not cycles, and the
+inlining cause and the instructions-to-wall-time link are inferred, not measured
+(the artifact says so, and `llvm-mca` is unavailable here). Under G1.5 this is
+**SUPPORTED**, and it may not be written as a measured percentage.
+
+**The experiment that would promote A7 to CONFIRMED**, and it is cheap: swap
+`offsetInternal` for `offsetInternalUnsafe` in the non-joined scan. The inventory
+records that the precondition is already met by `freezeMapsForProbing`, so this is
+a small throwaway patch that deletes exactly the re-hash, the bounds checks and
+the `call_once` machinery while leaving the scan and the pipeline alone. One
+incremental rebuild. **Not run.**
+
+A second, independent probe on the same claim, also not run: because the CRC32
+re-hash is provably dead at one thread, `perf stat` should show
+`instructions`/non-joined-row roughly 2.6x on `unified_hash` at roughly flat IPC.
+If instead IPC drops and `LLC-load-misses`/row rises, the cost is the flag array's
+layout (claim A5) rather than the instruction count, and A7 is downgraded. That is
+the discriminating counter test G1.3 exists for.

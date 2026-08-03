@@ -1,0 +1,103 @@
+=== Target ===
+Function: TwoLevelHashTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList> >, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList> >, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true> >, -1, void>::RuntimeStorage::offsetInternal(HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList> > const*, unsigned long) const
+Binary: build/reldeb/programs/clickhouse
+Format: ELF
+Arch: aarch64
+Build ID: b7980f6e38fd7fcc...
+Address: 0x165f0cc0..0x165f0dac (236 bytes)
+Resolution confidence: high
+
+=== Metrics ===
+Instructions: 59
+Byte size: 236
+Branch density: 6.8% (4 branches)
+Call density: 3.4% (2 calls)
+Spill density: 20.3% (6 stores + 6 loads)
+Basic blocks: 8
+Loops detected: 0
+Max block spill density: 50.0%
+Max block branch density: 33.3%
+
+=== Findings ===
+[high] High register spill density (20.3%)
+  0x165f0cc4: stp x29, x30, [sp, #0x40]
+  0x165f0cc8: stp x22, x21, [sp, #0x50]
+  0x165f0ccc: stp x20, x19, [sp, #0x60]
+  0x165f0cf8: str x0, [sp, #0x8]
+  0x165f0d10: stp x9, x11, [sp, #0x10]
+  0x165f0d1c: str x8, [sp, #0x20]
+  Why: Excessive stack spills indicate register pressure; may cause extra memory traffic in hot paths
+
+=== Disassembly (59 of 59 instructions) ===
+  0x165f0cc0: sub sp, sp, #0x70
+  0x165f0cc4: stp x29, x30, [sp, #0x40]
+  0x165f0cc8: stp x22, x21, [sp, #0x50]
+  0x165f0ccc: stp x20, x19, [sp, #0x60]
+  0x165f0cd0: add x29, sp, #0x40
+  0x165f0cd4: ldp x8, x9, [x0, #0x10]
+  0x165f0cd8: sub x9, x9, x8
+  0x165f0cdc: cmp x2, x9, asr #7
+  0x165f0ce0: b.hs <L2>
+  0x165f0ce4: ldr x9, [x1]
+  0x165f0ce8: mov x20, x1
+  0x165f0cec: cbz x9,  <L1>
+  0x165f0cf0: add x8, x8, x2, lsl #7
+  0x165f0cf4: mov x21, x0
+  0x165f0cf8: str x0, [sp, #0x8]
+  0x165f0cfc: ldr w10, [x0], #0x40
+  0x165f0d00: sub x9, x29, #0x14
+  0x165f0d04: add x11, sp, #0x8
+  0x165f0d08: ldr x22, [x8, #0x20]
+  0x165f0d0c: add x8, x21, #0x28
+  0x165f0d10: stp x9, x11, [sp, #0x10]
+  0x165f0d14: mov x19, x2
+  0x165f0d18: stur w10, [x29, #-0x14]
+  0x165f0d1c: str x8, [sp, #0x20]
+  0x165f0d20: ldapr x8, [x0]
+  0x165f0d24: cmn x8, #0x1
+  0x165f0d28: b.eq <L0>
+  0x165f0d2c: add x8, sp, #0x10
+  0x165f0d30: sub x9, x29, #0x8
+  0x165f0d34: nop 
+  0x165f0d38: adr x2,  <_ZNSt3__117__call_once_proxyB9fqe220101INS_5tupleIJOZN17TwoLevelHashTableIm11HashMapCellImNS_10unique_ptrIN2DB22SortedLookupVectorBaseENS_14default_deleteIS6_EEEE9HashCRC32ImE16HashTableNoState10PairNoInitImS9_EESB_33HashTableGrowerWithPrecalculationILm8EE9AllocatorILb1ELb1EE12HashMapTableImSF_SB_SH_SJ_ELin1EvE16BucketPrefixSums6offsetIRKZNKSM_14RuntimeStorage14offsetInternalEPKSF_mEUljE_EEmjOT_mmEUlvE_EEEEEvPv>
+  0x165f0d3c: sub x1, x29, #0x10
+  0x165f0d40: stp x9, x8, [x29, #-0x10]
+  0x165f0d44: bl <__AArch64ADRPThunk__ZNSt3__111__call_onceERVmPvPFvS2_E>
+  0x165f0d48: ldp x8, x9, [x21, #0x28]
+  0x165f0d4c: sub x9, x9, x8
+  0x165f0d50: cmp x19, x9, asr #3
+  0x165f0d54: b.hs <L2>
+  0x165f0d58: sub x9, x20, x22
+  0x165f0d5c: ldr x8, [x8, x19, lsl #3]
+  0x165f0d60: asr x9, x9, #4
+  0x165f0d64: add x9, x9, #0x1
+  0x165f0d68: add x0, x9, x8
+  0x165f0d6c: ldp x20, x19, [sp, #0x60]
+  0x165f0d70: ldp x22, x21, [sp, #0x50]
+  0x165f0d74: ldp x29, x30, [sp, #0x40]
+  0x165f0d78: add sp, sp, #0x70
+  0x165f0d7c: ret 
+  0x165f0d80: mov x0, xzr
+  0x165f0d84: ldp x20, x19, [sp, #0x60]
+  0x165f0d88: ldp x22, x21, [sp, #0x50]
+  0x165f0d8c: ldp x29, x30, [sp, #0x40]
+  0x165f0d90: add sp, sp, #0x70
+  0x165f0d94: ret 
+  0x165f0d98: adrp x0, 0x1ec1000 <_ZN6replxx12_GLOBAL__N_112action_names9LINE_NEXTE+0x169b>
+  0x165f0d9c: add x0, x0, #0x1ef
+  0x165f0da0: adrp x1, 0x1bad000 <_ZZN6replxx12_GLOBAL__N_112is_timestampERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEEE17TIMESTAMP_PATTERN+0x1a62>
+  0x165f0da4: add x1, x1, #0x8a4
+  0x165f0da8: bl <__AArch64ADRPThunk__ZNSt3__122__libcpp_verbose_abortEPKcz>
+
+=== Notes ===
+  static-only ranking; runtime impact unknown
+
+=== Timing ===
+  probe: 7ms
+  inspect: 12ms
+  resolve: 2277ms
+  disassemble: 2369ms
+  cfg: 0ms
+  metrics: 0ms
+  findings: 0ms
+
