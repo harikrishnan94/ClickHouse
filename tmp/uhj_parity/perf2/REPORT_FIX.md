@@ -631,3 +631,135 @@ copies columns where `unified_hash` routes row indices; and its probe pays a re-
 `call_once` per matched row for an offset that `unified_hash` reads from a precomputed prefix
 (§11.6: +11.6% over a single-level map against `unified_hash`'s +3.5%). None of those depend on
 the key type or the data distribution.
+
+---
+
+## 12. The shape sweep: the "faster in every cell" claim is FALSE
+
+§11.7 named the untested region - a small or large build side at many threads, since
+`THREAD_CARDS` pins the many-threaded points to one build size - and said it was the likeliest
+place to hold a surprise. It does. **`unified_hash` is up to 1.9x SLOWER than `parallel_hash`.**
+
+`shapes.py`, 240 cells, `INNER JOIN`, 5 interleaved repetitions with the algorithm order
+rotated, one build and one probe table read as range scans so a size is a prefix rather than a
+different table, match rate held at 50% for every size and shape:
+
+| axis | values |
+| --- | --- |
+| build rows | 2^17 (131 072) .. 2^26 (67.1M), powers of two - 10 points |
+| probe rows | 1x, 2x, 4x the build rows |
+| shape | `narrow` (nothing gathered), `rpay` (4 UInt64 + String gathered from the build side), `lpay` (same carried from the probe side), `uniq` (unique build keys, so all three promote ALL to RightAny and take `MapsOne`) |
+| threads | 16, 64 |
+
+**Answers agree in all 240 cells**, so the timings compare the same work.
+
+### 12.1 Result
+
+| group | n | wall median | wall worst | CPU median | cells >2% slower |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ALL | 240 | −13.7% | **+93.6%** | −5.8% | **27 / 240** |
+| threads=16 | 120 | −2.2% | **+93.6%** | −2.7% | **27 / 120** |
+| threads=64 | 120 | −20.9% | −7.8% | −9.7% | **0 / 120** |
+
+By build size, at both thread counts pooled:
+
+| build rows | wall median | wall worst | cells >2% slower |
+| --- | ---: | ---: | ---: |
+| 131 072 | −19.1% | −5.9% | 0 / 24 |
+| 262 144 | −14.7% | +0.0% | 0 / 24 |
+| 1 048 576 | −12.2% | +0.0% | 0 / 24 |
+| 4 194 304 | −5.7% | +4.8% | 5 / 24 |
+| 16 777 216 | −10.1% | +3.9% | 3 / 24 |
+| 33 554 432 | −12.6% | +37.7% | 3 / 24 |
+| **67 108 864** | **−3.6%** | **+93.6%** | **12 / 24** |
+
+So the small build side at many threads - the shape §11.7 flagged - is **fine** (0 losses below
+1M rows). The failure is the opposite corner: **a large build side at a low-to-middling thread
+count.** Worst cells, all at 16 threads: `uniq|b67108864|x4` **+93.6%**, `uniq|b67108864|x2`
++86.9%, `uniq|b67108864|x1` +48.7%, `narrow|b67108864|x4` +40.3%.
+
+`uniq` is the worst shape (12 of 60) and that is a clue rather than a quirk: at the same build
+*rows* it has twice the distinct *keys* of the two-rows-per-key shapes, so it is really the
+largest key count in the matrix.
+
+### 12.2 It is the probe, and it is a function of the bucket count `K`
+
+Phase split of the worst cell (`uniq|b67108864|x4|t16`, ms of processor time):
+
+| | wall | build | probe | peak mem |
+| --- | ---: | ---: | ---: | ---: |
+| `parallel_hash` | 708 | 1903 | 4556 | 2.61 GiB |
+| `unified_hash` | 1371 | 2828 | **14466** | 2.61 GiB |
+| delta | **+93.6%** | +48.6% | **+217.5%** | −0.3% |
+
+The probe dominates. A CPU profile confirms it is the probe row loop itself and not
+scaffolding: `joinRightColumns` holds **15 359** leaf samples for `unified_hash` against
+**4 683** for `parallel_hash`, a factor of **3.3**, and the two instantiations are structurally
+identical (`JoinKind::Inner`, `RightAny`, `MapsTemplate<RowRefList>`, `HashMethodOneNumber`,
+`AddedColumns<true>`). The only visible difference in the two symbols is the grower -
+`TwoLevelHashTableGrower<8ul>` against unified's single-level one - which affects growth, not
+lookup.
+
+**The penalty is set by `K`, not by the thread count.** `K = 2 * bit_ceil(threads)` is a step
+function, so different thread counts share a `K` - and cells that share a `K` show the same
+penalty (67.1M distinct keys, probe 1x, 7 reps, order rotated):
+
+| threads | K | wall (uni vs par) | **probe (uni vs par)** |
+| ---: | ---: | ---: | ---: |
+| 8 | 16 | +16.7% | +5.6% |
+| 16 | 32 | **+51.7%** | **+123.5%** |
+| 24 | **64** | +23.9% | **+39.0%** |
+| 32 | **64** | +25.4% | **+40.6%** |
+| 48 | **128** | −27.2% | **−2.7%** |
+| 64 | **128** | −35.8% | **−3.3%** |
+
+K=64 at 24 and at 32 threads: +39.0% and +40.6%. K=128 at 48 and at 64 threads: −2.7% and
+−3.3%. `parallel_hash`'s own probe cost is flat across the whole scan (1057 -> 1510 ms), so this
+is not a thread-count effect that both would share.
+
+Two things follow. First, **the sweep's "all losses at 16 threads" is an artefact of measuring
+only 16 and 64**: 8, 24 and 32 threads lose on this size too, and the crossover for 67.1M keys
+sits between K=64 and K=128, i.e. between 32 and 48 threads. Second, the relation is
+**non-monotone** - K=16 is nearly free (+5.6%), K=32 is catastrophic (+123%), K=64 is bad
+(+40%), K=128 is a small win. Neither "bigger sub-tables are worse" nor "more sub-tables are
+worse" predicts that shape.
+
+### 12.3 The mechanism is NOT identified, and this reproduces a known unchased lead
+
+I can say where it is (the probe row loop), what selects it (`K`, at large key counts) and that
+it is not the build, not memory (peak is within 0.3%) and not a different instantiation. I
+cannot say why K=32 is three times worse than K=128 at the same total capacity - all four K
+values give a clean power-of-two capacity per bucket, the routing bits (top of the CRC32) and
+the placement bits (low bits) do not overlap at any K, and the load factors are equal.
+
+This is the same bimodality the previous mission recorded in `WORKLOG.md` F7 and explicitly did
+not chase:
+
+> **LEAD, not used for acceptance:** the ablation's effect on `unified_hash` is non-monotone in
+> thread count (+36%, −22%, +19%, −15%, +90% for `u64` at 4/8/16/32/64) while the controls are
+> flat. Something bimodal is happening in the bucket layout that neither the packing story nor
+> the contention story predicts on its own. Not chased.
+
+That lead was seen on the build phase of a 30M-row join and looked like a curiosity. On a
+67M-key build side it is a **1.9x wall-time regression on the probe**, and it is now the largest
+open defect in `unified_hash` - considerably larger than anything the fix set in §1-§10
+addressed.
+
+### 12.4 What can honestly be claimed now
+
+- **True, and now well supported across 10 build sizes, 3 probe multiplicities and 4 payload
+  shapes:** at 64 threads `unified_hash` beats `parallie_hash` in **120 of 120** cells, median
+  −20.9% wall, worst −7.8%.
+- **True:** below about 1M build rows `unified_hash` wins at every thread count measured.
+- **FALSE:** "faster in every cell". At 67.1M rows and 16 threads it is up to **+93.6%** slower,
+  and the losing region extends over 8-32 threads.
+- The claim in §11.7 must therefore be narrowed to the thread count as well as the build size:
+  *at 64 threads, across build sides from 131 k to 67 M rows, probe multiplicities of 1-4x and
+  four payload shapes, `unified_hash` was faster than `parallel_hash` in all 120 measured cells.*
+
+Also fixed while doing this: `sweep.py` loses 0.6-0.7% of its runs (11 of 1848 in `bold1`, 13 of
+1848 in `bnew2`) because `SYSTEM FLUSH LOGS` races the `query_log` write for the query that just
+finished - always the last query of a cell. Symmetric between runs and harmless to a median over
+7 repetitions, but `shapes.py` retries the readback instead and loses none.
+
+Raw: `results/shapes.jsonl`, `results/shapes_s1_report.txt`, `logs/shapes_s1.log`.

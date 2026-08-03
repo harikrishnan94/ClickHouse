@@ -1,0 +1,54 @@
+tag=s1: 240 comparable cells; answer mismatches between the two algorithms: 0
+
+group                                n  wall med  wall worst  cpu med  mem med  slower>2%
+ALL                                240     -13.7       +93.6     -5.8     +0.1   27/240
+
+threads=16                         120      -2.2       +93.6     -2.7     +3.6   27/120
+threads=64                         120     -20.9        -7.8     -9.7     -0.5    0/120
+
+shape=narrow                        60     -17.2       +40.3     -4.4     -0.1    7/60
+shape=rpay                          60     -14.0       +17.6    -10.1     -2.6    3/60
+shape=lpay                          60     -10.8       +23.4     -3.2     +4.3    5/60
+shape=uniq                          60     -12.2       +93.6     -2.1     +2.1   12/60
+
+probe=1x build                      80     -14.4       +48.7     -6.8     -0.1   12/80
+probe=2x build                      80     -15.5       +86.9     -5.7     +0.0    9/80
+probe=4x build                      80     -12.2       +93.6     -3.6     +0.8    6/80
+
+build=   131072 rows                24     -19.1        -5.9    -24.6    -32.7    0/24
+build=   262144 rows                24     -14.7        +0.0    -13.1     -8.2    0/24
+build=   524288 rows                24     -13.8       +11.1    -11.3     -6.7    1/24
+build=  1048576 rows                24     -12.2        +0.0     -4.7     +6.4    0/24
+build=  2097152 rows                24     -15.6        +5.9     -6.3     -1.2    1/24
+build=  4194304 rows                24      -5.7        +4.8     -1.3     +7.5    5/24
+build=  8388608 rows                24     -11.0        +8.5     -2.9     -0.6    2/24
+build= 16777216 rows                24     -10.1        +3.9     -5.8     +9.2    3/24
+build= 33554432 rows                24     -12.6       +37.7     -1.9     -0.3    3/24
+build= 67108864 rows                24      -3.6       +93.6     +7.2    +11.1   12/24
+
+cells where unified_hash is more than 2% SLOWER on wall: 27
+     +93.6% wall    +96.2% cpu  uniq|b67108864|x4|t16
+     +86.9% wall    +88.0% cpu  uniq|b67108864|x2|t16
+     +48.7% wall    +50.1% cpu  uniq|b67108864|x1|t16
+     +40.3% wall    +40.5% cpu  narrow|b67108864|x4|t16
+     +37.7% wall    +33.3% cpu  uniq|b33554432|x2|t16
+     +36.4% wall    +36.9% cpu  uniq|b33554432|x4|t16
+     +30.8% wall    +32.3% cpu  narrow|b67108864|x2|t16
+     +23.9% wall    +26.7% cpu  narrow|b67108864|x1|t16
+     +23.4% wall    +22.6% cpu  lpay|b67108864|x4|t16
+     +23.0% wall    +22.3% cpu  lpay|b67108864|x2|t16
+     +17.6% wall    +21.2% cpu  rpay|b67108864|x4|t16
+     +16.8% wall    +18.0% cpu  lpay|b67108864|x1|t16
+     +16.0% wall    +14.1% cpu  uniq|b33554432|x1|t16
+     +11.1% wall     +2.8% cpu  uniq|b524288|x1|t16
+      +9.5% wall    +15.0% cpu  rpay|b67108864|x2|t16
+      +8.5% wall     +5.5% cpu  uniq|b8388608|x1|t16
+      +5.9% wall     +8.3% cpu  uniq|b2097152|x1|t16
+      +5.0% wall     +1.8% cpu  uniq|b8388608|x2|t16
+      +4.8% wall     +1.7% cpu  narrow|b4194304|x4|t16
+      +4.0% wall     +4.2% cpu  narrow|b4194304|x1|t16
+      +3.9% wall     +3.1% cpu  uniq|b16777216|x2|t16
+      +3.8% wall     +1.7% cpu  lpay|b4194304|x2|t16
+      +3.8% wall     +2.7% cpu  uniq|b16777216|x1|t16
+      +3.2% wall     +2.9% cpu  narrow|b4194304|x2|t16
+      +2.8% wall     +3.6% cpu  lpay|b4194304|x1|t16
