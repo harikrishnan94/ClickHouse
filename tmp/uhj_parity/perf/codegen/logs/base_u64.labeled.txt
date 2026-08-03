@@ -1,0 +1,515 @@
+
+build/reldeb/programs/clickhouse:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+00000000142a1b80 <_ZN2DB13NotJoinedHash11fillColumnsI12HashMapTableIm11HashMapCellImNS_10RowRefListE9HashCRC32ImE16HashTableNoState10PairNoInitImS4_EES6_33HashTableGrowerWithPrecalculationILm8EE9AllocatorILb1ELb1EEEEEmRKT_RNSt3__16vectorIN3COWINS_7IColumnEE11mutable_ptrISM_EENSJ_9allocatorISP_EEEE>:
+142a1b80:      	b	 <L0>
+142a1b84:      	nop
+142a1b88:      	nop
+142a1b8c:      	nop
+142a1b90:      	nop
+142a1b94:      	nop
+142a1b98:      	nop
+142a1b9c:      	nop
+<L0>:
+142a1ba0:      	sub	sp, sp, #0xf0
+142a1ba4:      	stp	x29, x30, [sp, #0x90]
+142a1ba8:      	stp	x28, x27, [sp, #0xa0]
+142a1bac:      	stp	x26, x25, [sp, #0xb0]
+142a1bb0:      	stp	x24, x23, [sp, #0xc0]
+142a1bb4:      	stp	x22, x21, [sp, #0xd0]
+142a1bb8:      	stp	x20, x19, [sp, #0xe0]
+142a1bbc:      	add	x29, sp, #0x90
+142a1bc0:      	movi	v0.2d, #0000000000000000
+142a1bc4:      	ldr	x19, [x0, #0x10]
+142a1bc8:      	mov	x25, x2
+142a1bcc:      	mov	x22, x1
+142a1bd0:      	mov	x20, x0
+142a1bd4:      	stp	q0, q0, [sp, #0x50]
+142a1bd8:      	str	q0, [sp, #0x40]
+142a1bdc:      	cbz	x19,  <L2>
+142a1be0:      	lsr	x8, x19, #61
+142a1be4:      	cbnz	x8,  <L41>
+142a1be8:      	lsl	x0, x19, #3
+142a1bec:      	mov	x1, xzr
+142a1bf0:      	bl	 <_Z26allocateWithMemoryTrackingmm>
+142a1bf4:      	ldp	x21, x8, [sp, #0x40]
+142a1bf8:      	mov	x23, x0
+142a1bfc:      	add	x19, x0, x19, lsl #3
+142a1c00:      	sub	x2, x8, x21
+142a1c04:      	mov	x1, x21
+142a1c08:      	sub	x24, x0, x2
+142a1c0c:      	mov	x0, x24
+142a1c10:      	bl	 <__AArch64ADRPThunk_memcpy>
+142a1c14:      	ldr	x8, [sp, #0x50]
+142a1c18:      	stp	x24, x23, [sp, #0x40]
+142a1c1c:      	str	x19, [sp, #0x50]
+142a1c20:      	cbz	x21,  <L1>
+142a1c24:      	sub	x1, x8, x21
+142a1c28:      	mov	x0, x21
+142a1c2c:      	bl	 <_Z28deallocateWithMemoryTrackingPvm>
+<L1>:
+142a1c30:      	ldr	x8, [sp, #0x68]
+142a1c34:      	ldr	x23, [sp, #0x58]
+142a1c38:      	ldr	x19, [x20, #0x10]
+142a1c3c:      	sub	x8, x8, x23
+142a1c40:      	cmp	x19, x8, asr #2
+142a1c44:      	b.ls	 <L2>
+142a1c48:      	lsr	x8, x19, #62
+142a1c4c:      	cbnz	x8,  <L42>
+142a1c50:      	ldr	x24, [sp, #0x60]
+142a1c54:      	lsl	x0, x19, #2
+142a1c58:      	mov	x1, xzr
+142a1c5c:      	bl	 <_Z26allocateWithMemoryTrackingmm>
+142a1c60:      	ldp	x21, x8, [sp, #0x58]
+142a1c64:      	sub	x9, x24, x23
+142a1c68:      	add	x23, x0, x9
+142a1c6c:      	add	x19, x0, x19, lsl #2
+142a1c70:      	sub	x2, x8, x21
+142a1c74:      	mov	x1, x21
+142a1c78:      	sub	x0, x23, x2
+142a1c7c:      	sub	x24, x23, x2
+142a1c80:      	bl	 <__AArch64ADRPThunk_memcpy>
+142a1c84:      	ldr	x8, [sp, #0x68]
+142a1c88:      	stp	x24, x23, [sp, #0x58]
+142a1c8c:      	str	x19, [sp, #0x68]
+142a1c90:      	cbz	x21,  <L2>
+142a1c94:      	sub	x1, x8, x21
+142a1c98:      	mov	x0, x21
+142a1c9c:      	bl	 <_Z28deallocateWithMemoryTrackingPvm>
+<L2>:
+142a1ca0:      	ldrb	w8, [x20, #0x18]
+142a1ca4:      	add	x9, sp, #0x40
+142a1ca8:      	str	x25, [sp]
+142a1cac:      	cmp	w8, #0x1
+142a1cb0:      	add	x8, x9, #0x18
+142a1cb4:      	str	x8, [sp, #0x10]
+142a1cb8:      	b.ne	 <L3>
+142a1cbc:      	ldr	x8, [x20, #0x8]
+142a1cc0:      	ldrb	w9, [x20, #0x70]
+142a1cc4:      	ldr	x8, [x8, #0xc0]
+142a1cc8:      	cmp	w9, #0x1
+142a1ccc:      	b.ne	 <L4>
+142a1cd0:      	ldr	x23, [x20, #0x68]
+142a1cd4:      	add	x8, x8, #0x80
+142a1cd8:      	cmp	x23, x8
+142a1cdc:      	str	x8, [sp, #0x8]
+142a1ce0:      	b.ne	 <L5>
+142a1ce4:      	b	 <L31>
+<L3>:
+142a1ce8:      	mov	x23, x20
+142a1cec:      	ldr	x8, [x23, #0x30]!
+142a1cf0:      	cbnz	x8,  <L22>
+142a1cf4:      	ldr	x8, [x22, #0x20]
+142a1cf8:      	cbz	x8,  <L19>
+142a1cfc:      	ldrb	w9, [x22]
+142a1d00:      	cmp	w9, #0x1
+142a1d04:      	b.ne	 <L17>
+142a1d08:      	add	x8, x22, #0x8
+142a1d0c:      	b	 <L19>
+<L4>:
+142a1d10:      	ldr	x23, [x8, #0x88]
+142a1d14:      	mov	w9, #0x1                // =1
+142a1d18:      	strb	w9, [x20, #0x70]
+142a1d1c:      	str	x23, [x20, #0x68]
+142a1d20:      	add	x8, x8, #0x80
+142a1d24:      	cmp	x23, x8
+142a1d28:      	str	x8, [sp, #0x8]
+142a1d2c:      	b.eq	 <L31>
+<L5>:
+142a1d30:      	mov	x25, #-0x5555555555555556 // =-6148914691236517206
+142a1d34:      	mov	w26, #0x18              // =24
+142a1d38:      	add	x27, sp, #0x18
+142a1d3c:      	movk	x25, #0xaaab
+142a1d40:      	add	x28, sp, #0x38
+142a1d44:      	add	x24, sp, #0x40
+142a1d48:      	b	 <L7>
+142a1d4c:      	nop
+142a1d50:      	nop
+142a1d54:      	nop
+142a1d58:      	nop
+142a1d5c:      	nop
+<L6>:
+142a1d60:      	ldr	x8, [x20, #0x68]
+142a1d64:      	ldr	x23, [x8, #0x8]
+142a1d68:      	ldr	x8, [sp, #0x8]
+142a1d6c:      	cmp	x23, x8
+142a1d70:      	str	x23, [x20, #0x68]
+142a1d74:      	b.eq	 <L31>
+<L7>:
+142a1d78:      	ldp	x9, x8, [sp, #0x58]
+142a1d7c:      	ldr	x10, [x20, #0x10]
+142a1d80:      	sub	x8, x8, x9
+142a1d84:      	cmp	x10, x8, asr #2
+142a1d88:      	b.ls	 <L31>
+142a1d8c:      	ldr	x8, [x20, #0x28]
+142a1d90:      	cmp	x8, #0x2
+142a1d94:      	b.lo	 <L8>
+142a1d98:      	ldr	w9, [x23, #0x58]
+142a1d9c:      	udiv	x10, x9, x8
+142a1da0:      	msub	x8, x10, x8, x9
+142a1da4:      	ldr	x9, [x20, #0x20]
+142a1da8:      	cmp	x8, x9
+142a1dac:      	b.ne	 <L6>
+<L8>:
+142a1db0:      	ldp	x8, x9, [x23, #0x10]
+142a1db4:      	cmp	x9, x8
+142a1db8:      	b.eq	 <L39>
+142a1dbc:      	ldr	x0, [x8]
+142a1dc0:      	ldr	x8, [x0]
+142a1dc4:      	ldr	x8, [x8, #0x58]
+142a1dc8:      	blr	x8
+142a1dcc:      	mov	x22, x0
+142a1dd0:      	cbz	x0,  <L6>
+142a1dd4:      	mov	x19, xzr
+142a1dd8:      	add	x21, x23, #0x10
+142a1ddc:      	b	 <L12>
+<L9>:
+142a1de0:      	str	w19, [x8], #0x4
+<L10>:
+142a1de4:      	str	x8, [sp, #0x60]
+<L11>:
+142a1de8:      	add	x19, x19, #0x1
+142a1dec:      	cmp	x22, x19
+142a1df0:      	b.eq	 <L6>
+<L12>:
+142a1df4:      	ldr	x8, [x20, #0x8]
+142a1df8:      	ldr	x8, [x8, #0xb0]
+142a1dfc:      	ldp	x9, x10, [x8, #0x18]
+142a1e00:      	sub	x10, x10, x9
+142a1e04:      	asr	x10, x10, #3
+142a1e08:      	mul	x11, x10, x25
+142a1e0c:      	ldr	w10, [x23, #0x58]
+142a1e10:      	cmp	x11, x10
+142a1e14:      	b.ls	 <L13>
+142a1e18:      	umaddl	x10, w10, w26, x9
+142a1e1c:      	ldp	x9, x10, [x10]
+142a1e20:      	cmp	x9, x10
+142a1e24:      	b.eq	 <L13>
+142a1e28:      	sub	x8, x10, x9
+142a1e2c:      	cmp	x19, x8
+142a1e30:      	b.hs	 <L37>
+142a1e34:      	add	x8, x9, x19
+142a1e38:      	ldarb	w8, [x8]
+142a1e3c:      	tbnz	w8, #0x0,  <L11>
+142a1e40:      	b	 <L14>
+142a1e44:      	nop
+142a1e48:      	nop
+142a1e4c:      	nop
+142a1e50:      	nop
+142a1e54:      	nop
+142a1e58:      	nop
+142a1e5c:      	nop
+<L13>:
+142a1e60:      	ldrb	w8, [x8, #0x48]
+142a1e64:      	tbz	w8, #0x0,  <L11>
+<L14>:
+142a1e68:      	ldp	x8, x9, [sp, #0x48]
+142a1e6c:      	str	x21, [sp, #0x38]
+142a1e70:      	stp	x27, x28, [x29, #-0x20]
+142a1e74:      	stur	x24, [x29, #-0x10]
+142a1e78:      	cmp	x8, x9
+142a1e7c:      	str	x8, [sp, #0x18]
+142a1e80:      	b.hs	 <L16>
+142a1e84:      	str	x21, [x8], #0x8
+<L15>:
+142a1e88:      	str	x8, [sp, #0x48]
+142a1e8c:      	ldp	x8, x9, [sp, #0x60]
+142a1e90:      	str	w19, [sp, #0x38]
+142a1e94:      	stp	x27, x28, [x29, #-0x20]
+142a1e98:      	cmp	x8, x9
+142a1e9c:      	ldr	x9, [sp, #0x10]
+142a1ea0:      	str	x8, [sp, #0x18]
+142a1ea4:      	stur	x9, [x29, #-0x10]
+142a1ea8:      	b.lo	 <L9>
+142a1eac:      	sub	x0, x29, #0x20
+142a1eb0:      	bl	 <__AArch64ADRPThunk__ZZNSt3__16vectorIj27AllocatorWithMemoryTrackingIjEE12emplace_backIJjEEERjDpOT_ENKUlvE0_clEv>
+142a1eb4:      	ldr	x8, [sp, #0x18]
+142a1eb8:      	b	 <L10>
+<L16>:
+142a1ebc:      	sub	x0, x29, #0x20
+142a1ec0:      	bl	 <__AArch64ADRPThunk__ZZNSt3__16vectorIPN4llvm5ValueE27AllocatorWithMemoryTrackingIS3_EE12emplace_backIJS3_EEERS3_DpOT_ENKUlvE0_clEv>
+142a1ec4:      	ldr	x8, [sp, #0x18]
+142a1ec8:      	b	 <L15>
+<L17>:
+142a1ecc:      	ldrb	w9, [x22, #0x40]
+142a1ed0:      	mov	w10, #0x10              // =16
+142a1ed4:      	lsl	x9, x10, x9
+142a1ed8:      	add	x9, x8, x9
+142a1edc:      	nop
+<L18>:
+142a1ee0:      	ldr	x10, [x8]
+142a1ee4:      	cbnz	x10,  <L19>
+142a1ee8:      	add	x8, x8, #0x10
+142a1eec:      	cmp	x8, x9
+142a1ef0:      	b.lo	 <L18>
+<L19>:
+142a1ef4:      	stp	x22, x8, [sp, #0x20]
+142a1ef8:      	nop
+142a1efc:      	adr	x8,  <_ZNSt3__19__any_imp13_SmallHandlerIN9HashTableIm11HashMapCellImN2DB10RowRefListE9HashCRC32ImE16HashTableNoState10PairNoInitImS5_EES7_33HashTableGrowerWithPrecalculationILm8EE9AllocatorILb1ELb1EEE14const_iteratorEE8__handleB9fqe220101ENS0_7_ActionEPKNS_3anyEPSK_PKSt9type_infoPKv>
+142a1f00:      	ldur	q0, [sp, #0x20]
+142a1f04:      	sub	x0, x29, #0x20
+142a1f08:      	mov	x1, x23
+142a1f0c:      	stur	x8, [x29, #-0x20]
+142a1f10:      	stur	q0, [x29, #-0x18]
+142a1f14:      	str	xzr, [sp, #0x18]
+142a1f18:      	bl	 <_ZNSt3__13any4swapB9fqe220101ERS0_>
+142a1f1c:      	ldur	x8, [x29, #-0x20]
+142a1f20:      	cbz	x8,  <L20>
+142a1f24:      	sub	x1, x29, #0x20
+142a1f28:      	mov	w0, wzr
+142a1f2c:      	mov	x2, xzr
+142a1f30:      	mov	x3, xzr
+142a1f34:      	mov	x4, xzr
+142a1f38:      	blr	x8
+<L20>:
+142a1f3c:      	ldr	x8, [sp, #0x18]
+142a1f40:      	cbz	x8,  <L21>
+142a1f44:      	add	x1, sp, #0x18
+142a1f48:      	mov	w0, wzr
+142a1f4c:      	mov	x2, xzr
+142a1f50:      	mov	x3, xzr
+142a1f54:      	mov	x4, xzr
+142a1f58:      	blr	x8
+<L21>:
+142a1f5c:      	ldr	x8, [x23]
+142a1f60:      	cbz	x8,  <L40>
+<L22>:
+142a1f64:      	adrp	x3, 0x1faa6000 <xallocx+0x1faa6000>
+142a1f68:      	adrp	x4, 0x1faa6000 <xallocx+0x1faa6000>
+142a1f6c:      	mov	w0, #0x3                // =3
+142a1f70:      	ldr	x3, [x3, #0xd78]
+142a1f74:      	ldr	x4, [x4, #0xd80]
+142a1f78:      	mov	x1, x23
+142a1f7c:      	mov	x2, xzr
+142a1f80:      	blr	x8
+142a1f84:      	mov	x23, x0
+142a1f88:      	cbz	x0,  <L40>
+142a1f8c:      	ldrb	w8, [x22, #0x40]
+142a1f90:      	mov	w9, #0x1                // =1
+142a1f94:      	ldr	x10, [x22, #0x20]
+142a1f98:      	lsl	x8, x9, x8
+142a1f9c:      	cmp	x10, #0x0
+142a1fa0:      	add	x9, x10, x8, lsl #4
+142a1fa4:      	ldr	x8, [x23, #0x8]
+142a1fa8:      	csel	x25, xzr, x9, eq
+142a1fac:      	cmp	x8, x25
+142a1fb0:      	b.eq	 <L31>
+142a1fb4:      	ldr	x9, [x20, #0x8]
+142a1fb8:      	mov	w19, #0x1               // =1
+142a1fbc:      	ldr	x9, [x9, #0xc0]
+142a1fc0:      	ldr	x9, [x9, #0xc8]
+142a1fc4:      	ldr	x24, [x9, #0x30]
+142a1fc8:      	b	 <L24>
+142a1fcc:      	nop
+142a1fd0:      	nop
+142a1fd4:      	nop
+142a1fd8:      	nop
+142a1fdc:      	nop
+<L23>:
+142a1fe0:      	cmp	x8, x25
+142a1fe4:      	b.eq	 <L31>
+<L24>:
+142a1fe8:      	ldr	x9, [x20, #0x8]
+142a1fec:      	ldr	x10, [x22, #0x20]
+142a1ff0:      	ldr	x11, [x8]
+142a1ff4:      	ldr	x9, [x9, #0xb0]
+142a1ff8:      	sub	x8, x8, x10
+142a1ffc:      	cmp	x11, #0x0
+142a2000:      	asr	x10, x8, #4
+142a2004:      	ldp	x8, x12, [x9, #0x30]
+142a2008:      	csinc	x9, xzr, x10, eq
+142a200c:      	sub	x10, x12, x8
+142a2010:      	cmp	x9, x10
+142a2014:      	b.hs	 <L37>
+142a2018:      	add	x8, x8, x9
+142a201c:      	ldarb	w8, [x8]
+142a2020:      	tbnz	w8, #0x0,  <L25>
+142a2024:      	ldr	x8, [x23, #0x8]
+142a2028:      	ldr	x3, [sp, #0x10]
+142a202c:      	add	x0, x8, #0x8
+142a2030:      	add	x2, sp, #0x40
+142a2034:      	mov	x1, x24
+142a2038:      	bl	 <_ZN2DB7Unified18CollectorNonJoinedINS_10RowRefListEE7collectERKS2_PKPKNS_11StoredBlockERNSt3__16vectorIS8_27AllocatorWithMemoryTrackingIS8_EEERNSC_IjSD_IjEEE>
+142a203c:      	ldp	x9, x8, [sp, #0x58]
+142a2040:      	ldr	x10, [x20, #0x10]
+142a2044:      	sub	x8, x8, x9
+142a2048:      	cmp	x10, x8, asr #2
+142a204c:      	b.ls	 <L28>
+<L25>:
+142a2050:      	ldr	x8, [x23, #0x8]
+142a2054:      	ldr	x9, [x8], #0x10
+142a2058:      	cbz	x9,  <L27>
+142a205c:      	ldr	x9, [x23]
+142a2060:      	ldr	x10, [x9, #0x20]
+142a2064:      	str	x8, [x23, #0x8]
+142a2068:      	ldrb	w9, [x9, #0x40]
+142a206c:      	lsl	x9, x19, x9
+142a2070:      	add	x9, x10, x9, lsl #4
+142a2074:      	cmp	x8, x9
+142a2078:      	b.hs	 <L23>
+142a207c:      	nop
+<L26>:
+142a2080:      	ldr	x10, [x8]
+142a2084:      	cbnz	x10,  <L23>
+142a2088:      	add	x8, x8, #0x10
+142a208c:      	cmp	x8, x9
+142a2090:      	str	x8, [x23, #0x8]
+142a2094:      	b.lo	 <L26>
+142a2098:      	b	 <L23>
+<L27>:
+142a209c:      	ldr	x9, [x23]
+142a20a0:      	ldr	x10, [x9, #0x20]
+142a20a4:      	mov	x8, x10
+142a20a8:      	str	x10, [x23, #0x8]
+142a20ac:      	ldrb	w9, [x9, #0x40]
+142a20b0:      	lsl	x9, x19, x9
+142a20b4:      	add	x9, x10, x9, lsl #4
+142a20b8:      	cmp	x10, x9
+142a20bc:      	b.lo	 <L26>
+142a20c0:      	b	 <L23>
+<L28>:
+142a20c4:      	ldr	x8, [x23, #0x8]
+142a20c8:      	ldr	x9, [x8], #0x10
+142a20cc:      	cbz	x9,  <L38>
+142a20d0:      	ldr	x10, [x23]
+142a20d4:      	ldr	x9, [x10, #0x20]
+<L29>:
+142a20d8:      	str	x8, [x23, #0x8]
+142a20dc:      	mov	w11, #0x1               // =1
+142a20e0:      	ldrb	w10, [x10, #0x40]
+142a20e4:      	lsl	x10, x11, x10
+142a20e8:      	add	x9, x9, x10, lsl #4
+142a20ec:      	cmp	x8, x9
+142a20f0:      	b.hs	 <L31>
+142a20f4:      	nop
+142a20f8:      	nop
+142a20fc:      	nop
+<L30>:
+142a2100:      	ldr	x10, [x8], #0x10
+142a2104:      	cbnz	x10,  <L31>
+142a2108:      	cmp	x8, x9
+142a210c:      	str	x8, [x23, #0x8]
+142a2110:      	b.lo	 <L30>
+<L31>:
+142a2114:      	ldr	x19, [sp]
+142a2118:      	ldp	x8, x9, [x19]
+142a211c:      	cmp	x9, x8
+142a2120:      	b.eq	 <L33>
+142a2124:      	mov	x20, xzr
+142a2128:      	nop
+142a212c:      	nop
+142a2130:      	nop
+142a2134:      	nop
+142a2138:      	nop
+142a213c:      	nop
+<L32>:
+142a2140:      	ldr	x0, [x8, x20, lsl #3]
+142a2144:      	ldr	x8, [x0]
+142a2148:      	ldr	x8, [x8, #0x328]
+142a214c:      	add	x2, sp, #0x40
+142a2150:      	mov	x1, x20
+142a2154:      	blr	x8
+142a2158:      	ldp	x8, x9, [x19]
+142a215c:      	add	x20, x20, #0x1
+142a2160:      	sub	x9, x9, x8
+142a2164:      	cmp	x20, x9, asr #3
+142a2168:      	b.lo	 <L32>
+<L33>:
+142a216c:      	ldp	x19, x20, [sp, #0x58]
+142a2170:      	cbz	x19,  <L34>
+142a2174:      	ldr	x8, [sp, #0x68]
+142a2178:      	mov	x0, x19
+142a217c:      	str	x19, [sp, #0x60]
+142a2180:      	sub	x1, x8, x19
+142a2184:      	bl	 <_Z28deallocateWithMemoryTrackingPvm>
+<L34>:
+142a2188:      	ldr	x0, [sp, #0x40]
+142a218c:      	cbz	x0,  <L35>
+142a2190:      	ldr	x8, [sp, #0x50]
+142a2194:      	str	x0, [sp, #0x48]
+142a2198:      	sub	x1, x8, x0
+142a219c:      	bl	 <_Z28deallocateWithMemoryTrackingPvm>
+<L35>:
+142a21a0:      	sub	x8, x20, x19
+142a21a4:      	asr	x0, x8, #2
+142a21a8:      	ldp	x20, x19, [sp, #0xe0]
+142a21ac:      	ldp	x22, x21, [sp, #0xd0]
+142a21b0:      	ldp	x24, x23, [sp, #0xc0]
+142a21b4:      	ldp	x26, x25, [sp, #0xb0]
+142a21b8:      	ldp	x28, x27, [sp, #0xa0]
+142a21bc:      	ldp	x29, x30, [sp, #0x90]
+142a21c0:      	add	sp, sp, #0xf0
+142a21c4:      	b	 <L36>
+142a21c8:      	nop
+142a21cc:      	nop
+142a21d0:      	nop
+142a21d4:      	nop
+142a21d8:      	nop
+142a21dc:      	nop
+142a21e0:      	nop
+<L36>:
+142a21e4:      	ret
+<L37>:
+142a21e8:      	adrp	x0, 0x1ec1000 <_ZN6replxx12_GLOBAL__N_112action_names9LINE_NEXTE+0x169b>
+142a21ec:      	add	x0, x0, #0x1ef
+142a21f0:      	adrp	x1, 0x1bad000 <_ZZN6replxx12_GLOBAL__N_112is_timestampERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEEE17TIMESTAMP_PATTERN+0x1a62>
+142a21f4:      	add	x1, x1, #0x8a4
+142a21f8:      	bl	 <__AArch64ADRPThunk__ZNSt3__122__libcpp_verbose_abortEPKcz>
+<L38>:
+142a21fc:      	ldr	x10, [x23]
+142a2200:      	ldr	x9, [x10, #0x20]
+142a2204:      	mov	x8, x9
+142a2208:      	b	 <L29>
+<L39>:
+142a220c:      	bl	 <__AArch64ADRPThunk__ZNSt3__16vectorIDu27AllocatorWithMemoryTrackingIDuEE20__throw_out_of_rangeB9fqe220101Ev>
+<L40>:
+142a2210:      	bl	 <_ZNSt3__120__throw_bad_any_castB9fqe220101Ev>
+<L41>:
+142a2214:      	bl	 <__AArch64ADRPThunk__ZNSt3__16vectorINS_10shared_ptrIKN2DB9IDataTypeEEE27AllocatorWithMemoryTrackingIS5_EE20__throw_length_errorB9fqe220101Ev>
+<L42>:
+142a2218:      	bl	 <__AArch64ADRPThunk__ZNSt3__16vectorINS_10shared_ptrIKN2DB9IDataTypeEEE27AllocatorWithMemoryTrackingIS5_EE20__throw_length_errorB9fqe220101Ev>
+142a221c:      	mov	x19, x0
+142a2220:      	add	x0, sp, #0x40
+142a2224:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a2228:      	mov	x0, x19
+142a222c:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a2230:      	mov	x19, x0
+142a2234:      	add	x0, sp, #0x40
+142a2238:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a223c:      	mov	x0, x19
+142a2240:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a2244:      	bl	 <__AArch64ADRPThunk___clang_call_terminate>
+142a2248:      	bl	 <__AArch64ADRPThunk___clang_call_terminate>
+142a224c:      	bl	 <__AArch64ADRPThunk___clang_call_terminate>
+142a2250:      	mov	x19, x0
+142a2254:      	add	x0, sp, #0x40
+142a2258:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a225c:      	mov	x0, x19
+142a2260:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a2264:      	mov	x19, x0
+142a2268:      	add	x0, sp, #0x40
+142a226c:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a2270:      	mov	x0, x19
+142a2274:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a2278:      	mov	x19, x0
+142a227c:      	add	x0, sp, #0x40
+142a2280:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a2284:      	mov	x0, x19
+142a2288:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a228c:      	mov	x19, x0
+142a2290:      	add	x0, sp, #0x40
+142a2294:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a2298:      	mov	x0, x19
+142a229c:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a22a0:      	mov	x19, x0
+142a22a4:      	add	x0, sp, #0x40
+142a22a8:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a22ac:      	mov	x0, x19
+142a22b0:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>
+142a22b4:      	mov	x19, x0
+142a22b8:      	add	x0, sp, #0x40
+142a22bc:      	bl	 <_ZN2DB21ColumnsWithRowNumbersD2Ev>
+142a22c0:      	mov	x0, x19
+142a22c4:      	bl	 <__AArch64ADRPThunk__Unwind_Resume>

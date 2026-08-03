@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "tool": {
+    "name": "analyze-assembly",
+    "version": "0.1.0"
+  },
+  "toolchain": {
+    "readelf": "3",
+    "llvm_objdump": "22.1.8",
+    "llvm_nm": "22.1.8",
+    "c++filt": "3"
+  },
+  "binary": {
+    "path": "clickhouse",
+    "format": "ELF",
+    "arch": "aarch64",
+    "build_id": "b7980f6e38fd7fccc6cb883a140c0c0a1b4dbe78"
+  },
+  "target": {
+    "identifier": "TwoLevelHashTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList> >, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList> >, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true> >, -1, void>::RuntimeStorage::offsetInternal(HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList> > const*, unsigned long) const",
+    "mangled": "_ZNK17TwoLevelHashTableIm11HashMapCellImN2DB10RowRefListE9HashCRC32ImE16HashTableNoState10PairNoInitImS2_EES4_33HashTableGrowerWithPrecalculationILm8EE9AllocatorILb1ELb1EE12HashMapTableImS8_S4_SA_SC_ELin1EvE14RuntimeStorage14offsetInternalEPKS8_m",
+    "address_start": "0x165f0cc0",
+    "address_end": "0x165f0dac",
+    "resolution_confidence": "high"
+  },
+  "metrics": {
+    "instruction_count": 59,
+    "byte_size": 236,
+    "branch_density": 0.0678,
+    "call_density": 0.0339,
+    "spill_density": 0.2034,
+    "branch_count": 4,
+    "call_count": 2,
+    "spill_store_count": 6,
+    "spill_load_count": 6,
+    "block_count": 8,
+    "loop_count": 0,
+    "max_block_branch_density": 0.3333,
+    "max_block_spill_density": 0.5
+  },
+  "findings": [
+    {
+      "id": "spill-density-high",
+      "severity": "high",
+      "confidence": "medium",
+      "summary": "High register spill density (20.3%)",
+      "evidence": [
+        "0x165f0cc4: stp x29, x30, [sp, #0x40]",
+        "0x165f0cc8: stp x22, x21, [sp, #0x50]",
+        "0x165f0ccc: stp x20, x19, [sp, #0x60]",
+        "0x165f0cf8: str x0, [sp, #0x8]",
+        "0x165f0d10: stp x9, x11, [sp, #0x10]",
+        "0x165f0d1c: str x8, [sp, #0x20]"
+      ],
+      "why": "Excessive stack spills indicate register pressure; may cause extra memory traffic in hot paths",
+      "impact_score": 0.0
+    }
+  ],
+  "notes": [
+    "static-only ranking; runtime impact unknown"
+  ],
+  "run_stats": {
+    "timing_ms": {
+      "probe": 8.0,
+      "inspect": 12.2,
+      "resolve": 2316.3,
+      "disassemble": 2384.6,
+      "cfg": 0.1,
+      "metrics": 0.0,
+      "findings": 0.0
+    },
+    "cache": {
+      "status": "hit"
+    },
+    "input": {
+      "instructions_analyzed": 59,
+      "findings_emitted": 1
+    }
+  },
+  "disassembly": "\n/mnt/ch/ClickHouse/build/reldeb/programs/clickhouse:\tfile format elf64-littleaarch64\n\nDisassembly of section .text:\n\n00000000165f0cc0 <_ZNK17TwoLevelHashTableIm11HashMapCellImNSt3__110unique_ptrIN2DB22SortedLookupVectorBaseENS1_14default_deleteIS4_EEEE9HashCRC32ImE16HashTableNoState10PairNoInitImS7_EES9_33HashTableGrowerWithPrecalculationILm8EE9AllocatorILb1ELb1EE12HashMapTableImSD_S9_SF_SH_ELin1EvE14RuntimeStorage14offsetInternalEPKSD_m>:\n165f0cc0:      \tsub\tsp, sp, #0x70\n165f0cc4:      \tstp\tx29, x30, [sp, #0x40]\n165f0cc8:      \tstp\tx22, x21, [sp, #0x50]\n165f0ccc:      \tstp\tx20, x19, [sp, #0x60]\n165f0cd0:      \tadd\tx29, sp, #0x40\n165f0cd4:      \tldp\tx8, x9, [x0, #0x10]\n165f0cd8:      \tsub\tx9, x9, x8\n165f0cdc:      \tcmp\tx2, x9, asr #7\n165f0ce0:      \tb.hs\t <L2>\n165f0ce4:      \tldr\tx9, [x1]\n165f0ce8:      \tmov\tx20, x1\n165f0cec:      \tcbz\tx9,  <L1>\n165f0cf0:      \tadd\tx8, x8, x2, lsl #7\n165f0cf4:      \tmov\tx21, x0\n165f0cf8:      \tstr\tx0, [sp, #0x8]\n165f0cfc:      \tldr\tw10, [x0], #0x40\n165f0d00:      \tsub\tx9, x29, #0x14\n165f0d04:      \tadd\tx11, sp, #0x8\n165f0d08:      \tldr\tx22, [x8, #0x20]\n165f0d0c:      \tadd\tx8, x21, #0x28\n165f0d10:      \tstp\tx9, x11, [sp, #0x10]\n165f0d14:      \tmov\tx19, x2\n165f0d18:      \tstur\tw10, [x29, #-0x14]\n165f0d1c:      \tstr\tx8, [sp, #0x20]\n165f0d20:      \tldapr\tx8, [x0]\n165f0d24:      \tcmn\tx8, #0x1\n165f0d28:      \tb.eq\t <L0>\n165f0d2c:      \tadd\tx8, sp, #0x10\n165f0d30:      \tsub\tx9, x29, #0x8\n165f0d34:      \tnop\n165f0d38:      \tadr\tx2,  <_ZNSt3__117__call_once_proxyB9fqe220101INS_5tupleIJOZN17TwoLevelHashTableIm11HashMapCellImNS_10unique_ptrIN2DB22SortedLookupVectorBaseENS_14default_deleteIS6_EEEE9HashCRC32ImE16HashTableNoState10PairNoInitImS9_EESB_33HashTableGrowerWithPrecalculationILm8EE9AllocatorILb1ELb1EE12HashMapTableImSF_SB_SH_SJ_ELin1EvE16BucketPrefixSums6offsetIRKZNKSM_14RuntimeStorage14offsetInternalEPKSF_mEUljE_EEmjOT_mmEUlvE_EEEEEvPv>\n165f0d3c:      \tsub\tx1, x29, #0x10\n165f0d40:      \tstp\tx9, x8, [x29, #-0x10]\n165f0d44:      \tbl\t <__AArch64ADRPThunk__ZNSt3__111__call_onceERVmPvPFvS2_E>\n<L0>:\n165f0d48:      \tldp\tx8, x9, [x21, #0x28]\n165f0d4c:      \tsub\tx9, x9, x8\n165f0d50:      \tcmp\tx19, x9, asr #3\n165f0d54:      \tb.hs\t <L2>\n165f0d58:      \tsub\tx9, x20, x22\n165f0d5c:      \tldr\tx8, [x8, x19, lsl #3]\n165f0d60:      \tasr\tx9, x9, #4\n165f0d64:      \tadd\tx9, x9, #0x1\n165f0d68:      \tadd\tx0, x9, x8\n165f0d6c:      \tldp\tx20, x19, [sp, #0x60]\n165f0d70:      \tldp\tx22, x21, [sp, #0x50]\n165f0d74:      \tldp\tx29, x30, [sp, #0x40]\n165f0d78:      \tadd\tsp, sp, #0x70\n165f0d7c:      \tret\n<L1>:\n165f0d80:      \tmov\tx0, xzr\n165f0d84:      \tldp\tx20, x19, [sp, #0x60]\n165f0d88:      \tldp\tx22, x21, [sp, #0x50]\n165f0d8c:      \tldp\tx29, x30, [sp, #0x40]\n165f0d90:      \tadd\tsp, sp, #0x70\n165f0d94:      \tret\n<L2>:\n165f0d98:      \tadrp\tx0, 0x1ec1000 <_ZN6replxx12_GLOBAL__N_112action_names9LINE_NEXTE+0x169b>\n165f0d9c:      \tadd\tx0, x0, #0x1ef\n165f0da0:      \tadrp\tx1, 0x1bad000 <_ZZN6replxx12_GLOBAL__N_112is_timestampERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEEE17TIMESTAMP_PATTERN+0x1a62>\n165f0da4:      \tadd\tx1, x1, #0x8a4\n165f0da8:      \tbl\t <__AArch64ADRPThunk__ZNSt3__122__libcpp_verbose_abortEPKcz>\n"
+}

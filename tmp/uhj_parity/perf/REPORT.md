@@ -167,18 +167,26 @@ Zero silently-missing cells (`gates.py g06`: 144 declared, 144 covered, 0 missin
 tested. The rest are LEADs from the code inventory with no measurement of their
 own.
 
-The refutation is the most useful thing in this table. Claim A1 said the separate
-non-joined scan caused the 1-thread deficit; it has a real 14,888 us cost and a
-clean mechanism, and it is wrong. Removing the operation — verified structurally
-gone, so the null is G1.4-valid — closed at most 2.3 of 12.2 percentage points.
-An earlier draft of this report recorded A1's "13.8% of phase"; that was a phase
-share, never an ablation result, and quoting it as a cause would have been exactly
-the move the brief bans. It is struck.
+The refutation is the most useful thing in this table, and its **scope matters**.
+A1 tested the *placement* of the non-joined scan in a separate transform. Setting
+`parallel_non_joined_rows_processing=0` puts `unified_hash` on the baseline's
+pipeline, and `JoiningTransform` then calls the **same** `getNonJoinedBlocks`
+(`JoiningTransform.cpp:167,630`). So the ablation moved the scan; it did not
+remove its per-cell cost, which is present in both arms. A1-d verified the
+transform vanished — true, and enough to make the null valid for the placement
+claim — but not enough to clear the scan itself.
+
+So: placement is REFUTED (A1); the scan's per-cell cost was never tested and is
+now **A7**, carrying codegen evidence and a bounded estimate rather than a
+measured percentage. An earlier draft recorded "13.8% of phase" as A1's cost; that
+was a phase share, never an ablation result, and quoting it as a cause would have
+been exactly the move the brief bans. It is struck.
 
 | # | Operation | Which impl | Sub-phase / cell | Cost | Ablation | Codegen | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **A6** | **Per-matched-row used-flag maintenance** — `offsetInternal` then `setUsed` — on `unified_hash`'s partitioned map versus `hash`'s flat one. Present for every kind that needs flags (RIGHT/FULL/SEMI/ANTI); absent for INNER, which is at parity. | differs in kind (partitioned vs flat addressing) | **probe**, 1 thread | probe **+8.1% to +14.0%** with the pipeline shape equalised; cell wall +7.1% to +11.1% | not run | not yet produced | **UNSETTLED** (localised, not attributed) |
-| ~~A1~~ | ~~A separate full scan of the hash table to emit non-joined rows~~ (`NonJoinedBlocksTransform` in UHJ; `hash` emits inline from `JoiningTransform` at 1 thread) | in UHJ only | post-join, `FULL\|u64\|hi\|t1\|medium` | real operation costing 14,888 us, but **it does not cause the gap** | **RAN.** Removing it closes at most **2.3 of 12.2** percentage points; one cell got worse. Structural check A1-d PASS, so the null is valid. | `codegen/N1_nonjoined_scan.md` | **REFUTED** |
+| **A7** | **The non-joined scan's per-cell cost.** `unified_hash` reaches the used flag through an **out-of-line** `offsetInternal` that re-hashes the cell key with `crc32cx` (a result provably **0** at 1 thread, one bucket), does two bounds-checked indexed loads, and stores a `std::call_once` closure — to compute the same `(ptr-buf)+1` the baseline gets inlined in 6 instructions. | differs in kind | post-join scan, 1 thread | **102 vs 39 instructions/cell (x2.6)**; bounded estimate ~9,200 us of the 11,342 us probe gap on `FULL\|u64\|hi\|t1\|medium`, i.e. an **upper bound of order 80%** — inferred from an instruction ratio, **not measured** | **not run.** A1 moved the scan, it did not remove it. | `codegen/N1_nonjoined_scan.md` | **SUPPORTED** |
+| ~~A1~~ | ~~The *placement* of the non-joined scan in a separate `NonJoinedBlocksTransform`~~ | in UHJ only | post-join | the transform is real, but its **placement** does not cause the gap | **RAN.** Removing it closes at most **2.3 of 12.2** points; one cell got worse. A1-d PASS => valid null. | `codegen/N1_nonjoined_scan.md` | **REFUTED** |
 | A2 | 64-thread composite-key **build** CPU excess | UHJ vs `parallel_hash` | build, 5 `comp\|t64\|large` cells | build CPU **+21% to +38%**, cell CPU +5.9% to +18.5%, wall **-15% to -37%** | not run | not produced | **UNSETTLED** |
 | A3 | per-bucket **mutex acquire/release** in `insertIntoBuckets` (`HashJoin.cpp:187,207`); no counterpart in `hash` | UHJ only | build | not measured | not run | not produced | **UNSETTLED (LEAD)** |
 | A4 | per-row bucket routing + `prefix[bucket]` load in `Prober::find` (`TwoLevelHashTable.h:554-563`) | UHJ | probe | not measured; expected ~0 at 1 thread (the `sole` short-circuit) | not run | not produced | **UNSETTLED (LEAD)** |
@@ -340,7 +348,7 @@ of this mission is that four fifths of the presumed problem is not there.**
 
 | Rank | Target | Headroom | Tier | Risk of removing it |
 | --- | --- | --- | --- | --- |
-| 1 | The separate non-joined scan at 1 thread (claim A1) | 13.8% of the probe+non-joined phase in its cell; up to +12.7% cell wall | UNSETTLED, measured phase cost | Low — `hash` already demonstrates the inline alternative at 1 thread. |
+| 1 | The non-joined scan's per-cell `offsetInternal` (claim A7) — out-of-line call, a CRC32 re-hash that is dead at 1 thread, and `call_once` closure stores, for a value the baseline computes inline | **x2.6 instructions/cell**; bounded upper estimate ~80% of the 1-thread probe gap | **SUPPORTED** (codegen; no ablation) | Low — swap to `offsetInternalUnsafe`; `freezeMapsForProbing` already establishes the precondition. One incremental rebuild would move this to CONFIRMED. |
 | 2 | 64-thread composite-key build CPU (claim A2) | +21% to +38% build CPU | UNSETTLED | Unclear — it currently coexists with a large wall win, so a naive fix could trade latency for CPU in the wrong direction. |
 | 3 | `BUCKETS_PER_THREAD` sizing | Unknown; the 3-way probe in P0.2R bounds it in one sweep | UNSETTLED | Low — it is already a tunable constant. |
 | 4 | Baseline's unconditional `use_offset = true` | Would *remove* a `unified_hash` advantage, so measure before touching anything else, or every other attribution is netted against a moving baseline | LEAD | n/a — this is a baseline property, not a UHJ defect. |
@@ -362,7 +370,12 @@ Every one of these is measured and documented rather than silent.
    reported as red, and the one-build experiment that would settle it is named.
 3. **`llvm-mca` is unavailable** on this host, so loop-body throughput analysis is
    out of reach. Instruction, branch and spill counts are not affected.
-4. **G1.3 hardware counters were never gathered.** `perf stat` was not run.
+4. **G1.3 hardware counters were never gathered.** `perf stat` was not run. This
+   is the single most costly omission: it is the discriminating test between A7
+   (instruction count — would show ~2.6x instructions/row at flat IPC) and A5
+   (flag-array layout — would show raised `LLC-load-misses`/row and falling IPC).
+   Without it both stay SUPPORTED/UNSETTLED rather than one being confirmed and
+   the other refuted.
 5. **The `dense` axis was dropped** mid-flight (§6 item 3).
 6. **Independent verification was not performed.** No verifier pass, self- or
    otherwise, has run against this work.
