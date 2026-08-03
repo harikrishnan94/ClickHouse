@@ -122,6 +122,7 @@ BuildResult insertIntoBuckets(
     std::vector<std::unique_ptr<Arena>> & pools,
     std::atomic<size_t> & bucket_bytes,
     const std::vector<const ScatteredBlock::Selector *> & per_bucket,
+    BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
     UInt32 stored_block_no,
@@ -147,7 +148,7 @@ BuildResult insertIntoBuckets(
 
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
-            join, type, map, bucket, key_columns, key_sizes, stored_block_no,
+            join, type, map, bucket, block_key_getter, key_columns, key_sizes, stored_block_no,
             *per_bucket[bucket], null_map, join_mask, *pools[bucket], bucket_result);
 
         bytes_added += map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes() - bytes_before;
@@ -991,6 +992,12 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     const size_t buckets = data->num_buckets;
                     std::vector<ScatteredBlock::Selector> scattered;
                     std::vector<const ScatteredBlock::Selector *> per_bucket(buckets, nullptr);
+
+                    /// One key getter for the whole block: the scatter pass and every bucket's
+                    /// insert read the same key columns, and building a getter reads all of them
+                    /// (see `BlockKeyGetter`).
+                    BlockKeyGetter block_key_getter;
+
                     if (buckets == 1)
                     {
                         per_bucket[0] = &stored_columns->selector;
@@ -998,7 +1005,8 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     else
                     {
                         scattered = Methods::scatterByBucket(
-                            data->type, map, key_columns, key_sizes[onexpr_idx], stored_columns->selector, buckets);
+                            data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx],
+                            stored_columns->selector, buckets);
                         for (size_t bucket = 0; bucket < buckets; ++bucket)
                             per_bucket[bucket] = &scattered[bucket];
                     }
@@ -1011,6 +1019,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                         data->pools,
                         data->bucket_bytes,
                         per_bucket,
+                        block_key_getter,
                         key_columns,
                         key_sizes[onexpr_idx],
                         stored_columns->block_no,

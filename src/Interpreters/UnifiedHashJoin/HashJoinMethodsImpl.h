@@ -93,6 +93,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     HashJoin::Type type,
     MapsTemplate & maps,
     size_t bucket,
+    BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
     UInt32 stored_block_no,
@@ -109,11 +110,13 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>, needs_offset>::Type>( \
-                join, *maps.TYPE, bucket, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, result); \
+                join, *maps.TYPE, bucket, block_key_getter, key_columns, key_sizes, stored_block_no, selector.getRange(), \
+                null_map, join_mask, pool, result); \
         else \
             insertFromBlockImplTypeCase< \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>, needs_offset>::Type>( \
-                join, *maps.TYPE, bucket, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, result); \
+                join, *maps.TYPE, bucket, block_key_getter, key_columns, key_sizes, stored_block_no, selector.getIndexes(), \
+                null_map, join_mask, pool, result); \
         break;
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
@@ -125,6 +128,7 @@ template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucket(
     HashJoin::Type type,
     MapsTemplate & maps,
+    BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
     const ScatteredBlock::Selector & selector,
@@ -136,7 +140,7 @@ std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemp
     case HashJoin::Type::TYPE: \
         return scatterByBucketTypeCase< \
             typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>, needs_offset>::Type>( \
-            *maps.TYPE, key_columns, key_sizes, selector, num_buckets);
+            *maps.TYPE, block_key_getter, key_columns, key_sizes, selector, num_buckets);
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
@@ -148,6 +152,7 @@ template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename HashMap>
 std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucketTypeCase(
     const HashMap & map,
+    BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
     const ScatteredBlock::Selector & selector,
@@ -163,7 +168,7 @@ std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemp
         static_assert(!KeyGetter::has_pre_computed_hashes, "Bucket routing assumes the map computes the hash it places by");
 
     constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
-    auto key_getter = createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes);
+    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, key_columns, key_sizes);
 
     /// Key holders are only read here, never persisted into the map, so nothing allocated through
     /// this outlives the call. String key holders do not touch it at all.
@@ -332,11 +337,21 @@ KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <typename KeyGetter, bool is_asof_join>
+KeyGetter & HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::blockKeyGetter(
+    BlockKeyGetter & block_key_getter, const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
+{
+    return block_key_getter.getOrBuild<KeyGetter>(
+        [&] { return createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes); });
+}
+
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename HashMap, typename Selector>
 void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCase(
     HashJoin & join,
     HashMap & map,
     size_t bucket,
+    BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
     UInt32 stored_block_no,
@@ -353,7 +368,10 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     if constexpr (is_asof_join)
         asof_column = key_columns.back();
 
-    auto key_getter = createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes);
+    /// Shared with this block's other buckets and with the scatter pass that routed the rows here:
+    /// building one packs the whole block's keys, so a getter per bucket would repack the block once
+    /// per bucket. See `BlockKeyGetter`.
+    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, key_columns, key_sizes);
 
     /// Every row here routes to `bucket`, so its cells are addressed once instead of once per row.
     /// `find` routes by the same function `scatterByBucket` used, so what lands here is what lookups
