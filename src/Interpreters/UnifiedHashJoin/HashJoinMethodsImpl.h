@@ -690,58 +690,63 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, map);
 
-    /// The map's routing state resolved once for the whole block rather than once per row.
-    auto prober = map->prober();
-
-    auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
-        [&](size_t k) __attribute__((always_inline))
+    /// Sole vs routed `Prober` is chosen once for the block: with a sole bucket,
+    /// `offsetInternal` compiles as the flat form (no prefix add, no spill of routing state).
+    return map->withProber(
+        [&](auto prober) -> size_t
         {
-            if constexpr (can_prefetch)
-                prober.prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
-        });
+            auto prefetcher = makeJoinPrefetcher(
+                use_prefetch,
+                rows,
+                [&](size_t k) __attribute__((always_inline))
+                {
+                    if constexpr (can_prefetch)
+                        prober.prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
+                });
 
-    IColumn::Offset current_offset = 0;
-    for (size_t i = 0; i < rows; ++i)
-    {
-        if constexpr (can_prefetch)
-            prefetcher.prefetchAt(i);
-
-        const size_t ind = selectorIndexAt(selector, i);
-
-        bool right_row_found = false;
-        KnownRowsHolder<flag_per_row> dummy_known_rows;
-
-        bool skip_row = false;
-        if constexpr (!fast_path)
-            skip_row = skip_data && skip_data[ind];
-
-        if (!skip_row)
-        {
-            auto find_result = key_getter.findKey(prober, ind, pool);
-
-            if (find_result.isFound())
+            IColumn::Offset current_offset = 0;
+            for (size_t i = 0; i < rows; ++i)
             {
-                right_row_found = true;
-                processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                    find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows, /*is_last_disjunct=*/ true);
+                if constexpr (can_prefetch)
+                    prefetcher.prefetchAt(i);
+
+                const size_t ind = selectorIndexAt(selector, i);
+
+                bool right_row_found = false;
+                KnownRowsHolder<flag_per_row> dummy_known_rows;
+
+                bool skip_row = false;
+                if constexpr (!fast_path)
+                    skip_row = skip_data && skip_data[ind];
+
+                if (!skip_row)
+                {
+                    auto find_result = key_getter.findKey(prober, ind, pool);
+
+                    if (find_result.isFound())
+                    {
+                        right_row_found = true;
+                        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                            find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows, /*is_last_disjunct=*/true);
+                    }
+                }
+
+                if (!right_row_found)
+                {
+                    if constexpr (join_features.is_anti_join && join_features.left)
+                        setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
+                    addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+                }
+
+                if constexpr (join_features.need_replication)
+                {
+                    added_columns.offsets_to_replicate[i] = current_offset;
+                }
             }
-        }
 
-        if (!right_row_found)
-        {
-            if constexpr (join_features.is_anti_join && join_features.left)
-                setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-            addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
-        }
-
-        if constexpr (join_features.need_replication)
-        {
-            added_columns.offsets_to_replicate[i] = current_offset;
-        }
-    }
-
-    added_columns.applyLazyDefaults();
-    return 0;
+            added_columns.applyLazyDefaults();
+            return 0;
+        });
 }
 
 /// Joins right table columns which indexes are present in right_indexes using specified map.
@@ -807,68 +812,78 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
 
-    /// One handle per clause, each holding that clause's map routing state for the whole block.
-    std::vector<decltype(mapv[0]->prober())> probers;
-    probers.reserve(mapv.size());
-    for (const auto * clause_map : mapv)
-        probers.push_back(clause_map->prober());
-
-    auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
-        [&](size_t k) __attribute__((always_inline))
+    /// Every clause shares the join's bucket count, so one sole/routed choice covers all handles.
+    return mapv[0]->withProber(
+        [&](auto sample_prober) -> size_t
         {
-            if constexpr (can_prefetch)
-                probers[0].prefetch(key_getter_vector[0].getKeyHolder(selectorIndexAt(selector, k), pool));
-        });
+            constexpr bool has_sole = std::remove_cvref_t<decltype(sample_prober)>::is_sole;
+            std::vector<std::remove_cvref_t<decltype(sample_prober)>> probers;
+            probers.reserve(mapv.size());
+            for (const auto * clause_map : mapv)
+                probers.push_back(clause_map->template prober<has_sole>());
 
-    size_t max_joined_rows = added_columns.max_joined_block_rows > 0 ? added_columns.max_joined_block_rows : std::numeric_limits<size_t>::max();
-
-    IColumn::Offset current_offset = 0;
-    size_t i = 0;
-    for (; i < rows && current_offset < max_joined_rows; ++i)
-    {
-        if constexpr (can_prefetch)
-            prefetcher.prefetchAt(i);
-
-        const size_t ind = selectorIndexAt(selector, i);
-
-        bool right_row_found = false;
-        KnownRowsHolder<flag_per_row> known_rows;
-        for (size_t onexpr_idx = 0; onexpr_idx < added_columns.join_on_keys.size(); ++onexpr_idx)
-        {
-            bool skip_row = false;
-            if constexpr (!fast_path)
-                skip_row = skip_datas[onexpr_idx] && skip_datas[onexpr_idx][ind];
-
-            if (!skip_row)
-            {
-                auto find_result = key_getter_vector[onexpr_idx].findKey(probers[onexpr_idx], ind, pool);
-
-                if (find_result.isFound())
+            auto prefetcher = makeJoinPrefetcher(
+                use_prefetch,
+                rows,
+                [&](size_t k) __attribute__((always_inline))
                 {
-                    right_row_found = true;
-                    const bool is_last_disjunct = onexpr_idx + 1 == added_columns.join_on_keys.size();
-                    processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
-                        find_result, added_columns, used_flags, i, ind, current_offset, known_rows, is_last_disjunct);
+                    if constexpr (can_prefetch)
+                        probers[0].prefetch(key_getter_vector[0].getKeyHolder(selectorIndexAt(selector, k), pool));
+                });
 
-                    if constexpr (join_features.is_any_or_semi_join && !(join_features.is_any_join && (join_features.right || join_features.full)))
-                        break;
+            size_t max_joined_rows
+                = added_columns.max_joined_block_rows > 0 ? added_columns.max_joined_block_rows : std::numeric_limits<size_t>::max();
+
+            IColumn::Offset current_offset = 0;
+            size_t i = 0;
+            for (; i < rows && current_offset < max_joined_rows; ++i)
+            {
+                if constexpr (can_prefetch)
+                    prefetcher.prefetchAt(i);
+
+                const size_t ind = selectorIndexAt(selector, i);
+
+                bool right_row_found = false;
+                KnownRowsHolder<flag_per_row> known_rows;
+                for (size_t onexpr_idx = 0; onexpr_idx < added_columns.join_on_keys.size(); ++onexpr_idx)
+                {
+                    bool skip_row = false;
+                    if constexpr (!fast_path)
+                        skip_row = skip_datas[onexpr_idx] && skip_datas[onexpr_idx][ind];
+
+                    if (!skip_row)
+                    {
+                        auto find_result = key_getter_vector[onexpr_idx].findKey(probers[onexpr_idx], ind, pool);
+
+                        if (find_result.isFound())
+                        {
+                            right_row_found = true;
+                            const bool is_last_disjunct = onexpr_idx + 1 == added_columns.join_on_keys.size();
+                            processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate, Map, KeyGetter>(
+                                find_result, added_columns, used_flags, i, ind, current_offset, known_rows, is_last_disjunct);
+
+                            if constexpr (
+                                join_features.is_any_or_semi_join
+                                && !(join_features.is_any_join && (join_features.right || join_features.full)))
+                                break;
+                        }
+                    }
                 }
+
+                if (!right_row_found)
+                {
+                    if constexpr (join_features.is_anti_join && join_features.left)
+                        setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
+                    addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+                }
+
+                if constexpr (join_features.need_replication)
+                    added_columns.offsets_to_replicate.push_back(current_offset);
             }
-        }
 
-        if (!right_row_found)
-        {
-            if constexpr (join_features.is_anti_join && join_features.left)
-                setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-            addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
-        }
-
-        if constexpr (join_features.need_replication)
-            added_columns.offsets_to_replicate.push_back(current_offset);
-    }
-
-    added_columns.applyLazyDefaults();
-    return i;
+            added_columns.applyLazyDefaults();
+            return i;
+        });
 }
 
 template <typename AddedColumns, typename Selector>
@@ -1050,59 +1065,65 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
         if constexpr (can_prefetch)
             use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
 
-        /// One handle per clause, each holding that clause's map routing state for the whole block.
-        std::vector<decltype(mapv[0]->prober())> probers;
-        probers.reserve(mapv.size());
-        for (const auto * clause_map : mapv)
-            probers.push_back(clause_map->prober());
-
-        const size_t selector_size = selector.size();
-        auto prefetcher = makeJoinPrefetcher(use_prefetch, selector_size,
-            [&](size_t k) __attribute__((always_inline))
+        mapv[0]->withProber(
+            [&](auto sample_prober)
             {
-                if constexpr (can_prefetch)
-                    probers[0].prefetch(key_getter_vector[0].getKeyHolder(selector[k], *pool));
-            });
+                constexpr bool has_sole = std::remove_cvref_t<decltype(sample_prober)>::is_sole;
+                std::vector<std::remove_cvref_t<decltype(sample_prober)>> probers;
+                probers.reserve(mapv.size());
+                for (const auto * clause_map : mapv)
+                    probers.push_back(clause_map->template prober<has_sole>());
 
-        for (size_t row_idx = 0; row_idx < selector_size; ++row_idx)
-        {
-            if constexpr (can_prefetch)
-                prefetcher.prefetchAt(row_idx);
+                const size_t selector_size = selector.size();
+                auto prefetcher = makeJoinPrefetcher(
+                    use_prefetch,
+                    selector_size,
+                    [&](size_t k) __attribute__((always_inline))
+                    {
+                        if constexpr (can_prefetch)
+                            probers[0].prefetch(key_getter_vector[0].getKeyHolder(selector[k], *pool));
+                    });
 
-            auto ind = selector[row_idx];
-            KnownRowsHolder<true> all_flag_known_rows;
-            KnownRowsHolder<false> single_flag_know_rows;
-            for (size_t join_clause_idx = 0; join_clause_idx < added_columns.join_on_keys.size(); ++join_clause_idx)
-            {
-                const auto & join_keys = added_columns.join_on_keys[join_clause_idx];
-                if (join_keys.null_map && (*join_keys.null_map)[ind])
-                    continue;
-
-                bool row_acceptable = !join_keys.isRowFiltered(ind);
-                auto find_result
-                    = row_acceptable ? key_getter_vector[join_clause_idx].findKey(probers[join_clause_idx], ind, *pool) : FindResult();
-
-                if (find_result.isFound())
+                for (size_t row_idx = 0; row_idx < selector_size; ++row_idx)
                 {
-                    auto & mapped = find_result.getMapped();
-                    find_results.push_back(find_result);
-                    /// We don't add missing in addFoundRowAll here. we will add it after filter is applied.
-                    /// it's different from `joinRightColumns`.
-                    PreSelectedRows selected_rows_view{selected_rows};
-                    const bool is_last_disjunct = join_clause_idx + 1 == added_columns.join_on_keys.size();
-                    if (flag_per_row)
-                        addFoundRowAll<Map, false, true>(mapped, selected_rows_view, current_added_rows, all_flag_known_rows, nullptr, is_last_disjunct);
-                    else
-                        addFoundRowAll<Map, false, false>(mapped, selected_rows_view, current_added_rows, single_flag_know_rows, nullptr, is_last_disjunct);
+                    if constexpr (can_prefetch)
+                        prefetcher.prefetchAt(row_idx);
+
+                    auto ind = selector[row_idx];
+                    KnownRowsHolder<true> all_flag_known_rows;
+                    KnownRowsHolder<false> single_flag_know_rows;
+                    for (size_t join_clause_idx = 0; join_clause_idx < added_columns.join_on_keys.size(); ++join_clause_idx)
+                    {
+                        const auto & join_keys = added_columns.join_on_keys[join_clause_idx];
+                        if (join_keys.null_map && (*join_keys.null_map)[ind])
+                            continue;
+
+                        bool row_acceptable = !join_keys.isRowFiltered(ind);
+                        auto find_result = row_acceptable ? key_getter_vector[join_clause_idx].findKey(probers[join_clause_idx], ind, *pool)
+                                                          : FindResult();
+
+                        if (find_result.isFound())
+                        {
+                            auto & mapped = find_result.getMapped();
+                            find_results.push_back(find_result);
+                            /// We don't add missing in addFoundRowAll here. we will add it after filter is applied.
+                            /// it's different from `joinRightColumns`.
+                            PreSelectedRows selected_rows_view{selected_rows};
+                            const bool is_last_disjunct = join_clause_idx + 1 == added_columns.join_on_keys.size();
+                            if (flag_per_row)
+                                addFoundRowAll<Map, false, true>(
+                                    mapped, selected_rows_view, current_added_rows, all_flag_known_rows, nullptr, is_last_disjunct);
+                            else
+                                addFoundRowAll<Map, false, false>(
+                                    mapped, selected_rows_view, current_added_rows, single_flag_know_rows, nullptr, is_last_disjunct);
+                        }
+                    }
+                    row_replicate_offset.push_back(current_added_rows);
+
+                    if (current_added_rows >= max_joined_rows)
+                        break;
                 }
-
-            }
-            row_replicate_offset.push_back(current_added_rows);
-
-
-            if (current_added_rows >= max_joined_rows)
-                break;
-        }
+            });
 
         if (selected_rows.size() != current_added_rows)
             throw Exception(
