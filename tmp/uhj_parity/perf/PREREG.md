@@ -71,6 +71,10 @@ apart).
 
 ### P0.2 Prediction — inherited LEAD (1) points the wrong way
 
+> **SUPERSEDED by P0.2R below.** The sub-table counts in this entry are wrong
+> (4096 counts empty bucket *objects*, not populated partitions). The entry is
+> kept unedited because it is a pre-registration; the corrected version follows.
+
 Inherited LEAD (1) says the 16-thread build CPU excess is `unified_hash`'s
 "per-bucket sub-table cache footprint at `BUCKETS_PER_THREAD = 2`". From E1 I have
 already established from code, before measuring, that at 16 threads
@@ -87,6 +91,54 @@ are per-operation costs that a sharded map does not pay at all:
 than the noise band in the direction LEAD (1) predicts, while a lock-removal
 ablation does not. That is the discriminating probe, and it belongs to Unit 1 —
 recorded here only so the prediction predates the evidence.
+
+### P0.2R Prediction (CORRECTED) — LEAD (1) may be real with the OPPOSITE sign
+
+Registered after the requester rejected P0.2's arithmetic and before any
+measurement. Correction derived and evidenced in WORKLOG E3.
+
+`ConcurrentHashJoin.cpp:589` sets a row's shard from the bucket it will land in
+(`getBucketFromHash(hash) & (num_shards - 1)`), so each of the 256 bucket indices
+is owned by exactly one shard and only **256** sub-tables are ever populated. The
+4096 figure counted empty bucket objects. Populated partitions:
+
+| max_threads | `unified_hash` | `parallel_hash` |
+| --- | --- | --- |
+| 16 | 32 | 256 |
+| 64 | 128 | 256 |
+
+`unified_hash` therefore splits the same rows into **8x fewer** partitions at 16
+threads, making each of its sub-tables **8x larger**. Revised prediction:
+
+- LEAD (1) **as worded** ("too many sub-tables to miss the cache on") is still
+  expected **REFUTED**: `unified_hash` has fewer, not more.
+- But a sub-table cache effect may be real with the **opposite sign** — too *few*
+  buckets, each too large to stay cache-resident during its insert window.
+- **Discriminating probe, prediction registered before it runs:** sweep
+  `BUCKETS_PER_THREAD` upward (2 -> 8 -> 32). If the "too few, too large" mechanism
+  is real, the 16-thread build CPU gap **shrinks monotonically** as the count
+  rises. If LEAD (1) as worded were right, the gap would **grow**. If neither, the
+  gap is flat and the cause is per-operation (lock / offset), not footprint.
+  Those three outcomes are mutually exclusive, which is what makes this a
+  discriminating probe rather than a confirmation.
+
+### P0.7 Prediction — the direct-addressed conversion is a `unified_hash` WIN
+
+Registered before measurement, from WORKLOG E4. `canConvertToFixedHashMap`
+(`UnifiedHashJoin/HashJoin.cpp:2077-2081`) requires `key32`/`key64`, which
+`parallel_hash` can never satisfy, while `unified_hash` converts at any thread
+count. I predict the `dense` cells at 16/64 threads show `unified_hash`
+**faster** than `parallel_hash` by a large, beyond-noise margin on probe.
+
+**Refuted if** `unified_hash` is at parity or slower there — which would mean the
+conversion either does not fire or does not pay, and the harness assertion that
+conversion fired is what tells those apart.
+
+This axis exists because the dense-key range would otherwise have fired the
+conversion silently inside the `small` cells and turned a quarter of the matrix
+into an array-lookup comparison labelled as a hash-join comparison. The other
+cardinalities now use keys spread over the whole `UInt64` range so the conversion
+cannot fire, and the harness asserts per cell that it did not.
 
 ### P0.3 Gate invocations (the harness must make each of these runnable)
 
