@@ -197,3 +197,67 @@ produced by a binary that predates commit `5362055b4ed`, which changes
 ## Results appended below after each gate runs
 
 (none yet — no gate has been run at the time of writing)
+
+---
+
+## P1 — Unit 1: attribution
+
+Registered **before** any ablation patch exists and before the full deficit map was
+read. The candidate list comes from the code inventory
+(`artifacts/CANDIDATE_INVENTORY.md`), whose claims are LEADS, not evidence.
+
+Which cells get attributed is decided by Gate G0.7, not by this list. If a
+candidate's cell turns out not to be slower, the candidate is not investigated and
+that is recorded — hunting a cause for a gap that does not exist is the failure
+mode this ordering prevents.
+
+### P1.0 Method, fixed now
+
+- Every claim carries a G1.1 codegen artifact **unconditionally**, whatever its
+  verdict.
+- Every ablation is predicted (direction + rough magnitude) here **before** it is
+  built and run.
+- A null result is VOID unless a codegen diff confirms the targeted instructions
+  actually left the binary (G1.4). An unvalidated null is never evidence that an
+  operation is cheap.
+- Ablation binaries are built into a **separate build directory** so the pristine
+  `build/reldeb` binary stays available as the unmodified side of every
+  before/after codegen diff, and so no ablation can leak into the delivered tree.
+- `llvm-mca` is **not available** on this host (`llvm-objdump`/`llvm-nm` v22 are).
+  Throughput analysis of loop bodies is therefore out of reach; instruction counts,
+  loads/stores, branch and spill density, and inlining decisions are all still
+  available and are what the gate actually requires. Recorded as a tooling
+  limitation, not silently skipped.
+
+### P1.1 Candidate operations and their pre-registered predictions
+
+| # | Operation | Phase | Multiplicity | Prediction | Refuted if |
+| --- | --- | --- | --- | --- | --- |
+| C1 | per-bucket **mutex acquire/release** in `insertIntoBuckets` (`UnifiedHashJoin/HashJoin.cpp:187,207`); no counterpart in `hash`, ~`slots` per block in `parallel_hash` | BUILD | per bucket per block per clause (32/block at 16t, 128/block at 64t) | removing the lock loop shrinks the 16/64t build gap **beyond the noise band** | gap unmoved *and* codegen confirms the lock is gone -> REFUTED, cost is elsewhere |
+| C2 | **bucket-count trade** via `BUCKETS_PER_THREAD` (2 -> 8 -> 32) | BUILD | once per join, per-row consequences | the three-way outcome discriminates: gap **shrinks** monotonically => UHJ's sub-tables are too few/too large; gap **grows** => inherited LEAD (1) as worded; gap **flat** => cause is per-operation, not footprint | any outcome is informative; this probe cannot fail, only decide |
+| C3 | per-row **bucket routing** in `Prober::find` + the `prefix[bucket]` load (`TwoLevelHashTable.h:554-563`) | PROBE | per row | at `max_threads=1` UHJ takes the `sole` short-circuit, so this costs ~0 and the 1-thread probe gap is **not** explained by routing | a 1-thread probe gap that survives the `sole` path means routing is not the mechanism |
+| C4 | **`use_offset` asymmetry**: baseline hardcodes `use_offset = true` (`HashJoin/KeyGetter.h:19`) so `parallel_hash` pays a re-hash + `std::call_once` per matched row; UHJ computes no offset for INNER/LEFT | PROBE | per matched row | this is a UHJ **advantage** and explains a large part of why UHJ is *faster* at 16/64t on INNER. Grafting `use_offset=false` into the baseline should **erase most of UHJ's probe lead** | if the baseline gets no faster, UHJ's probe lead is elsewhere |
+| C5 | per-cell `offsetInternal` + `std::call_once` in the **non-joined scan** (`UnifiedHashJoin/HashJoin.cpp:1515`) | POST-JOIN | per populated cell | RIGHT/FULL low-match at 16/64t is UHJ's worst shape; swapping to the unsafe variant closes a beyond-noise part of it | gap unmoved with codegen confirming removal -> REFUTED |
+| C6 | `per_offset_flags` **sized from summed bucket capacities** (`P7`), wider and sparser than the baseline's | PROBE + POST-JOIN | per matched row (cache) | shows as raised `LLC-load-misses`/row with flat-or-lower IPC, not as raised instructions/row | counters showing raised instructions at flat cache behaviour contradict the layout story -> REFUTED or downgraded |
+| C7 | per-block **bucket scatter** (2 row passes + `num_buckets` index-column allocations) | BUILD | per block per clause | contributes to the 64t build gap more than the 16t one, since allocations scale with `num_buckets` | flat across thread counts => not allocation-driven |
+
+C1, C4, C5 are ablatable in isolation. C3, C6 are **not** (they are the
+partitioning and its consequence) and are expected to route to SUPPORTED via
+G1.1 + G1.3 rather than to CONFIRMED. C2 is a knob sweep, not an ablation, and its
+result bounds rather than removes.
+
+### P1.2 Prediction about the shape of the answer
+
+From the pilot slice (INNER|u64|hi), `unified_hash` was at parity at 1 thread and
+**faster** at 16 and 64 threads. I therefore predict, before reading the full map,
+that the deficit is **not** general, and that the attribution table will be
+dominated by RIGHT/FULL non-joined shapes rather than by build or probe of INNER.
+
+**Refuted if** the full sweep shows broad slowness across INNER/LEFT at 16/64
+threads, which would mean the pilot slice was unrepresentative and C4's advantage
+does not generalise.
+
+If the deficit genuinely does not reproduce in most cells, the honest deliverable
+is a deficit map that says so plus attribution of the cells where it does — not a
+manufactured gap. That outcome is explicitly acceptable and is recorded here in
+advance so it cannot later be dressed up as a disappointment or padded out.
