@@ -836,3 +836,86 @@ controls the fraction of *probe* rows that match, which is not the same as the
 fraction of *build* keys that go unmatched — those coincide only when the probe is
 not much larger than the build. Recorded as a declared gap; closing it needs a
 probe-rows-per-build-key knob, which is a harness change, not a re-measurement.
+
+---
+
+## E10 — ABLATION A1 RAN. Prediction MISSED. Claim A1 is REFUTED.
+
+`python3 tmp/uhj_parity/perf/ablate_a1.py` (log `logs/ablate_a1.log`,
+raw `results/ablate_a1.jsonl`, `JOB_EXIT=0`). 4 arms x 6 cells x 7 interleaved reps.
+
+### A1-d — the ablation demonstrably took effect (so a null is interpretable)
+
+```
+cell                          algo           pnj  NonJoined?   JoiningTransform out_rows
+FULL|u64|hi|t1|medium         unified_hash     1        True             3,800,000
+FULL|u64|hi|t1|medium         unified_hash     0       False             3,885,728
+FULL|u64|hi|t1|medium         hash             1       False             3,885,728
+```
+
+`NonJoinedBlocksTransform` disappears and `JoiningTransform`'s output rises by
+exactly 85,728 — the non-joined row count — landing on precisely the baseline's
+number. The operation was removed, not merely re-labelled. **A1-d PASS**, so this
+null is a G1.4-valid REFUTATION, not a VOID one.
+
+### A1-a — the prediction was WRONG
+
+Predicted: the 1-thread deficit shrinks into the noise band. Measured:
+
+| cell | metric | gap before | gap after | band |
+| --- | --- | --- | --- | --- |
+| `FULL\|u64\|hi\|t1\|medium` | wall | +12.2% | **+9.9%** | 5.0% |
+| `RIGHT\|u64\|hi\|t1\|medium` | wall | +10.3% | **+11.1%** | 5.0% |
+| `RIGHT\|u64\|hi\|t1\|small` | wall | +7.8% | **+7.8%** | 5.0% |
+| `FULL\|u64\|hi\|t1\|small` | wall | +8.9% | **+7.1%** | 5.0% |
+
+Removing the separate scan closes **at most 2.3 percentage points of a 12.2 point
+gap**, and on one cell the gap got slightly *worse*. Every cell stays far outside
+the band.
+
+**Claim A1 — "the separate non-joined scan causes the 1-thread deficit" — is
+REFUTED.** It is a real extra operation and it really costs 14,888 us, but that
+cost is evidently paid back elsewhere: `hash` doing the same emission inline
+costs almost the same. I recorded 13.8%-of-phase for it in an earlier draft of
+REPORT.md; that number was a share of a phase, never an ablation result, and
+attributing the gap to it would have been exactly the banned move of presenting a
+phase share as a measured cause. The ablation is what caught it.
+
+### Where the gap actually is
+
+With the transform removed on **both** sides (`pnj=0`), so the two run the same
+pipeline shape:
+
+| cell | build delta | **probe delta** |
+| --- | --- | --- |
+| `FULL\|u64\|hi\|t1\|medium` | +3.1% | **+12.1%** |
+| `RIGHT\|u64\|hi\|t1\|medium` | +4.4% | **+14.0%** |
+| `RIGHT\|u64\|hi\|t1\|small` | +4.2% | **+8.1%** |
+
+The 1-thread deficit is in the **probe**, and combined with the kind gradient
+(INNER +0.64% and no flags; RIGHT/FULL/SEMI/ANTI +5-11% and flags) the target is
+now sharp: **the per-matched-row used-flag maintenance** —
+`offsetInternal` followed by `setUsed` — on a partitioned map versus a flat one.
+
+That is inherited LEAD (2)'s mechanism, but relocated: not the non-joined scan at
+16 threads, but the probe-path flag maintenance at 1 thread. Registered as claim
+**A6**. It is sharpened by a puzzle worth stating: at 1 thread `num_buckets == 1`,
+so `Prober` takes the `sole` short-circuit and routing should be free. Either the
+`sole` path is not as free as it reads, or the cost is in the flag array's
+layout rather than in the lookup. Those are distinguishable, and the codegen
+artifact plus `perf stat` counters are what distinguish them.
+
+### A1-c — confounded as designed, but it revealed something bigger
+
+The control moved: `parallel_hash` responds to `parallel_non_joined_rows_processing`
+too (`ConcurrentHashJoin` overrides `supportParallelNonJoinedBlocksProcessing`;
+only plain `hash` leaves the `IJoin` default of false). So the 16/64-thread arm is
+confounded and no UHJ-vs-PH conclusion is drawn from it.
+
+What it does show, for both implementations alike: turning the parallel non-joined
+path **off** costs roughly **5-6x wall** at 16 and 64 threads
+(`RIGHT|u64|lo|t16|large` 392 ms -> ~2,143 ms for `parallel_hash`, 360 ms ->
+2,087 ms for `unified_hash`). That is an OPERATIONAL observation about the
+setting, not an attribution, and it is why commit `5362055b4ed` giving
+`unified_hash` this path plausibly erased the snapshot's 16-thread RIGHT deficit
+(Gate G0.4).

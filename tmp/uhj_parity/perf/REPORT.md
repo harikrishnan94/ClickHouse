@@ -13,7 +13,7 @@ Server: `127.0.0.1:9111`, started by `tmp/uhj_parity/perf/start_server.sh`
 | Unit | Verdict |
 | --- | --- |
 | **Unit 0 — the measurement instrument** | **GREEN on 5 of 6 gates; G0.4 RED** (see §5). The deficit map is complete: 144/144 cells measured or SKIPPED with a reason. |
-| **Unit 1 — attribution** | **PARTIAL / NOT DONE.** One claim carries a measured phase cost; no ablation has been built or run, so **no claim reaches CONFIRMED**. See §4 and §7. |
+| **Unit 1 — attribution** | **PARTIAL.** One pre-registered ablation ran and **refuted** its claim; the cost is now localised to the probe phase but **not attributed**. No claim reaches CONFIRMED; the residual is 100%. See §3 and §7. |
 
 ### The headline, stated plainly
 
@@ -163,21 +163,39 @@ Zero silently-missing cells (`gates.py g06`: 144 declared, 144 covered, 0 missin
 
 ### 3.1 Ranked claims
 
-**No claim is CONFIRMED.** No ablation has been built or run. Claim A1 has a
-measured phase cost and a localised mechanism; the rest are LEADs from the code
-inventory with no measurement of their own.
+**No claim is CONFIRMED.** One ablation was run and it **refuted** the claim it
+tested. The rest are LEADs from the code inventory with no measurement of their
+own.
+
+The refutation is the most useful thing in this table. Claim A1 said the separate
+non-joined scan caused the 1-thread deficit; it has a real 14,888 us cost and a
+clean mechanism, and it is wrong. Removing the operation — verified structurally
+gone, so the null is G1.4-valid — closed at most 2.3 of 12.2 percentage points.
+An earlier draft of this report recorded A1's "13.8% of phase"; that was a phase
+share, never an ablation result, and quoting it as a cause would have been exactly
+the move the brief bans. It is struck.
 
 | # | Operation | Which impl | Sub-phase / cell | Cost | Ablation | Codegen | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **A1** | **A separate full scan of the hash table to emit non-joined rows.** `unified_hash` runs `NonJoinedBlocksTransform`, testing each cell with `map.offsetInternal(it.getPtr())` then `parent.isUsed(offset)`. At 1 thread `hash` has no such pass — it emits the same rows inline from `JoiningTransform`. | in UHJ; effectively absent in `hash` at 1 thread | post-join, `FULL\|u64\|hi\|t1\|medium` | **14,888 us of a 108,055 us probe+non-joined phase = 13.8%**; cell wall +9.7% | **not run** | `codegen/N1_nonjoined_scan.md` | **UNSETTLED** |
+| **A6** | **Per-matched-row used-flag maintenance** — `offsetInternal` then `setUsed` — on `unified_hash`'s partitioned map versus `hash`'s flat one. Present for every kind that needs flags (RIGHT/FULL/SEMI/ANTI); absent for INNER, which is at parity. | differs in kind (partitioned vs flat addressing) | **probe**, 1 thread | probe **+8.1% to +14.0%** with the pipeline shape equalised; cell wall +7.1% to +11.1% | not run | not yet produced | **UNSETTLED** (localised, not attributed) |
+| ~~A1~~ | ~~A separate full scan of the hash table to emit non-joined rows~~ (`NonJoinedBlocksTransform` in UHJ; `hash` emits inline from `JoiningTransform` at 1 thread) | in UHJ only | post-join, `FULL\|u64\|hi\|t1\|medium` | real operation costing 14,888 us, but **it does not cause the gap** | **RAN.** Removing it closes at most **2.3 of 12.2** percentage points; one cell got worse. Structural check A1-d PASS, so the null is valid. | `codegen/N1_nonjoined_scan.md` | **REFUTED** |
 | A2 | 64-thread composite-key **build** CPU excess | UHJ vs `parallel_hash` | build, 5 `comp\|t64\|large` cells | build CPU **+21% to +38%**, cell CPU +5.9% to +18.5%, wall **-15% to -37%** | not run | not produced | **UNSETTLED** |
 | A3 | per-bucket **mutex acquire/release** in `insertIntoBuckets` (`HashJoin.cpp:187,207`); no counterpart in `hash` | UHJ only | build | not measured | not run | not produced | **UNSETTLED (LEAD)** |
 | A4 | per-row bucket routing + `prefix[bucket]` load in `Prober::find` (`TwoLevelHashTable.h:554-563`) | UHJ | probe | not measured; expected ~0 at 1 thread (the `sole` short-circuit) | not run | not produced | **UNSETTLED (LEAD)** |
 | A5 | `per_offset_flags` sized from **summed** bucket capacities, wider and sparser than the baseline's | UHJ | probe + post-join | not measured | infeasible in isolation (consequence of the map layout) | not produced | **UNSETTLED (LEAD)** |
 
-A1's 13.8% is a **measured share of a measured phase**, from the Unit 0
-denominator for that cell. It is *not* an ablation result, so it does not reach
-CONFIRMED: nothing has yet shown that removing the operation closes the gap.
+A6's probe deltas are measured with the pipeline shape **equalised on both sides**
+(`parallel_non_joined_rows_processing=0`), so they are not an artefact of the
+processor split. They localise the cost; they do not attribute it, because no
+ablation has isolated the flag maintenance itself.
+
+The sharp version of the open question: at 1 thread `bucketCountForThreads(1) = 1`,
+so `Prober` takes the `sole` short-circuit and bucket routing should cost nothing.
+Either that path is not as free as it reads, or the cost is in the used-flag
+array's layout rather than the lookup. Those two are distinguishable — an
+instruction-count cause raises `instructions`/row at flat IPC, a layout cause
+raises `LLC-load-misses`/row and drops IPC — which is exactly what G1.3's counters
+would settle, and they have not been gathered.
 
 ### 3.2 A phase comparison that was invalid, and the fix
 
