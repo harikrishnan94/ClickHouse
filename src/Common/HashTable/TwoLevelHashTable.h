@@ -911,6 +911,28 @@ public:
             return impls.offsetInternal(ptr, getBucketFromHash(bucketRoutingHash(ptr->getKey(), ptr->getHash(*this))));
     }
 
+    /// Offset for a cell reached by ITERATION, which already knows which bucket it is in.
+    ///
+    /// `offsetInternal(ptr)` above has to recover the bucket from the cell, and that costs a re-hash
+    /// of the key on every call - dead work for an iterator, which was handed the bucket to begin
+    /// with. It also pays the "are the prefix sums computed yet" check per call. A full-table scan
+    /// (the RIGHT/FULL non-joined pass) does both per populated cell, so both are worth skipping.
+    ///
+    /// The bucket passed here is an ITERATION bucket. For the storages whose buckets own their
+    /// cells that is the same thing as the bucket partition (`iterationBuckets() == bucketCount()`),
+    /// and for the direct-addressed storage there is one iteration partition and the offset comes
+    /// from the pointer alone, so the argument is unused.
+    ///
+    /// Precondition, same as `offsetInternalUnsafe`: `computeBucketPrefix()` has been called since
+    /// the last change to any bucket's capacity.
+    size_t ALWAYS_INLINE offsetInternalAtBucket(ConstLookupResult ptr, size_t iteration_bucket) const
+    {
+        if constexpr (isFixedRangeStorage())
+            return impls.offsetInternalUnsafe(ptr);
+        else
+            return impls.offsetInternalUnsafe(ptr, iteration_bucket);
+    }
+
     /// Precondition: `computeBucketPrefix()` has been called since the last change to any
     /// bucket's capacity. See `computeBucketPrefix()`.
     size_t offsetInternalUnsafe(ConstLookupResult ptr) const

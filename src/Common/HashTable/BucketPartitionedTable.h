@@ -56,6 +56,11 @@ concept BucketPartitionedTable = requires(
     /// 0 for an empty one. `HashJoin` indexes its per-row RIGHT/FULL used flags by it.
     { const_map.offsetInternal(const_lookup) } -> std::convertible_to<size_t>;
 
+    /// The same offset for a cell reached by iteration, which knows its bucket and so needs neither
+    /// the re-hash `offsetInternal` uses to recover it nor the per-call "prefix sums ready" check.
+    /// Requires `computeBucketPrefix()` to have run; see `TwoLevelHashTable`.
+    { const_map.offsetInternalAtBucket(const_lookup, size_t{}) } -> std::convertible_to<size_t>;
+
     /// Sizing. `getBufferSizeInCells()` bounds `offsetInternal`, so the two must agree.
     { const_map.size() } -> std::convertible_to<size_t>;
     { const_map.empty() } -> std::same_as<bool>;
