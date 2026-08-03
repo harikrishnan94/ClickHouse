@@ -1,0 +1,59 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : N1/N3/N4/N7 fillColumns
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x142a4740 size=2640
+  unsigned long DB::NotJoinedHash::fillColumns<TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>>(TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8> const&, std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&)
+UNIFIED   0x165e81c0 size=2536
+  unsigned long DB::Unified::NotJoinedHash::fillColumns<TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>>(TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1> const&, std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_ptr<DB::IColumn>>>&)
+
+instructions: baseline 660  unified 634  delta -26
+call/branch targets Unified-normalised: baseline 46, unified 46
+call/branch targets reached via a linker range thunk (followed): baseline 22, unified 23
+identical after normalisation: NO
+differing positions: 580 of 660
+  of which branch/call with a genuinely different target: 15 -> indices [220, 345, 434, 569, 580, 582, 585, 587, 597, 602]
+  of which branch/call differing only in ICF alias naming: 17
+  opcode histogram delta (unified - baseline), largest first:
+    add          -19   (baseline 73, unified 54)
+    nop          -18   (baseline 74, unified 56)
+    b.ne         -11   (baseline 22, unified 11)
+    b.hs         +8   (baseline 4, unified 12)
+    b.eq         +7   (baseline 11, unified 18)
+    bl           +6   (baseline 43, unified 49)
+    ldr          +6   (baseline 75, unified 81)
+    ldp          +6   (baseline 21, unified 27)
+    stp          +5   (baseline 19, unified 24)
+    stur         -5   (baseline 10, unified 5)
+    cbnz         -5   (baseline 9, unified 4)
+    ldrb         -5   (baseline 13, unified 8)
+    sub          +4   (baseline 32, unified 36)
+    str          +4   (baseline 19, unified 23)
+    b            -3   (baseline 18, unified 15)
+  callee multiset: 61 baseline calls to 17 targets, 64 unified calls to 16 targets; 2 targets baseline-only, 3 unified-only
+    BASELINE-ONLY callee x3: SELF
+    BASELINE-ONLY callee x1: std::__1::__call_once(unsigned long volatile&, void*, void (*)(void*))
+    UNIFIED-ONLY callee x3: TwoLevelHashTable<unsigned long, HashMapCell<unsigned long, DB::RowRef, HashCRC32<unsigned long
+    UNIFIED-ONLY callee x2: DB::QuantileLevels<double
+    UNIFIED-ONLY callee x2: _Unwind_Resume
+  aligned edit script: 225 instructions identical and in the same relative order, 330 replaced, 168 inserted by unified, 242 only in baseline
+       636  insert/delete
+        60  immediate or field offset only
+        33  different opcode
+        11  same opcode, different operands
+
+  first 6 aligned differences that are not just an immediate/offset (33 such):
+    [  80] base    ldr x8, [x8, #0xc0]
+           unified str x28, [sp]
+    [  93] base    mov x9, xzr
+           unified stur xzr, [x29, #-0x20]
+    [  96] base    add x10, x22, x8
+           unified nop
+    [  97] base    mov x19, x9
+           unified nop
+    [  98] base    ldr x11, [x10, #0x58]
+           unified sub x10, x8, x10
+    [  99] base    cbnz x11, <SELF+0x38c>
+           unified add x10, x10, x11
+
+listings: codegen/xtree/N1_N7.txt

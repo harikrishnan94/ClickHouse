@@ -1,0 +1,681 @@
+# BASELINE void DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList>>::insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodOneNumber<PairNoInit<unsigned long, DB::RowRefList>, DB::RowRefList, unsigned long, false, true, false>, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>, DB::ColumnVector<unsigned long>>(DB::HashJoin&, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>, HashMapTable, 8>&, std::__1::vector<DB::IColumn const*, std::__1::allocator<DB::IColumn const*>> const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, unsigned int, DB::ColumnVector<unsigned long> const&, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul> const*, DB::JoinCommon::JoinMask const&, DB::Arena&, bool&, bool&)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0xd0
+    9 stp x29, x30, [sp, #0x70]
+   10 stp x28, x27, [sp, #0x80]
+   11 stp x26, x25, [sp, #0x90]
+   12 stp x24, x23, [sp, #0xa0]
+   13 stp x22, x21, [sp, #0xb0]
+   14 stp x20, x19, [sp, #0xc0]
+   15 add x29, sp, #0x70
+   16 ldp x8, x9, [x2]
+   17 stp x7, x5, [x29, #-0x20]
+   18 str w4, [sp, #0x34]
+   19 stp xzr, xzr, [x29, #-0x10]
+   20 cmp x9, x8
+   21 b.eq <SELF+0x46c>
+   22 mov x24, x0
+   23 ldr x0, [x8]
+   24 mov x20, x6
+   25 mov x27, x1
+   26 ldr x8, [x0]
+   27 ldr x8, [x8, #0x388]
+   28 blr x8
+   29 stur x0, [x29, #-0x28]
+   30 ldr x9, [x29, #0x68]
+   31 mov w8, #0x1
+   32 str x9, [sp, #0x38]
+   33 strb w8, [x9]
+   34 ldur x9, [x29, #-0x18]
+   35 ldrb w8, [x24, #0x2ab]
+   36 ldp x22, x19, [x9, #0x10]
+   37 cmp w8, #0x1
+   38 b.ne <SELF+0xf8>
+   39 mov x8, xzr
+   40 mov x9, xzr
+   41 add x10, x27, #0x100
+   42 mov w11, #0x100
+   43 mov w12, #0x10
+   44 nop
+   45 nop
+   46 nop
+   47 nop
+   48 ldurb w13, [x10, #-0x80]
+   49 ldrb w14, [x10]
+   50 subs x11, x11, #0x2
+   51 add x10, x10, #0x100
+   52 lsl x13, x12, x13
+   53 lsl x14, x12, x14
+   54 add x8, x13, x8
+   55 add x9, x14, x9
+   56 b.ne <SELF+0xc0>
+   57 add x21, x9, x8
+   58 bl <DB::getMinBytesForPrefetchInJoin()>
+   59 cmp x21, x0
+   60 cset w24, hi
+   61 b <SELF+0xfc>
+   62 mov w24, wzr
+   63 sub x1, x29, #0x10
+   64 mov w0, #0x4
+   65 stp xzr, xzr, [x29, #-0x10]
+   66 bl <clock_gettime>
+   67 cbnz w0, <SELF+0x480>
+   68 sub x8, x19, x22
+   69 lsr x22, x8, #3
+   70 cbz x22, <SELF+0x420>
+   71 ldr x10, [x29, #0x60]
+   72 ldr x9, [x29, #0x70]
+   73 mov x25, xzr
+   74 add x11, x27, #0x40
+   75 mov w19, #0x4
+   76 str x10, [sp, #0x10]
+   77 ldp x8, x10, [x29, #-0x10]
+   78 str x9, [sp, #0x28]
+   79 mov w9, #0xca00
+   80 movk w9, #0x3b9a, lsl #16
+   81 stur x11, [x29, #-0x30]
+   82 madd x11, x8, x9, x10
+   83 ldr w9, [sp, #0x34]
+   84 mov w10, w9
+   85 orr w9, w9, #ADDR
+   86 mov x8, #-ADDR
+   87 orr x8, x8, x10, lsl #32
+   88 stp x8, x11, [sp, #0x18]
+   89 lsl x8, x9, #32
+   90 stp x10, x8, [sp]
+   91 b <SELF+0x198>
+   92 nop
+   93 nop
+   94 nop
+   95 nop
+   96 ldr x8, [sp, #0x38]
+   97 mov w9, #0x1
+   98 strb w9, [x8]
+   99 add x25, x25, #0x1
+  100 cmp x25, x22
+  101 b.eq <SELF+0x420>
+  102 tbz w24, #0x0, <SELF+0x1e0>
+  103 cmp x25, #0x64
+  104 b.eq <SELF+0x200>
+  105 ldur x8, [x29, #-0x18]
+  106 add x9, x19, x25
+  107 cmp x9, x22
+  108 ldr x8, [x8, #0x10]
+  109 b.lo <SELF+0x250>
+  110 ldr x27, [x8, x25, lsl #3]
+  111 cbnz x20, <SELF+0x28c>
+  112 b <SELF+0x298>
+  113 nop
+  114 nop
+  115 nop
+  116 nop
+  117 nop
+  118 nop
+  119 nop
+  120 ldur x8, [x29, #-0x18]
+  121 ldr x8, [x8, #0x10]
+  122 ldr x27, [x8, x25, lsl #3]
+  123 cbnz x20, <SELF+0x28c>
+  124 b <SELF+0x298>
+  125 nop
+  126 nop
+  127 nop
+  128 ldr x19, [sp, #0x20]
+  129 mov w1, #0x4
+  130 mov x0, x19
+  131 bl <clock_gettime_ns_adjusted(unsigned long, int)>
+  132 subs x8, x0, x19
+  133 b.eq <SELF+0x3c8>
+  134 mov w9, #0x9c3f
+  135 add x9, x8, x9
+  136 udiv x8, x9, x8
+  137 mov w9, #0x4
+  138 cmp x8, #0x4
+  139 csel x8, x8, x9, hi
+  140 mov w9, #0x20
+  141 cmp x8, #0x20
+  142 csel x19, x8, x9, lo
+  143 ldur x8, [x29, #-0x18]
+  144 add x9, x19, x25
+  145 cmp x9, x22
+  146 ldr x8, [x8, #0x10]
+  147 b.hs <SELF+0x1b8>
+  148 ldp x11, x10, [x29, #-0x30]
+  149 ldr x9, [x8, x9, lsl #3]
+  150 ldr x9, [x10, x9, lsl #3]
+  151 mov w10, #-0x1
+  152 crc32cx w9, w10, x9
+  153 lsr x10, x9, #17
+  154 and x10, x10, #0x7f80
+  155 add x10, x11, x10
+  156 ldr x11, [x10, #0x48]
+  157 ldr x10, [x10, #0x20]
+  158 and x9, x11, x9
+  159 lsl x9, x9, #4
+  160 prfm pldl1keep, [x10, x9]
+  161 ldr x27, [x8, x25, lsl #3]
+  162 cbz x20, <SELF+0x298>
+  163 ldr x8, [x20]
+  164 ldrb w8, [x8, x27]
+  165 cbnz w8, <SELF+0x180>
+  166 ldur x8, [x29, #-0x20]
+  167 ldr w8, [x8, #0x10]
+  168 cmp w8, #0x1
+  169 b.eq <SELF+0x18c>
+  170 cmp w8, #0x2
+  171 b.ne <SELF+0x2c4>
+  172 ldur x8, [x29, #-0x20]
+  173 ldr x8, [x8]
+  174 ldr x8, [x8, #0x10]
+  175 ldrb w8, [x8, x27]
+  176 cbz w8, <SELF+0x18c>
+  177 ldp x9, x8, [x29, #-0x30]
+  178 ldr x26, [x8, x27, lsl #3]
+  179 mov w8, #-0x1
+  180 crc32cx w23, w8, x26
+  181 lsr x8, x23, #17
+  182 and x8, x8, #0x7f80
+  183 add x28, x9, x8
+  184 cbz x26, <SELF+0x3a0>
+  185 ldr x9, [x28, #0x48]
+  186 ldr x8, [x28, #0x20]
+  187 and x21, x9, x23
+  188 lsl x10, x21, #4
+  189 ldr x10, [x8, x10]
+  190 cbz x10, <SELF+0x31c>
+  191 nop
+  192 cmp x10, x26
+  193 b.eq <SELF+0x364>
+  194 add x10, x21, #0x1
+  195 and x21, x10, x9
+  196 lsl x10, x21, #4
+  197 ldr x10, [x8, x10]
+  198 cbnz x10, <SELF+0x300>
+  199 add x8, x8, x21, lsl #4
+  200 stp x26, xzr, [x8]
+  201 ldr x9, [x28, #0x18]
+  202 ldr x10, [x28, #0x50]
+  203 add x9, x9, #0x1
+  204 cmp x9, x10
+  205 str x9, [x28, #0x18]
+  206 b.hi <SELF+0x3e4>
+  207 ldr w9, [sp, #0x34]
+  208 str xzr, [x8, #0x8]
+  209 tbnz w9, #0x1f, <SELF+0x460>
+  210 lsr x9, x27, #32
+  211 cbnz x9, <SELF+0x460>
+  212 ldr x9, [sp, #0x18]
+  213 orr x9, x27, x9
+  214 str x9, [x8, #0x8]
+  215 mov w8, #0x1
+  216 b <SELF+0x38c>
+  217 add x8, x8, x21, lsl #4
+  218 ldr w9, [sp, #0x34]
+  219 tbnz w9, #0x1f, <SELF+0x460>
+  220 lsr x9, x27, #32
+  221 cbnz x9, <SELF+0x460>
+  222 add x0, x8, #0x8
+  223 ldp x8, x2, [sp, #0x8]
+  224 orr x1, x27, x8
+  225 bl <DB::RowRefList::insert(unsigned long, DB::Arena&)>
+  226 mov w8, wzr
+  227 ldr x10, [sp, #0x28]
+  228 ldrb w9, [x10]
+  229 and w8, w8, w9
+  230 strb w8, [x10]
+  231 b <SELF+0x18c>
+  232 mov x8, x28
+  233 ldrb w9, [x8], #0x8
+  234 tbnz w9, #0x0, <SELF+0x368>
+  235 ldr x9, [x28, #0x18]
+  236 mov w10, #0x1
+  237 stp xzr, xzr, [x8]
+  238 strb w10, [x28]
+  239 add x9, x9, #0x1
+  240 str x9, [x28, #0x18]
+  241 b <SELF+0x33c>
+  242 mov w19, #0x20
+  243 ldur x8, [x29, #-0x18]
+  244 add x9, x19, x25
+  245 cmp x9, x22
+  246 ldr x8, [x8, #0x10]
+  247 b.hs <SELF+0x1b8>
+  248 b <SELF+0x250>
+  249 mov x0, x28
+  250 mov x1, xzr
+  251 mov x2, xzr
+  252 bl <HashTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, TwoLevelHashTableGrower<8ul>, Allocator<true, true>>::resize(unsigned long, unsigned long)>
+  253 ldr x9, [x28, #0x48]
+  254 ldr x8, [x28, #0x20]
+  255 and x10, x23, x9
+  256 lsl x11, x10, #4
+  257 add x23, x10, #0x1
+  258 ldr x11, [x8, x11]
+  259 cmp x11, #0x0
+  260 ccmp x11, x26, #0x4, ne
+  261 b.ne <SELF+0x3fc>
+  262 add x8, x8, x10, lsl #4
+  263 b <SELF+0x33c>
+  264 ldp x20, x19, [sp, #0xc0]
+  265 ldp x22, x21, [sp, #0xb0]
+  266 ldp x24, x23, [sp, #0xa0]
+  267 ldp x26, x25, [sp, #0x90]
+  268 ldp x28, x27, [sp, #0x80]
+  269 ldp x29, x30, [sp, #0x70]
+  270 add sp, sp, #0xd0
+  271 b <SELF+0x45c>
+  272 nop
+  273 nop
+  274 nop
+  275 nop
+  276 nop
+  277 nop
+  278 nop
+  279 ret
+  280 ldr x0, [sp]
+  281 mov x1, x27
+  282 bl <DB::throwRowRefOutOfRange(unsigned long, unsigned long)>
+  283 adrp x0, ADDR
+  284 add x0, x0, #RELOC_LO
+  285 adrp x1, ADDR
+  286 add x1, x1, #RELOC_LO
+  287 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  288 mov w0, #0x128
+  289 bl <__cxa_allocate_exception>
+  290 mov x19, x0
+  291 bl <?>
+  292 ldr w20, [x0]
+  293 bl <std::__1::system_category()>
+  294 mov x2, x0
+  295 mov x0, x19
+  296 mov x1, x20
+  297 bl <std::__1::system_error::system_error(std::__1::error_code)>
+  298 adrp x1, ADDR
+  299 adrp x2, ADDR
+  300 mov x0, x19
+  301 ldr x1, [x1, #0x218]
+  302 ldr x2, [x2, #0x220]
+  303 bl <__cxa_throw>
+  304 bl <__cxa_begin_catch>
+  305 ldp x8, x9, [x28, #0x18]
+  306 lsl x10, x21, #4
+  307 sub x8, x8, #0x1
+  308 str x8, [x28, #0x18]
+  309 str xzr, [x9, x10]
+  310 bl <__cxa_rethrow>
+  311 mov x20, x0
+  312 bl <__cxa_end_catch>
+  313 b <SELF+0x50c>
+  314 bl <__clang_call_terminate>
+  315 mov x20, x0
+  316 mov x0, x19
+  317 bl <__cxa_free_exception>
+  318 mov x0, x20
+  319 bl <_Unwind_Resume>
+  320 mov x20, x0
+  321 sub x0, x29, #0x10
+  322 bl <StopToken::~StopToken()>
+  323 mov x0, x20
+  324 bl <_Unwind_Resume>
+
+# UNIFIED void DB::Unified::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList>>::insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodOneNumber<PairNoInit<unsigned long, DB::RowRefList>, DB::RowRefList, unsigned long, false, false, false>, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>, DB::ColumnVector<unsigned long>>(DB::Unified::HashJoin&, TwoLevelHashMapTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, -1>&, unsigned long, std::__1::vector<DB::IColumn const*, std::__1::allocator<DB::IColumn const*>> const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long>> const&, unsigned int, DB::ColumnVector<unsigned long> const&, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul> const*, DB::JoinCommon::JoinMask const&, DB::Arena&, DB::Unified::BuildResult&)
+    0 b <SELF+0x20>
+    1 nop
+    2 nop
+    3 nop
+    4 nop
+    5 nop
+    6 nop
+    7 nop
+    8 sub sp, sp, #0xc0
+    9 stp x29, x30, [sp, #0x60]
+   10 stp x28, x27, [sp, #0x70]
+   11 stp x26, x25, [sp, #0x80]
+   12 stp x24, x23, [sp, #0x90]
+   13 stp x22, x21, [sp, #0xa0]
+   14 stp x20, x19, [sp, #0xb0]
+   15 add x29, sp, #0x60
+   16 ldp x8, x9, [x3]
+   17 stp x6, xzr, [x29, #-0x18]
+   18 str w5, [sp, #0x2c]
+   19 stur xzr, [x29, #-0x8]
+   20 cmp x9, x8
+   21 b.eq <SELF+0x4c8>
+   22 mov x25, x0
+   23 ldr x0, [x8]
+   24 mov x19, x7
+   25 mov x23, x2
+   26 mov x24, x1
+   27 ldr x8, [x0]
+   28 ldr x8, [x8, #0x388]
+   29 blr x8
+   30 str x0, [sp, #0x30]
+   31 ldp x26, x8, [x24, #0x10]
+   32 sub x8, x8, x26
+   33 asr x9, x8, #7
+   34 cmp x23, x9
+   35 b.hs <SELF+0x4dc>
+   36 ldr x28, [x29, #0x70]
+   37 mov w8, #0x1
+   38 ldur x10, [x29, #-0x18]
+   39 strb w8, [x28]
+   40 ldrb w8, [x25, #0x333]
+   41 ldp x22, x21, [x10, #0x10]
+   42 cmp w8, #0x1
+   43 b.ne <SELF+0xd8>
+   44 ldr w8, [x24]
+   45 cbz w8, <SELF+0xe0>
+   46 sub w10, w8, #0x1
+   47 cmp x9, x10
+   48 b.ls <SELF+0x4c8>
+   49 cmp w8, #0x1
+   50 b.ne <SELF+0xe8>
+   51 mov x9, xzr
+   52 mov x20, xzr
+   53 b <SELF+0x130>
+   54 mov w25, wzr
+   55 b <SELF+0x160>
+   56 mov x20, xzr
+   57 b <SELF+0x154>
+   58 mov x10, xzr
+   59 mov x11, xzr
+   60 and x9, x8, #ADDR
+   61 add x12, x26, #0xc0
+   62 mov w13, #0x10
+   63 and x14, x8, #ADDR
+   64 ldurb w15, [x12, #-0x80]
+   65 ldrb w16, [x12]
+   66 subs x14, x14, #0x2
+   67 add x12, x12, #0x100
+   68 lsl x15, x13, x15
+   69 lsl x16, x13, x16
+   70 add x10, x15, x10
+   71 add x11, x16, x11
+   72 b.ne <SELF+0x100>
+   73 cmp x9, x8
+   74 add x20, x11, x10
+   75 b.eq <SELF+0x154>
+   76 add x10, x26, x9, lsl #7
+   77 sub x8, x8, x9
+   78 add x9, x10, #0x40
+   79 mov w10, #0x10
+   80 ldrb w11, [x9], #0x80
+   81 subs x8, x8, #0x1
+   82 lsl x11, x10, x11
+   83 add x20, x11, x20
+   84 b.ne <SELF+0x140>
+   85 bl <DB::getMinBytesForPrefetchInJoin()>
+   86 cmp x20, x0
+   87 cset w25, hi
+   88 sub x1, x29, #0x10
+   89 mov w0, #0x4
+   90 stp xzr, xzr, [x29, #-0x10]
+   91 bl <clock_gettime>
+   92 cbnz w0, <SELF+0x4f0>
+   93 sub x8, x21, x22
+   94 lsr x24, x8, #3
+   95 cbz x24, <SELF+0x47c>
+   96 ldr x9, [x29, #0x68]
+   97 ldp x8, x10, [x29, #-0x10]
+   98 add x23, x26, x23, lsl #7
+   99 mov x21, xzr
+  100 str x9, [sp, #0x10]
+  101 ldr x9, [x29, #0x60]
+  102 stur x9, [x29, #-0x20]
+  103 mov w9, #0xca00
+  104 movk w9, #0x3b9a, lsl #16
+  105 madd x11, x8, x9, x10
+  106 ldr w9, [sp, #0x2c]
+  107 mov x8, #-ADDR
+  108 mov w10, w9
+  109 orr w9, w9, #ADDR
+  110 orr x8, x8, x10, lsl #32
+  111 stp x8, x11, [sp, #0x18]
+  112 lsl x8, x9, #32
+  113 stp x10, x8, [sp]
+  114 mov w8, #0x4
+  115 stur x8, [x29, #-0x28]
+  116 b <SELF+0x1f4>
+  117 nop
+  118 nop
+  119 nop
+  120 mov w8, #0x1
+  121 strb w8, [x28]
+  122 add x21, x21, #0x1
+  123 cmp x21, x24
+  124 b.eq <SELF+0x47c>
+  125 tbz w25, #0x0, <SELF+0x240>
+  126 cmp x21, #0x64
+  127 b.eq <SELF+0x260>
+  128 ldur x8, [x29, #-0x28]
+  129 add x9, x8, x21
+  130 ldur x8, [x29, #-0x18]
+  131 cmp x9, x24
+  132 ldr x8, [x8, #0x10]
+  133 b.lo <SELF+0x2b4>
+  134 ldr x27, [x8, x21, lsl #3]
+  135 cbnz x19, <SELF+0x2e4>
+  136 b <SELF+0x2f0>
+  137 nop
+  138 nop
+  139 nop
+  140 nop
+  141 nop
+  142 nop
+  143 nop
+  144 ldur x8, [x29, #-0x18]
+  145 ldr x8, [x8, #0x10]
+  146 ldr x27, [x8, x21, lsl #3]
+  147 cbnz x19, <SELF+0x2e4>
+  148 b <SELF+0x2f0>
+  149 nop
+  150 nop
+  151 nop
+  152 ldr x20, [sp, #0x20]
+  153 mov w1, #0x4
+  154 mov x0, x20
+  155 bl <clock_gettime_ns_adjusted(unsigned long, int)>
+  156 subs x8, x0, x20
+  157 b.eq <SELF+0x438>
+  158 mov w9, #0x9c3f
+  159 add x9, x8, x9
+  160 udiv x8, x9, x8
+  161 mov w9, #0x4
+  162 cmp x8, #0x4
+  163 csel x8, x8, x9, hi
+  164 mov w9, #0x20
+  165 cmp x8, #0x20
+  166 csel x8, x8, x9, lo
+  167 stur x8, [x29, #-0x28]
+  168 add x9, x8, x21
+  169 ldur x8, [x29, #-0x18]
+  170 cmp x9, x24
+  171 ldr x8, [x8, #0x10]
+  172 b.hs <SELF+0x218>
+  173 ldr x9, [x8, x9, lsl #3]
+  174 ldr x10, [sp, #0x30]
+  175 ldr x9, [x10, x9, lsl #3]
+  176 mov w10, #-0x1
+  177 crc32cx w9, w10, x9
+  178 ldr x10, [x23, #0x48]
+  179 and x9, x10, x9
+  180 ldr x10, [x23, #0x20]
+  181 lsl x9, x9, #4
+  182 prfm pldl1keep, [x10, x9]
+  183 ldr x27, [x8, x21, lsl #3]
+  184 cbz x19, <SELF+0x2f0>
+  185 ldr x8, [x19]
+  186 ldrb w8, [x8, x27]
+  187 cbnz w8, <SELF+0x1e0>
+  188 ldur x8, [x29, #-0x20]
+  189 ldr w8, [x8, #0x10]
+  190 cmp w8, #0x1
+  191 b.eq <SELF+0x1e8>
+  192 cmp w8, #0x2
+  193 b.ne <SELF+0x31c>
+  194 ldur x8, [x29, #-0x20]
+  195 ldr x8, [x8]
+  196 ldr x8, [x8, #0x10]
+  197 ldrb w8, [x8, x27]
+  198 cbz w8, <SELF+0x1e8>
+  199 ldr x8, [sp, #0x30]
+  200 ldr x20, [x8, x27, lsl #3]
+  201 cbz x20, <SELF+0x408>
+  202 mov w8, #-0x1
+  203 ldr x9, [x23, #0x48]
+  204 crc32cx w22, w8, x20
+  205 ldr x8, [x23, #0x20]
+  206 and x26, x9, x22
+  207 lsl x10, x26, #4
+  208 ldr x10, [x8, x10]
+  209 cbz x10, <SELF+0x37c>
+  210 nop
+  211 nop
+  212 nop
+  213 nop
+  214 nop
+  215 nop
+  216 cmp x10, x20
+  217 b.eq <SELF+0x3d0>
+  218 add x10, x26, #0x1
+  219 and x26, x10, x9
+  220 lsl x10, x26, #4
+  221 ldr x10, [x8, x10]
+  222 cbnz x10, <SELF+0x360>
+  223 add x8, x8, x26, lsl #4
+  224 stp x20, xzr, [x8]
+  225 ldr x9, [x23, #0x18]
+  226 ldr x10, [x23, #0x50]
+  227 add x9, x9, #0x1
+  228 cmp x9, x10
+  229 str x9, [x23, #0x18]
+  230 b.hi <SELF+0x440>
+  231 str xzr, [x8, #0x8]
+  232 ldr x9, [x28, #0x8]
+  233 add x9, x9, #0x1
+  234 str x9, [x28, #0x8]
+  235 ldr w9, [sp, #0x2c]
+  236 tbnz w9, #0x1f, <SELF+0x4bc>
+  237 lsr x9, x27, #32
+  238 cbnz x9, <SELF+0x4bc>
+  239 ldr x9, [sp, #0x18]
+  240 orr x9, x27, x9
+  241 str x9, [x8, #0x8]
+  242 mov w8, #0x1
+  243 b <SELF+0x3f8>
+  244 add x8, x8, x26, lsl #4
+  245 ldr w9, [sp, #0x2c]
+  246 tbnz w9, #0x1f, <SELF+0x4bc>
+  247 lsr x9, x27, #32
+  248 cbnz x9, <SELF+0x4bc>
+  249 add x0, x8, #0x8
+  250 ldp x8, x2, [sp, #0x8]
+  251 orr x1, x27, x8
+  252 bl <DB::RowRefList::insert(unsigned long, DB::Arena&)>
+  253 mov w8, wzr
+  254 ldrb w9, [x28, #0x1]
+  255 and w8, w8, w9
+  256 strb w8, [x28, #0x1]
+  257 b <SELF+0x1e8>
+  258 ldrb w9, [x23]
+  259 add x8, x23, #0x8
+  260 tbnz w9, #0x0, <SELF+0x3d4>
+  261 ldr x8, [x23, #0x18]
+  262 mov w9, #0x1
+  263 strb w9, [x23]
+  264 add x8, x8, #0x1
+  265 str x8, [x23, #0x18]
+  266 add x8, x23, #0x8
+  267 stp xzr, xzr, [x8]
+  268 add x8, x23, #0x8
+  269 b <SELF+0x39c>
+  270 mov w8, #0x20
+  271 b <SELF+0x29c>
+  272 mov x0, x23
+  273 mov x1, xzr
+  274 mov x2, xzr
+  275 bl <HashTable<unsigned long, HashMapCell<unsigned long, DB::RowRefList, HashCRC32<unsigned long>, HashTableNoState, PairNoInit<unsigned long, DB::RowRefList>>, HashCRC32<unsigned long>, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>>::resize(unsigned long, unsigned long)>
+  276 ldr x9, [x23, #0x48]
+  277 ldr x8, [x23, #0x20]
+  278 and x10, x22, x9
+  279 lsl x11, x10, #4
+  280 add x22, x10, #0x1
+  281 ldr x11, [x8, x11]
+  282 cmp x11, #0x0
+  283 ccmp x11, x20, #0x4, ne
+  284 b.ne <SELF+0x458>
+  285 add x8, x8, x10, lsl #4
+  286 b <SELF+0x39c>
+  287 ldp x20, x19, [sp, #0xb0]
+  288 ldp x22, x21, [sp, #0xa0]
+  289 ldp x24, x23, [sp, #0x90]
+  290 ldp x26, x25, [sp, #0x80]
+  291 ldp x28, x27, [sp, #0x70]
+  292 ldp x29, x30, [sp, #0x60]
+  293 add sp, sp, #0xc0
+  294 b <SELF+0x4b8>
+  295 nop
+  296 nop
+  297 nop
+  298 nop
+  299 nop
+  300 nop
+  301 nop
+  302 ret
+  303 ldr x0, [sp]
+  304 mov x1, x27
+  305 bl <DB::throwRowRefOutOfRange(unsigned long, unsigned long)>
+  306 adrp x0, ADDR
+  307 add x0, x0, #RELOC_LO
+  308 adrp x1, ADDR
+  309 add x1, x1, #RELOC_LO
+  310 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  311 adrp x0, ADDR
+  312 add x0, x0, #RELOC_LO
+  313 adrp x1, ADDR
+  314 add x1, x1, #RELOC_LO
+  315 bl <std::__1::__libcpp_verbose_abort(char const*, ...)>
+  316 mov w0, #0x128
+  317 bl <__cxa_allocate_exception>
+  318 mov x19, x0
+  319 bl <?>
+  320 ldr w20, [x0]
+  321 bl <std::__1::system_category()>
+  322 mov x2, x0
+  323 mov x0, x19
+  324 mov x1, x20
+  325 bl <std::__1::system_error::system_error(std::__1::error_code)>
+  326 adrp x1, ADDR
+  327 adrp x2, ADDR
+  328 mov x0, x19
+  329 ldr x1, [x1, #0x218]
+  330 ldr x2, [x2, #0x220]
+  331 bl <__cxa_throw>
+  332 bl <__cxa_begin_catch>
+  333 ldp x8, x9, [x23, #0x18]
+  334 lsl x10, x26, #4
+  335 sub x8, x8, #0x1
+  336 str x8, [x23, #0x18]
+  337 str xzr, [x9, x10]
+  338 bl <__cxa_rethrow>
+  339 mov x20, x0
+  340 bl <__cxa_end_catch>
+  341 b <SELF+0x57c>
+  342 bl <__clang_call_terminate>
+  343 mov x20, x0
+  344 mov x0, x19
+  345 bl <__cxa_free_exception>
+  346 mov x0, x20
+  347 bl <_Unwind_Resume>
+  348 mov x20, x0
+  349 sub x0, x29, #0x10
+  350 bl <StopToken::~StopToken()>
+  351 mov x0, x20
+  352 bl <_Unwind_Resume>

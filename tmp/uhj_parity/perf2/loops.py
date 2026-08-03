@@ -22,7 +22,24 @@ from __future__ import annotations
 
 IN_JOIN_MARKERS = [
     r"DB::HashJoin",
+    # `DB::Unified::` is a blanket for the whole unified tree. The baseline tree has no
+    # single namespace prefix, so every baseline counterpart must be named explicitly --
+    # and an omission here does not lose samples, it silently attributes them to the
+    # next frame OUT, which biases per-loop shares between the two trees.
+    #
+    # That defect was real: `DB::LazyOutput::` was missing, so baseline gather samples
+    # rolled up into `HashJoinResult::generateBlock` while unified ones stopped at
+    # `DB::Unified::LazyOutput::buildOutputFromBlocks`. It looked like an inlining
+    # difference on the hottest loop in the join. It is not: the two symbols are
+    # byte-identical, 397 instructions, zero positional mismatches
+    # (codegen/P1_G2_probe_and_gather.md). See WORKLOG F5.
     r"DB::Unified::",
+    r"DB::LazyOutput",
+    r"DB::CollectorNonJoined",
+    r"DB::JoinOnKeyColumns",
+    r"DB::Inserter",
+    r"packFixedBatch", r"fillFixedBatch", r"packFixed",
+    r"DB::processMatch", r"DB::addFoundRowAll",
     r"DB::ConcurrentHashJoin",
     r"DB::JoinStuff",
     r"NotJoinedHash",
@@ -128,6 +145,26 @@ LOOPS = [
          refs="UnifiedHashJoin/HashJoinMethodsImpl.h:198-203",
          symbols=[r"Unified::HashJoinMethods.*scatterByBucket"],
          shared_symbol=True, note="same symbol as B7"),
+
+    # B22 was added after the marker fix in PREREG P1.1 made it visible: it holds 7.5%
+    # of ALL in-join samples across the matrix and was previously being attributed to
+    # its caller. It is the single largest per-partition cost found in this mission.
+    dict(id="B22", name="whole-block fixed-key packing in the key-getter constructor",
+         subphase="build insert", impls=ALL3,
+         mult="per row, PER PARTITION per block -- not per block",
+         formula="R*B*P  where P = 1 (hash), S = threads (parallel_hash), "
+                 "K = 2*bit_ceil(threads) (unified_hash)",
+         refs="Interpreters/AggregationCommon.h:58-76 fillFixedBatch (sizes by "
+              "column->size(), i.e. the WHOLE block, not the selector); reached from "
+              "Common/ColumnsHashing/HashMethod.h:456-459 when usePreparedKeys holds; "
+              "constructed per bucket at UnifiedHashJoin/HashJoinMethodsImpl.h:356 and "
+              "once more for the scatter pass at :166; once per block for hash; once "
+              "per slot per block for parallel_hash",
+         symbols=[r"fillFixedBatch", r"packFixedBatch", r"HashMethodKeysFixed<.*>::HashMethodKeysFixed"],
+         note="fires only for fixed-width composite keys (usePreparedKeys: no nullable "
+              "or LowCardinality keys, sizeof(Key)<=16, every key size in {1,2,4,8,16}). "
+              "The single-UInt64 key uses HashMethodOneNumber and packs nothing, which "
+              "is the discriminator PREREG P1.2 uses."),
 
     # ---------------- build: insert ------------------------------------------
     dict(id="B11", name="per-row emplace main loop (null/mask skip + Inserter)",
@@ -401,6 +438,8 @@ EXCLUSIONS = [
      "construction/teardown/metadata, once per join"),
     (r"DB::ConcurrentHashJoin::(ConcurrentHashJoin|~ConcurrentHashJoin|getTotals|setTotals|checkTypesOfKeys|alwaysReturnsEmptySet)\b",
      "construction/teardown/metadata, once per join"),
+    (r"(allocate_shared.*)?(JoiningTransform::JoiningTransform|NonJoinedBlocksTransform::NonJoinedBlocksTransform|FillingRightJoinSide\\w*::FillingRightJoinSide)",
+     "pipeline construction, once per query"),
     (r"allocate_shared.*(JoiningTransform|NonJoinedBlocksTransform|FillingRightJoinSide)",
      "pipeline construction, once per query"),
     (r"MapsTemplate<.*>::operator=",

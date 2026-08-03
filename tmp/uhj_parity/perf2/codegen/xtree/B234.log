@@ -1,0 +1,69 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : B2/B3/B4 addBlockToJoin
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x14289c00 size=13824
+  DB::HashJoin::addBlockToJoin(DB::Block const&, DB::detail::Selector, bool)
+UNIFIED   0x165d4f00 size=8344
+  DB::Unified::HashJoin::addBlockToJoin(DB::Block const&, DB::detail::Selector, bool)
+
+instructions: baseline 3456  unified 2086  delta -1370
+call/branch targets Unified-normalised: baseline 34, unified 32
+call/branch targets reached via a linker range thunk (followed): baseline 127, unified 125
+identical after normalisation: NO
+differing positions: 3405 of 3456
+  of which branch/call with a genuinely different target: 54 -> indices [40, 74, 182, 270, 278, 286, 319, 324, 332, 340]
+  of which branch/call differing only in ICF alias naming: 52
+  opcode histogram delta (unified - baseline), largest first:
+    ldr          -248   (baseline 511, unified 263)
+    add          -180   (baseline 385, unified 205)
+    mov          -168   (baseline 445, unified 277)
+    cmp          -110   (baseline 185, unified 75)
+    str          -81   (baseline 203, unified 122)
+    ldrb         -61   (baseline 90, unified 29)
+    ldp          -52   (baseline 109, unified 57)
+    bl           -46   (baseline 291, unified 245)
+    sub          -46   (baseline 119, unified 73)
+    asr          -40   (baseline 48, unified 8)
+    madd         -40   (baseline 50, unified 10)
+    movk         -40   (baseline 55, unified 15)
+    mul          -40   (baseline 44, unified 4)
+    b.hs         -40   (baseline 53, unified 13)
+    b            -39   (baseline 149, unified 110)
+  callee multiset: 440 baseline calls to 122 targets, 355 unified calls to 82 targets; 47 targets baseline-only, 3 unified-only
+    BASELINE-ONLY callee x39: SELF
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)1, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)3, (DB::JoinStrictness)6, DB::HashJoin::MapsTemplate<DB::RowRef
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)6, DB::HashJoin::MapsTemplate<DB::RowRef
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)1, (DB::JoinStrictness)4, DB::HashJoin::MapsTemplate<std::__1::unique_ptr<DB::SortedLookupVectorBase, std::__1::default_delete<DB::Sorte
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)3, (DB::JoinStrictness)4, DB::HashJoin::MapsTemplate<std::__1::unique_ptr<DB::SortedLookupVectorBase, std::__1::default_delete<DB::Sorte
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)4, DB::HashJoin::MapsTemplate<std::__1::unique_ptr<DB::SortedLookupVectorBase, std::__1::default_delete<DB::Sorte
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)2, (DB::JoinStrictness)4, DB::HashJoin::MapsTemplate<std::__1::unique_ptr<DB::SortedLookupVectorBase, std::__1::default_delete<DB::Sorte
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)3, (DB::JoinStrictness)5, DB::HashJoin::MapsTemplate<DB::RowRef
+    BASELINE-ONLY callee x2: DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)5, DB::HashJoin::MapsTemplate<DB::RowRef
+    BASELINE-ONLY callee x1: DB::HashJoinMethods<(DB::JoinKind)3, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList
+    UNIFIED-ONLY callee x5: std::__1::mutex::unlock()
+    UNIFIED-ONLY callee x4: std::__1::mutex::lock()
+    UNIFIED-ONLY callee x1: bool static_for_impl<int, 0, bool DB::joinDispatch<std::__1::variant<DB::HashJoin::MapsTemplate<DB::RowRef
+  aligned edit script: 919 instructions identical and in the same relative order, 2819 replaced, 13 inserted by unified, 32 only in baseline
+      2024  insert/delete
+       412  immediate or field offset only
+       277  different opcode
+       151  same opcode, different operands
+
+  first 6 aligned differences that are not just an immediate/offset (277 such):
+    [  39] base    b.eq <SELF+0xb8>
+           unified b.ne <SELF+0x388>
+    [  90] base    stur x0, [x29, #-0x30]
+           unified str x0, [sp, #0x270]
+    [ 212] base    stur xzr, [x29, #-0x30]
+           unified str xzr, [sp, #0x270]
+    [ 260] base    sub x0, x29, #0xf0
+           unified add x0, sp, #0x270
+    [ 268] base    sub x27, x29, #0xf0
+           unified add x27, sp, #0x270
+    [ 431] base    stp xzr, xzr, [sp, #0xf0]
+           unified add x9, sp, #0x159
+
+listings: codegen/xtree/B234.txt

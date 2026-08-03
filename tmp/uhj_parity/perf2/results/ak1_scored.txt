@@ -1,0 +1,47 @@
+ABLATION A-K1: BUCKETS_PER_THREAD 2 -> 1  (K halved for unified_hash only)
+
+key   algo             t    base_us     abl_us   delta%   band%        verdict
+u64   hash             4     843050     663136    -21.3    40.7   within noise
+u64   hash             8     810056     843025      4.1    39.4   within noise
+u64   hash            16     896625     894455     -0.2     5.0   within noise
+u64   hash            32     901262     895995     -0.6     5.0   within noise
+u64   hash            64     946057     938420     -0.8     5.0   within noise
+u64   parallel_hash    4    1074652    1053537     -2.0     5.0   within noise
+u64   parallel_hash    8    1140422    1170415      2.6     5.0   within noise
+u64   parallel_hash   16    1287256    1337552      3.9     5.0   within noise
+u64   parallel_hash   32    1459140    1508997      3.4     5.0   within noise
+u64   parallel_hash   64    2126934    2163766      1.7    10.7   within noise
+u64   unified_hash     4     976382    1332195     36.4     5.3         SLOWER
+u64   unified_hash     8    1346593    1051079    -21.9     5.0         FASTER
+u64   unified_hash    16    1255903    1497722     19.3     5.0         SLOWER
+u64   unified_hash    32    1740374    1480004    -15.0     5.0         FASTER
+u64   unified_hash    64    1632136    3102635     90.1     5.0         SLOWER
+comp  hash             4    1181541    1188262      0.6    38.2   within noise
+comp  hash             8    1173112    1165623     -0.6     5.0   within noise
+comp  hash            16    1233033    1171973     -5.0     5.1   within noise
+comp  hash            32    1221668    1212452     -0.8     5.0   within noise
+comp  hash            64    1198193    1178763     -1.6     5.0   within noise
+comp  parallel_hash    4    1658365    1665489      0.4     5.0   within noise
+comp  parallel_hash    8    1912734    1916968      0.2     5.0   within noise
+comp  parallel_hash   16    2396980    2389833     -0.3     5.0   within noise
+comp  parallel_hash   32    2952457    2985831      1.1     5.0   within noise
+comp  parallel_hash   64    4876642    4918051      0.8     5.0   within noise
+comp  unified_hash     4    1755242    2001597     14.0    37.8   within noise
+comp  unified_hash     8    2506443    1850943    -26.2     5.0         FASTER
+comp  unified_hash    16    2642551    2881343      9.0     5.0         SLOWER
+comp  unified_hash    32    4498245    3148210    -30.0     5.0         FASTER
+comp  unified_hash    64    6075474    6622082      9.0     5.0         SLOWER
+
+PREREG P3.1 scoring (comp + unified_hash at 64 threads, build ns per build row):
+  measured before      :    202.5 ns/row   (model predicted 209.1)
+  PREDICTED after      :    133.5 ns/row   (registered before the build)
+  measured after       :    220.7 ns/row
+  predicted change     :    -34.1%
+  measured  change     :      9.0%
+  model/measured ratio :    -3.79   (predicted -69.0 ns/row, measured 18.2 ns/row)
+
+  Control arms (must be unchanged -- the ablation touches only unified code):
+    hash           u64   t64:   -0.8%  band 5.0%  OK
+    hash           comp  t64:   -1.6%  band 5.0%  OK
+    parallel_hash  u64   t64:   +1.7%  band 10.7%  OK
+    parallel_hash  comp  t64:   +0.8%  band 5.0%  OK

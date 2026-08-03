@@ -1,0 +1,41 @@
+binary: /mnt/ch/ClickHouse/tmp/uhj_parity/perf2/bin/clickhouse.ref
+group : P8/P0 joinBlockImpl
+baseline candidates: 1   unified candidates: 1
+
+BASELINE  0x14a38880 size=2748
+  DB::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::HashJoin::MapsTemplate<DB::RowRefList>>::joinBlockImpl(DB::HashJoin const&, DB::ScatteredBlock, DB::Block const&, std::__1::vector<DB::HashJoin::MapsTemplate<DB::RowRefList> const*, std::__1::allocator<DB::HashJoin::MapsTemplate<DB::RowRefList> const*>> const&, bool)
+UNIFIED   0x16c48300 size=2748
+  DB::Unified::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList>>::joinBlockImpl(DB::Unified::HashJoin const&, DB::ScatteredBlock, DB::Block const&, std::__1::vector<DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> const*, std::__1::allocator<DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> const*>> const&, bool)
+
+instructions: baseline 687  unified 687  delta +0
+call/branch targets Unified-normalised: baseline 1, unified 15
+call/branch targets reached via a linker range thunk (followed): baseline 19, unified 30
+identical after normalisation: NO
+differing positions: 66 of 687
+  of which branch/call with a genuinely different target: 3 -> indices [562, 564, 566]
+  of which branch/call differing only in ICF alias naming: 0
+  opcode histogram delta (unified - baseline), largest first:
+    nop          -2   (baseline 37, unified 35)
+    ldar         +2   (baseline 0, unified 2)
+    add          +1   (baseline 86, unified 87)
+    ldr          -1   (baseline 88, unified 87)
+  callee multiset: 76 baseline calls to 25 targets, 76 unified calls to 25 targets; 0 targets baseline-only, 0 unified-only
+  aligned edit script: 656 instructions identical and in the same relative order, 33 replaced, 1 inserted by unified, 10 only in baseline
+        26  insert/delete
+        11  immediate or field offset only
+         5  different opcode
+         2  same opcode, different operands
+
+  first 6 aligned differences that are not just an immediate/offset (5 such):
+    [ 518] base    ldr x8, [x20, #0xc0]
+           unified add x9, x20, #0x2f0
+    [ 519] base    ldr x10, [x20, #0x70]
+           unified add x10, x20, #0x290
+    [ 520] base    add x11, x20, #0x208
+           unified ldr x8, [x20, #0x70]
+    [ 536] base    add x9, x20, #0x298
+           unified ldrh w9, [x11]
+    [ 537] base    ldr q0, [x9]
+           unified sturh w9, [x23, #0x33]
+
+listings: codegen/xtree/P8_P0.txt
