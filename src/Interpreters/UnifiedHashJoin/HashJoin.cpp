@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <Common/JoinLockProbe.h>   /// INSTRUMENTATION
 #include <any>
 #include <bit>
 #include <limits>
@@ -145,6 +146,7 @@ BuildResult insertIntoBuckets(
 
         const size_t bytes_after = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
         bucket_bytes.fetch_add(bytes_after - bytes_before, std::memory_order_relaxed);
+        JoinLockProbe::bump(JoinLockProbe::ATOM_BUCKET_BYTES);   /// INSTRUMENTATION
 
         result.is_inserted |= bucket_result.is_inserted;
         result.all_values_unique &= bucket_result.all_values_unique;
@@ -168,6 +170,7 @@ BuildResult insertIntoBuckets(
     if (buckets_left == 0)
     {
         std::lock_guard lock(locks[0].mutex);
+        JoinLockProbe::HoldTimer probe_t(JoinLockProbe::UNI_BUCKET_EMPTY);   /// INSTRUMENTATION
         insert_bucket(0);
         return result;
     }
@@ -186,10 +189,16 @@ BuildResult insertIntoBuckets(
 
             std::unique_lock lock(locks[bucket].mutex, std::try_to_lock);
             if (!lock.owns_lock())
+            {
+                JoinLockProbe::countTryFailure(JoinLockProbe::UNI_BUCKET_TRY);   /// INSTRUMENTATION
                 continue;
+            }
 
             made_progress = true;
-            insert_bucket(bucket);
+            {
+                JoinLockProbe::HoldTimer probe_t(JoinLockProbe::UNI_BUCKET_TRY);   /// INSTRUMENTATION
+                insert_bucket(bucket);
+            }
             pending[bucket] = 0;
             --buckets_left;
         }
@@ -204,8 +213,15 @@ BuildResult insertIntoBuckets(
                 if (!pending[bucket])
                     continue;
 
-                std::lock_guard lock(locks[bucket].mutex);
-                insert_bucket(bucket);
+                {
+                    /// INSTRUMENTATION: UNI_BUCKET_BLOCK records the *wait*, UNI_BUCKET_TRY the hold.
+                    const uint64_t probe_w0 = JoinLockProbe::ticks();
+                    std::lock_guard lock(locks[bucket].mutex);
+                    JoinLockProbe::record(JoinLockProbe::UNI_BUCKET_BLOCK,
+                                          JoinLockProbe::ticks() - probe_w0);
+                    JoinLockProbe::HoldTimer probe_t(JoinLockProbe::UNI_BUCKET_TRY);
+                    insert_bucket(bucket);
+                }
                 pending[bucket] = 0;
                 --buckets_left;
                 break;
@@ -861,6 +877,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
         size_t data_allocated_bytes = 0;
         {
             std::lock_guard lock(blocks_mutex);
+            JoinLockProbe::HoldTimer probe_t(JoinLockProbe::UNI_BLOCKS_MUTEX);   /// INSTRUMENTATION
 
             if (storage_join_lock)
                 throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "addBlockToJoin called when HashJoin locked to prevent updates");
@@ -1296,6 +1313,7 @@ JoinResultPtr HashJoin::joinBlock(Block block)
 
 HashJoin::~HashJoin()
 {
+    JoinLockProbe::dump("unified_hash");   /// INSTRUMENTATION
     if (!data)
     {
         LOG_TEST(log, "{}Join data has been already released", instance_log_id);

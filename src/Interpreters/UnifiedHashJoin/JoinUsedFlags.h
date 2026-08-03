@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <Common/JoinLockProbe.h>   /// INSTRUMENTATION
 #include <utility>
 #include <vector>
 #include <Core/Joins.h>
@@ -134,6 +135,7 @@ public:
                     for (const UInt64 ref_word : refsOf(mapped.word))
                     {
                         auto & flag = per_row_flags[refWordBlockNo(ref_word)][refWordRowNo(ref_word)];
+                        JoinLockProbe::bump(JoinLockProbe::ATOM_SET_USED);   /// INSTRUMENTATION
                         if (!flag.load(std::memory_order_relaxed))
                             flag.store(true, std::memory_order_relaxed);
                     }
@@ -148,6 +150,7 @@ public:
             else
             {
                 auto & flag = per_offset_flags[f.getOffset()];
+                JoinLockProbe::bump(JoinLockProbe::ATOM_SET_USED);   /// INSTRUMENTATION
                 if (!flag.load(std::memory_order_relaxed))
                     flag.store(true, std::memory_order_relaxed);
             }
