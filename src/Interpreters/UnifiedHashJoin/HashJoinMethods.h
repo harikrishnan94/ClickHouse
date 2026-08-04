@@ -30,32 +30,51 @@ struct Inserter
     /// `new_keys` counts keys the map did not have before, which is what the size limits are
     /// checked against. It is not always what these functions return: with `any_take_last_row` a
     /// duplicate overwrites the mapped value, so the row becomes reachable without adding a key.
+    ///
+    /// `key_row` is the row the key getter reads and `row_no` the row the ref records. They differ
+    /// when the scatter copied the keys into per-bucket dense columns (see `scatterByBucket`): the
+    /// getter then reads the dense copy at its own position while the ref still points at the row
+    /// of the stored block.
     static ALWAYS_INLINE bool insertOne(
-        const HashJoin & join, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool, size_t & new_keys)
+        const HashJoin & join,
+        HashMap & map,
+        KeyGetter & key_getter,
+        UInt32 stored_block_no,
+        size_t key_row,
+        size_t row_no,
+        Arena & pool,
+        size_t & new_keys)
     {
-        auto emplace_result = key_getter.emplaceKey(map, i, pool);
+        auto emplace_result = key_getter.emplaceKey(map, key_row, pool);
 
         const bool inserted = emplace_result.isInserted();
         new_keys += inserted;
         if (inserted || join.anyTakeLastRow())
-            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, i);
+            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, row_no);
         return inserted || join.anyTakeLastRow();
     }
 
     static ALWAYS_INLINE bool insertAll(
-        const HashJoin &, HashMap & map, KeyGetter & key_getter, UInt32 stored_block_no, size_t i, Arena & pool, size_t & new_keys)
+        const HashJoin &,
+        HashMap & map,
+        KeyGetter & key_getter,
+        UInt32 stored_block_no,
+        size_t key_row,
+        size_t row_no,
+        Arena & pool,
+        size_t & new_keys)
     {
-        auto emplace_result = key_getter.emplaceKey(map, i, pool);
+        auto emplace_result = key_getter.emplaceKey(map, key_row, pool);
 
         const bool inserted = emplace_result.isInserted();
         new_keys += inserted;
         if (inserted)
-            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, i);
+            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, row_no);
         else
         {
             /// A single ref is stored inline in the value of the hash table; the first duplicate
             /// switches the value to a pointer to an arena-allocated list of refs.
-            emplace_result.getMapped().insert(RowRef(stored_block_no, i).encode(), pool);
+            emplace_result.getMapped().insert(RowRef(stored_block_no, row_no).encode(), pool);
         }
         return inserted;
     }
@@ -65,12 +84,13 @@ struct Inserter
         HashMap & map,
         KeyGetter & key_getter,
         UInt32 stored_block_no,
-        size_t i,
+        size_t key_row,
+        size_t row_no,
         Arena & pool,
         size_t & new_keys,
         const IColumn & asof_column)
     {
-        auto emplace_result = key_getter.emplaceKey(map, i, pool);
+        auto emplace_result = key_getter.emplaceKey(map, key_row, pool);
         typename HashMap::mapped_type * time_series_map = &emplace_result.getMapped();
 
         const bool inserted = emplace_result.isInserted();
@@ -78,7 +98,7 @@ struct Inserter
         TypeIndex asof_type = *join.getAsofType();
         if (inserted)
             time_series_map = new (time_series_map) typename HashMap::mapped_type(createAsofRowRef(asof_type, join.getAsofInequality()));
-        (*time_series_map)->insert(asof_column, stored_block_no, i);
+        (*time_series_map)->insert(asof_column, stored_block_no, row_no);
         return inserted;
     }
 };
@@ -143,6 +163,15 @@ class HashJoinMethods
     static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;
 
 public:
+    /// The scatter's output: one selector per bucket, and - when the keys were scattered by copying
+    /// (see `scatterByBucket`) - one dense copy of the key columns per bucket, parallel to that
+    /// bucket's selector. `dense_keys` is empty when the keys kept the zero-copy selectors.
+    struct BucketScatter
+    {
+        std::vector<ScatteredBlock::Selector> selectors;
+        std::vector<Columns> dense_keys;
+    };
+
     /// Insert `selector`'s rows into `bucket` of every map in `maps`. The caller routed those rows
     /// there (see `scatterByBucket`) and holds that bucket's lock, so the insert addresses the
     /// bucket's cells directly rather than re-deriving the bucket from each row's key.
@@ -150,6 +179,10 @@ public:
     /// `block_key_getter` belongs to the block, not to the bucket: the caller passes the same one to
     /// every bucket of a block and to the scatter pass that split it, so the block's keys are read
     /// once. See `BlockKeyGetter`.
+    ///
+    /// `dense_keys`, when not null, holds this bucket's dense copies of the key columns (see
+    /// `BucketScatter`); the keys are then read from the copies sequentially instead of through the
+    /// selector.
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
@@ -160,6 +193,7 @@ public:
         const Sizes & key_sizes,
         UInt32 stored_block_no,
         const ScatteredBlock::Selector & selector,
+        const Columns * dense_keys,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
@@ -168,7 +202,12 @@ public:
     /// Split `selector`'s rows by the bucket of `maps` each row's key routes to, returning one
     /// selector per bucket. Inserts lock the bucket `emplace` routes each row to, which is the same
     /// routing function used here.
-    static std::vector<ScatteredBlock::Selector> scatterByBucket(
+    ///
+    /// Mirrors `ConcurrentHashJoin::dispatchBlock`'s scatter policy: narrow fixed-size keys are
+    /// additionally scattered by copying (`BucketScatter::dense_keys`), so the insert reads them
+    /// sequentially; wider keys keep only the selectors, whose insert-side gather costs less than
+    /// copying them would.
+    static BucketScatter scatterByBucket(
         HashJoin::Type type,
         MapsTemplate & maps,
         BlockKeyGetter & block_key_getter,
@@ -213,13 +252,14 @@ private:
         const Sizes & key_sizes,
         UInt32 stored_block_no,
         const Selector & selector,
+        const Columns * dense_keys,
         ConstNullMapPtr null_map,
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
         BuildResult & result);
 
     template <typename KeyGetter, typename HashMap>
-    static std::vector<ScatteredBlock::Selector> scatterByBucketTypeCase(
+    static BucketScatter scatterByBucketTypeCase(
         const HashMap & map,
         BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
