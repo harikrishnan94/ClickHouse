@@ -763,3 +763,49 @@ finished - always the last query of a cell. Symmetric between runs and harmless 
 7 repetitions, but `shapes.py` retries the readback instead and loses none.
 
 Raw: `results/shapes.jsonl`, `results/shapes_s1_report.txt`, `logs/shapes_s1.log`.
+
+### 12.5 A 15-second reproduction
+
+`tmp/uhj_parity/perf2/repro_k32.sh` - self-contained `clickhouse local`, no server and no
+tables, so it runs against any build:
+
+```
+bash tmp/uhj_parity/perf2/repro_k32.sh [path/to/clickhouse] [reps]
+```
+
+Default shape: 67.1M distinct build keys, 268M probe rows (4x) at a 50% match rate,
+`max_threads=16` so `unified_hash` gets K = 32 buckets. It checks that both algorithms return
+the same answer before timing anything, interleaves the repetitions with the order rotated, and
+prints the median wall time of each.
+
+```
+median wall  parallel_hash      886 ms   unified_hash     1569 ms   unified is +77.1%
+REGRESSION REPRODUCED
+```
+
+Two consecutive runs on the same binary: +77.1% and +76.9%. Total runtime 15 s.
+
+**The control matters as much as the repro.** `THREADS=64 bash repro_k32.sh ...` gives K = 128
+and prints `-16.6%`, i.e. `not reproduced` - so a change that merely makes everything slower
+cannot be mistaken for a fix. `THREADS` is the knob that selects K:
+
+| `THREADS` | K | expected |
+| ---: | ---: | --- |
+| 8 | 16 | roughly parity |
+| **16** | **32** | **worst, about +77%** |
+| 24 or 32 | 64 | about +25% wall |
+| 48 or 64 | 128 | `unified_hash` wins by 17-36% |
+
+`KEYS` and `MULT` are also settable. Note that the effect needs the full key count: holding
+keys-per-bucket at 2.1M and shrinking the data does **not** reproduce it (§12.2), so a smaller
+input is not a faster repro - `MULT` is the knob for trading runtime against signal, and
+`MULT=1` still shows about +48% in 9 s.
+
+**One lead checked and discarded, recorded so it is not chased twice.** The ProfileEvent
+`HashJoinPreallocatedElementsInHashTables` reads 67,108,864 for `parallel_hash` and 0 for
+`unified_hash` on this query, which looks like unified failing to preallocate its hash tables.
+It is not: `rg HashJoinPreallocatedElementsInHashTables src/` shows the counter is incremented
+only in `ConcurrentHashJoin.cpp`, so plain `hash` reports 0 as well, and unified's
+`MapsTemplate::create(type, buckets, reserve)` does pass `reserve` down to
+`RuntimeStorage::reserveBuckets`. The counter is uninstrumented outside `parallel_hash`, not a
+missing reserve.
