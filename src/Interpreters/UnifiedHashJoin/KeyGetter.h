@@ -174,19 +174,17 @@ struct LowCardinalityKeyGetterForJoin
         auto key_holder = base.getKeyHolder(row, pool);
         const auto key = keyHolderGetKey(key_holder);
 
-        /// The offset comes from the lookup itself, not from a follow-up call - see
-        /// `TwoLevelHashTable::Prober`.
-        size_t offset = 0;
-        auto it = [&]
-        {
-            if constexpr (use_offset)
-                return saved_hash ? data.findWithOffset(key, saved_hash[row], offset) : data.findWithOffset(key, offset);
-            else
-                return saved_hash ? data.find(key, saved_hash[row]) : data.find(key);
-        }();
+        auto it = saved_hash ? data.find(key, saved_hash[row]) : data.find(key);
 
         const bool found = it;
         Mapped * mapped = found ? &it->getMapped() : nullptr;
+
+        /// The prefix sums the offset is taken from were published once, when the build finished
+        /// (`freezeMapsForProbing`), so this skips the per-row "are they computed yet" check that
+        /// `offsetInternal` pays.
+        size_t offset = 0;
+        if constexpr (use_offset)
+            offset = found ? data.offsetInternalUnsafe(it) : 0;
 
         visit_cache[row] = found ? 1 : 2;
         mapped_cache[row] = mapped;
@@ -267,6 +265,17 @@ KEYGETTER_RANGE_IMPL(range16_key64, UInt64)
 KEYGETTER_RANGE_IMPL(range17_key64, UInt64)
 KEYGETTER_RANGE_IMPL(range18_key64, UInt64)
 #undef KEYGETTER_RANGE_IMPL
+
+/// A 256-bucket map reads its keys exactly as its one-bucket counterpart does - the bucket count is
+/// a property of the map, not of how a key is read - so each twin inherits the same key getter.
+#define KEYGETTER_TWO_LEVEL_IMPL(NAME) \
+    template <typename Value, typename Mapped, bool use_offset> \
+    struct KeyGetterForTypeImpl<HashJoin::Type::two_level_##NAME, Value, Mapped, use_offset> \
+        : KeyGetterForTypeImpl<HashJoin::Type::NAME, Value, Mapped, use_offset> \
+    { \
+    };
+UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(KEYGETTER_TWO_LEVEL_IMPL)
+#undef KEYGETTER_TWO_LEVEL_IMPL
 
 /// `use_offset` asks the key getter to report a matched cell's global offset. Only a join that keeps
 /// per-offset used flags reads it (see `JoinUsedFlags`), and on a partitioned map an offset is not

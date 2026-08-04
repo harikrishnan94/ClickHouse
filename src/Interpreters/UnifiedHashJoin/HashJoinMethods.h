@@ -163,31 +163,30 @@ class HashJoinMethods
     static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;
 
 public:
-    /// The scatter's output: one selector per bucket, and - when the keys were scattered by copying
-    /// (see `scatterByBucket`) - one dense copy of the key columns per bucket, parallel to that
-    /// bucket's selector. `dense_keys` is empty when the keys kept the zero-copy selectors.
-    struct BucketScatter
+    /// The scatter's output: one selector per slot, and - when the keys were scattered by copying
+    /// (see `scatterBySlot`) - one dense copy of the key columns per slot, parallel to that slot's
+    /// selector. `dense_keys` is empty when the keys kept the zero-copy selectors.
+    struct SlotScatter
     {
         std::vector<ScatteredBlock::Selector> selectors;
         std::vector<Columns> dense_keys;
     };
 
-    /// Insert `selector`'s rows into `bucket` of every map in `maps`. The caller routed those rows
-    /// there (see `scatterByBucket`) and holds that bucket's lock, so the insert addresses the
-    /// bucket's cells directly rather than re-deriving the bucket from each row's key.
+    /// Insert `selector`'s rows into `maps`, routing each row to its bucket the way `emplace` does.
+    /// The caller has scattered the rows so that every row here belongs to one slot, and holds that
+    /// slot's lock; the slot owns every bucket those rows can reach.
     ///
-    /// `block_key_getter` belongs to the block, not to the bucket: the caller passes the same one to
-    /// every bucket of a block and to the scatter pass that split it, so the block's keys are read
+    /// `block_key_getter` belongs to the block, not to the slot: the caller passes the same one to
+    /// every slot of a block and to the scatter pass that split it, so the block's keys are read
     /// once. See `BlockKeyGetter`.
     ///
-    /// `dense_keys`, when not null, holds this bucket's dense copies of the key columns (see
-    /// `BucketScatter`); the keys are then read from the copies sequentially instead of through the
+    /// `dense_keys`, when not null, holds this slot's dense copies of the key columns (see
+    /// `SlotScatter`); the keys are then read from the copies sequentially instead of through the
     /// selector.
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
         MapsTemplate & maps,
-        size_t bucket,
         BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
@@ -199,22 +198,22 @@ public:
         Arena & pool,
         BuildResult & result);
 
-    /// Split `selector`'s rows by the bucket of `maps` each row's key routes to, returning one
-    /// selector per bucket. Inserts lock the bucket `emplace` routes each row to, which is the same
-    /// routing function used here.
+    /// Split `selector`'s rows by the slot that owns the bucket each row's key routes to, returning
+    /// one selector per slot. Inserts hold the lock of the slot they were handed, and route within
+    /// it by the same function used here, so a row can only reach a bucket that lock covers.
     ///
-    /// Mirrors `ConcurrentHashJoin::dispatchBlock`'s scatter policy: narrow fixed-size keys are
-    /// additionally scattered by copying (`BucketScatter::dense_keys`), so the insert reads them
-    /// sequentially; wider keys keep only the selectors, whose insert-side gather costs less than
-    /// copying them would.
-    static BucketScatter scatterByBucket(
+    /// Mirrors `ConcurrentHashJoin::dispatchBlock`: the row groups are the same partition of the
+    /// block, and narrow fixed-size keys are additionally scattered by copying
+    /// (`SlotScatter::dense_keys`) so the insert reads them sequentially, while wider keys keep only
+    /// the selectors, whose insert-side gather costs less than copying them would.
+    static SlotScatter scatterBySlot(
         HashJoin::Type type,
         MapsTemplate & maps,
         BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         const ScatteredBlock::Selector & selector,
-        size_t num_buckets);
+        size_t num_slots);
 
     using MapsTemplateVector = std::vector<const MapsTemplate *>;
 
@@ -246,7 +245,6 @@ private:
     static void insertFromBlockImplTypeCase(
         HashJoin & join,
         HashMap & map,
-        size_t bucket,
         BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
@@ -259,13 +257,13 @@ private:
         BuildResult & result);
 
     template <typename KeyGetter, typename HashMap>
-    static BucketScatter scatterByBucketTypeCase(
+    static SlotScatter scatterBySlotTypeCase(
         const HashMap & map,
         BlockKeyGetter & block_key_getter,
         const ColumnRawPtrs & key_columns,
         const Sizes & key_sizes,
         const ScatteredBlock::Selector & selector,
-        size_t num_buckets);
+        size_t num_slots);
 
     template <typename AddedColumns>
     static size_t switchJoinRightColumns(

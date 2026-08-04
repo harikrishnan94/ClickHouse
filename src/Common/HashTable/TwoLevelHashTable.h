@@ -17,8 +17,9 @@
   * - delay during resizes is amortized, since the small hash tables will be resized separately;
   * - in theory, resizes are cache-local in a larger range of sizes.
   *
-  * Dynamic mode (`bits_for_bucket = -1`) uses runtime bucket count with per-bucket address
-  * descriptors instead of fixed arrays.
+  * `bits_for_bucket = 0` is one bucket: routing folds to a constant, the single sub-table is stored
+  * inline, and every operation compiles to the single-level table's. It is the serial case of the
+  * same template rather than a second kind of table.
   */
 
 template <size_t initial_size_degree = 8>
@@ -66,20 +67,11 @@ protected:
 public:
     using Impl = ImplTable;
 
-    /// Helper: returns true if dynamic bucket count (runtime mode).
-    static constexpr bool isRuntimeStorage() { return bits_for_bucket == -1; }
-    /// Helper: returns true if fixed bucket count (compile-time mode).
-    static constexpr bool isFixedStorage() { return bits_for_bucket >= 0; }
-    /// Helper: returns true for a runtime bucket count over a direct-addressed table, where the
-    /// buckets route into one shared cell buffer instead of owning their cells.
-    static constexpr bool isFixedRangeStorage() { return isRuntimeStorage() && IsDirectAddressedTable<ImplTable>::value; }
+    /// Helper: returns true for a direct-addressed table, where the buckets route into one shared
+    /// cell buffer instead of owning their cells.
+    static constexpr bool isFixedRangeStorage() { return IsDirectAddressedTable<ImplTable>::value; }
 
-    /// Fixed-bucket mode only. Runtime mode (`bits_for_bucket == -1`) uses instance `bucketCount`.
-    static constexpr UInt32 numBuckets()
-    requires(isFixedStorage())
-    {
-        return static_cast<UInt32>(1) << static_cast<UInt32>(bits_for_bucket);
-    }
+    static constexpr UInt32 numBuckets() { return static_cast<UInt32>(1) << static_cast<UInt32>(bits_for_bucket); }
 
 private:
     /// Prefix sums of bucket cell-buffer sizes, shared by both storage kinds' `offsetInternal`.
@@ -112,7 +104,7 @@ private:
         /// This is for a caller that has no point at which it can say the inserting is over. A caller
         /// that does - `Unified::HashJoin`, whose `freezeMapsForProbing` runs at build finish and
         /// again after any post-build rewrite of the maps - reaches the prefix sums only through
-        /// `offsetInternalUnsafe` / `bucketPrefix`, and so never pays the once-flag check per row.
+        /// `offsetInternalUnsafe`, and so never pays the once-flag check per row.
         template <typename BucketAt>
         size_t offset(UInt32 bucket_count, BucketAt && bucket_at, size_t buck, size_t cell_offset)
         {
@@ -129,14 +121,6 @@ private:
             return prefix[buck] + cell_offset;
         }
 
-        /// The prefix sums themselves, for a caller that indexes them per bucket rather than
-        /// asking for one offset at a time. Same precondition as `offsetUnsafe`.
-        const size_t * data() const
-        {
-            chassert(computed);
-            return prefix.data();
-        }
-
     private:
         std::vector<size_t> prefix;
         std::once_flag compute_once;
@@ -146,8 +130,6 @@ private:
     class FixedStorage
     {
     private:
-        /// `std::conditional_t` names this class even when dynamic(), so the bucket
-        /// count must stay well-formed there; the class is not instantiated in that mode.
         static constexpr UInt32 MAX_BUCKET = numBuckets() - 1;
 
     public:
@@ -180,6 +162,10 @@ private:
         {
             if (ptr->isZero(buckets[buck]))
                 return 0;
+            /// With one bucket every prefix is zero, so the offset is the sub-table's own - the same
+            /// expression a single-level table evaluates, with nothing to look up or check.
+            if constexpr (bucketCount() == 1)
+                return static_cast<size_t>(ptr - buckets[0].buf) + 1;
             const auto bucket_at = [this](UInt32 i) -> const Impl & { return buckets[i]; };
             return prefix_sums.offset(bucketCount(), bucket_at, buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
         }
@@ -188,6 +174,8 @@ private:
         {
             if (ptr->isZero(buckets[buck]))
                 return 0;
+            if constexpr (bucketCount() == 1)
+                return static_cast<size_t>(ptr - buckets[0].buf) + 1;
             return prefix_sums.offsetUnsafe(buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
         }
 
@@ -240,123 +228,6 @@ private:
         mutable BucketPrefixSums prefix_sums;
     };
 
-    class RuntimeStorage
-    {
-    public:
-        explicit RuntimeStorage(size_t num_buckets_, size_t size_hint = 0)
-            : num_buckets(validateBucketCount(num_buckets_))
-            , max_bucket(num_buckets - 1)
-            , shift(32 - std::countr_zero(num_buckets))
-            , buckets(num_buckets)
-        {
-            if (size_hint)
-                reserveBuckets(size_hint);
-        }
-
-        Impl & operator[](size_t bucket) { return buckets[bucket]; }
-        const Impl & operator[](size_t bucket) const { return buckets[bucket]; }
-
-        UInt32 bucketCount() const { return num_buckets; }
-        UInt32 maxBucket() const { return max_bucket; }
-        UInt32 bucketShift() const { return shift; }
-        UInt32 getBucketFromHash(size_t hash_value) const { return static_cast<UInt32>((hash_value >> shift) & max_bucket); }
-
-        /// The buckets, contiguously, so that a lookup handle can address bucket `i` as `[i]` from
-        /// one base pointer it resolved once.
-        const Impl * bucketsData() const { return buckets.data(); }
-
-        /// The one bucket that answers every lookup, when there is one - so a lookup handle can drop
-        /// the routing entirely rather than route every key to the same place.
-        const Impl * soleBucket() const { return num_buckets == 1 ? buckets.data() : nullptr; }
-
-        const size_t * bucketPrefix() const { return prefix_sums.data(); }
-
-        void reserve(size_t num_elements) { reserveBuckets(num_elements); }
-
-        void computeBucketPrefix() const
-        {
-            prefix_sums.compute(num_buckets, [this](UInt32 i) -> const Impl & { return buckets[i]; });
-        }
-
-        size_t offsetInternal(typename Impl::ConstLookupResult ptr, size_t buck) const
-        {
-            if (ptr->isZero(buckets[buck]))
-                return 0;
-            const auto bucket_at = [this](UInt32 i) -> const Impl & { return buckets[i]; };
-            return prefix_sums.offset(num_buckets, bucket_at, buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
-        }
-
-        size_t offsetInternalUnsafe(typename Impl::ConstLookupResult ptr, size_t buck) const
-        {
-            if (ptr->isZero(buckets[buck]))
-                return 0;
-            return prefix_sums.offsetUnsafe(buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
-        }
-
-        /// The iteration partition. Here a bucket owns its cells, so it coincides with the bucket
-        /// partition; a storage that routes into shared cells reports its own partition instead.
-        UInt32 iterationBuckets() const { return num_buckets; }
-        UInt32 lastIterationBucket() const { return max_bucket; }
-
-        size_t size() const
-        {
-            size_t res = 0;
-            for (UInt32 i = 0; i < num_buckets; ++i)
-                res += buckets[i].size();
-            return res;
-        }
-
-        bool empty() const
-        {
-            for (UInt32 i = 0; i < num_buckets; ++i)
-                if (!buckets[i].empty())
-                    return false;
-            return true;
-        }
-
-        size_t getBufferSizeInBytes() const
-        {
-            size_t res = 0;
-            for (UInt32 i = 0; i < num_buckets; ++i)
-                res += buckets[i].getBufferSizeInBytes();
-            return res;
-        }
-
-        size_t getBufferSizeInCells() const
-        {
-            size_t res = 0;
-            for (UInt32 i = 0; i < num_buckets; ++i)
-                res += buckets[i].getBufferSizeInCells();
-            return res;
-        }
-
-        template <typename Func>
-        void ALWAYS_INLINE forEachMapped(Func && func)
-        {
-            for (UInt32 i = 0; i < num_buckets; ++i)
-                buckets[i].forEachMapped(func);
-        }
-
-    private:
-        static UInt32 validateBucketCount(size_t num_buckets)
-        {
-            chassert(num_buckets >= 1 && std::has_single_bit(num_buckets));
-            return static_cast<UInt32>(num_buckets);
-        }
-
-        void reserveBuckets(size_t num_elements)
-        {
-            for (auto & bucket : buckets)
-                bucket.reserve(num_elements / num_buckets);
-        }
-
-        const UInt32 num_buckets;
-        const UInt32 max_bucket;
-        const UInt32 shift;
-        std::vector<Impl> buckets;
-        mutable BucketPrefixSums prefix_sums;
-    };
-
     /** Storage for a direct-addressed `Impl`, where the cell for a key is `buf[key]`.
       *
       * There is exactly one table, covering the whole key space, and every bucket IS that table.
@@ -371,32 +242,31 @@ private:
       */
     class FixedRangeStorage
     {
+    private:
+        static constexpr UInt32 MAX_BUCKET = numBuckets() - 1;
+
     public:
-        explicit FixedRangeStorage(size_t num_buckets_, size_t /*size_hint*/ = 0)
-            : num_buckets(validateBucketCount(num_buckets_))
-            , max_bucket(num_buckets - 1)
-            , shift(32 - std::countr_zero(num_buckets))
+        FixedRangeStorage()
         {
             /// `min`/`max` are plain members written by every `emplace`, so bucket-parallel inserts
-            /// would race on them. One bucket means a serialized build, where the optimization is
-            /// both safe and worth keeping.
-            if (num_buckets > 1)
-                flat.disableMinMaxOptimization();
+            /// would race on them, and the bucket count alone does not say whether the build is
+            /// parallel. The optimization only bounds iteration - lookups never consult it - so it
+            /// is dropped rather than made conditional.
+            flat.disableMinMaxOptimization();
+        }
+
+        explicit FixedRangeStorage(size_t /*size_hint*/)
+            : FixedRangeStorage()
+        {
         }
 
         Impl & operator[](size_t) { return flat; }
         const Impl & operator[](size_t) const { return flat; }
 
-        UInt32 bucketCount() const { return num_buckets; }
-        UInt32 maxBucket() const { return max_bucket; }
-        UInt32 bucketShift() const { return shift; }
-        UInt32 getBucketFromHash(size_t hash_value) const { return static_cast<UInt32>((hash_value >> shift) & max_bucket); }
-
-        /// Every bucket is the flat table, so it is also the sole one a lookup handle needs, whatever
-        /// the bucket count - routing here decides a lock, and a lookup takes none.
-        const Impl * bucketsData() const { return &flat; }
-        const Impl * soleBucket() const { return &flat; }
-        static constexpr const size_t * bucketPrefix() { return nullptr; }
+        static constexpr UInt32 bucketCount() { return MAX_BUCKET + 1; }
+        static constexpr UInt32 maxBucket() { return MAX_BUCKET; }
+        static constexpr UInt32 bucketShift() { return 32 - bits_for_bucket; }
+        static size_t getBucketFromHash(size_t hash_value) { return (hash_value >> bucketShift()) & MAX_BUCKET; }
 
         /// One flat pass: buckets share the cells, so iterating per bucket would repeat the table.
         static constexpr UInt32 iterationBuckets() { return 1; }
@@ -423,22 +293,10 @@ private:
         size_t offsetInternalUnsafe(typename Impl::ConstLookupResult ptr) const { return flat.offsetInternal(ptr); }
 
     private:
-        static UInt32 validateBucketCount(size_t num_buckets_)
-        {
-            chassert(num_buckets_ >= 1 && std::has_single_bit(num_buckets_));
-            return static_cast<UInt32>(num_buckets_);
-        }
-
         Impl flat;
-        const UInt32 num_buckets;
-        const UInt32 max_bucket;
-        const UInt32 shift;
     };
 
-    using Storage = std::conditional_t<
-        isFixedRangeStorage(),
-        FixedRangeStorage,
-        std::conditional_t<isRuntimeStorage(), RuntimeStorage, FixedStorage>>;
+    using Storage = std::conditional_t<isFixedRangeStorage(), FixedRangeStorage, FixedStorage>;
 
 public:
     using key_type = typename Impl::key_type;
@@ -450,26 +308,19 @@ public:
 
     Storage impls;
 
-    TwoLevelHashTable()
-    requires(isFixedStorage())
-    = default;
+    TwoLevelHashTable() = default;
 
     explicit TwoLevelHashTable(size_t size_hint)
-    requires(isFixedStorage())
         : impls(size_hint)
     {
     }
 
-    explicit TwoLevelHashTable(size_t num_buckets, size_t size_hint = 0)
-    requires(isRuntimeStorage())
-        : impls(num_buckets, size_hint)
-    {
-    }
-
     /// Copy the data from another (normal) hash table. It should have the same hash function.
+    /// Constrained so that an integer literal cannot pick this over the size-hint constructor, which
+    /// it would otherwise be a better match for.
     template <typename Source>
+    requires(!std::is_arithmetic_v<Source>)
     explicit TwoLevelHashTable(const Source & src)
-    requires(isFixedStorage())
     {
         typename Source::const_iterator it = src.begin();
 
@@ -491,21 +342,10 @@ public:
 
     size_t hash(const Key & x) const { return Hash::operator()(x); }
 
-    template <Int32 bits_for_bucket_param = bits_for_bucket>
-    static size_t getBucketFromHash(size_t hash_value)
-    requires(bits_for_bucket_param >= 0)
-    {
-        return FixedStorage::getBucketFromHash(hash_value);
-    }
+    static size_t ALWAYS_INLINE getBucketFromHash(size_t hash_value) { return Storage::getBucketFromHash(hash_value); }
 
-    UInt32 ALWAYS_INLINE getBucketFromHash(size_t hash_value) const
-    requires(isRuntimeStorage())
-    {
-        return impls.getBucketFromHash(hash_value);
-    }
-
-    UInt32 bucketCount() const { return impls.bucketCount(); }
-    UInt32 bucketShift() const { return impls.bucketShift(); }
+    static constexpr UInt32 bucketCount() { return Storage::bucketCount(); }
+    static constexpr UInt32 bucketShift() { return Storage::bucketShift(); }
 
     void reserve(size_t num_elements) { impls.reserve(num_elements); }
 
@@ -516,182 +356,6 @@ public:
             return cell_hash_value;
         else
             return BucketHash{}(key);
-    }
-
-    /** A handle for looking keys up in this table, held across a run of lookups.
-      *
-      * Which bucket a hash selects, and where that bucket's cells live, stops changing once the
-      * table stops growing - but it is fixed in memory, not in the code, so reaching a cell means
-      * loading the bucket array, then that bucket's table, then its buffer. A handle resolves that
-      * routing state once, so a lookup loop pays for it once instead of once per key; where there is
-      * nothing to route - a single bucket, or buckets sharing one cell buffer - a lookup through the
-      * handle is exactly a single-level table's lookup.
-      *
-      * `has_sole` is fixed for the handle's lifetime and chosen once per probe block: with a sole
-      * bucket, `find` / `findWithOffset` / `prefetch` compile as the flat single-level forms (no
-      * per-row branch, no prefix add, no routing to carry). Callers must pick the specialisation
-      * that matches the table (`withProber` does that); mixing them is a bug.
-      *
-      * A caller that needs a matched cell's global offset asks for it from the same call
-      * (`findWithOffset`) rather than afterwards. That is not a convenience: which bucket a lookup
-      * routed to is not recoverable from the cell pointer - recovering it means re-hashing the key,
-      * which for a cell that does not save its hash is the whole hash again - so answering
-      * afterwards means the handle holds the routing across the call. Holding it means storing it,
-      * and a per-row store to a `size_t` field the compiler cannot separate from the prefix array
-      * forces the handle's invariants to be reloaded per row as well. Reporting both at once leaves
-      * the handle read-only, so all of it stays in registers.
-      *
-      * A handle belongs to one thread, and is valid only while the table's buckets keep their
-      * buffers - that is, for as long as nothing inserts into the table.
-      */
-    template <bool has_sole>
-    class Prober
-    {
-    public:
-        static constexpr bool is_sole = has_sole;
-
-        using key_type = typename Self::key_type;
-        using mapped_type = typename Self::mapped_type;
-        using value_type = typename Self::value_type;
-        using cell_type = typename Self::cell_type;
-        using LookupResult = typename Self::ConstLookupResult;
-        using ConstLookupResult = typename Self::ConstLookupResult;
-
-        explicit Prober(const Self & table_)
-            : table(&table_)
-            , state(table_)
-        {
-        }
-
-        size_t ALWAYS_INLINE hash(const Key & x) const { return table->hash(x); }
-
-        ConstLookupResult ALWAYS_INLINE find(Key x, size_t hash_value) const
-        {
-            if constexpr (has_sole)
-                return state.sole->find(x, hash_value);
-            else
-                return routedBucket(x, hash_value)->find(x, hash_value);
-        }
-
-        ConstLookupResult ALWAYS_INLINE find(Key x) const { return find(x, hash(x)); }
-
-        /// `find`, also reporting the global cell offset of the cell it returns, as
-        /// `TwoLevelHashTable` numbers them; zero when nothing was found. Zero is reserved for the
-        /// zero-key cell, in every bucket, exactly as a single-level table reserves it - only one
-        /// bucket can hold that cell, since the zero key routes like any other. With a sole bucket
-        /// the offset is the flat one: the bucket prefix is identically zero, so there is nothing to
-        /// add. See the class comment for why this is one call and not two.
-        ///
-        /// Precondition, inherited from `bucketPrefix()`: `computeBucketPrefix()` has been called
-        /// since the last change to any bucket's capacity.
-        ConstLookupResult ALWAYS_INLINE findWithOffset(Key x, size_t hash_value, size_t & offset) const
-        {
-            if constexpr (has_sole)
-            {
-                const ConstLookupResult ptr = state.sole->find(x, hash_value);
-                offset = ptr ? state.sole->offsetInternal(ptr) : 0;
-                return ptr;
-            }
-            else
-            {
-                const size_t bucket = routedBucketIndex(x, hash_value);
-                const Impl * routed = state.buckets + bucket;
-                const ConstLookupResult ptr = routed->find(x, hash_value);
-                const size_t offset_in_bucket = ptr ? routed->offsetInternal(ptr) : 0;
-                offset = offset_in_bucket ? state.prefix[bucket] + offset_in_bucket : 0;
-                return ptr;
-            }
-        }
-
-        ConstLookupResult ALWAYS_INLINE findWithOffset(Key x, size_t & offset) const { return findWithOffset(x, hash(x), offset); }
-
-        /// Same contract as `TwoLevelHashTable::prefetch`, and declared under the same constraint so
-        /// that callers testing for the member only see it when the underlying table can prefetch.
-        template <typename KeyHolder>
-        void ALWAYS_INLINE prefetch(KeyHolder && key_holder) const
-        requires requires(const Impl & impl, size_t key_hash) { impl.prefetchByHash(key_hash); }
-        {
-            const auto & key = keyHolderGetKey(key_holder);
-            const auto key_hash = hash(key);
-            if constexpr (has_sole)
-                state.sole->prefetchByHash(key_hash);
-            else
-                routedBucket(key, key_hash)->prefetchByHash(key_hash);
-            keyHolderDiscardKey(key_holder);
-        }
-
-    private:
-        template <typename K>
-        size_t ALWAYS_INLINE routedBucketIndex(const K & key, size_t hash_value) const
-        requires(!has_sole)
-        {
-            return (table->bucketRoutingHash(key, hash_value) >> state.shift) & state.max_bucket;
-        }
-
-        template <typename K>
-        const Impl * ALWAYS_INLINE routedBucket(const K & key, size_t hash_value) const
-        requires(!has_sole)
-        {
-            return state.buckets + routedBucketIndex(key, hash_value);
-        }
-
-        struct SoleState
-        {
-            explicit SoleState(const Self & table_)
-                : sole(table_.impls.soleBucket())
-            {
-                chassert(sole);
-            }
-
-            const Impl * sole;
-        };
-
-        /// Read-only for the handle's lifetime, which is what lets the per-row loop keep all of it in
-        /// registers - see the class comment.
-        struct RoutedState
-        {
-            explicit RoutedState(const Self & table_)
-                : buckets(table_.impls.bucketsData())
-                , prefix(table_.impls.bucketPrefix())
-                , shift(table_.impls.bucketShift())
-                , max_bucket(table_.impls.maxBucket())
-            {
-                chassert(!table_.impls.soleBucket());
-            }
-
-            const Impl * buckets;
-            /// Where each bucket's cells start in the global numbering. Only `findWithOffset` reads
-            /// it, so a probe that does not ask for offsets never touches it.
-            const size_t * prefix;
-            UInt32 shift;
-            UInt32 max_bucket;
-        };
-
-        /// Only for the hash functions, which are stateless, so this costs no load.
-        const Self * table;
-        std::conditional_t<has_sole, SoleState, RoutedState> state;
-    };
-
-    /// Precondition: `computeBucketPrefix()` has been called since the last change to any bucket's
-    /// capacity, as for `offsetInternalUnsafe()`. `has_sole` must match whether this table has a
-    /// sole bucket; prefer `withProber` at call sites that decide once per block.
-    template <bool has_sole>
-    Prober<has_sole> prober() const
-    requires(isRuntimeStorage())
-    {
-        return Prober<has_sole>(*this);
-    }
-
-    /// Pick `Prober<true>` or `Prober<false>` once from the table's layout and invoke `f` with it.
-    /// The probe block's row loop then sees a specialised `find` / `findWithOffset` / `prefetch` with
-    /// no residual sole branch.
-    template <typename F>
-    decltype(auto) withProber(F && f) const
-    requires(isRuntimeStorage())
-    {
-        if (impls.soleBucket())
-            return std::forward<F>(f)(Prober<true>(*this));
-        return std::forward<F>(f)(Prober<false>(*this));
     }
 
 protected:
@@ -918,14 +582,12 @@ public:
     ConstLookupResult ALWAYS_INLINE find(Key x) const { return find(x, hash(x)); }
 
     void write(DB::WriteBuffer & wb) const
-    requires(isFixedStorage())
     {
         for (UInt32 i = 0; i < bucketCount(); ++i)
             impls[i].write(wb);
     }
 
     void writeText(DB::WriteBuffer & wb) const
-    requires(isFixedStorage())
     {
         for (UInt32 i = 0; i < bucketCount(); ++i)
         {
@@ -936,14 +598,12 @@ public:
     }
 
     void read(DB::ReadBuffer & rb)
-    requires(isFixedStorage())
     {
         for (UInt32 i = 0; i < bucketCount(); ++i)
             impls[i].read(rb);
     }
 
     void readText(DB::ReadBuffer & rb)
-    requires(isFixedStorage())
     {
         for (UInt32 i = 0; i < bucketCount(); ++i)
         {
@@ -975,7 +635,7 @@ public:
     /// (Re)compute the bucket prefix sums `offsetInternal` relies on. Call this once, after the
     /// last insert that may have changed a bucket's capacity, and before anything that reads the
     /// prefix sums without checking whether they are there: `offsetInternalUnsafe`, which skips the
-    /// "already computed" check `offsetInternal` pays on every call, and `prober` / `withProber`.
+    /// "already computed" check `offsetInternal` pays on every call.
     void computeBucketPrefix() const { impls.computeBucketPrefix(); }
 
     /// Lazily computes the prefix sums on first use, then reuses them - it does NOT notice later
@@ -990,6 +650,10 @@ public:
     {
         if constexpr (isFixedRangeStorage())
             return impls.offsetInternal(ptr);
+        /// One bucket routes everything to itself, so there is no bucket to recover and no re-hash
+        /// to pay for it: this is the single-level table's `ptr - buf + 1`.
+        else if constexpr (bucketCount() == 1)
+            return impls.offsetInternal(ptr, 0);
         else
             return impls.offsetInternal(ptr, getBucketFromHash(bucketRoutingHash(ptr->getKey(), ptr->getHash(*this))));
     }
@@ -1022,6 +686,8 @@ public:
     {
         if constexpr (isFixedRangeStorage())
             return impls.offsetInternalUnsafe(ptr);
+        else if constexpr (bucketCount() == 1)
+            return impls.offsetInternalUnsafe(ptr, 0);
         else
             return impls.offsetInternalUnsafe(ptr, getBucketFromHash(bucketRoutingHash(ptr->getKey(), ptr->getHash(*this))));
     }

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <Common/HashTable/HashMap.h>
+#include <Common/HashTable/PartitionedFixedHashMap.h>
 #include <Common/HashTable/TwoLevelHashTable.h>
 
 #include <bit>
@@ -10,13 +11,14 @@
 #include <vector>
 
 
-/** Tests for `TwoLevelHashTable`'s `bits_for_bucket == -1` (runtime-sized) bucket-storage mode: a
-  * bucket count fixed at construction time, and a bucket-selection hash (`BucketHash`) that may
-  * differ from the cell-placement hash. Synchronization is external, as for the underlying hash
-  * tables - concurrent tests below take their own per-bucket locks.
+/** Tests for the parts of `TwoLevelHashTable` a bucket-parallel JOIN build relies on: the one-bucket
+  * bucket count (`bits_for_bucket == 0`, where routing folds away and the table must behave as a
+  * single-level one), a bucket-selection hash (`BucketHash`) that may differ from the cell-placement
+  * hash, the prefix sums `offsetInternal` numbers cells by, and the direct-addressed storage whose
+  * buckets route into one shared buffer.
   *
-  * The fixed-bucket (`bits_for_bucket >= 0`, default) mode is covered by `gtest_hash_table.cpp`
-  * through `TwoLevelHashMap`, and shares the same class, so nothing here can affect it.
+  * Ordinary 256-bucket aggregation use is covered by `gtest_hash_table.cpp` through
+  * `TwoLevelHashMap`, and shares the same class, so nothing here can affect it.
   */
 
 namespace
@@ -26,14 +28,13 @@ using Cell = HashMapCell<UInt64, UInt64, DefaultHash<UInt64>>;
 using Impl = HashMapTable<UInt64, Cell, DefaultHash<UInt64>, TwoLevelHashTableGrower<>, HashTableAllocator>;
 
 /// A real hash for cell placement, so bucket selection can reuse it (`BucketHash = void`).
-using DynamicMap = TwoLevelHashTable<
-    UInt64,
-    Cell,
-    DefaultHash<UInt64>,
-    TwoLevelHashTableGrower<>,
-    HashTableAllocator,
-    Impl,
-    /*bits_for_bucket=*/-1>;
+template <Int32 bits>
+using MapWithBits
+    = TwoLevelHashTable<UInt64, Cell, DefaultHash<UInt64>, TwoLevelHashTableGrower<>, HashTableAllocator, Impl, bits>;
+
+/// The two bucket counts a JOIN builds with: one bucket for a serial build, 256 for a parallel one.
+using SerialMap = MapWithBits<0>;
+using ParallelMap = MapWithBits<8>;
 
 /// The `FixedHashMap` shape: the table's own hash is the identity, so it is useless for bucket
 /// selection and an independent route word has to select the bucket instead. Same arrangement
@@ -68,8 +69,6 @@ struct RouteWordBucketHash
 using IdentityCell = HashMapCell<UInt64, UInt64, IdentityHash>;
 using IdentityImpl = HashMapTable<UInt64, IdentityCell, IdentityHash, TwoLevelHashTableGrower<>, HashTableAllocator>;
 
-using BenchLookupResult = typename Impl::LookupResult;
-
 using RoutedMap = TwoLevelHashTable<
     UInt64,
     IdentityCell,
@@ -77,10 +76,10 @@ using RoutedMap = TwoLevelHashTable<
     TwoLevelHashTableGrower<>,
     HashTableAllocator,
     IdentityImpl,
-    /*bits_for_bucket=*/-1,
+    /*bits_for_bucket=*/8,
     /*BucketHash=*/RouteWordBucketHash>;
 
-void insertKeyValue(auto & map, UInt64 key, UInt64 value)
+void insertKeyValue(auto & map, auto key, UInt64 value)
 {
     typename std::decay_t<decltype(map)>::LookupResult it = nullptr;
     bool inserted = false;
@@ -93,20 +92,19 @@ void insertKeyValue(auto & map, UInt64 key, UInt64 value)
 
 /// The bucket `emplace`/`find` would route `key` to - the same routing `insertKeyValue` uses
 /// internally, exposed so concurrent tests can take the matching external per-bucket lock.
-size_t routedBucket(const auto & map, UInt64 key)
+size_t routedBucket(const auto & map, auto key)
 {
     return map.getBucketFromHash(map.bucketRoutingHash(key, map.hash(key)));
 }
 
 }
 
-TEST(TwoLevelHashTableDynamic, InsertAndFindAcrossBuckets)
+TEST(TwoLevelHashTableBuckets, InsertAndFindAcrossBuckets)
 {
-    constexpr size_t num_buckets = 256;
     constexpr UInt64 num_keys = 100000;
 
-    DynamicMap map(num_buckets);
-    ASSERT_EQ(map.bucketCount(), num_buckets);
+    ParallelMap map;
+    ASSERT_EQ(map.bucketCount(), 256u);
     ASSERT_TRUE(map.empty());
 
     for (UInt64 key = 1; key <= num_keys; ++key)
@@ -128,7 +126,7 @@ TEST(TwoLevelHashTableDynamic, InsertAndFindAcrossBuckets)
     size_t non_empty_buckets = 0;
     for (UInt32 i = 0; i < map.bucketCount(); ++i)
         non_empty_buckets += !map.impls[i].empty();
-    ASSERT_EQ(non_empty_buckets, num_buckets);
+    ASSERT_EQ(non_empty_buckets, map.bucketCount());
 
     size_t iterated = 0;
     for (auto it = map.begin(); it != map.end(); ++it)
@@ -136,10 +134,11 @@ TEST(TwoLevelHashTableDynamic, InsertAndFindAcrossBuckets)
     ASSERT_EQ(iterated, num_keys);
 }
 
-TEST(TwoLevelHashTableDynamic, DegenerateSingleBucket)
+TEST(TwoLevelHashTableBuckets, OneBucketRoutesEverythingToItself)
 {
-    DynamicMap map(1);
+    SerialMap map;
     ASSERT_EQ(map.bucketCount(), 1u);
+    ASSERT_EQ(map.bucketShift(), 32u);
 
     for (UInt64 key = 1; key <= 1000; ++key)
         insertKeyValue(map, key, key);
@@ -153,89 +152,49 @@ TEST(TwoLevelHashTableDynamic, DegenerateSingleBucket)
     ASSERT_EQ(map.getBucketFromHash(0xFFFFFFFFFFFFFFFFULL), 0u);
 }
 
-TEST(TwoLevelHashTableDynamic, BucketAddressedDirectlyStaysOneStorage)
+TEST(TwoLevelHashTableBuckets, OneBucketNumbersCellsLikeASingleLevelTable)
 {
-    /// The bucket count is a runtime value, so a single-bucket table cannot be folded away at
-    /// compile time - the build addresses `impls[bucket]` directly instead, because the caller
-    /// already routed the rows it is inserting. That has to be the same storage the table's own
-    /// routed lookups see, not a view of it that could drift.
+    /// A serial JOIN uses the one-bucket table where the classic join uses a single-level `HashMap`,
+    /// so it must number its cells the same way: the offset is the cell's own index within the one
+    /// buffer, with no bucket prefix added and nothing to compute first.
     constexpr UInt64 num_keys = 20000;
 
-    DynamicMap flat_map(1);
-    auto & cells = flat_map.impls[0];
+    SerialMap map;
+    for (UInt64 key = 1; key <= num_keys; ++key)
+        insertKeyValue(map, key, key * 9);
+
     for (UInt64 key = 1; key <= num_keys; ++key)
     {
-        BenchLookupResult it = nullptr;
-        bool inserted = false;
-        cells.emplace(key, it, inserted);
-        ASSERT_TRUE(inserted) << "key " << key;
-        new (&it->getMapped()) UInt64(key * 9);
+        auto * it = map.find(key);
+        ASSERT_NE(it, nullptr) << "key " << key;
+        /// `Impl::offsetInternal` is the single-level numbering; the two-level table must agree,
+        /// both before and after the prefix sums exist.
+        ASSERT_EQ(map.offsetInternal(it), map.impls[0].offsetInternal(it)) << "key " << key;
     }
 
-    ASSERT_EQ(flat_map.size(), num_keys);
-    for (UInt64 key = 1; key <= num_keys; ++key)
-    {
-        auto * direct = cells.find(key);
-        auto * routed = flat_map.find(key);
-        ASSERT_NE(routed, nullptr) << "key " << key;
-        ASSERT_EQ(direct, routed) << "direct and routed lookups disagreed on key " << key;
-        ASSERT_EQ(routed->getMapped(), key * 9);
-    }
-    ASSERT_EQ(cells.find(num_keys + 1), nullptr);
-    ASSERT_EQ(flat_map.find(num_keys + 1), nullptr);
-}
-
-TEST(TwoLevelHashTableDynamic, DirectBucketInsertIsFoundByRoutedLookup)
-{
-    /// The contract the build relies on: a caller that routed a key itself and inserted it straight
-    /// into that bucket must be found by the table's own routed lookup. It holds for a bucket
-    /// selection independent of the cell hash too, which is the case that has no safety net - the
-    /// insert no longer re-derives the bucket, so the two routings have to agree by construction.
-    constexpr size_t num_buckets = 64;
-    constexpr UInt64 num_keys = 20000;
-
-    RoutedMap map(num_buckets);
-    for (UInt64 key = 1; key <= num_keys; ++key)
-    {
-        auto & cells = map.impls[routedBucket(map, key)];
-        typename RoutedMap::LookupResult it = nullptr;
-        bool inserted = false;
-        cells.emplace(key, it, inserted);
-        ASSERT_TRUE(inserted) << "key " << key;
-        new (&it->getMapped()) UInt64(key * 7);
-    }
-
-    ASSERT_EQ(map.size(), num_keys);
     map.computeBucketPrefix();
-    map.withProber(
-        [&](auto prober)
-        {
-            for (UInt64 key = 1; key <= num_keys; ++key)
-            {
-                auto * it = map.find(key);
-                ASSERT_NE(it, nullptr) << "key " << key << " inserted into its bucket but not found";
-                ASSERT_EQ(it->getMapped(), key * 7);
-                ASSERT_EQ(prober.find(key), it) << "key " << key;
-            }
-        });
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        auto * it = map.find(key);
+        ASSERT_EQ(map.offsetInternalUnsafe(it), map.impls[0].offsetInternal(it)) << "key " << key;
+        ASSERT_EQ(map.offsetInternalAtBucket(it, 0), map.impls[0].offsetInternal(it)) << "key " << key;
+    }
 }
 
-TEST(TwoLevelHashTableDynamic, SizeHintReservesPerBucket)
+TEST(TwoLevelHashTableBuckets, SizeHintReservesPerBucket)
 {
-    constexpr size_t num_buckets = 64;
-    DynamicMap map(num_buckets, /*size_hint=*/num_buckets * 1024);
+    ParallelMap map(/*size_hint=*/size_t{256} * 1024);
 
     /// The hint is divided across buckets, so each bucket is pre-sized rather than the whole table.
     for (UInt32 i = 0; i < map.bucketCount(); ++i)
         ASSERT_GE(map.impls[i].getBufferSizeInCells(), 1024u);
 }
 
-TEST(TwoLevelHashTableDynamic, BucketHashDecorrelatesFromIdentityCellHash)
+TEST(TwoLevelHashTableBuckets, BucketHashDecorrelatesFromIdentityCellHash)
 {
-    constexpr size_t num_buckets = 256;
     constexpr UInt64 num_keys = 4096;
 
-    RoutedMap map(num_buckets);
+    RoutedMap map;
     for (UInt64 key = 1; key <= num_keys; ++key)
         insertKeyValue(map, key, key * 7);
 
@@ -259,33 +218,35 @@ TEST(TwoLevelHashTableDynamic, BucketHashDecorrelatesFromIdentityCellHash)
     ASSERT_EQ(map.find(num_keys + 1), nullptr);
 }
 
-TEST(TwoLevelHashTableDynamic, IsEmptyCellIsSoundUnderBucketHash)
+TEST(TwoLevelHashTableBuckets, IsEmptyCellIsSoundUnderBucketHash)
 {
     /// `isEmptyCell` is a correctness-bearing early-out for its caller
     /// (`ColumnsHashingImpl.h`: answering true means "no match" WITHOUT a `find()`), and a hash
     /// value alone cannot identify the bucket when bucket selection does not derive from it - so
     /// under a non-void `BucketHash` it must never claim emptiness.
-    RoutedMap routed(256);
+    /// A 256-bucket table holds its sub-tables inline, so it is too large to keep two of them on the
+    /// stack.
+    auto routed = std::make_unique<RoutedMap>();
     for (UInt64 key = 1; key <= 1000; ++key)
-        insertKeyValue(routed, key, key);
+        insertKeyValue(*routed, key, key);
 
     for (UInt64 key = 1; key <= 1000; ++key)
-        ASSERT_FALSE(routed.isEmptyCell(routed.hash(key)));
-    ASSERT_FALSE(routed.isEmptyCell(routed.hash(123456789)));
+        ASSERT_FALSE(routed->isEmptyCell(routed->hash(key)));
+    ASSERT_FALSE(routed->isEmptyCell(routed->hash(123456789)));
 
     /// With the default `BucketHash` the hash does identify the bucket, so the fast path stays.
-    DynamicMap plain(256);
+    auto plain = std::make_unique<ParallelMap>();
     for (UInt64 key = 1; key <= 1000; ++key)
-        insertKeyValue(plain, key, key);
+        insertKeyValue(*plain, key, key);
     for (UInt64 key = 1; key <= 1000; ++key)
-        ASSERT_FALSE(plain.isEmptyCell(plain.hash(key)));
+        ASSERT_FALSE(plain->isEmptyCell(plain->hash(key)));
 }
 
-TEST(TwoLevelHashTableDynamic, OffsetInternalIsUniquePerCell)
+TEST(TwoLevelHashTableBuckets, OffsetInternalIsUniquePerCell)
 {
     /// `HashJoin` indexes its per-offset RIGHT/FULL flags by `offsetInternal`, so offsets must be
     /// distinct across buckets - including when `BucketHash` decides the bucket.
-    RoutedMap map(64);
+    RoutedMap map;
     constexpr UInt64 num_keys = 2000;
     for (UInt64 key = 1; key <= num_keys; ++key)
         insertKeyValue(map, key, key);
@@ -301,12 +262,13 @@ TEST(TwoLevelHashTableDynamic, OffsetInternalIsUniquePerCell)
     }
 }
 
-TEST(TwoLevelHashTableDynamic, OffsetInternalUnsafeMatchesSafeAfterComputeBucketPrefix)
+TEST(TwoLevelHashTableBuckets, OffsetInternalUnsafeMatchesSafeAfterComputeBucketPrefix)
 {
-    /// `computeBucketPrefix()` + `offsetInternalUnsafe()` is the hot-loop pattern: compute the
-    /// prefix sums once ahead of a per-row loop, then look up offsets without paying the
-    /// "already computed" check `offsetInternal()` makes on every call. The two must agree.
-    RoutedMap map(64);
+    /// `computeBucketPrefix()` + `offsetInternalUnsafe()` is the hot-loop pattern
+    /// (`Unified::HashJoin::freezeMapsForProbing` then the probe): compute the prefix sums once when
+    /// the build ends, then look up offsets without paying the "already computed" check
+    /// `offsetInternal()` makes on every call. The two must agree.
+    RoutedMap map;
     constexpr UInt64 num_keys = 2000;
     for (UInt64 key = 1; key <= num_keys; ++key)
         insertKeyValue(map, key, key);
@@ -325,17 +287,16 @@ TEST(TwoLevelHashTableDynamic, OffsetInternalUnsafeMatchesSafeAfterComputeBucket
     }
 }
 
-TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
+TEST(TwoLevelHashTableBuckets, ConcurrentBuildWithExternalBucketLocks)
 {
-    /// Runtime-sized storage does not synchronize internally - callers do, exactly as for the
-    /// underlying hash tables. N worker threads insert directly into the one shared table under
-    /// external per-bucket locks; growth of one bucket must not disturb another.
-    constexpr size_t num_buckets = 256;
+    /// The table does not synchronize internally - callers do, exactly as for the underlying hash
+    /// tables. N worker threads insert into the one shared table under external per-bucket locks;
+    /// growth of one bucket must not disturb another.
     constexpr size_t num_threads = 16;
     constexpr UInt64 keys_per_thread = 20000;
 
-    DynamicMap map(num_buckets);
-    std::vector<std::mutex> bucket_mutexes(num_buckets);
+    ParallelMap map;
+    std::vector<std::mutex> bucket_mutexes(map.bucketCount());
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
@@ -355,69 +316,23 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithExternalBucketLocks)
         thread.join();
 
     ASSERT_EQ(map.size(), num_threads * keys_per_thread);
+
+    /// Offsets are published once, after the build, and must then number every cell the parallel
+    /// build inserted exactly once.
+    map.computeBucketPrefix();
+    std::unordered_set<size_t> offsets;
     for (UInt64 key = 1; key <= num_threads * keys_per_thread; ++key)
     {
         auto * it = map.find(key);
         ASSERT_NE(it, nullptr) << "key " << key << " lost by the concurrent build";
         ASSERT_EQ(it->getMapped(), key * 5) << "mapped value of key " << key << " was corrupted";
-    }
-
-    /// A probe handle resolves the routing once, after the build, so it must find everything the
-    /// bucket-parallel build inserted and number the cells exactly as the table itself does.
-    map.computeBucketPrefix();
-    map.withProber(
-        [&](auto prober)
-        {
-            for (UInt64 key = 1; key <= num_threads * keys_per_thread; ++key)
-            {
-                size_t offset = 0;
-                const auto * cell = prober.findWithOffset(key, offset);
-                ASSERT_NE(cell, nullptr) << "key " << key << " not found through the probe handle";
-                ASSERT_EQ(cell->getMapped(), key * 5) << "key " << key;
-                ASSERT_EQ(offset, map.offsetInternal(cell)) << "key " << key;
-            }
-        });
-}
-
-TEST(TwoLevelHashTableDynamic, ProberMatchesTheTableAtEveryBucketCount)
-{
-    /// The probe handle is an alternative addressing path into the same cells: same answers, same
-    /// offsets, for a routed bucket count and for the one-bucket case it addresses directly.
-    for (size_t num_buckets = 1; num_buckets <= 64; num_buckets *= 2)
-    {
-        constexpr UInt64 num_keys = 20000;
-        DynamicMap map(num_buckets);
-        for (UInt64 key = 1; key <= num_keys; ++key)
-            insertKeyValue(map, key, key * 3);
-
-        map.computeBucketPrefix();
-        map.withProber(
-            [&](auto prober)
-            {
-                std::unordered_set<size_t> offsets;
-                for (UInt64 key = 1; key <= num_keys; ++key)
-                {
-                    size_t offset = 0;
-                    const auto * cell = prober.findWithOffset(key, offset);
-                    ASSERT_NE(cell, nullptr) << num_buckets << " buckets, key " << key;
-                    ASSERT_EQ(cell, map.find(key)) << num_buckets << " buckets, key " << key;
-                    ASSERT_EQ(cell->getMapped(), key * 3) << num_buckets << " buckets, key " << key;
-                    ASSERT_EQ(offset, map.offsetInternal(cell)) << num_buckets << " buckets, key " << key;
-                    ASSERT_TRUE(offsets.insert(offset).second) << num_buckets << " buckets, duplicate offset for key " << key;
-                }
-
-                for (UInt64 key = num_keys + 1; key <= num_keys + 1000; ++key)
-                {
-                    size_t offset = 0;
-                    ASSERT_EQ(prober.findWithOffset(key, offset), nullptr)
-                        << num_buckets << " buckets, key " << key << " should be missing";
-                    ASSERT_EQ(offset, 0u) << num_buckets << " buckets, missing key " << key << " must report offset 0";
-                }
-            });
+        const size_t offset = map.offsetInternalUnsafe(it);
+        ASSERT_EQ(offset, map.offsetInternal(it)) << "key " << key;
+        ASSERT_TRUE(offsets.insert(offset).second) << "duplicate offset for key " << key;
     }
 }
 
-TEST(TwoLevelHashTableDynamic, BucketSelectionMatchesJoinHashRouteSlot)
+TEST(TwoLevelHashTableBuckets, BucketSelectionMatchesJoinHashRouteSlot)
 {
     /// A build/probe contract: `ConcurrentHashJoin` computes a row's target partition with
     /// `joinHashRouteSlot`, and the table must pick the same partition for the same hash, or probe
@@ -425,12 +340,10 @@ TEST(TwoLevelHashTableDynamic, BucketSelectionMatchesJoinHashRouteSlot)
     /// differently - `(UInt32)h >> (32 - b)` against `(h >> (32 - b)) & (2^b - 1)` - so pin them
     /// against each other over both bucket counts and hash shapes, including the high bits that
     /// only one of the two expressions sees.
-    for (size_t num_buckets = 1; num_buckets <= 256; num_buckets *= 2)
+    auto check = [](auto & map)
     {
-        DynamicMap map(num_buckets);
-        const auto route_shift = static_cast<UInt32>(32 - std::countr_zero(num_buckets));
+        const auto route_shift = static_cast<UInt32>(32 - std::countr_zero(map.bucketCount()));
         ASSERT_EQ(map.bucketShift(), route_shift);
-        ASSERT_EQ(map.bucketCount(), num_buckets);
 
         for (const size_t hash_value : {size_t(0),
                                         size_t(1),
@@ -442,16 +355,24 @@ TEST(TwoLevelHashTableDynamic, BucketSelectionMatchesJoinHashRouteSlot)
                                         size_t(0x00000000DEADBEEFULL)})
         {
             ASSERT_EQ(map.getBucketFromHash(hash_value), joinHashRouteSlot(hash_value, route_shift))
-                << "num_buckets " << num_buckets << ", hash " << hash_value;
+                << "num_buckets " << map.bucketCount() << ", hash " << hash_value;
         }
-    }
+    };
+
+    MapWithBits<0> one_bucket;
+    MapWithBits<1> two_buckets;
+    MapWithBits<4> sixteen_buckets;
+    auto full = std::make_unique<MapWithBits<8>>();
+    check(one_bucket);
+    check(two_buckets);
+    check(sixteen_buckets);
+    check(*full);
 }
 
-TEST(TwoLevelHashTableDynamic, ReserveSizesEveryBucket)
+TEST(TwoLevelHashTableBuckets, ReserveSizesEveryBucket)
 {
-    constexpr size_t num_buckets = 128;
-    DynamicMap map(num_buckets);
-    map.reserve(num_buckets * 2048);
+    ParallelMap map;
+    map.reserve(map.bucketCount() * 2048);
 
     for (UInt32 i = 0; i < map.bucketCount(); ++i)
         ASSERT_GE(map.impls[i].getBufferSizeInCells(), 2048u);
@@ -464,9 +385,9 @@ TEST(TwoLevelHashTableDynamic, ReserveSizesEveryBucket)
         ASSERT_NE(map.find(key), nullptr);
 }
 
-TEST(TwoLevelHashTableDynamic, ForEachMappedVisitsEveryBucket)
+TEST(TwoLevelHashTableBuckets, ForEachMappedVisitsEveryBucket)
 {
-    DynamicMap map(64);
+    ParallelMap map;
     constexpr UInt64 num_keys = 5000;
     for (UInt64 key = 1; key <= num_keys; ++key)
         insertKeyValue(map, key, key);
@@ -489,7 +410,7 @@ TEST(TwoLevelHashTableDynamic, ForEachMappedVisitsEveryBucket)
     }
 }
 
-TEST(TwoLevelHashTableDynamic, OffsetsStayValidAfterRecomputingPrefixPostGrowth)
+TEST(TwoLevelHashTableBuckets, OffsetsStayValidAfterRecomputingPrefixPostGrowth)
 {
     /// `offsetInternal()`'s prefix-sum cache is computed once, lazily, on first use, and does NOT
     /// notice later bucket growth on its own - there is no internal tracking of buffer changes,
@@ -497,7 +418,7 @@ TEST(TwoLevelHashTableDynamic, OffsetsStayValidAfterRecomputingPrefixPostGrowth)
     /// underlying hash tables). `StorageJoin` can insert again after offsets have already been
     /// handed out, so a caller that needs correct offsets afterward must call
     /// `computeBucketPrefix()` again itself before trusting further offsets.
-    DynamicMap map(16);
+    MapWithBits<4> map;
     for (UInt64 key = 1; key <= 200; ++key)
         insertKeyValue(map, key, key);
 
@@ -525,14 +446,14 @@ TEST(TwoLevelHashTableDynamic, OffsetsStayValidAfterRecomputingPrefixPostGrowth)
     }
 }
 
-TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithContendedKeys)
+TEST(TwoLevelHashTableBuckets, ConcurrentBuildWithContendedKeys)
 {
     /// Same, but every thread inserts the SAME key range through external bucket locks, so
     /// threads collide on cells inside a bucket instead of only on the bucket itself.
     constexpr size_t num_threads = 16;
     constexpr UInt64 num_keys = 5000;
 
-    DynamicMap map(64);
+    MapWithBits<6> map;
     std::vector<std::mutex> bucket_mutexes(map.bucketCount());
 
     std::vector<std::thread> threads;
@@ -558,4 +479,52 @@ TEST(TwoLevelHashTableDynamic, ConcurrentBuildWithContendedKeys)
         ASSERT_NE(it, nullptr);
         ASSERT_EQ(it->getMapped(), key * 11);
     }
+}
+
+TEST(TwoLevelHashTableBuckets, DirectAddressedBucketsRouteIntoOneBuffer)
+{
+    /// `PartitionedFixedHashMap` is direct-addressed: `buf[key]` finds the cell, so every bucket IS
+    /// the one flat table and the bucket only names a lock. Memory, addressing and offsets must
+    /// therefore be those of a plain `FixedHashMap`, while routing still spreads keys over buckets
+    /// so that a bucket-parallel build gets disjointness.
+    using RangeMap = PartitionedFixedHashMap<UInt16, UInt64>;
+
+    RangeMap map;
+    ASSERT_EQ(map.bucketCount(), 256u);
+
+    constexpr UInt64 num_keys = 4096;
+    for (UInt64 key = 1; key <= num_keys; ++key)
+        insertKeyValue(map, static_cast<UInt16>(key), key * 3);
+
+    ASSERT_EQ(map.size(), num_keys);
+
+    /// One buffer: every bucket reports the same one, and the whole table is not counted per bucket.
+    for (UInt32 i = 1; i < map.bucketCount(); ++i)
+        ASSERT_EQ(map.impls[i].getBufferSizeInBytes(), map.impls[0].getBufferSizeInBytes());
+    ASSERT_EQ(map.getBufferSizeInBytes(), map.impls[0].getBufferSizeInBytes());
+
+    /// Routing must still spread the keys, or a parallel build would serialize on one lock.
+    std::unordered_set<size_t> used_buckets;
+    for (UInt64 key = 1; key <= num_keys; ++key)
+        used_buckets.insert(routedBucket(map, static_cast<UInt16>(key)));
+    ASSERT_GT(used_buckets.size(), 200u) << "keys did not spread over the routing buckets";
+
+    /// Offsets are already global here - there is only one buffer to be an offset into - and every
+    /// populated cell must still get a distinct one.
+    std::unordered_set<size_t> offsets;
+    for (UInt64 key = 1; key <= num_keys; ++key)
+    {
+        auto * it = map.find(static_cast<UInt16>(key));
+        ASSERT_NE(it, nullptr) << "key " << key;
+        ASSERT_EQ(it->getMapped(), key * 3);
+        const size_t offset = map.offsetInternal(it);
+        ASSERT_LE(offset, map.getBufferSizeInCells());
+        ASSERT_TRUE(offsets.insert(offset).second) << "duplicate offset for key " << key;
+    }
+
+    /// Iteration visits each populated cell once, not once per bucket.
+    size_t iterated = 0;
+    for (auto it = map.begin(); it != map.end(); ++it)
+        ++iterated;
+    ASSERT_EQ(iterated, num_keys);
 }
