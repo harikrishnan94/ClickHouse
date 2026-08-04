@@ -141,13 +141,17 @@ BuildResult insertIntoSlots(
     UInt32 stored_block_no,
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
-    size_t num_buckets)
+    size_t num_buckets,
+    std::vector<char> & slot_space_reserved,
+    size_t reserve_hint,
+    size_t max_reserve_bytes)
 {
     BuildResult result;
 
     const size_t num_slots = locks.size();
     chassert(pools.size() == num_slots);
     chassert(per_slot.size() == num_slots);
+    chassert(slot_space_reserved.size() == num_slots);
     chassert(num_slots >= 1);
 
     /// Summed here and published once below rather than added to the shared counter per slot: the
@@ -172,6 +176,21 @@ BuildResult insertIntoSlots(
         /// Measured under the slot's own lock, so the growth this insert caused is attributed
         /// exactly once even while other threads are growing other slots.
         const size_t bytes_before = slot_bytes(slot);
+
+        /// The reserve is applied here, by the thread that takes the slot's first block, rather
+        /// than eagerly at construction - the same lazy, slot-parallel placement as
+        /// `reserveSpaceInHashMaps` in `ConcurrentHashJoin`. Reserving in the constructor clears
+        /// every bucket's buffer on one thread before the pipeline exists: measured as ~220 ms of
+        /// serial wall per query for a 67M-key hint, which was the whole remaining gap to
+        /// `parallel_hash` on large builds. Counted inside the bytes delta, as
+        /// `ConcurrentHashJoin` counts its own; `clampReserve` keeps it under the spill trigger.
+        if (reserve_hint && !slot_space_reserved[slot])
+        {
+            const size_t reserved = map.reserveSlot(type, slot, num_slots, reserve_hint, max_reserve_bytes);
+            if (reserved)
+                ProfileEvents::increment(ProfileEvents::HashJoinPreallocatedElementsInHashTables, reserved);
+            slot_space_reserved[slot] = 1;
+        }
 
         BuildResult slot_result;
         Methods::insertFromBlockImpl(
@@ -468,6 +487,9 @@ HashJoin::HashJoin(
         dataMapInit(maps);
 
     bucket_locks = std::vector<BucketLock>(num_slots);
+    map_size_hint = sizeHintForMaps();
+    map_reserve_bytes_cap = table_join->maxBytesBeforeExternalJoin();
+    slot_space_reserved.assign(data->maps.size(), std::vector<char>(num_slots, 0));
 
     /// `bucket_bytes` tracks insert deltas only; do not seed it from empty map buffers here or
     /// `SpillingHashJoin` sees ~1 MiB before the first row and spills immediately.
@@ -637,11 +659,10 @@ void HashJoin::dataMapInit(MapsVariant & map)
     if (!data)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin::dataMapInit called with empty data");
 
-    const size_t size_hint = sizeHintForMaps();
-    const size_t max_reserve_bytes = table_join->maxBytesBeforeExternalJoin();
-    if (size_hint)
-        ProfileEvents::increment(ProfileEvents::HashJoinPreallocatedElementsInHashTables, size_hint);
-
+    /// No reserve here, deliberately: this runs on one thread, before the pipeline exists, so
+    /// sizing every bucket's buffer here is pure serial wall time. The reserve decided by
+    /// `sizeHintForMaps` is applied lazily and slot-parallel during the build instead - see
+    /// `MapsTemplate::reserveSlot`.
     const bool prefer_use_maps_all = preferUseMapsAll();
     joinDispatchInit(kind, strictness, map, prefer_use_maps_all);
     joinDispatch(
@@ -649,7 +670,7 @@ void HashJoin::dataMapInit(MapsVariant & map)
         strictness,
         map,
         prefer_use_maps_all,
-        [&](auto, auto, auto & map_) { map_.create(data->type, size_hint, max_reserve_bytes); });
+        [&](auto, auto, auto & map_) { map_.create(data->type); });
 }
 
 
@@ -1081,7 +1102,10 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                         stored_columns->block_no,
                         null_map,
                         join_mask_col,
-                        map.getBucketCount(data->type));
+                        map.getBucketCount(data->type),
+                        slot_space_reserved[onexpr_idx],
+                        map_size_hint,
+                        map_reserve_bytes_cap);
 
                     is_inserted = result.is_inserted;
                     if (!result.all_values_unique)
@@ -1734,8 +1758,11 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
     from_storage_join = true;
 
     /// The maps come from another join, which may have been built by a different number of threads.
-    /// The locks index the maps' slots, so they have to follow the maps.
+    /// The locks index the maps' slots, so they have to follow the maps - and so does the per-slot
+    /// reserve bookkeeping. The maps are already built, so nothing is left to reserve.
     bucket_locks = std::vector<BucketLock>(data->num_slots);
+    map_size_hint = 0;
+    slot_space_reserved.assign(data->maps.size(), std::vector<char>(data->num_slots, 1));
 
     bool flag_per_row = needUsedFlagsForPerRightTableRow(table_join);
     if (flag_per_row)
