@@ -70,25 +70,18 @@ extern const int INVALID_JOIN_ON_EXPRESSION;
 
 namespace Unified
 {
-size_t bucketCountForThreads(size_t max_threads)
-{
-    /// A single build thread cannot contend with anyone, so it gets the one-bucket layout: no
-    /// scatter pass, one hash table with the whole right side in it, and a lock it always gets.
-    if (max_threads <= 1)
-        return 1;
-
-    return NUM_HASH_TABLE_BUCKETS;
-}
-
 size_t slotCountForThreads(size_t max_threads)
 {
+    /// A single build thread cannot contend with anyone, so it gets one slot and the one-bucket
+    /// maps: no scatter pass, one hash table with the whole right side in it, and a lock it always
+    /// gets.
     if (max_threads <= 1)
         return 1;
 
     /// Rounded up to a power of two, exactly how `ConcurrentHashJoin` sizes its slots
-    /// (`toPowerOfTwo(std::min(slots, 256))`), and capped at the HT bucket count so every slot
-    /// owns at least one HT bucket. A power of two divides `NUM_HASH_TABLE_BUCKETS`, so all slots
-    /// own equally many buckets. Routing uses Lemire fastmod either way.
+    /// (`toPowerOfTwo(std::min(slots, 256))`), and capped at the HT bucket count so every slot owns
+    /// at least one HT bucket. A power of two divides `NUM_HASH_TABLE_BUCKETS`, so all slots own
+    /// equally many buckets and `slotForBucket` is a mask.
     return std::min<size_t>(std::bit_ceil(max_threads), NUM_HASH_TABLE_BUCKETS);
 }
 
@@ -111,24 +104,19 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, slot by slot: take a slot's lock once and,
-/// while holding it, insert every non-empty HT-bucket group the slot owns. `per_bucket[b]` holds
-/// the rows routed to HT bucket `b` by the same routing function `emplace` uses, so a group's rows
-/// all land in cells the held slot lock covers (`slotForBucket(b, num_slots, M)`).
+/// Insert one block's rows into one clause's map, slot by slot: take a slot's lock once and, while
+/// holding it, insert the rows the scatter routed to that slot. `per_slot[s]` holds the rows whose
+/// keys route to a bucket slot `s` owns, decided by the same function `emplace` routes by, so the
+/// held lock covers every cell the insert can reach (see `scatterBySlot`).
 ///
-/// The lock is taken once per slot rather than once per bucket (let alone per row). With slots
-/// about as numerous as threads, every build thread wants some slot lock nearly all of the time,
-/// so at per-bucket granularity lock acquisitions fail constantly and the build serializes: at
-/// 4 threads that measured as 9x the voluntary context switches of `parallel_hash` and a quarter
-/// of the build wall spent with threads blocked. Draining a whole slot per acquisition divides
-/// the lock round trips per block by the buckets-per-slot ratio and matches `ConcurrentHashJoin`,
-/// which also locks a slot once per block.
+/// This is `ConcurrentHashJoin::addBlockToJoin`'s loop: one lock per slot per block, `try_lock` and
+/// skip, yield when nothing is free. The difference is what the slots contain - buckets of one
+/// shared map rather than a whole `HashJoin` each - so there is nothing to merge when the build
+/// ends, and the insert routes within the slot instead of owning a table outright.
 ///
-/// Slots are drained with `try_lock`-and-skip rather than in order: a thread that finds a slot
-/// busy moves on and comes back to it later, so build threads working on different blocks
-/// interleave instead of all queueing behind whichever slot they happen to reach first.
-/// `ConcurrentHashJoin` drains its per-slot locks the same way; the difference here is that these
-/// are slots over buckets of one shared map, so there is nothing to merge when the build ends.
+/// Slots are drained with `try_lock`-and-skip rather than in order: a thread that finds a slot busy
+/// moves on and comes back to it later, so build threads working on different blocks interleave
+/// instead of all queueing behind whichever slot they happen to reach first.
 ///
 /// The scan starts at a different slot per block rather than always at zero. Every thread has to
 /// visit every slot, so threads that all scan in the same order collide on the same slot at the
@@ -138,79 +126,83 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
 /// A thread holds one slot lock at a time and takes no other lock while holding it, so the loop
 /// cannot deadlock: every slot it waits on is owned by a thread that is itself making progress.
 template <typename Methods, typename Map>
-BuildResult insertIntoBuckets(
+BuildResult insertIntoSlots(
     HashJoin & join,
     HashJoin::Type type,
     Map & map,
     std::vector<BucketLock> & locks,
     std::vector<std::unique_ptr<Arena>> & pools,
     std::atomic<size_t> & bucket_bytes,
-    const std::vector<const ScatteredBlock::Selector *> & per_bucket,
-    const std::vector<Columns> & bucket_dense_keys,
+    const std::vector<const ScatteredBlock::Selector *> & per_slot,
+    const std::vector<Columns> & slot_dense_keys,
     BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
     UInt32 stored_block_no,
     ConstNullMapPtr null_map,
-    const JoinCommon::JoinMask & join_mask)
+    const JoinCommon::JoinMask & join_mask,
+    size_t num_buckets)
 {
     BuildResult result;
 
-    const size_t num_buckets = per_bucket.size();
     const size_t num_slots = locks.size();
     chassert(pools.size() == num_slots);
+    chassert(per_slot.size() == num_slots);
     chassert(num_slots >= 1);
-    const UInt64 slot_modulo_m = lemireModuloMultiplier(static_cast<UInt32>(num_slots));
 
-    /// Summed here and published once below rather than added to the shared counter per bucket: the
-    /// counter is one cache line every build thread writes, and at `K` buckets per block that is `K`
-    /// times as many round trips of it as there are blocks. Nothing reads the total between the
-    /// buckets of one block - the size-limit check runs once the block is in - so one add per block
+    /// Summed here and published once below rather than added to the shared counter per slot: the
+    /// counter is one cache line every build thread writes, and nothing reads the total between the
+    /// slots of one block - the size-limit check runs once the block is in - so one add per block
     /// reports the same numbers.
     size_t bytes_added = 0;
 
-    auto insert_bucket = [&](size_t bucket)
+    /// The buffer bytes of the buckets this slot owns. Only those buckets can grow while the slot's
+    /// lock is held, and no other thread may touch them, so a delta taken around the insert is both
+    /// race-free and exact. The whole map's total is not: other slots grow concurrently.
+    auto slot_bytes = [&](size_t slot)
     {
-        const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
+        size_t res = pools[slot]->allocatedBytes();
+        for (size_t bucket = slot; bucket < num_buckets; bucket += num_slots)
+            res += map.getBucketBufferSizeInBytes(type, bucket);
+        return res;
+    };
 
+    auto insert_slot = [&](size_t slot)
+    {
         /// Measured under the slot's own lock, so the growth this insert caused is attributed
         /// exactly once even while other threads are growing other slots.
-        const size_t bytes_before = map.getBucketBufferSizeInBytes(type, bucket) + pools[slot]->allocatedBytes();
+        const size_t bytes_before = slot_bytes(slot);
 
-        BuildResult bucket_result;
+        BuildResult slot_result;
         Methods::insertFromBlockImpl(
             join,
             type,
             map,
-            bucket,
             block_key_getter,
             key_columns,
             key_sizes,
             stored_block_no,
-            *per_bucket[bucket],
-            bucket_dense_keys.empty() ? nullptr : &bucket_dense_keys[bucket],
+            *per_slot[slot],
+            slot_dense_keys.empty() ? nullptr : &slot_dense_keys[slot],
             null_map,
             join_mask,
             *pools[slot],
-            bucket_result);
+            slot_result);
 
-        bytes_added += map.getBucketBufferSizeInBytes(type, bucket) + pools[slot]->allocatedBytes() - bytes_before;
+        bytes_added += slot_bytes(slot) - bytes_before;
 
-        result.is_inserted |= bucket_result.is_inserted;
-        result.all_values_unique &= bucket_result.all_values_unique;
-        result.new_keys += bucket_result.new_keys;
+        result.is_inserted |= slot_result.is_inserted;
+        result.all_values_unique &= slot_result.all_values_unique;
+        result.new_keys += slot_result.new_keys;
     };
 
-    /// Which slots own at least one non-empty bucket group of this block. Function-local: a thread
-    /// drains only its own block's groups, so no other thread touches this bookkeeping.
+    /// Which slots this block has rows for. Function-local: a thread drains only its own block's
+    /// groups, so no other thread touches this bookkeeping.
     std::vector<char> slot_pending(num_slots, 0);
     size_t slots_left = 0;
-    for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+    for (size_t slot = 0; slot < num_slots; ++slot)
     {
-        if (per_bucket[bucket]->size() == 0)
-            continue;
-        const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
-        if (!slot_pending[slot])
+        if (per_slot[slot]->size() != 0)
         {
             slot_pending[slot] = 1;
             ++slots_left;
@@ -224,13 +216,13 @@ BuildResult insertIntoBuckets(
     {
         {
             std::lock_guard lock(locks[0].mutex);
-            insert_bucket(0);
+            insert_slot(0);
         }
         bucket_bytes.fetch_add(bytes_added, std::memory_order_relaxed);
         return result;
     }
 
-    const size_t first_slot = stored_block_no % num_slots;
+    const size_t first_slot = stored_block_no & (num_slots - 1);
 
     while (slots_left > 0)
     {
@@ -238,9 +230,7 @@ BuildResult insertIntoBuckets(
 
         for (size_t i = 0; i < num_slots; ++i)
         {
-            size_t slot = first_slot + i;
-            if (slot >= num_slots)
-                slot -= num_slots;
+            const size_t slot = (first_slot + i) & (num_slots - 1);
             if (!slot_pending[slot])
                 continue;
 
@@ -249,14 +239,7 @@ BuildResult insertIntoBuckets(
                 continue;
 
             made_progress = true;
-
-            /// Drain every non-empty group the slot owns while holding its lock. Slot `s` owns
-            /// exactly the buckets `s, s + num_slots, ...` because `slotForBucket` is an exact
-            /// modulo.
-            for (size_t bucket = slot; bucket < num_buckets; bucket += num_slots)
-                if (per_bucket[bucket]->size() != 0)
-                    insert_bucket(bucket);
-
+            insert_slot(slot);
             slot_pending[slot] = 0;
             --slots_left;
         }
@@ -340,10 +323,9 @@ HashJoin::HashJoin(
     , reserve_num(reserve_num_)
     , instance_id(instance_id_)
     , max_threads(std::max<size_t>(1, max_threads_))
-    , num_buckets(bucketCountForThreads(max_threads))
     , num_slots(slotCountForThreads(max_threads))
     , asof_inequality(table_join->getAsofInequality())
-    , data(std::make_shared<RightTableData>(num_buckets, num_slots))
+    , data(std::make_shared<RightTableData>(num_slots))
     , right_sample_block(*right_sample_block_)
     , max_joined_block_rows(table_join->maxJoinedBlockRows())
     , max_joined_block_bytes(table_join->maxJoinedBlockBytes())
@@ -466,7 +448,11 @@ HashJoin::HashJoin(
     if (!selected_join_method)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin cannot choose JOIN method without keys");
 
-    data->type = *selected_join_method;
+    /// A build that can run several threads at once takes the 256-bucket maps, so that its threads
+    /// insert into buckets under different slot locks; a serial build takes the one-bucket maps,
+    /// which cost what a single-level table costs. `HashJoin` picks between the same two families
+    /// here, by the same mapping (see `toTwoLevelType`).
+    data->type = useTwoLevelMaps(max_threads) ? toTwoLevelType(*selected_join_method) : *selected_join_method;
 
     LOG_TEST(
         log,
@@ -663,7 +649,7 @@ void HashJoin::dataMapInit(MapsVariant & map)
         strictness,
         map,
         prefer_use_maps_all,
-        [&](auto, auto, auto & map_) { map_.create(data->type, num_buckets, size_hint, max_reserve_bytes); });
+        [&](auto, auto, auto & map_) { map_.create(data->type, size_hint, max_reserve_bytes); });
 }
 
 
@@ -1056,45 +1042,46 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                 {
                     using Methods = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>;
 
-                    /// One selector per bucket, pointing either into the scatter's output or - when
-                    /// there is a single bucket, so routing is the identity - straight at the
+                    /// One selector per slot, pointing either into the scatter's output or - when
+                    /// there is a single slot, so the whole block goes to it - straight at the
                     /// block's own selector, which avoids materializing a copy of it.
-                    const size_t buckets = data->num_buckets;
-                    typename Methods::BucketScatter scattered;
-                    std::vector<const ScatteredBlock::Selector *> per_bucket(buckets, nullptr);
+                    const size_t slots = data->num_slots;
+                    typename Methods::SlotScatter scattered;
+                    std::vector<const ScatteredBlock::Selector *> per_slot(slots, nullptr);
 
-                    /// One key getter for the whole block: the scatter pass and every bucket's
-                    /// insert read the same key columns, and building a getter reads all of them
-                    /// (see `BlockKeyGetter`).
+                    /// One key getter for the whole block: the scatter pass and every slot's insert
+                    /// read the same key columns, and building a getter reads all of them (see
+                    /// `BlockKeyGetter`).
                     BlockKeyGetter block_key_getter;
 
-                    if (buckets == 1)
+                    if (slots == 1)
                     {
-                        per_bucket[0] = &stored_columns->selector;
+                        per_slot[0] = &stored_columns->selector;
                     }
                     else
                     {
-                        scattered = Methods::scatterByBucket(
-                            data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx], stored_columns->selector, buckets);
-                        for (size_t bucket = 0; bucket < buckets; ++bucket)
-                            per_bucket[bucket] = &scattered.selectors[bucket];
+                        scattered = Methods::scatterBySlot(
+                            data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx], stored_columns->selector, slots);
+                        for (size_t slot = 0; slot < slots; ++slot)
+                            per_slot[slot] = &scattered.selectors[slot];
                     }
 
-                    const BuildResult result = insertIntoBuckets<Methods>(
+                    const BuildResult result = insertIntoSlots<Methods>(
                         *this,
                         data->type,
                         map,
                         bucket_locks,
                         data->pools,
                         data->bucket_bytes,
-                        per_bucket,
+                        per_slot,
                         scattered.dense_keys,
                         block_key_getter,
                         key_columns,
                         key_sizes[onexpr_idx],
                         stored_columns->block_no,
                         null_map,
-                        join_mask_col);
+                        join_mask_col,
+                        map.getBucketCount(data->type));
 
                     is_inserted = result.is_inserted;
                     if (!result.all_values_unique)
@@ -2061,8 +2048,8 @@ void HashJoin::tryRerangeRightTableData()
     data->sorted = true;
 }
 
-template <bool is_signed, typename Key, typename MapsTemplate>
-void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
+template <bool is_signed, typename Key, typename SourcePtr, typename MapsTemplate>
+void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps, SourcePtr & source_ptr)
 {
     using SignedKey = std::make_signed_t<Key>;
 
@@ -2071,13 +2058,7 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
     /// ensuring they use at most around twice the memory of the source HashMap.
     static constexpr size_t MAX_RANGE_SPARSITY_FACTOR = 4;
 
-    auto & source_map = [&]() -> auto &
-    {
-        if constexpr (std::is_same_v<Key, UInt32>)
-            return *maps.key32;
-        else
-            return *maps.key64;
-    }();
+    auto & source_map = *source_ptr;
 
     if (source_map.empty() || source_map.size() > MAX_RANGE)
         return;
@@ -2120,7 +2101,7 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
     auto convert_to_fixed_hash_map = [&]<size_t size_bits>(auto & dst_map, Type type)
     {
         using RangeMap = JoinFixedHashMap<Key, Mapped, size_bits>;
-        auto range_map = std::make_shared<RangeMap>(num_buckets);
+        auto range_map = std::make_shared<RangeMap>();
         for (auto source_map_it = source_map.begin(); source_map_it != source_map.end(); ++source_map_it)
         {
             typename RangeMap::LookupResult res;
@@ -2168,7 +2149,7 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
             Type::range17_key32,
             maps.range18_key32,
             Type::range18_key32,
-            maps.key32);
+            source_ptr);
     else
         result = dispatch_conversion(
             maps.range8_key64,
@@ -2179,7 +2160,7 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
             Type::range17_key64,
             maps.range18_key64,
             Type::range18_key64,
-            maps.key64);
+            source_ptr);
 
     if (result)
         LOG_DEBUG(log, "{}Converted join hash map to fixed hash map (range: {}, keys: {})", instance_log_id, range, key_count);
@@ -2188,7 +2169,9 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps)
 bool HashJoin::canConvertToFixedHashMap() const
 {
     return !conversion_to_fixed_hash_map_attempted && data && data->rows_to_join && table_join->enableJoinFixedHashTableConversion()
-        && (data->type == Type::key32 || data->type == Type::key64) && data->maps.size() == 1 && strictness != JoinStrictness::Asof;
+        && (data->type == Type::key32 || data->type == Type::key64 || data->type == Type::two_level_key32
+            || data->type == Type::two_level_key64)
+        && data->maps.size() == 1 && strictness != JoinStrictness::Asof;
 }
 
 void HashJoin::freezeMapsForProbing()
@@ -2562,20 +2545,24 @@ void HashJoin::tryConvertToFixedHashMap()
             if constexpr (std::is_same_v<MapType, MapsOne> || std::is_same_v<MapType, MapsAll>)
             {
                 bool is_signed = !right_table_keys.getByPosition(0).type->isValueRepresentedByUnsignedInteger();
+                /// The source is whichever family this join built with; the range map it converts to
+                /// is the same either way, since its buckets only route (see `JoinFixedHashMap`).
+                auto convert = [&]<typename Key>(auto & source_ptr)
+                {
+                    if (is_signed)
+                        tryConvertToFixedHashMapImpl<true, Key>(map, source_ptr);
+                    else
+                        tryConvertToFixedHashMapImpl<false, Key>(map, source_ptr);
+                };
+
                 if (data->type == Type::key32)
-                {
-                    if (is_signed)
-                        tryConvertToFixedHashMapImpl<true, UInt32>(map);
-                    else
-                        tryConvertToFixedHashMapImpl<false, UInt32>(map);
-                }
+                    convert.template operator()<UInt32>(map.key32);
+                else if (data->type == Type::two_level_key32)
+                    convert.template operator()<UInt32>(map.two_level_key32);
+                else if (data->type == Type::key64)
+                    convert.template operator()<UInt64>(map.key64);
                 else
-                {
-                    if (is_signed)
-                        tryConvertToFixedHashMapImpl<true, UInt64>(map);
-                    else
-                        tryConvertToFixedHashMapImpl<false, UInt64>(map);
-                }
+                    convert.template operator()<UInt64>(map.two_level_key64);
             }
         },
         data->maps.front());

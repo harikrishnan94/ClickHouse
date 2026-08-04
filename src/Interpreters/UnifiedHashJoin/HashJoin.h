@@ -45,51 +45,39 @@ class JoinUsedFlags;
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods;
 
-/// The join's hash maps are two-level, in the runtime-sized mode (`bits_for_bucket == -1`), so the
-/// bucket count is a per-join value rather than part of the type.
-///
 /// A bucket is the unit of lock granularity for the build. A build thread scatters its block's rows
-/// by bucket once, then inserts each group while holding only that bucket's lock, so several
-/// threads mutate one shared map concurrently - this is what lets `unified_hash` subsume
-/// `parallel_hash` without replicating the whole join per thread. One bucket is the serial case
-/// rather than a separate code path.
-constexpr Int32 BITS_FOR_BUCKET = -1;
+/// by slot once, then inserts each group while holding only that slot's lock, so several threads
+/// mutate one shared map concurrently - this is what lets `unified_hash` subsume `parallel_hash`
+/// without replicating the whole join per thread.
+///
+/// The bucket count is part of the map's type, as it is for `HashJoin`: a serial build gets the
+/// one-bucket map and a parallel build the 256-bucket one, chosen by `Type` exactly where
+/// `HashJoin` chooses between `key64` and `two_level_key64`. One bucket is the serial case of the
+/// same template rather than a separate kind of table - routing folds to a constant and the single
+/// sub-table is stored inline, so those maps are single-table maps in everything but their name.
+constexpr Int32 BITS_FOR_BUCKET_SERIAL = 0;
+constexpr Int32 BITS_FOR_BUCKET_TWO_LEVEL = DEFAULT_BITS_FOR_BUCKET;
 
-/// Hash-table bucket count for a multi-threaded build. Fixed, and independent of the slot count
-/// that sizes locks and arenas: more HT buckets improve key-space partitioning and cache locality
-/// of each sub-table, while the slot count only needs to track build concurrency.
-constexpr size_t NUM_HASH_TABLE_BUCKETS = 256;
+/// Hash-table bucket count of the two-level maps, and the cap on the slot count that sizes locks
+/// and arenas: more HT buckets improve key-space partitioning and cache locality of each sub-table,
+/// while the slot count only needs to track build concurrency.
+constexpr size_t NUM_HASH_TABLE_BUCKETS = 1ull << BITS_FOR_BUCKET_TWO_LEVEL;
 
-/// HT bucket count for a join whose right side is built by `max_threads` threads. Single-threaded
-/// builds keep one bucket (no scatter). Multi-threaded builds always use `NUM_HASH_TABLE_BUCKETS`.
-/// The result is a power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.
-size_t bucketCountForThreads(size_t max_threads);
+/// Whether a right side built by `max_threads` threads uses the two-level maps.
+inline bool useTwoLevelMaps(size_t max_threads)
+{
+    return max_threads > 1;
+}
 
-/// Lock/arena slot count for the same join. Equals `max_threads`, capped at
-/// `NUM_HASH_TABLE_BUCKETS` so every slot owns at least one HT bucket. Not forced to a power of
-/// two: HT buckets map onto slots with Lemire fastmod. Independent of the HT bucket count.
+/// Lock/arena slot count for a join whose right side is built by `max_threads` threads. A power of
+/// two, as in `ConcurrentHashJoin`, capped at `NUM_HASH_TABLE_BUCKETS` so every slot owns at least
+/// one HT bucket; one slot for a serial build.
 size_t slotCountForThreads(size_t max_threads);
 
-/// Lemire fastmod multiplier for exact 32-bit `n % d`
-/// (https://github.com/lemire/fastmod, https://lemire.me/blog/2019/02/08/faster-remainders-when-the-divisor-is-a-constant-beating-compilers-and-libdivide/).
-/// Precomputed once per divisor. For `d == 1` the multiply wraps to 0 and `lemireFastModulo` still
-/// returns 0 for every `n`.
-inline UInt64 lemireModuloMultiplier(UInt32 d)
+/// Slot that owns HT bucket `bucket`. Both counts are powers of two, so this is a mask.
+inline size_t slotForBucket(size_t bucket, size_t num_slots)
 {
-    return static_cast<UInt64>(-1) / d + 1;
-}
-
-/// Exact `n % d` using a precomputed Lemire multiplier `M = lemireModuloMultiplier(d)`.
-inline UInt32 lemireFastModulo(UInt32 n, UInt64 M, UInt32 d)
-{
-    const UInt64 lowbits = M * n;
-    return static_cast<UInt32>((static_cast<__uint128_t>(lowbits) * d) >> 64);
-}
-
-/// Slot that owns HT bucket `bucket`. Exact `bucket % num_slots` via Lemire fastmod.
-inline size_t slotForBucket(size_t bucket, size_t num_slots, UInt64 slot_modulo_M)
-{
-    return lemireFastModulo(static_cast<UInt32>(bucket), slot_modulo_M, static_cast<UInt32>(num_slots));
+    return bucket & (num_slots - 1);
 }
 
 /// The lock guarding one slot: every HT bucket mapped to that slot in every clause's map, and that
@@ -125,7 +113,7 @@ struct BuildResult
 /// during the build rather than in probe time.
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMap
-    = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET>;
+    = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_SERIAL>;
 
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
@@ -135,7 +123,23 @@ using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     TwoLevelHashTableGrower<>,
     HashTableAllocator,
     HashMapTable,
-    BITS_FOR_BUCKET>;
+    BITS_FOR_BUCKET_SERIAL>;
+
+/// The 256-bucket counterparts, for a parallel build. These are the same instantiations
+/// `HashJoin::MapsTemplate` names `two_level_*`.
+template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
+using TwoLevelJoinHashMap
+    = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_TWO_LEVEL>;
+
+template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
+using TwoLevelJoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
+    Key,
+    Mapped,
+    Hash,
+    TwoLevelHashTableGrower<>,
+    HashTableAllocator,
+    HashMapTable,
+    BITS_FOR_BUCKET_TWO_LEVEL>;
 
 /// The direct-addressed maps (`key8`/`key16`, and `range8_key32`..`range18_key64` after the
 /// post-build range conversion). Same bucket protocol, same bucket count, but the buckets route
@@ -145,8 +149,14 @@ using JoinFixedHashMap = PartitionedFixedHashMap<Key, Mapped, size_bits>;
 
 static_assert(BucketPartitionedMap<JoinHashMap<UInt64, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinHashMapWithSavedHash<std::string_view, RowRefList>>);
+static_assert(BucketPartitionedMap<TwoLevelJoinHashMap<UInt64, RowRefList>>);
+static_assert(BucketPartitionedMap<TwoLevelJoinHashMapWithSavedHash<std::string_view, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt8, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt64, RowRefList, 18>>);
+
+/// The serial maps must cost no more than a single-level table does: one sub-table, stored inline.
+static_assert(JoinHashMap<UInt64, RowRefList>::bucketCount() == 1);
+static_assert(TwoLevelJoinHashMap<UInt64, RowRefList>::bucketCount() == NUM_HASH_TABLE_BUCKETS);
 
 /** Data structure for implementation of hash JOIN.
   * It is a hash table: keys -> rows of joined ("right") table.
@@ -330,10 +340,8 @@ public:
 
     const ColumnWithTypeAndName & rightAsofKeyColumn() const;
 
-    /// Different types of keys for maps.
-    #define UNIFIED_APPLY_FOR_JOIN_VARIANTS(M) \
-        M(key8)                        \
-        M(key16)                       \
+    /// The open-addressing maps of a serial build: one bucket each.
+    #define UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(M) \
         M(key32)                       \
         M(key64)                       \
         M(key_string)                  \
@@ -343,8 +351,29 @@ public:
         M(keys128)                     \
         M(keys256)                     \
         M(hashed)                      \
-        M(low_cardinality_key_string)       \
-        M(low_cardinality_key_fixed_string) \
+        M(low_cardinality_key_string)  \
+        M(low_cardinality_key_fixed_string)
+
+    /// Their 256-bucket counterparts, chosen for a parallel build. Same key kinds, same key getters,
+    /// same names as `HashJoin`'s.
+    #define UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M) \
+        M(two_level_key32)                       \
+        M(two_level_key64)                       \
+        M(two_level_key_string)                  \
+        M(two_level_key_fixed_string)            \
+        M(two_level_keys32)                      \
+        M(two_level_keys64)                      \
+        M(two_level_keys128)                     \
+        M(two_level_keys256)                     \
+        M(two_level_hashed)                      \
+        M(two_level_low_cardinality_key_string)  \
+        M(two_level_low_cardinality_key_fixed_string)
+
+    /// The direct-addressed maps. One flat `buf[key]` buffer whatever the bucket count, so they have
+    /// no serial counterpart: their buckets route a lock and nothing else.
+    #define UNIFIED_APPLY_FOR_FIXED_JOIN_VARIANTS(M) \
+        M(key8)                        \
+        M(key16)                       \
         M(range8_key32)                \
         M(range16_key32)               \
         M(range17_key32)               \
@@ -353,6 +382,12 @@ public:
         M(range16_key64)               \
         M(range17_key64)               \
         M(range18_key64)
+
+    /// Different types of keys for maps.
+    #define UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)          \
+        UNIFIED_APPLY_FOR_FIXED_JOIN_VARIANTS(M)        \
+        UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(M) \
+        UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M)
 
     /// Used for reading from StorageJoin and applying joinGet function. The single-LowCardinality-key
     /// maps store key values in maps physically identical to their non-LowCardinality counterparts, so
@@ -365,7 +400,13 @@ public:
         M(key_string)                          \
         M(key_fixed_string)                    \
         M(low_cardinality_key_string)          \
-        M(low_cardinality_key_fixed_string)
+        M(low_cardinality_key_fixed_string)    \
+        M(two_level_key32)                     \
+        M(two_level_key64)                     \
+        M(two_level_key_string)                \
+        M(two_level_key_fixed_string)          \
+        M(two_level_low_cardinality_key_string)\
+        M(two_level_low_cardinality_key_fixed_string)
 
     enum class Type : uint8_t
     {
@@ -382,9 +423,42 @@ public:
         {
             case Type::low_cardinality_key_string:
             case Type::low_cardinality_key_fixed_string:
+            case Type::two_level_low_cardinality_key_string:
+            case Type::two_level_low_cardinality_key_fixed_string:
                 return true;
             default:
                 return false;
+        }
+    }
+
+    /// True for the 256-bucket maps, which is what a parallel build uses.
+    static bool isTwoLevelType(Type type)
+    {
+        switch (type)
+        {
+            #define M(NAME) \
+                case Type::NAME: \
+                    return true;
+                UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M)
+            #undef M
+            default:
+                return false;
+        }
+    }
+
+    /// The 256-bucket counterpart of a key kind, for a parallel build. The direct-addressed maps are
+    /// their own counterpart - see `UNIFIED_APPLY_FOR_FIXED_JOIN_VARIANTS`.
+    static Type toTwoLevelType(Type type)
+    {
+        switch (type)
+        {
+            #define M(NAME) \
+                case Type::NAME: \
+                    return Type::two_level_##NAME;
+                UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(M)
+            #undef M
+            default:
+                return type;
         }
     }
 
@@ -408,6 +482,17 @@ public:
         std::shared_ptr<JoinHashMap<UInt128, Mapped, UInt128TrivialHash>>     hashed;
         std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>  low_cardinality_key_string;
         std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>>  low_cardinality_key_fixed_string;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt32, Mapped, HashCRC32<UInt32>>>       two_level_key32;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt64, Mapped, HashCRC32<UInt64>>>       two_level_key64;
+        std::shared_ptr<TwoLevelJoinHashMapWithSavedHash<std::string_view, Mapped>>          two_level_key_string;
+        std::shared_ptr<TwoLevelJoinHashMapWithSavedHash<std::string_view, Mapped>>          two_level_key_fixed_string;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt32, Mapped, HashCRC32<UInt32>>>       two_level_keys32;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt64, Mapped, HashCRC32<UInt64>>>       two_level_keys64;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt128, Mapped, UInt128HashCRC32>>       two_level_keys128;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt256, Mapped, UInt256HashCRC32>>       two_level_keys256;
+        std::shared_ptr<TwoLevelJoinHashMap<UInt128, Mapped, UInt128TrivialHash>>     two_level_hashed;
+        std::shared_ptr<TwoLevelJoinHashMapWithSavedHash<std::string_view, Mapped>>  two_level_low_cardinality_key_string;
+        std::shared_ptr<TwoLevelJoinHashMapWithSavedHash<std::string_view, Mapped>>  two_level_low_cardinality_key_fixed_string;
         std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 8>>                  range8_key32;
         std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 16>>                 range16_key32;
         std::shared_ptr<JoinFixedHashMap<UInt32, Mapped, 17>>                 range17_key32;
@@ -417,9 +502,9 @@ public:
         std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 17>>                 range17_key64;
         std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 18>>                 range18_key64;
 
-        /// Every variant is a bucket-partitioned table taking the same `(num_buckets, size_hint)`,
-        /// so there is one construction path rather than one per map family. The `static_assert`
-        /// below is what keeps it that way.
+        /// Every variant is a bucket-partitioned table taking the same `(size_hint)`, so there is one
+        /// construction path rather than one per map family. The `static_assert` below is what keeps
+        /// it that way.
         #define M(NAME) static_assert(BucketPartitionedMap<typename decltype(NAME)::element_type>);
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
         #undef M
@@ -443,7 +528,7 @@ public:
                 return reserve;
         }
 
-        void create(Type which, size_t buckets, size_t reserve, size_t max_reserve_bytes = 0)
+        void create(Type which, size_t reserve, size_t max_reserve_bytes = 0)
         {
             switch (which)
             {
@@ -451,7 +536,7 @@ public:
                 case Type::NAME:                                                                   \
                 {                                                                                  \
                     using Table = typename decltype(NAME)::element_type;                           \
-                    NAME = std::make_shared<Table>(buckets, clampReserve<Table>(reserve, max_reserve_bytes)); \
+                    NAME = std::make_shared<Table>(clampReserve<Table>(reserve, max_reserve_bytes)); \
                     break;                                                                         \
                 }
 
@@ -488,6 +573,19 @@ public:
             {
             #define M(NAME) \
                 case Type::NAME: return NAME ? NAME->getBufferSizeInCells() : 0;
+                UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
+            #undef M
+            }
+        }
+
+        /// The bucket count of the chosen variant. Every variant's is a compile-time constant; this
+        /// picks the one the runtime `Type` names, for code that is not templated on the map.
+        size_t getBucketCount(Type which) const
+        {
+            switch (which)
+            {
+            #define M(NAME) \
+                case Type::NAME: return decltype(NAME)::element_type::bucketCount();
                 UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
             #undef M
             }
@@ -552,28 +650,19 @@ public:
 
     struct RightTableData
     {
-        RightTableData(size_t buckets, size_t slots)
-            : num_buckets(buckets)
-            , num_slots(slots)
-            , slot_modulo_M(lemireModuloMultiplier(static_cast<UInt32>(slots)))
+        explicit RightTableData(size_t slots)
+            : num_slots(slots)
         {
             pools.reserve(slots);
             for (size_t i = 0; i < slots; ++i)
                 pools.push_back(std::make_unique<Arena>());
         }
 
-        /// How many buckets every map here was built with. Lives beside the maps rather than on the
-        /// join, because `StorageJoin` hands one `RightTableData` to joins created with a different
-        /// `max_threads`, and the locks must match the maps, not the join that took them over.
-        const size_t num_buckets;
-
-        /// How many lock/arena slots this build uses. Independent of `num_buckets`: HT buckets map
-        /// onto slots by `slotForBucket`. Same StorageJoin reason as `num_buckets` - the locks of a
-        /// join that reuses this data must match these slots.
+        /// How many lock/arena slots this build uses. Lives beside the maps rather than on the join,
+        /// because `StorageJoin` hands one `RightTableData` to joins created with a different
+        /// `max_threads`, and the locks must match the maps, not the join that took them over. HT
+        /// buckets map onto slots by `slotForBucket`.
         const size_t num_slots;
-
-        /// Lemire multiplier for exact `bucket % num_slots` (see `lemireModuloMultiplier`).
-        const UInt64 slot_modulo_M;
 
         Type type = Type::hashed;
 
@@ -601,7 +690,7 @@ public:
         /// contiguous or to be rolled back.
         std::vector<std::unique_ptr<Arena>> pools;
 
-        Arena & poolForBucket(size_t bucket) { return *pools[slotForBucket(bucket, num_slots, slot_modulo_M)]; }
+        Arena & poolForBucket(size_t bucket) { return *pools[slotForBucket(bucket, num_slots)]; }
 
         size_t poolsAllocatedBytes() const
         {
@@ -726,12 +815,10 @@ private:
     const size_t reserve_num;
     const String instance_id;
 
-    /// How many threads may call `addBlockToJoin` concurrently, and the HT-bucket / slot counts
-    /// derived from it. Every map of every clause is built with `num_buckets` buckets, so one
-    /// bucket index addresses the same partition of the key space in all of them. Locks and arenas
-    /// are sized by `num_slots`, which may be smaller: several HT buckets then share one slot.
+    /// How many threads may call `addBlockToJoin` concurrently, and the slot count derived from it.
+    /// Locks and arenas are sized by `num_slots`, which may be smaller than the maps' bucket count:
+    /// several HT buckets then share one slot.
     const size_t max_threads;
-    const size_t num_buckets;
     const size_t num_slots;
 
     std::optional<TypeIndex> asof_type;
@@ -859,8 +946,8 @@ private:
     void publishSharedRuntimeFilters();
     void tryConvertToFixedHashMap();
 
-    template <bool is_signed, typename Key, typename MapsTemplate>
-    void tryConvertToFixedHashMapImpl(MapsTemplate & maps);
+    template <bool is_signed, typename Key, typename SourcePtr, typename MapsTemplate>
+    void tryConvertToFixedHashMapImpl(MapsTemplate & maps, SourcePtr & source_ptr);
 
     /// Publishes everything the probe reads that the build deliberately left stale, so that a
     /// bucket-parallel build never writes state shared between buckets. Must run after the last

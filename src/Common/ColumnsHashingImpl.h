@@ -467,78 +467,52 @@ protected:
             return EmplaceResult(inserted);
     }
 
-    /// Whether `data` can report a matched cell's offset from the lookup itself, rather than from a
-    /// follow-up `offsetInternal`.
-    template <typename Data, typename Key>
-    static constexpr bool has_fused_offset_lookup
-        = FindResult::has_offset && requires(Data & data, Key key, size_t & offset) { data.findWithOffset(key, offset); };
-
     template <typename Data, typename Key>
     ALWAYS_INLINE FindResult findKeyImpl(Key key, Data & data)
     {
-        /// Where the table can report the offset from the lookup itself, ask it that way. The offset
-        /// is not always derivable from the cell afterwards - a partitioned table has to know which
-        /// partition the lookup routed to - so a table that is asked afterwards has to carry that
-        /// routing across the call instead of keeping it in registers. Kept as a branch of its own,
-        /// leaving the path every other table takes exactly as it was.
-        if constexpr (has_fused_offset_lookup<Data, Key>)
+        if constexpr (consecutive_keys_optimization)
         {
-            static_assert(!consecutive_keys_optimization, "`consecutive_keys_optimization` and `has_offset` are conflicting options");
-
-            size_t offset = 0;
-            auto it = data.findWithOffset(key, offset);
-
-            if constexpr (has_mapped)
-                return FindResult(it ? &it->getMapped() : nullptr, it != nullptr, offset);
-            else
-                return FindResult(it != nullptr, offset);
-        }
-        else
-        {
-            if constexpr (consecutive_keys_optimization)
+            /// It's possible to support such combination, but code will became more complex.
+            /// Now there's not place where we need this options enabled together
+            static_assert(!FindResult::has_offset, "`consecutive_keys_optimization` and `has_offset` are conflicting options");
+            if (likely(!cache.empty) && cache.check(key))
             {
-                /// It's possible to support such combination, but code will became more complex.
-                /// Now there's not place where we need this options enabled together
-                static_assert(!FindResult::has_offset, "`consecutive_keys_optimization` and `has_offset` are conflicting options");
-                if (likely(!cache.empty) && cache.check(key))
-                {
-                    if constexpr (has_mapped)
-                        return FindResult(&cache.value.second, cache.found, 0);
-                    else
-                        return FindResult(cache.found, 0);
-                }
-            }
-
-            auto it = data.find(key);
-
-            if constexpr (consecutive_keys_optimization)
-            {
-                cache.onNewValue(it != nullptr);
-
-                if constexpr (nullable)
-                    cache.is_null = false;
-
                 if constexpr (has_mapped)
-                {
-                    cache.value.first = key;
-                    if (it)
-                        cache.value.second = it->getMapped();
-                }
+                    return FindResult(&cache.value.second, cache.found, 0);
                 else
-                {
-                    cache.value = key;
-                }
+                    return FindResult(cache.found, 0);
             }
+        }
 
-            size_t offset = 0;
-            if constexpr (FindResult::has_offset)
-                offset = it ? data.offsetInternal(it) : 0;
+        auto it = data.find(key);
+
+        if constexpr (consecutive_keys_optimization)
+        {
+            cache.onNewValue(it != nullptr);
+
+            if constexpr (nullable)
+                cache.is_null = false;
 
             if constexpr (has_mapped)
-                return FindResult(it ? &it->getMapped() : nullptr, it != nullptr, offset);
+            {
+                cache.value.first = key;
+                if (it)
+                    cache.value.second = it->getMapped();
+            }
             else
-                return FindResult(it != nullptr, offset);
+            {
+                cache.value = key;
+            }
         }
+
+        size_t offset = 0;
+        if constexpr (FindResult::has_offset)
+            offset = it ? data.offsetInternal(it) : 0;
+
+        if constexpr (has_mapped)
+            return FindResult(it ? &it->getMapped() : nullptr, it != nullptr, offset);
+        else
+            return FindResult(it != nullptr, offset);
     }
 };
 

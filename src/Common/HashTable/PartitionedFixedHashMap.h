@@ -10,7 +10,9 @@
   *
   * The cells stay exactly as they are: one flat buffer of `2 ^ size_bits`, addressed by `buf[key]`.
   * Only routing is added, and routing never touches addressing, so offsets, buffer size, iteration
-  * order and memory are unchanged from a plain `FixedHashMap` at any bucket count.
+  * order and memory are unchanged from a plain `FixedHashMap` at any bucket count. That is why this
+  * map needs no serial counterpart the way the open-addressing maps do: its bucket count costs
+  * nothing but the routing arithmetic, so it always uses the default.
   */
 
 /** Routes a key to a bucket for a direct-addressed table.
@@ -68,5 +70,5 @@ using PartitionedFixedHashMap = TwoLevelHashTable<
         FixedHashTableStoredSize<FixedHashMapCell<Key, Mapped>>,
         HashTableAllocator,
         size_bits>,
-    /*bits_for_bucket=*/-1,
+    DEFAULT_BITS_FOR_BUCKET,
     FixedRangeBucketHash<fixedRangeBlockShift<FixedHashMapCell<Key, Mapped>>()>>;
