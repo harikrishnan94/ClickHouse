@@ -528,7 +528,7 @@ public:
                 return reserve;
         }
 
-        void create(Type which, size_t reserve, size_t max_reserve_bytes = 0)
+        void create(Type which)
         {
             switch (which)
             {
@@ -536,8 +536,42 @@ public:
                 case Type::NAME:                                                                   \
                 {                                                                                  \
                     using Table = typename decltype(NAME)::element_type;                           \
-                    NAME = std::make_shared<Table>(clampReserve<Table>(reserve, max_reserve_bytes)); \
+                    NAME = std::make_shared<Table>();                                              \
                     break;                                                                         \
+                }
+
+                UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
+            #undef M
+            }
+        }
+
+        /// Reserve the buckets slot `slot` owns in the variant `which` names, returning how many
+        /// elements were reserved on this slot's behalf (zero for a direct-addressed table, whose
+        /// buffer is sized by the key range rather than by any reserve).
+        ///
+        /// Called by the build thread that takes the slot's first block, under that slot's lock -
+        /// the same lazy, slot-parallel shape as `reserveSpaceInHashMaps` in `ConcurrentHashJoin`,
+        /// and for the same reason: reserving eagerly at construction clears every bucket's buffer
+        /// on one thread before the pipeline exists, which is pure serial wall time (~220 ms for a
+        /// 67M-key hint), while here the clearing is spread over the build threads and overlaps the
+        /// reading of the right side.
+        size_t reserveSlot(Type which, size_t slot, size_t slots, size_t reserve, size_t max_reserve_bytes)
+        {
+            switch (which)
+            {
+            #define M(NAME)                                                                        \
+                case Type::NAME:                                                                   \
+                {                                                                                  \
+                    using Table = typename decltype(NAME)::element_type;                           \
+                    if constexpr (Table::isFixedRangeStorage())                                    \
+                        return 0;                                                                  \
+                    else                                                                           \
+                    {                                                                              \
+                        const size_t clamped = clampReserve<Table>(reserve, max_reserve_bytes);    \
+                        for (size_t bucket = slot; bucket < Table::bucketCount(); bucket += slots) \
+                            NAME->impls[bucket].reserve(clamped / Table::bucketCount());           \
+                        return clamped / slots;                                                    \
+                    }                                                                              \
                 }
 
                 UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
@@ -843,6 +877,15 @@ private:
     mutable std::mutex blocks_mutex;
 
     mutable std::vector<BucketLock> bucket_locks;
+
+    /// The reserve decided at construction (an explicit `reserve_num`, else the statistics of
+    /// previous runs) and applied lazily, one slot at a time, by the build thread that takes the
+    /// slot's first block - see `MapsTemplate::reserveSlot`. `slot_space_reserved[clause][slot]`
+    /// says the slot's buckets were already sized; it is only read and written under that slot's
+    /// lock.
+    size_t map_size_hint = 0;
+    size_t map_reserve_bytes_cap = 0;
+    std::vector<std::vector<char>> slot_space_reserved;
 
     /// Guards the totals block, which every parallel `FillingRightJoinSideTransform` writes.
     mutable std::mutex totals_mutex;
