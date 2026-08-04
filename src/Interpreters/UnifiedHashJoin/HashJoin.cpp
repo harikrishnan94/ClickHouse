@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <any>
+#include <bit>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <vector>
 
 #include <base/getL2CacheSize.h>
@@ -83,9 +85,11 @@ size_t slotCountForThreads(size_t max_threads)
     if (max_threads <= 1)
         return 1;
 
-    /// Cap at the HT bucket count so every slot owns at least one HT bucket. Not rounded to a
-    /// power of two: routing uses Lemire fastmod.
-    return std::min(max_threads, NUM_HASH_TABLE_BUCKETS);
+    /// Rounded up to a power of two, exactly how `ConcurrentHashJoin` sizes its slots
+    /// (`toPowerOfTwo(std::min(slots, 256))`), and capped at the HT bucket count so every slot
+    /// owns at least one HT bucket. A power of two divides `NUM_HASH_TABLE_BUCKETS`, so all slots
+    /// own equally many buckets. Routing uses Lemire fastmod either way.
+    return std::min<size_t>(std::bit_ceil(max_threads), NUM_HASH_TABLE_BUCKETS);
 }
 
 size_t getMinBytesForPrefetchInJoin()
@@ -107,26 +111,29 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, HT-bucket by HT-bucket, holding only one slot's
-/// lock at a time. `per_bucket[b]` holds the rows routed to HT bucket `b` by the same routing
-/// function `emplace` uses, so a group's rows all land in cells the held slot lock covers
-/// (`slotForBucket(b, num_slots, M)`).
+/// Insert one block's rows into one clause's map, slot by slot: take a slot's lock once and,
+/// while holding it, insert every non-empty HT-bucket group the slot owns. `per_bucket[b]` holds
+/// the rows routed to HT bucket `b` by the same routing function `emplace` uses, so a group's rows
+/// all land in cells the held slot lock covers (`slotForBucket(b, num_slots, M)`).
 ///
-/// The lock is taken once per group rather than once per row. A row's insert is a handful of
-/// nanoseconds; an uncontended mutex round trip is more than that on its own, and a contended one
-/// turns into a futex wait, so per-row locking makes the build slower the more threads run it.
+/// The lock is taken once per slot rather than once per bucket (let alone per row). With slots
+/// about as numerous as threads, every build thread wants some slot lock nearly all of the time,
+/// so at per-bucket granularity lock acquisitions fail constantly and the build serializes: at
+/// 4 threads that measured as 9x the voluntary context switches of `parallel_hash` and a quarter
+/// of the build wall spent with threads blocked. Draining a whole slot per acquisition divides
+/// the lock round trips per block by the buckets-per-slot ratio and matches `ConcurrentHashJoin`,
+/// which also locks a slot once per block.
 ///
-/// HT buckets are drained with `try_lock`-and-skip rather than in order: a thread that finds a
-/// slot busy moves on and comes back to it later, so build threads working on different blocks
-/// interleave instead of all queueing behind whichever bucket they happen to reach first.
+/// Slots are drained with `try_lock`-and-skip rather than in order: a thread that finds a slot
+/// busy moves on and comes back to it later, so build threads working on different blocks
+/// interleave instead of all queueing behind whichever slot they happen to reach first.
 /// `ConcurrentHashJoin` drains its per-slot locks the same way; the difference here is that these
 /// are slots over buckets of one shared map, so there is nothing to merge when the build ends.
 ///
-/// The scan starts at a different HT bucket per block rather than always at zero. Every thread has
-/// to visit every bucket, so threads that all scan in the same order collide on the same slot at
-/// the same time; block numbers are handed out in sequence, so starting at
-/// `block_no & (num_buckets - 1)` staggers concurrent threads into taking different slots from the
-/// first attempt.
+/// The scan starts at a different slot per block rather than always at zero. Every thread has to
+/// visit every slot, so threads that all scan in the same order collide on the same slot at the
+/// same time; block numbers are handed out in sequence, so starting at `block_no % num_slots`
+/// staggers concurrent threads into taking different slots from the first attempt.
 ///
 /// A thread holds one slot lock at a time and takes no other lock while holding it, so the loop
 /// cannot deadlock: every slot it waits on is owned by a thread that is itself making progress.
@@ -139,6 +146,7 @@ BuildResult insertIntoBuckets(
     std::vector<std::unique_ptr<Arena>> & pools,
     std::atomic<size_t> & bucket_bytes,
     const std::vector<const ScatteredBlock::Selector *> & per_bucket,
+    const std::vector<Columns> & bucket_dense_keys,
     BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
     const Sizes & key_sizes,
@@ -180,6 +188,7 @@ BuildResult insertIntoBuckets(
             key_sizes,
             stored_block_no,
             *per_bucket[bucket],
+            bucket_dense_keys.empty() ? nullptr : &bucket_dense_keys[bucket],
             null_map,
             join_mask,
             *pools[slot],
@@ -192,21 +201,26 @@ BuildResult insertIntoBuckets(
         result.new_keys += bucket_result.new_keys;
     };
 
-    std::vector<char> pending(num_buckets, 0);
-    size_t buckets_left = 0;
+    /// Which slots own at least one non-empty bucket group of this block. Function-local: a thread
+    /// drains only its own block's groups, so no other thread touches this bookkeeping.
+    std::vector<char> slot_pending(num_slots, 0);
+    size_t slots_left = 0;
     for (size_t bucket = 0; bucket < num_buckets; ++bucket)
     {
-        if (per_bucket[bucket]->size() != 0)
+        if (per_bucket[bucket]->size() == 0)
+            continue;
+        const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
+        if (!slot_pending[slot])
         {
-            pending[bucket] = 1;
-            ++buckets_left;
+            slot_pending[slot] = 1;
+            ++slots_left;
         }
     }
 
     /// A block with no rows must still report `is_inserted` the way a non-empty one would, because
     /// for the map kinds that keep every block that is what decides whether the block is dropped
     /// again. Run the (empty) insert once rather than trying to predict its answer here.
-    if (buckets_left == 0)
+    if (slots_left == 0)
     {
         {
             std::lock_guard lock(locks[0].mutex);
@@ -216,48 +230,43 @@ BuildResult insertIntoBuckets(
         return result;
     }
 
-    /// `num_buckets` is a power of two (1 or `NUM_HASH_TABLE_BUCKETS`).
-    const size_t first_bucket = stored_block_no & (num_buckets - 1);
+    const size_t first_slot = stored_block_no % num_slots;
 
-    while (buckets_left > 0)
+    while (slots_left > 0)
     {
         bool made_progress = false;
 
-        for (size_t i = 0; i < num_buckets; ++i)
+        for (size_t i = 0; i < num_slots; ++i)
         {
-            const size_t bucket = (first_bucket + i) & (num_buckets - 1);
-            if (!pending[bucket])
+            size_t slot = first_slot + i;
+            if (slot >= num_slots)
+                slot -= num_slots;
+            if (!slot_pending[slot])
                 continue;
 
-            const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
             std::unique_lock lock(locks[slot].mutex, std::try_to_lock);
             if (!lock.owns_lock())
                 continue;
 
             made_progress = true;
-            insert_bucket(bucket);
-            pending[bucket] = 0;
-            --buckets_left;
+
+            /// Drain every non-empty group the slot owns while holding its lock. Slot `s` owns
+            /// exactly the buckets `s, s + num_slots, ...` because `slotForBucket` is an exact
+            /// modulo.
+            for (size_t bucket = slot; bucket < num_buckets; bucket += num_slots)
+                if (per_bucket[bucket]->size() != 0)
+                    insert_bucket(bucket);
+
+            slot_pending[slot] = 0;
+            --slots_left;
         }
 
-        /// Every remaining bucket's slot was busy. Block on one instead of spinning: the owner is
-        /// inserting, so waiting for it costs less than burning a core on `try_lock`.
+        /// Every remaining slot was busy. Yield and retry, the same policy as
+        /// `ConcurrentHashJoin::addBlockToJoin`: blocking on the mutex would park the thread in a
+        /// futex wait whose wake-up latency stalls the build, while a yielded thread stays
+        /// runnable and takes the slot the moment its owner releases it.
         if (!made_progress)
-        {
-            for (size_t i = 0; i < num_buckets; ++i)
-            {
-                const size_t bucket = (first_bucket + i) & (num_buckets - 1);
-                if (!pending[bucket])
-                    continue;
-
-                const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
-                std::lock_guard lock(locks[slot].mutex);
-                insert_bucket(bucket);
-                pending[bucket] = 0;
-                --buckets_left;
-                break;
-            }
-        }
+            std::this_thread::yield();
     }
 
     bucket_bytes.fetch_add(bytes_added, std::memory_order_relaxed);
@@ -1051,7 +1060,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     /// there is a single bucket, so routing is the identity - straight at the
                     /// block's own selector, which avoids materializing a copy of it.
                     const size_t buckets = data->num_buckets;
-                    std::vector<ScatteredBlock::Selector> scattered;
+                    typename Methods::BucketScatter scattered;
                     std::vector<const ScatteredBlock::Selector *> per_bucket(buckets, nullptr);
 
                     /// One key getter for the whole block: the scatter pass and every bucket's
@@ -1068,7 +1077,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                         scattered = Methods::scatterByBucket(
                             data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx], stored_columns->selector, buckets);
                         for (size_t bucket = 0; bucket < buckets; ++bucket)
-                            per_bucket[bucket] = &scattered[bucket];
+                            per_bucket[bucket] = &scattered.selectors[bucket];
                     }
 
                     const BuildResult result = insertIntoBuckets<Methods>(
@@ -1079,6 +1088,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                         data->pools,
                         data->bucket_bytes,
                         per_bucket,
+                        scattered.dense_keys,
                         block_key_getter,
                         key_columns,
                         key_sizes[onexpr_idx],

@@ -98,6 +98,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     const Sizes & key_sizes,
     UInt32 stored_block_no,
     const ScatteredBlock::Selector & selector,
+    const Columns * dense_keys,
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
     Arena & pool,
@@ -118,6 +119,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
                 key_sizes, \
                 stored_block_no, \
                 selector.getRange(), \
+                dense_keys, \
                 null_map, \
                 join_mask, \
                 pool, \
@@ -133,6 +135,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
                 key_sizes, \
                 stored_block_no, \
                 selector.getIndexes(), \
+                dense_keys, \
                 null_map, \
                 join_mask, \
                 pool, \
@@ -145,7 +148,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
-std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucket(
+typename HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::BucketScatter
+HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucket(
     HashJoin::Type type,
     MapsTemplate & maps,
     BlockKeyGetter & block_key_getter,
@@ -170,7 +174,8 @@ std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemp
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename HashMap>
-std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucketTypeCase(
+typename HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::BucketScatter
+HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterByBucketTypeCase(
     const HashMap & map,
     BlockKeyGetter & block_key_getter,
     const ColumnRawPtrs & key_columns,
@@ -231,10 +236,42 @@ std::vector<ScatteredBlock::Selector> HashJoinMethods<KIND, STRICTNESS, MapsTemp
     for (size_t i = 0; i < rows; ++i)
         indexes[row_to_bucket[i]]->getData().push_back(selector[i]);
 
-    std::vector<ScatteredBlock::Selector> result;
-    result.reserve(num_buckets);
+    BucketScatter result;
+    result.selectors.reserve(num_buckets);
     for (auto & column : indexes)
-        result.emplace_back(std::move(column));
+        result.selectors.emplace_back(std::move(column));
+
+    /// The same policy as `ConcurrentHashJoin::dispatchBlock`: narrow fixed-size keys are scattered
+    /// by copying, so every bucket's insert reads its keys sequentially from a dense column instead
+    /// of gathering `key[selector[i]]` at a roughly `num_buckets` stride, which costs a cache line
+    /// per row. Wider keys keep the zero-copy selectors, where the gather is cheaper than the copy.
+    /// The threshold is `ConcurrentHashJoin`'s. LowCardinality keys are left zero-copy: their
+    /// getter routes by the dictionary's saved hash, and a scattered copy may rebuild dictionaries.
+    /// The copy indexes the key columns directly, so it needs the selector to be the identity.
+    constexpr size_t threshold = sizeof(IColumn::Selector::value_type);
+    size_t max_bytes_per_row = 0;
+    for (const auto * column : key_columns)
+        max_bytes_per_row += (column->valuesHaveFixedSize() && !column->lowCardinality()) ? column->sizeOfValueIfFixed() : threshold + 1;
+
+    const bool selector_is_identity = selector.isContinuousRange() && selector.getRange().first == 0
+        && !key_columns.empty() && selector.getRange().second == key_columns[0]->size();
+
+    if (max_bytes_per_row <= threshold && selector_is_identity)
+    {
+        IColumn::Selector column_selector(rows);
+        for (size_t i = 0; i < rows; ++i)
+            column_selector[i] = row_to_bucket[i];
+
+        result.dense_keys.resize(num_buckets);
+        for (const auto * column : key_columns)
+        {
+            auto parts = column->scatter(num_buckets, column_selector);
+            chassert(parts.size() == num_buckets);
+            for (size_t bucket = 0; bucket < num_buckets; ++bucket)
+                result.dense_keys[bucket].push_back(std::move(parts[bucket]));
+        }
+    }
+
     return result;
 }
 
@@ -385,6 +422,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     const Sizes & key_sizes,
     UInt32 stored_block_no,
     const Selector & selector,
+    const Columns * dense_keys,
     ConstNullMapPtr null_map,
     const JoinCommon::JoinMask & join_mask,
     Arena & pool,
@@ -397,8 +435,25 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     if constexpr (is_asof_join)
         asof_column = key_columns.back();
 
+    const size_t rows = ScatteredBlock::Selector::size(selector);
+
+    /// With dense keys the getter reads this bucket's copies at its own positions (see
+    /// `BucketScatter`), so it is built over the copies rather than shared across buckets; without
+    /// them it reads the block's key columns through the selector.
     std::optional<KeyGetter> own_key_getter;
-    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, own_key_getter, key_columns, key_sizes);
+    ColumnRawPtrs dense_key_ptrs;
+    KeyGetter * key_getter_ptr = nullptr;
+    if (dense_keys)
+    {
+        chassert(!dense_keys->empty() && dense_keys->front()->size() == rows);
+        dense_key_ptrs.reserve(dense_keys->size());
+        for (const auto & column : *dense_keys)
+            dense_key_ptrs.push_back(column.get());
+        key_getter_ptr = &own_key_getter.emplace(createKeyGetter<KeyGetter, is_asof_join>(dense_key_ptrs, key_sizes));
+    }
+    else
+        key_getter_ptr = &blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, own_key_getter, key_columns, key_sizes);
+    auto & key_getter = *key_getter_ptr;
 
     /// Every row here routes to `bucket`, so its cells are addressed once instead of once per row.
     /// `find` routes by the same function `scatterByBucket` used, so what lands here is what lookups
@@ -408,8 +463,6 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     /// For ALL and ASOF join always insert values
     result.is_inserted = !mapped_one || is_asof_join;
 
-    const size_t rows = ScatteredBlock::Selector::size(selector);
-
     /// Software prefetch during the build phase. The decision is taken on the whole map: what
     /// matters is whether the right side as a whole is too large to sit in cache.
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, HashMap>;
@@ -418,12 +471,14 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(join.enable_prefetch, &map);
 
+    const bool keys_are_dense = dense_keys != nullptr;
+
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
         {
             if constexpr (can_prefetch)
             {
-                auto key_holder = key_getter.getKeyHolder(selectorIndexAt(selector, k), pool);
+                auto key_holder = key_getter.getKeyHolder(keys_are_dense ? k : selectorIndexAt(selector, k), pool);
                 cells.prefetchByHash(cells.hash(keyHolderGetKey(key_holder)));
                 keyHolderDiscardKey(key_holder);
             }
@@ -435,6 +490,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
             prefetcher.prefetchAt(i);
 
         const size_t ind = selectorIndexAt(selector, i);
+        const size_t key_row = keys_are_dense ? i : ind;
 
         chassert(!null_map || ind < null_map->size());
         if (null_map && (*null_map)[ind])
@@ -452,13 +508,13 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         using Cells = std::decay_t<decltype(cells)>;
         if constexpr (is_asof_join)
             Inserter<Cells, KeyGetter>::insertAsof(
-                join, cells, key_getter, stored_block_no, ind, pool, result.new_keys, *asof_column);
+                join, cells, key_getter, stored_block_no, key_row, ind, pool, result.new_keys, *asof_column);
         else if constexpr (mapped_one)
-            result.is_inserted
-                |= Inserter<Cells, KeyGetter>::insertOne(join, cells, key_getter, stored_block_no, ind, pool, result.new_keys);
+            result.is_inserted |= Inserter<Cells, KeyGetter>::insertOne(
+                join, cells, key_getter, stored_block_no, key_row, ind, pool, result.new_keys);
         else
-            result.all_values_unique
-                &= Inserter<Cells, KeyGetter>::insertAll(join, cells, key_getter, stored_block_no, ind, pool, result.new_keys);
+            result.all_values_unique &= Inserter<Cells, KeyGetter>::insertAll(
+                join, cells, key_getter, stored_block_no, key_row, ind, pool, result.new_keys);
     }
 }
 
