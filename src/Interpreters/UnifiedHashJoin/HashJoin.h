@@ -55,26 +55,48 @@ class HashJoinMethods;
 /// rather than a separate code path.
 constexpr Int32 BITS_FOR_BUCKET = -1;
 
-/// Buckets - and therefore locks and arenas - per build thread. Above one, because a build thread
-/// visits every bucket for every block it inserts: with as many buckets as threads, nearly all of
-/// them are held at any moment, so `try_lock` fails everywhere and threads end up queueing. A small
-/// margin is enough once the scan is staggered (see `insertIntoBuckets`) - measured on a 40M-row
-/// build-bound join, two buckets per thread matched sixteen on wall time while costing ~25% less
-/// build CPU per row, because every extra bucket is another sub-table to miss the cache on.
-/// Raising it trades that per-row cost for tolerance of key skew: each bucket is a sub-table with a
-/// minimum capacity, and the per-offset used flags are sized from the capacity summed over all
-/// buckets.
-constexpr size_t BUCKETS_PER_THREAD = 2;
+/// Hash-table bucket count for a multi-threaded build. Fixed, and independent of the slot count
+/// that sizes locks and arenas: more HT buckets improve key-space partitioning and cache locality
+/// of each sub-table, while the slot count only needs to track build concurrency.
+constexpr size_t NUM_HASH_TABLE_BUCKETS = 256;
 
-/// Bucket count for a join whose right side is built by `max_threads` threads. The result is a
-/// power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.
+/// HT bucket count for a join whose right side is built by `max_threads` threads. Single-threaded
+/// builds keep one bucket (no scatter). Multi-threaded builds always use `NUM_HASH_TABLE_BUCKETS`.
+/// The result is a power of two and at least 1, as `TwoLevelHashTable::RuntimeStorage` requires.
 size_t bucketCountForThreads(size_t max_threads);
 
-/// The lock guarding one bucket: that bucket in every clause's map, and that bucket's arena. One
-/// lock covers all clauses because the arenas are per bucket and shared between them, so two
-/// threads working on different clauses of the same bucket would otherwise race on the arena.
-/// Padded, because two threads inserting into neighbouring buckets would otherwise contend on the
-/// cache line holding both mutexes even though they never contend on the lock itself.
+/// Lock/arena slot count for the same join. Equals `max_threads`, capped at
+/// `NUM_HASH_TABLE_BUCKETS` so every slot owns at least one HT bucket. Not forced to a power of
+/// two: HT buckets map onto slots with Lemire fastmod. Independent of the HT bucket count.
+size_t slotCountForThreads(size_t max_threads);
+
+/// Lemire fastmod multiplier for exact 32-bit `n % d`
+/// (https://github.com/lemire/fastmod, https://lemire.me/blog/2019/02/08/faster-remainders-when-the-divisor-is-a-constant-beating-compilers-and-libdivide/).
+/// Precomputed once per divisor. For `d == 1` the multiply wraps to 0 and `lemireFastModulo` still
+/// returns 0 for every `n`.
+inline UInt64 lemireModuloMultiplier(UInt32 d)
+{
+    return static_cast<UInt64>(-1) / d + 1;
+}
+
+/// Exact `n % d` using a precomputed Lemire multiplier `M = lemireModuloMultiplier(d)`.
+inline UInt32 lemireFastModulo(UInt32 n, UInt64 M, UInt32 d)
+{
+    const UInt64 lowbits = M * n;
+    return static_cast<UInt32>((static_cast<__uint128_t>(lowbits) * d) >> 64);
+}
+
+/// Slot that owns HT bucket `bucket`. Exact `bucket % num_slots` via Lemire fastmod.
+inline size_t slotForBucket(size_t bucket, size_t num_slots, UInt64 slot_modulo_M)
+{
+    return lemireFastModulo(static_cast<UInt32>(bucket), slot_modulo_M, static_cast<UInt32>(num_slots));
+}
+
+/// The lock guarding one slot: every HT bucket mapped to that slot in every clause's map, and that
+/// slot's arena. One lock covers all clauses because the arenas are per slot and shared between
+/// them, so two threads working on different clauses of the same slot would otherwise race on the
+/// arena. Padded, because two threads inserting into neighbouring slots would otherwise contend on
+/// the cache line holding both mutexes even though they never contend on the lock itself.
 struct alignas(DB::CH_CACHE_LINE_SIZE) BucketLock
 {
     std::mutex mutex;
@@ -95,19 +117,22 @@ struct BuildResult
     size_t new_keys = 0;
 };
 
-/// The grower is spelled out because `TwoLevelHashMap` defaults to `TwoLevelHashTableGrower`, which
-/// stops quadrupling at 2^15 cells. That is the right trade when a bucket holds a 256th of the rows,
-/// but here a bucket holds all of them, so keep the single-level grower.
+/// `TwoLevelHashTableGrower` - the same growth policy `HashJoin` uses - so that a bucket holding a
+/// given number of keys ends up with the same buffer as its `parallel_hash` counterpart. It stops
+/// quadrupling at 2^15 cells and doubles from there, which matters now that a multi-threaded build
+/// always splits the rows over `NUM_HASH_TABLE_BUCKETS` buckets: quadrupling all the way overshoots
+/// by one step for a bucket of that size and doubles the buffer, which is paid for in page faults
+/// during the build rather than in probe time.
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMap
-    = TwoLevelHashMap<Key, Mapped, Hash, HashTableGrowerWithPrecalculation<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET>;
+    = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET>;
 
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     Key,
     Mapped,
     Hash,
-    HashTableGrowerWithPrecalculation<>,
+    TwoLevelHashTableGrower<>,
     HashTableAllocator,
     HashMapTable,
     BITS_FOR_BUCKET>;
@@ -399,14 +424,36 @@ public:
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
         #undef M
 
-        void create(Type which, size_t buckets, size_t reserve)
+        /// A reserve taken from the statistics of a previous, larger run of the same query can be
+        /// far bigger than the memory this one is allowed to use, and it is claimed before
+        /// `SpillingHashJoin` ever gets to check its threshold. `max_reserve_bytes` bounds it; zero
+        /// means unbounded. Buffers run at a 0.5 load factor and round up to a power of two, so a
+        /// reserved entry can cost up to four cells, and we aim at half the budget so that the
+        /// spill trigger and the hand-over peak still fit under it - the same arithmetic as
+        /// `reserveSpaceInHashMaps` in `ConcurrentHashJoin`.
+        template <typename Table>
+        static size_t clampReserve(size_t reserve, size_t max_reserve_bytes)
+        {
+            if (!max_reserve_bytes)
+                return reserve;
+            /// Direct-addressed tables size their buffer from the key range, not from the reserve.
+            if constexpr (requires { sizeof(typename Table::cell_type); })
+                return std::min(reserve, max_reserve_bytes / (8 * sizeof(typename Table::cell_type)));
+            else
+                return reserve;
+        }
+
+        void create(Type which, size_t buckets, size_t reserve, size_t max_reserve_bytes = 0)
         {
             switch (which)
             {
             #define M(NAME)                                                                        \
                 case Type::NAME:                                                                   \
-                    NAME = std::make_shared<typename decltype(NAME)::element_type>(buckets, reserve); \
-                    break;
+                {                                                                                  \
+                    using Table = typename decltype(NAME)::element_type;                           \
+                    NAME = std::make_shared<Table>(buckets, clampReserve<Table>(reserve, max_reserve_bytes)); \
+                    break;                                                                         \
+                }
 
                 UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
             #undef M
@@ -505,10 +552,13 @@ public:
 
     struct RightTableData
     {
-        explicit RightTableData(size_t buckets) : num_buckets(buckets)
+        RightTableData(size_t buckets, size_t slots)
+            : num_buckets(buckets)
+            , num_slots(slots)
+            , slot_modulo_M(lemireModuloMultiplier(static_cast<UInt32>(slots)))
         {
-            pools.reserve(buckets);
-            for (size_t i = 0; i < buckets; ++i)
+            pools.reserve(slots);
+            for (size_t i = 0; i < slots; ++i)
                 pools.push_back(std::make_unique<Arena>());
         }
 
@@ -516,6 +566,14 @@ public:
         /// join, because `StorageJoin` hands one `RightTableData` to joins created with a different
         /// `max_threads`, and the locks must match the maps, not the join that took them over.
         const size_t num_buckets;
+
+        /// How many lock/arena slots this build uses. Independent of `num_buckets`: HT buckets map
+        /// onto slots by `slotForBucket`. Same StorageJoin reason as `num_buckets` - the locks of a
+        /// join that reuses this data must match these slots.
+        const size_t num_slots;
+
+        /// Lemire multiplier for exact `bucket % num_slots` (see `lemireModuloMultiplier`).
+        const UInt64 slot_modulo_M;
 
         Type type = Type::hashed;
 
@@ -535,15 +593,15 @@ public:
         /// Additional data - strings for string keys and continuation elements of single-linked
         /// lists of references to rows.
         ///
-        /// One arena per bucket. `Arena` is a plain bump allocator with no synchronization, so a
-        /// single shared one could not be filled by several build threads at once; a bucket's arena
-        /// is covered by that bucket's lock, exactly like its cells. Splitting is safe because the
-        /// only allocations here are `keyHolderPersistKey` for string keys and `RowRefList`
-        /// continuation nodes, and neither needs allocations of different keys to be contiguous or
-        /// to be rolled back.
+        /// One arena per slot. `Arena` is a plain bump allocator with no synchronization, so a
+        /// single shared one could not be filled by several build threads at once; a slot's arena
+        /// is covered by that slot's lock, exactly like the HT buckets mapped to it. Splitting is
+        /// safe because the only allocations here are `keyHolderPersistKey` for string keys and
+        /// `RowRefList` continuation nodes, and neither needs allocations of different keys to be
+        /// contiguous or to be rolled back.
         std::vector<std::unique_ptr<Arena>> pools;
 
-        Arena & poolForBucket(size_t bucket) { return *pools[bucket]; }
+        Arena & poolForBucket(size_t bucket) { return *pools[slotForBucket(bucket, num_slots, slot_modulo_M)]; }
 
         size_t poolsAllocatedBytes() const
         {
@@ -569,9 +627,9 @@ public:
         std::atomic<size_t> keys_to_join = 0;
         /// Bytes owned by the buckets - their map buffers plus their arenas. Seeded with the maps'
         /// initial size and then advanced by the delta each block's inserts produced, measured
-        /// bucket by bucket under that bucket's lock, for the same reason as `keys_to_join`. The
-        /// deltas of one block's buckets are summed by the inserting thread and added here once,
-        /// after it has let go of the last bucket lock (see `insertIntoBuckets`).
+        /// bucket by bucket under that bucket's slot lock, for the same reason as `keys_to_join`.
+        /// The deltas of one block's buckets are summed by the inserting thread and added here once,
+        /// after it has let go of the last slot lock (see `insertIntoBuckets`).
         std::atomic<size_t> bucket_bytes = 0;
 
         /// Whether the right table reranged by key
@@ -668,11 +726,13 @@ private:
     const size_t reserve_num;
     const String instance_id;
 
-    /// How many threads may call `addBlockToJoin` concurrently, and the bucket count derived from
-    /// it. Every map of every clause is built with `num_buckets` buckets, so one bucket index
-    /// addresses the same partition of the key space in all of them.
+    /// How many threads may call `addBlockToJoin` concurrently, and the HT-bucket / slot counts
+    /// derived from it. Every map of every clause is built with `num_buckets` buckets, so one
+    /// bucket index addresses the same partition of the key space in all of them. Locks and arenas
+    /// are sized by `num_slots`, which may be smaller: several HT buckets then share one slot.
     const size_t max_threads;
     const size_t num_buckets;
+    const size_t num_slots;
 
     std::optional<TypeIndex> asof_type;
     const ASOFJoinInequality asof_inequality;
@@ -684,13 +744,13 @@ private:
     /// shrink decision. All of it is O(1) per block, so holding one lock for it costs nothing -
     /// unlike the rows, which are the actual work.
     ///
-    /// `bucket_locks[bucket]` covers the rows: a build thread routes its block's rows to buckets
-    /// once and then inserts each group holding only that bucket's lock for the whole group, so
-    /// threads inserting into different buckets of the same map run concurrently. The lock is taken
-    /// per group and not per row - a per-row acquisition costs more than the insert it protects and
-    /// makes the build scale negatively with the thread count.
+    /// `bucket_locks[slot]` covers the rows of every HT bucket mapped to that slot: a build thread
+    /// routes its block's rows to HT buckets once and then inserts each group holding only that
+    /// slot's lock for the whole group, so threads inserting into HT buckets of different slots run
+    /// concurrently. The lock is taken per group and not per row - a per-row acquisition costs more
+    /// than the insert it protects and makes the build scale negatively with the thread count.
     ///
-    /// A thread holds at most one bucket lock at a time and never holds one across `blocks_mutex`,
+    /// A thread holds at most one slot lock at a time and never holds one across `blocks_mutex`,
     /// so there is no lock order to get wrong. Joining a block takes neither: once the build phase
     /// is over the hash table is immutable and the used flags are atomic.
     mutable std::mutex blocks_mutex;
@@ -771,6 +831,10 @@ private:
     void recomputeBucketBytes();
 
     void dataMapInit(MapsVariant & map);
+
+    /// How many entries to preallocate across all buckets: the caller's explicit reserve if there
+    /// is one, otherwise the size the hash-table statistics recorded for this query shape.
+    size_t sizeHintForMaps() const;
 
     void initRightBlockStructure(Block & saved_block_sample);
 
