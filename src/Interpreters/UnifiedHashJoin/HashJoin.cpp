@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <any>
-#include <bit>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -36,6 +35,7 @@
 #include <Interpreters/UnifiedHashJoin/joinDispatch.h>
 
 #include <Common/Exception.h>
+#include <Common/ProfileEvents.h>
 #include <Common/assert_cast.h>
 #include <Common/formatReadable.h>
 #include <Common/typeid_cast.h>
@@ -45,6 +45,11 @@
 #include <Interpreters/UnifiedHashJoin/JoinUsedFlags.h>
 
 #include <Processors/QueryPlan/RuntimeFilterLookup.h>
+
+namespace ProfileEvents
+{
+extern const Event HashJoinPreallocatedElementsInHashTables;
+}
 
 namespace DB
 {
@@ -70,7 +75,17 @@ size_t bucketCountForThreads(size_t max_threads)
     if (max_threads <= 1)
         return 1;
 
-    return std::bit_ceil(max_threads) * BUCKETS_PER_THREAD;
+    return NUM_HASH_TABLE_BUCKETS;
+}
+
+size_t slotCountForThreads(size_t max_threads)
+{
+    if (max_threads <= 1)
+        return 1;
+
+    /// Cap at the HT bucket count so every slot owns at least one HT bucket. Not rounded to a
+    /// power of two: routing uses Lemire fastmod.
+    return std::min(max_threads, NUM_HASH_TABLE_BUCKETS);
 }
 
 size_t getMinBytesForPrefetchInJoin()
@@ -92,27 +107,29 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, bucket by bucket, holding only one bucket's lock
-/// at a time. `per_bucket[b]` holds the rows routed to bucket `b` by the same routing function
-/// `emplace` uses, so a group's rows all land in cells the held lock covers.
+/// Insert one block's rows into one clause's map, HT-bucket by HT-bucket, holding only one slot's
+/// lock at a time. `per_bucket[b]` holds the rows routed to HT bucket `b` by the same routing
+/// function `emplace` uses, so a group's rows all land in cells the held slot lock covers
+/// (`slotForBucket(b, num_slots, M)`).
 ///
 /// The lock is taken once per group rather than once per row. A row's insert is a handful of
 /// nanoseconds; an uncontended mutex round trip is more than that on its own, and a contended one
 /// turns into a futex wait, so per-row locking makes the build slower the more threads run it.
 ///
-/// Buckets are drained with `try_lock`-and-skip rather than in order: a thread that finds a bucket
-/// busy moves on and comes back to it later, so build threads working on different blocks interleave
-/// instead of all queueing behind whichever bucket they happen to reach first. `ConcurrentHashJoin`
-/// drains its per-slot locks the same way; the difference here is that these are buckets of one
-/// shared map, so there is nothing to merge when the build ends.
+/// HT buckets are drained with `try_lock`-and-skip rather than in order: a thread that finds a
+/// slot busy moves on and comes back to it later, so build threads working on different blocks
+/// interleave instead of all queueing behind whichever bucket they happen to reach first.
+/// `ConcurrentHashJoin` drains its per-slot locks the same way; the difference here is that these
+/// are slots over buckets of one shared map, so there is nothing to merge when the build ends.
 ///
-/// The scan starts at a different bucket per block rather than always at zero. Every thread has to
-/// visit every bucket, so threads that all scan in the same order collide on the same bucket at the
-/// same time; block numbers are handed out in sequence, so starting at `block_no % num_buckets`
-/// staggers concurrent threads into taking different buckets from the first attempt.
+/// The scan starts at a different HT bucket per block rather than always at zero. Every thread has
+/// to visit every bucket, so threads that all scan in the same order collide on the same slot at
+/// the same time; block numbers are handed out in sequence, so starting at
+/// `block_no & (num_buckets - 1)` staggers concurrent threads into taking different slots from the
+/// first attempt.
 ///
-/// A thread holds one bucket lock at a time and takes no other lock while holding it, so the loop
-/// cannot deadlock: every bucket it waits on is owned by a thread that is itself making progress.
+/// A thread holds one slot lock at a time and takes no other lock while holding it, so the loop
+/// cannot deadlock: every slot it waits on is owned by a thread that is itself making progress.
 template <typename Methods, typename Map>
 BuildResult insertIntoBuckets(
     HashJoin & join,
@@ -132,6 +149,10 @@ BuildResult insertIntoBuckets(
     BuildResult result;
 
     const size_t num_buckets = per_bucket.size();
+    const size_t num_slots = locks.size();
+    chassert(pools.size() == num_slots);
+    chassert(num_slots >= 1);
+    const UInt64 slot_modulo_m = lemireModuloMultiplier(static_cast<UInt32>(num_slots));
 
     /// Summed here and published once below rather than added to the shared counter per bucket: the
     /// counter is one cache line every build thread writes, and at `K` buckets per block that is `K`
@@ -142,9 +163,11 @@ BuildResult insertIntoBuckets(
 
     auto insert_bucket = [&](size_t bucket)
     {
-        /// Measured under the bucket's own lock, so the growth this insert caused is attributed
-        /// exactly once even while other threads are growing other buckets.
-        const size_t bytes_before = map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes();
+        const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
+
+        /// Measured under the slot's own lock, so the growth this insert caused is attributed
+        /// exactly once even while other threads are growing other slots.
+        const size_t bytes_before = map.getBucketBufferSizeInBytes(type, bucket) + pools[slot]->allocatedBytes();
 
         BuildResult bucket_result;
         Methods::insertFromBlockImpl(
@@ -159,10 +182,10 @@ BuildResult insertIntoBuckets(
             *per_bucket[bucket],
             null_map,
             join_mask,
-            *pools[bucket],
+            *pools[slot],
             bucket_result);
 
-        bytes_added += map.getBucketBufferSizeInBytes(type, bucket) + pools[bucket]->allocatedBytes() - bytes_before;
+        bytes_added += map.getBucketBufferSizeInBytes(type, bucket) + pools[slot]->allocatedBytes() - bytes_before;
 
         result.is_inserted |= bucket_result.is_inserted;
         result.all_values_unique &= bucket_result.all_values_unique;
@@ -193,7 +216,8 @@ BuildResult insertIntoBuckets(
         return result;
     }
 
-    const size_t first_bucket = stored_block_no % num_buckets;
+    /// `num_buckets` is a power of two (1 or `NUM_HASH_TABLE_BUCKETS`).
+    const size_t first_bucket = stored_block_no & (num_buckets - 1);
 
     while (buckets_left > 0)
     {
@@ -201,11 +225,12 @@ BuildResult insertIntoBuckets(
 
         for (size_t i = 0; i < num_buckets; ++i)
         {
-            const size_t bucket = (first_bucket + i) % num_buckets;
+            const size_t bucket = (first_bucket + i) & (num_buckets - 1);
             if (!pending[bucket])
                 continue;
 
-            std::unique_lock lock(locks[bucket].mutex, std::try_to_lock);
+            const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
+            std::unique_lock lock(locks[slot].mutex, std::try_to_lock);
             if (!lock.owns_lock())
                 continue;
 
@@ -215,17 +240,18 @@ BuildResult insertIntoBuckets(
             --buckets_left;
         }
 
-        /// Every remaining bucket was busy. Block on one instead of spinning: the owner is
+        /// Every remaining bucket's slot was busy. Block on one instead of spinning: the owner is
         /// inserting, so waiting for it costs less than burning a core on `try_lock`.
         if (!made_progress)
         {
             for (size_t i = 0; i < num_buckets; ++i)
             {
-                const size_t bucket = (first_bucket + i) % num_buckets;
+                const size_t bucket = (first_bucket + i) & (num_buckets - 1);
                 if (!pending[bucket])
                     continue;
 
-                std::lock_guard lock(locks[bucket].mutex);
+                const size_t slot = slotForBucket(bucket, num_slots, slot_modulo_m);
+                std::lock_guard lock(locks[slot].mutex);
                 insert_bucket(bucket);
                 pending[bucket] = 0;
                 --buckets_left;
@@ -306,8 +332,9 @@ HashJoin::HashJoin(
     , instance_id(instance_id_)
     , max_threads(std::max<size_t>(1, max_threads_))
     , num_buckets(bucketCountForThreads(max_threads))
+    , num_slots(slotCountForThreads(max_threads))
     , asof_inequality(table_join->getAsofInequality())
-    , data(std::make_shared<RightTableData>(num_buckets))
+    , data(std::make_shared<RightTableData>(num_buckets, num_slots))
     , right_sample_block(*right_sample_block_)
     , max_joined_block_rows(table_join->maxJoinedBlockRows())
     , max_joined_block_bytes(table_join->maxJoinedBlockBytes())
@@ -445,7 +472,7 @@ HashJoin::HashJoin(
     for (auto & maps : data->maps)
         dataMapInit(maps);
 
-    bucket_locks = std::vector<BucketLock>(data->num_buckets);
+    bucket_locks = std::vector<BucketLock>(num_slots);
 
     /// `bucket_bytes` tracks insert deltas only; do not seed it from empty map buffers here or
     /// `SpillingHashJoin` sees ~1 MiB before the first row and spills immediately.
@@ -596,15 +623,38 @@ static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes 
         return KeyGetter(key_columns, key_sizes, nullptr);
 }
 
+size_t HashJoin::sizeHintForMaps() const
+{
+    /// An explicit reserve from the caller wins: it is a known bound, not a prediction.
+    if (reserve_num)
+        return reserve_num;
+
+    /// Otherwise use what previous runs of this query shape measured. Without it every bucket
+    /// starts at the grower's initial 256 cells and grows its way up, rehashing at every step.
+    if (const auto hint = getSizeHint(stats_collecting_params))
+        return hint->ht_size;
+
+    return 0;
+}
+
 void HashJoin::dataMapInit(MapsVariant & map)
 {
+    if (!data)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin::dataMapInit called with empty data");
+
+    const size_t size_hint = sizeHintForMaps();
+    const size_t max_reserve_bytes = table_join->maxBytesBeforeExternalJoin();
+    if (size_hint)
+        ProfileEvents::increment(ProfileEvents::HashJoinPreallocatedElementsInHashTables, size_hint);
+
     const bool prefer_use_maps_all = preferUseMapsAll();
     joinDispatchInit(kind, strictness, map, prefer_use_maps_all);
     joinDispatch(
-        kind, strictness, map, prefer_use_maps_all, [&](auto, auto, auto & map_) { map_.create(data->type, num_buckets, reserve_num); });
-
-    if (!data)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin::dataMapInit called with empty data");
+        kind,
+        strictness,
+        map,
+        prefer_use_maps_all,
+        [&](auto, auto, auto & map_) { map_.create(data->type, num_buckets, size_hint, max_reserve_bytes); });
 }
 
 
@@ -1687,8 +1737,8 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
     from_storage_join = true;
 
     /// The maps come from another join, which may have been built by a different number of threads.
-    /// The locks index the maps' buckets, so they have to follow the maps.
-    bucket_locks = std::vector<BucketLock>(data->num_buckets);
+    /// The locks index the maps' slots, so they have to follow the maps.
+    bucket_locks = std::vector<BucketLock>(data->num_slots);
 
     bool flag_per_row = needUsedFlagsForPerRightTableRow(table_join);
     if (flag_per_row)
