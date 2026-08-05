@@ -646,6 +646,16 @@ size_t HashJoin::sizeHintForMaps() const
     if (reserve_num)
         return reserve_num;
 
+    /// Only a bucket-parallel build predicts its size from statistics, which is the same line
+    /// `ConcurrentHashJoin` draws - it preallocates only when `twoLevelMapIsUsed()`. A serial
+    /// build takes the one-bucket maps and has to cost what plain `HashJoin` costs, and
+    /// `HashJoin` never consults the statistics: it grows from the grower's initial 256 cells.
+    /// Predicting instead sizes the table to the element count, which puts 10k keys in 32768
+    /// cells where growth would have reached 65536 - twice the load factor, and a probe-heavy
+    /// join pays for the longer collision chains in mispredicted branches.
+    if (num_slots <= 1)
+        return 0;
+
     /// Otherwise use what previous runs of this query shape measured. Without it every bucket
     /// starts at the grower's initial 256 cells and grows its way up, rehashing at every step.
     if (const auto hint = getSizeHint(stats_collecting_params))
