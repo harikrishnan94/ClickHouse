@@ -88,7 +88,9 @@ size_t LazyOutput::buildOutput(
     size_t bytes_limit) const
 {
     if (!output_by_row_list)
+    {
         buildOutputFromBlocks<false>(size_to_reserve, columns, row_refs_begin, row_refs_end);
+    }
     else
     {
         if (rows_limit)

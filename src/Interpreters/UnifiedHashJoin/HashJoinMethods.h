@@ -43,7 +43,7 @@ struct Inserter
         const bool inserted = emplace_result.isInserted();
         new_keys += inserted;
         if (inserted || join.anyTakeLastRow())
-            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, row_no);
+            new (&emplace_result.getMapped()) HashMap::mapped_type(stored_block_no, row_no);
         return inserted || join.anyTakeLastRow();
     }
 
@@ -62,7 +62,9 @@ struct Inserter
         const bool inserted = emplace_result.isInserted();
         new_keys += inserted;
         if (inserted)
-            new (&emplace_result.getMapped()) typename HashMap::mapped_type(stored_block_no, row_no);
+        {
+            new (&emplace_result.getMapped()) HashMap::mapped_type(stored_block_no, row_no);
+        }
         else
         {
             /// A single ref is stored inline in the value of the hash table; the first duplicate
@@ -84,13 +86,13 @@ struct Inserter
         const IColumn & asof_column)
     {
         auto emplace_result = key_getter.emplaceKey(map, key_row, pool);
-        typename HashMap::mapped_type * time_series_map = &emplace_result.getMapped();
+        auto * time_series_map = &emplace_result.getMapped();
 
         const bool inserted = emplace_result.isInserted();
         new_keys += inserted;
         TypeIndex asof_type = *join.getAsofType();
         if (inserted)
-            time_series_map = new (time_series_map) typename HashMap::mapped_type(createAsofRowRef(asof_type, join.getAsofInequality()));
+            time_series_map = new (time_series_map) HashMap::mapped_type(createAsofRowRef(asof_type, join.getAsofInequality()));
         (*time_series_map)->insert(asof_column, stored_block_no, row_no);
         return inserted;
     }

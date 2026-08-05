@@ -145,7 +145,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
-typename HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::SlotScatter
+HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::SlotScatter
 HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlot(
     HashJoin::Type type,
     MapsTemplate & maps,
@@ -171,7 +171,7 @@ HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlot(
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <typename KeyGetter, typename HashMap>
-typename HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::SlotScatter
+HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::SlotScatter
 HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
     const HashMap & map,
     BlockKeyGetter & block_key_getter,
@@ -201,7 +201,7 @@ HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
         auto key_holder = key_getter.getKeyHolder(selector[i], scratch_pool);
         const auto & key = keyHolderGetKey(key_holder);
 
-        size_t hash_value;
+        size_t hash_value = 0;
         if constexpr (requires { key_getter.routingHashForRow(map, selector[i], scratch_pool); })
             hash_value = key_getter.routingHashForRow(map, selector[i], scratch_pool);
         else
@@ -364,7 +364,9 @@ KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const
             return KeyGetter(key_column_copy, key_size_copy, nullptr);
         }
         else
+        {
             return KeyGetter(key_columns, key_sizes, nullptr);
+        }
     }();
 
     if constexpr (ColumnsHashing::IsHashMethodInRange<KeyGetter>::value)
@@ -426,7 +428,9 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
         key_getter_ptr = &own_key_getter.emplace(createKeyGetter<KeyGetter, is_asof_join>(dense_key_ptrs, key_sizes));
     }
     else
+    {
         key_getter_ptr = &blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, own_key_getter, key_columns, key_sizes);
+    }
     auto & key_getter = *key_getter_ptr;
 
     /// For ALL and ASOF join always insert values
@@ -656,7 +660,9 @@ void processMatch(
             added_columns.appendFromBlock(row_ref->encode(), join_features.add_missing);
         }
         else
+        {
             addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+        }
     }
     else if constexpr (join_features.is_all_join)
     {
@@ -1072,7 +1078,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
     if constexpr (join_features.need_replication)
         added_columns.offsets_to_replicate = IColumn::Offsets(left_block_rows);
 
-    using FindResult = typename KeyGetter::FindResult;
+    using FindResult = KeyGetter::FindResult;
 
     /// Adapter class to pass into addFoundRowAll
     /// We don't want to add rows directly into AddedColumns, because they need to be filtered by additional_filter_expression.

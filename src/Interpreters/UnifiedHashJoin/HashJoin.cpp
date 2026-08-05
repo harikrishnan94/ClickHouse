@@ -355,7 +355,7 @@ HashJoin::HashJoin(
 
     materializeBlockInplace(right_table_keys);
     initRightBlockStructure(data->sample_block);
-    data->sample_block = prepareRightBlock(data->sample_block);
+    data->sample_block = prepareRightBlock(data->sample_block, data->sample_block);
 
     JoinCommon::createMissedColumns(sample_block_with_columns_to_add);
 
@@ -584,7 +584,9 @@ static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes 
         return KeyGetter(key_column_copy, key_size_copy, nullptr);
     }
     else
+    {
         return KeyGetter(key_columns, key_sizes, nullptr);
+    }
 }
 
 size_t HashJoin::sizeHintForMaps() const
@@ -803,7 +805,7 @@ Block HashJoin::prepareRightBlock(const Block & block, const Block & saved_block
 
 Block HashJoin::prepareRightBlock(const Block & block) const
 {
-    return prepareRightBlock(block, savedBlockSample());
+    return prepareRightBlock(block, data->sample_block);
 }
 
 bool HashJoin::addBlockToJoin(const Block & source_block, bool check_limits)
@@ -1180,8 +1182,10 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
             data->allocated_size -= old_size - new_size;
         }
         else
+        {
             /// Sometimes after clone resized block can be bigger than original
             data->allocated_size += new_size - old_size;
+        }
 
         doDebugAsserts();
     }
@@ -1329,7 +1333,9 @@ JoinResultPtr HashJoin::joinBlock(Block block)
             return res;
         }
         else
+        {
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Wrong JOIN combination: {} {}", strictness, kind);
+        }
     }
 }
 
@@ -1512,8 +1518,8 @@ private:
         }
         else
         {
-            using Mapped = typename Map::mapped_type;
-            using Iterator = typename Map::const_iterator;
+            using Mapped = Map::mapped_type;
+            using Iterator = Map::const_iterator;
 
 
             if (!position.has_value())
@@ -1829,7 +1835,9 @@ void HashJoin::tryRerangeRightTableDataImpl(Map & map [[maybe_unused]])
 {
     constexpr JoinFeatures<KIND, STRICTNESS, Map> join_features;
     if constexpr (!join_features.is_all_join || (!join_features.left && !join_features.inner))
+    {
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Only left or inner join table can be reranged.");
+    }
     else
     {
         const StoredBlock * const * stored_columns = data->stored_columns_index->blocksData();
@@ -2025,7 +2033,7 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps, SourcePtr & sou
 
     size_t range = static_cast<size_t>(max_key - min_key) + 1;
 
-    using Mapped = typename std::decay_t<decltype(source_map)>::mapped_type;
+    using Mapped = std::decay_t<decltype(source_map)>::mapped_type;
     auto convert_to_fixed_hash_map = [&]<size_t size_bits>(auto & dst_map, Type type)
     {
         using RangeMap = JoinFixedHashMap<Key, Mapped, size_bits>;
@@ -2047,9 +2055,13 @@ void HashJoin::tryConvertToFixedHashMapImpl(MapsTemplate & maps, SourcePtr & sou
         [&](auto & range8, Type type8, auto & range16, Type type16, auto & range17, Type type17, auto & range18, Type type18, auto & source)
     {
         if (range <= (1ULL << 8))
+        {
             convert_to_fixed_hash_map.template operator()<8>(range8, type8);
+        }
         else if (range <= (1ULL << 16))
+        {
             convert_to_fixed_hash_map.template operator()<16>(range16, type16);
+        }
         else if (range <= (1ULL << 17))
         {
             if ((1ULL << 17) > key_count * MAX_RANGE_SPARSITY_FACTOR)
@@ -2226,7 +2238,7 @@ ColumnPtr probeFixedHashMap(
         col,
         [&](const auto & typed_col) -> bool
         {
-            using T = typename std::decay_t<decltype(typed_col)>::ValueType;
+            using T = std::decay_t<decltype(typed_col)>::ValueType;
             if constexpr (canLosslesslyHold<BuildKey, T>())
             {
                 probeFixedHashMapLoop<BuildKey, HashMapT, T>(
@@ -2241,7 +2253,7 @@ ColumnPtr probeFixedHashMap(
         });
 
     if (!dispatched)
-        std::fill_n(result, n, UInt8(1));
+        std::fill_n(result, n, static_cast<UInt8>(1));
 
     return result_col;
 }
@@ -2337,15 +2349,15 @@ void HashJoin::publishSharedRuntimeFilters()
                     {
                         case Type::key8:
                             if (build_signed)
-                                dispatch.template operator()<Int8>(map.key8, UInt8(0), 1ULL << 8);
+                                dispatch.template operator()<Int8>(map.key8, static_cast<UInt8>(0), 1ULL << 8);
                             else
-                                dispatch.template operator()<UInt8>(map.key8, UInt8(0), 1ULL << 8);
+                                dispatch.template operator()<UInt8>(map.key8, static_cast<UInt8>(0), 1ULL << 8);
                             break;
                         case Type::key16:
                             if (build_signed)
-                                dispatch.template operator()<Int16>(map.key16, UInt16(0), 1ULL << 16);
+                                dispatch.template operator()<Int16>(map.key16, static_cast<UInt16>(0), 1ULL << 16);
                             else
-                                dispatch.template operator()<UInt16>(map.key16, UInt16(0), 1ULL << 16);
+                                dispatch.template operator()<UInt16>(map.key16, static_cast<UInt16>(0), 1ULL << 16);
                             break;
                         case Type::range8_key32:
                             if (build_signed)

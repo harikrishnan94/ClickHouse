@@ -196,7 +196,9 @@ public:
                 return per_offset_flags[f.getOffset()].load();
         }
         else
+        {
             return true;
+        }
     }
 
     template <bool use_flags, bool flag_per_row, typename FindResult>
@@ -228,7 +230,9 @@ public:
             }
         }
         else
+        {
             return true;
+        }
     }
 
     template <bool use_flags, bool flag_per_row>
