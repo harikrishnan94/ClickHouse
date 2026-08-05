@@ -29,7 +29,6 @@ namespace DB
 
 class TableJoin;
 class ExpressionActions;
-/// Reads the built maps back for StorageJoin; see StorageJoin.cpp.
 class JoinSource;
 using Sizes = std::vector<size_t>;
 
@@ -45,21 +44,10 @@ class JoinUsedFlags;
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods;
 
-/// A bucket is the unit of lock granularity for the build. A build thread scatters its block's rows
-/// by slot once, then inserts each group while holding only that slot's lock, so several threads
-/// mutate one shared map concurrently.
-///
-/// The bucket count is part of the map's type, as it is for `HashJoin`: a serial build gets the
-/// one-bucket map and a parallel build the 256-bucket one, chosen by `Type` exactly where
-/// `HashJoin` chooses between `key64` and `two_level_key64`. One bucket is the serial case of the
-/// same template rather than a separate kind of table - routing folds to a constant and the single
-/// sub-table is stored inline.
+/// Bucket count selects the serial one-bucket or parallel 256-bucket map; slots lock the buckets during build.
 constexpr Int32 BITS_FOR_BUCKET_SERIAL = 0;
 constexpr Int32 BITS_FOR_BUCKET_TWO_LEVEL = DEFAULT_BITS_FOR_BUCKET;
 
-/// Hash-table bucket count of the two-level maps, and the cap on the slot count that sizes locks
-/// and arenas: more HT buckets improve key-space partitioning and cache locality of each sub-table,
-/// while the slot count only needs to track build concurrency.
 constexpr size_t NUM_HASH_TABLE_BUCKETS = 1ull << BITS_FOR_BUCKET_TWO_LEVEL;
 
 inline bool useTwoLevelMaps(size_t max_threads)
@@ -67,47 +55,30 @@ inline bool useTwoLevelMaps(size_t max_threads)
     return max_threads > 1;
 }
 
-/// Lock/arena slot count for a join whose right side is built by `max_threads` threads. A power of
-/// two, as in `ConcurrentHashJoin`, capped at `NUM_HASH_TABLE_BUCKETS` so every slot owns at least
-/// one HT bucket; one slot for a serial build.
+/// Lock/arena slots are a power of two, capped at `NUM_HASH_TABLE_BUCKETS`.
 size_t slotCountForThreads(size_t max_threads);
 
-/// Slot that owns HT bucket `bucket`. Both counts are powers of two, so this is a mask.
 inline size_t slotForBucket(size_t bucket, size_t num_slots)
 {
     return bucket & (num_slots - 1);
 }
 
-/// The lock guarding one slot: every HT bucket mapped to that slot in every clause's map, and that
-/// slot's arena. One lock covers all clauses because the arenas are per slot and shared between
-/// them, so two threads working on different clauses of the same slot would otherwise race on the
-/// arena. Padded, because two threads inserting into neighbouring slots would otherwise contend on
-/// the cache line holding both mutexes even though they never contend on the lock itself.
+/// One padded lock protects all clauses' buckets and the corresponding slot arena.
+/// Padding prevents false sharing between neighboring slot locks.
 struct alignas(DB::CH_CACHE_LINE_SIZE) BucketLock
 {
     std::mutex mutex;
 };
 
-/// What inserting one block's rows into one clause's map produced. A bucket-parallel build makes
-/// one insert call per bucket and reduces these across the buckets, so every field has to be
-/// reducible: OR, AND and addition respectively.
 struct BuildResult
 {
-    /// Whether this block became reachable at all - either a key was inserted, or a NULL key was
-    /// seen that a RIGHT/FULL join still has to emit. If no clause sets it the block is dropped.
     bool is_inserted = false;
-    /// Cleared as soon as one key is seen twice. Uniqueness is a property of the whole right side,
-    /// so this is only meaningful once reduced across every bucket and every block.
     bool all_values_unique = true;
-    /// Keys the map did not have before.
     size_t new_keys = 0;
 };
 
-/// Serial one-bucket maps (`BITS_FOR_BUCKET_SERIAL == 0`) use the same growth policy as plain
-/// `HashJoin`'s flat `HashMap`: `HashTableGrowerWithPrecalculation`, which keeps quadrupling until
-/// size degree 23. Using `TwoLevelHashTableGrower` here was wrong - that policy switches to doubling
-/// at degree 15 because each of 256 parallel buckets is small, and on a single full-size table it
-/// adds two large rehashes for a ~500k-key build (+35-44% `FillingRightJoinSide` vs `hash`).
+/// Serial maps use the flat-table grower; the two-level grower added two rehashes on full-size maps
+/// (+35–44% `FillingRightJoinSide` in the measured 500k-key case).
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMap
     = TwoLevelHashMap<Key, Mapped, Hash, HashTableGrowerWithPrecalculation<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_SERIAL>;
@@ -122,10 +93,7 @@ using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     HashMapTable,
     BITS_FOR_BUCKET_SERIAL>;
 
-/// The 256-bucket counterparts, for a parallel build. These are the same instantiations
-/// `HashJoin::MapsTemplate` names `two_level_*`. `TwoLevelHashTableGrower` stops quadrupling at
-/// 2^15 cells and doubles from there, so a bucket of typical parallel size does not overshoot by
-/// one step and double its buffer (paid as page faults during the build).
+/// Parallel maps use the two-level grower, which avoids oversized bucket growth.
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using TwoLevelJoinHashMap
     = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_TWO_LEVEL>;
@@ -140,9 +108,6 @@ using TwoLevelJoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     HashMapTable,
     BITS_FOR_BUCKET_TWO_LEVEL>;
 
-/// The direct-addressed maps (`key8`/`key16`, and `range8_key32`..`range18_key64` after the
-/// post-build range conversion). Same bucket protocol, same bucket count, but the buckets route
-/// into one flat `buf[key]` buffer rather than owning their cells - see `FixedRangeStorage`.
 template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8>
 using JoinFixedHashMap = PartitionedFixedHashMap<Key, Mapped, size_bits>;
 
@@ -153,7 +118,6 @@ static_assert(BucketPartitionedMap<TwoLevelJoinHashMapWithSavedHash<std::string_
 static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt8, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt64, RowRefList, 18>>);
 
-/// The serial maps must cost no more than a single-level table does: one sub-table, stored inline.
 static_assert(JoinHashMap<UInt64, RowRefList>::bucketCount() == 1);
 static_assert(TwoLevelJoinHashMap<UInt64, RowRefList>::bucketCount() == NUM_HASH_TABLE_BUCKETS);
 
@@ -250,8 +214,6 @@ public:
         SharedHeader,
         SharedHeader right_sample_block_) const override
     {
-        /// `max_threads` is carried over because it only sizes the buckets, which is this join's
-        /// analogue of the `use_two_level_maps` the baseline's `clone` also settles here.
         return std::make_shared<HashJoin>(
             table_join_, right_sample_block_, any_take_last_row, reserve_num, instance_id, StatsCollectingParams{}, max_threads);
     }
@@ -280,18 +242,9 @@ public:
 
     bool isFilled() const override { return from_storage_join; }
 
-    /** The right side may be filled from several threads at once, into one shared map per clause.
-      * Unlike `ConcurrentHashJoin`, which gives each thread its own `HashJoin` and merges them
-      * afterwards, a build thread here routes its block's rows to buckets and inserts each group
-      * holding only that bucket's lock, so there is nothing to merge and a block is stored once
-      * rather than once per thread that received a row from it.
-      */
+    /// One shared map uses bucket locks; unlike `ConcurrentHashJoin`, it needs no per-thread merge.
     bool supportParallelJoin() const override { return true; }
 
-    /** The non-joined rows of a RIGHT/FULL join are emitted by several streams, each taking the
-      * buckets it owns. `ConcurrentHashJoin` does the same on a two-level map; the maps here are
-      * always two-level, so the same partitioning applies.
-      */
     bool supportParallelNonJoinedBlocksProcessing() const override;
 
     void setTotals(const Block & block) override;
@@ -353,8 +306,6 @@ public:
         M(low_cardinality_key_string)  \
         M(low_cardinality_key_fixed_string)
 
-    /// Their 256-bucket counterparts, chosen for a parallel build. Same key kinds, same key getters,
-    /// same names as `HashJoin`'s.
     #define UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M) \
         M(two_level_key32)                       \
         M(two_level_key64)                       \
@@ -368,8 +319,6 @@ public:
         M(two_level_low_cardinality_key_string)  \
         M(two_level_low_cardinality_key_fixed_string)
 
-    /// The direct-addressed maps. One flat `buf[key]` buffer whatever the bucket count, so they have
-    /// no serial counterpart: their buckets route a lock and nothing else.
     #define UNIFIED_APPLY_FOR_FIXED_JOIN_VARIANTS(M) \
         M(key8)                        \
         M(key16)                       \
@@ -444,8 +393,6 @@ public:
         }
     }
 
-    /// The 256-bucket counterpart of a key kind, for a parallel build. The direct-addressed maps are
-    /// their own counterpart - see `UNIFIED_APPLY_FOR_FIXED_JOIN_VARIANTS`.
     static Type toTwoLevelType(Type type)
     {
         switch (type)
@@ -500,23 +447,16 @@ public:
         std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 17>>                 range17_key64;
         std::shared_ptr<JoinFixedHashMap<UInt64, Mapped, 18>>                 range18_key64;
 
-        /// Every variant is a bucket-partitioned table taking the same `(size_hint)`, so there is one
-        /// construction path rather than one per map family. The `static_assert` below is what keeps
-        /// it that way.
         #define M(NAME) static_assert(BucketPartitionedMap<typename decltype(NAME)::element_type>);
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
         #undef M
 
-        /// Bounds a statistics-sourced reserve so it cannot exceed the spill budget before
-        /// `SpillingHashJoin` checks its threshold. Zero means unbounded. Same arithmetic as
-        /// `ConcurrentHashJoin::reserveSpaceInHashMaps` (0.5 load factor, power-of-two round-up,
-        /// aim at half the budget).
+        /// Bound statistics-based reserve to the spill budget; zero means unbounded.
         template <typename Table>
         static size_t clampReserve(size_t reserve, size_t max_reserve_bytes)
         {
             if (!max_reserve_bytes)
                 return reserve;
-            /// Direct-addressed tables size their buffer from the key range, not from the reserve.
             if constexpr (requires { sizeof(typename Table::cell_type); })
                 return std::min(reserve, max_reserve_bytes / (8 * sizeof(typename Table::cell_type)));
             else
@@ -540,9 +480,6 @@ public:
             }
         }
 
-        /// Reserve the buckets slot `slot` owns. Called under that slot's lock by the build thread
-        /// that takes the slot's first block - lazy like `ConcurrentHashJoin::reserveSpaceInHashMaps`,
-        /// so clearing is spread over build threads instead of serialised at construction.
         size_t reserveSlot(Type which, size_t slot, size_t slots, size_t reserve, size_t max_reserve_bytes)
         {
             switch (which)
@@ -600,8 +537,6 @@ public:
             }
         }
 
-        /// The bucket count of the chosen variant. Every variant's is a compile-time constant; this
-        /// picks the one the runtime `Type` names, for code that is not templated on the map.
         size_t getBucketCount(Type which) const
         {
             switch (which)
@@ -613,9 +548,6 @@ public:
             }
         }
 
-        /// Bytes of one bucket's own buffer. A storage whose buckets share one flat buffer reports
-        /// that whole buffer for every bucket, so this is only meaningful as a delta taken around
-        /// an insert into that bucket - such a buffer has a fixed capacity, so its delta is zero.
         size_t getBucketBufferSizeInBytes(Type which, size_t bucket) const
         {
             switch (which)
@@ -627,9 +559,6 @@ public:
             }
         }
 
-        /// Sum up the buckets' capacities into the prefix the global cell offsets are numbered from.
-        /// The build does not maintain it, precisely so that a bucket-parallel build writes nothing
-        /// shared between buckets, so this must run once after the last insert and before any probe.
         void computeBucketPrefix(Type which) const
         {
             switch (which)
@@ -680,10 +609,7 @@ public:
                 pools.push_back(std::make_unique<Arena>());
         }
 
-        /// How many lock/arena slots this build uses. Lives beside the maps rather than on the join,
-        /// because `StorageJoin` hands one `RightTableData` to joins created with a different
-        /// `max_threads`, and the locks must match the maps, not the join that took them over. HT
-        /// buckets map onto slots by `slotForBucket`.
+        /// Map-owned slot count: `StorageJoin` can reuse the maps with a different join thread count.
         const size_t num_slots;
 
         Type type = Type::hashed;
@@ -697,8 +623,6 @@ public:
         StoredBlocksList columns; /// Columns of "right" table.
         NullmapList nullmaps; /// Nullmaps for blocks of "right" table (if needed)
 
-        /// Resolves RowRef::block_no to the stored block. Block numbers are assigned as blocks
-        /// arrive, so they stay unique across the build threads that share this instance.
         StoredColumnsIndexPtr stored_columns_index = std::make_shared<StoredColumnsIndex>();
 
         /// Additional data - strings for string keys and continuation elements of single-linked
@@ -722,25 +646,14 @@ public:
             return res;
         }
 
-        /// Bytes of the stored blocks and of the nullmaps. Both are per-block quantities and are
-        /// only ever written under `blocks_mutex`, which is what lets `doDebugAsserts` recompute
-        /// and compare them; they are atomic so that the size-limit check can read them without
-        /// taking that lock.
         std::atomic<size_t> allocated_size = 0;
         std::atomic<size_t> nullmaps_allocated_size = 0;
 
         /// Number of rows of right table to join
         std::atomic<size_t> rows_to_join = 0;
-        /// Number of keys of right table to join. Maintained incrementally from the number of keys
-        /// each insert added, rather than by asking the maps: during a bucket-parallel build the
-        /// buckets are being mutated, so summing their sizes would both race and cost O(buckets)
-        /// per block.
+        /// Incremented per insert; bucket sizes cannot be summed while build threads mutate them.
         std::atomic<size_t> keys_to_join = 0;
-        /// Bytes owned by the buckets - their map buffers plus their arenas. Seeded with the maps'
-        /// initial size and then advanced by the delta each block's inserts produced, measured
-        /// bucket by bucket under that bucket's slot lock, for the same reason as `keys_to_join`.
-        /// The deltas of one block's buckets are summed by the inserting thread and added here once,
-        /// after it has let go of the last slot lock (see `insertIntoBuckets`).
+        /// Track insert deltas; recompute after post-build operations replace map storage.
         std::atomic<size_t> bucket_bytes = 0;
 
         /// Whether the right table reranged by key
@@ -822,8 +735,6 @@ private:
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
     friend class HashJoinMethods;
 
-    /// The build implementation. `selector` restricts insertion to a subset of the block's rows;
-    /// it is narrowed for ASOF joins to drop rows with a NULL ASOF key.
     bool addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits);
 
     std::shared_ptr<TableJoin> table_join;
@@ -837,33 +748,23 @@ private:
     const size_t reserve_num;
     const String instance_id;
 
-    /// How many threads may call `addBlockToJoin` concurrently, and the slot count derived from it.
-    /// Locks and arenas are sized by `num_slots`, which may be smaller than the maps' bucket count:
-    /// several HT buckets then share one slot.
     const size_t max_threads;
     const size_t num_slots;
 
     std::optional<TypeIndex> asof_type;
     const ASOFJoinInequality asof_inequality;
 
-    /// Build uses two locks: `blocks_mutex` for per-block bookkeeping (O(1) per block), and
-    /// `bucket_locks[slot]` for the rows of every HT bucket mapped to that slot. A thread holds at
-    /// most one slot lock at a time and never across `blocks_mutex`. After the build, the table is
-    /// immutable and the used flags are atomic, so joining a block takes neither.
+    /// Build threads use `blocks_mutex` for stored-block bookkeeping and `bucket_locks` for inserts.
+    /// A thread holds at most one bucket lock and never holds it with `blocks_mutex`.
     mutable std::mutex blocks_mutex;
 
     mutable std::vector<BucketLock> bucket_locks;
 
-    /// The reserve decided at construction (an explicit `reserve_num`, else - for a
-    /// bucket-parallel build only - the statistics of previous runs; see `sizeHintForMaps`) and
-    /// applied lazily, one slot at a time, by the build thread that takes the slot's first block
-    /// - see `MapsTemplate::reserveSlot`. `slot_space_reserved[clause][slot]` says the slot's
-    /// buckets were already sized; it is only read and written under that slot's lock.
+    /// Reserve is applied lazily per slot; `slot_space_reserved` is protected by that slot's lock.
     size_t map_size_hint = 0;
     size_t map_reserve_bytes_cap = 0;
     std::vector<std::vector<char>> slot_space_reserved;
 
-    /// Guards the totals block, which every parallel `FillingRightJoinSideTransform` writes.
     mutable std::mutex totals_mutex;
 
     /// Right table data. StorageJoin shares it between many Join objects.
@@ -902,9 +803,6 @@ private:
     /// blocks. Set under `blocks_mutex`, but read without it on the per-block path, where a stale
     /// `false` only means one more block is stored unshrunk before the next one shrinks it.
     std::atomic<bool> shrink_blocks = false;
-    /// The query's tracked memory usage as it stood before this join stored its first block. Atomic
-    /// so that the per-block path can sample it - once per join, on whichever build thread gets
-    /// there first - without taking `blocks_mutex`, which the reading does not need.
     std::atomic<Int64> memory_usage_before_adding_blocks = 0;
 
     /// Track if conversion to fixed hash map was already attempted to prevent repeated checks.
@@ -931,9 +829,6 @@ private:
     size_t getTotalRowCountUnlocked() const;
     size_t getTotalByteCountUnlocked() const;
 
-    /// Recompute `data->bucket_bytes` from the maps and arenas as they now stand. The running sum
-    /// the build maintains cannot survive the post-build surgery that replaces a whole map, so
-    /// call this after anything that does.
     void recomputeBucketBytes();
 
     void dataMapInit(MapsVariant & map);
@@ -968,9 +863,7 @@ private:
     template <bool is_signed, typename Key, typename SourcePtr, typename MapsTemplate>
     void tryConvertToFixedHashMapImpl(MapsTemplate & maps, SourcePtr & source_ptr);
 
-    /// Publishes everything the probe reads that the build deliberately left stale, so that a
-    /// bucket-parallel build never writes state shared between buckets. Must run after the last
-    /// insert and before the first probe.
+    /// Publish build state that probing needs after the last insert.
     void freezeMapsForProbing();
 
     void reinitUsedFlags();

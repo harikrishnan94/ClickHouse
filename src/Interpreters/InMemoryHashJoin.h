@@ -13,9 +13,7 @@ enum class InMemoryHashJoinKind : uint8_t
     Unified,
 };
 
-/// `max_threads` is how many threads will feed the right side of this join concurrently. Only
-/// `InMemoryHashJoinKind::Unified` uses it - it sizes the bucket count, and therefore the build's
-/// lock granularity, from it. Pass 1 when the caller serializes the inserts itself.
+/// `max_threads` controls UHJ bucket/lock parallelism; use 1 when the caller serializes inserts.
 InMemoryHashJoinPtr createInMemoryHashJoin(
     InMemoryHashJoinKind kind,
     const std::shared_ptr<TableJoin> & table_join,

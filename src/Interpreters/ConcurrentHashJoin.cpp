@@ -326,7 +326,6 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
         {
             bool made_progress = false;
 
-            /// insert blocks into corresponding HashJoin instances
             for (size_t i = 0; i < dispatched_blocks.size(); ++i)
             {
                 auto & hash_join = hash_joins[i];
@@ -334,7 +333,6 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
 
                 if (dispatched_block.rows())
                 {
-                    /// if current hash_join is already processed by another thread, skip it and try later
                     std::unique_lock<std::mutex> lock(hash_join->mutex, std::try_to_lock);
                     if (!lock.owns_lock())
                         continue;
@@ -360,8 +358,6 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, bool check_l
                 }
             }
 
-            /// If no slot was available in this pass, yield to avoid burning CPU while waiting
-            /// for other threads to finish inserting into their respective hash join slots
             if (!made_progress)
                 std::this_thread::yield();
         }
@@ -421,9 +417,6 @@ public:
 
     JoinResultBlock next() override
     {
-        /// Accumulates the whole lazy probe cost (the lookup below plus the gather/emit that runs
-        /// inside `current_result->next()`) into the probe total, on top of the dispatch cost
-        /// `joinBlock` already charged before this result was created.
         ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::ConcurrentHashJoinProbeMicroseconds);
         if (!current_result)
         {
@@ -435,9 +428,6 @@ public:
             if (next_block >= dispatched_blocks.size())
                 return {Block(), nullptr, true};
 
-            /// The hash-map lookup: `joinScatteredBlock` -> `joinBlockImpl` -> `joinRightColumns`'s
-            /// per-row `findKey` plus recording cheap match row-refs. It does NOT gather any column
-            /// values yet (that is deferred to `HashJoinResult::next`).
             ProfileEventTimeIncrement<Microseconds> lookup_watch(ProfileEvents::ConcurrentHashJoinProbeLookupMicroseconds);
             current_result = hash_joins[next_block]->data->joinScatteredBlock(std::move(dispatched_blocks[next_block]));
         }
@@ -805,8 +795,6 @@ BlocksList ConcurrentHashJoin::releaseSlotBlocks(size_t slot_idx)
 void ConcurrentHashJoin::onBuildPhaseFinish()
 {
     ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::ConcurrentHashJoinBuildMicroseconds);
-    /// The whole function is bucket-merge/consolidation work (a no-op when the two-level map
-    /// isn't used), so it is charged wholesale as the "merge" build sub-phase.
     ProfileEventTimeIncrement<Microseconds> merge_watch(ProfileEvents::ConcurrentHashJoinBuildMergeMicroseconds);
 
     if (hash_joins[0]->data->twoLevelMapIsUsed())

@@ -27,14 +27,7 @@ size_t getMinBytesForPrefetchInJoin();
 template <typename HashMap, typename KeyGetter>
 struct Inserter
 {
-    /// `new_keys` counts keys the map did not have before, which is what the size limits are
-    /// checked against. It is not always what these functions return: with `any_take_last_row` a
-    /// duplicate overwrites the mapped value, so the row becomes reachable without adding a key.
-    ///
-    /// `key_row` is the row the key getter reads and `row_no` the row the ref records. They differ
-    /// when the scatter copied the keys into per-bucket dense columns (see `scatterByBucket`): the
-    /// getter then reads the dense copy at its own position while the ref still points at the row
-    /// of the stored block.
+    /// `new_keys` counts new map keys; `any_take_last_row` can update an existing value without adding one.
     static ALWAYS_INLINE bool insertOne(
         const HashJoin & join,
         HashMap & map,
@@ -102,10 +95,8 @@ struct Inserter
         return inserted;
     }
 };
-/// A key getter for one block, built once and handed to everything that reads that block's keys.
-/// Share only when construction packs the whole block (`HashMethodKeysFixed`); otherwise build per
-/// bucket so the row loop keeps a stack-local getter. Safe on the build path: getters write nothing
-/// after construction. Type-erased here because the map kind is runtime.
+
+/// Share a getter only when construction reads the whole block; otherwise build one per bucket.
 class BlockKeyGetter
 {
 public:
@@ -142,17 +133,12 @@ class HashJoinMethods
     static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;
 
 public:
-    /// The scatter's output: one selector per slot, and - when the keys were scattered by copying
-    /// (see `scatterBySlot`) - one dense copy of the key columns per slot, parallel to that slot's
-    /// selector. `dense_keys` is empty when the keys kept the zero-copy selectors.
     struct SlotScatter
     {
         std::vector<ScatteredBlock::Selector> selectors;
         std::vector<Columns> dense_keys;
     };
 
-    /// Insert `selector`'s rows into `maps`. Caller holds the slot lock; `block_key_getter` is shared
-    /// across the block's slots. `dense_keys`, when not null, is this slot's dense key-column copies.
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
@@ -168,8 +154,6 @@ public:
         Arena & pool,
         BuildResult & result);
 
-    /// Split rows by the slot that owns each key's bucket. Mirrors `ConcurrentHashJoin::dispatchBlock`:
-    /// narrow fixed-size keys are also copied into `SlotScatter::dense_keys` for sequential insert.
     static SlotScatter scatterBySlot(
         HashJoin::Type type,
         MapsTemplate & maps,

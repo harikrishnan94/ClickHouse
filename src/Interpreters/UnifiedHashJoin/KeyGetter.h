@@ -52,7 +52,6 @@ struct LowCardinalityKeyGetterForJoin
     /// also works for any mapped type, including the move-only AsofRowRefs.
     PaddedPODArray<UInt8> visit_cache;       /// 0 = not visited, 1 = found, 2 = not found
     PaddedPODArray<Mapped *> mapped_cache;
-    /// Only populated for a join that reads offsets - see `use_offset`.
     PaddedPODArray<size_t> offset_cache;
 
     /// The base method runs on the dictionary's nested column for a LowCardinality key, or directly
@@ -109,8 +108,6 @@ struct LowCardinalityKeyGetterForJoin
         return base.getKeyHolder(isLowCardinality() ? getIndexAt(row) : row, pool);
     }
 
-    /// Hash value `emplace` would pass for bucket routing on this row. When the dictionary carries a
-    /// saved hash, it must be used here too - `map.hash(key)` alone can disagree with `emplace`.
     template <typename Data>
     ALWAYS_INLINE size_t routingHashForRow(const Data & data, size_t row_, Arena & pool) const
     {
@@ -121,6 +118,7 @@ struct LowCardinalityKeyGetterForJoin
         }
 
         const size_t row = getIndexAt(row_);
+        /// Reuse the dictionary's saved hash so routing matches `emplace`.
         if (saved_hash)
             return saved_hash[row];
 
@@ -179,10 +177,8 @@ struct LowCardinalityKeyGetterForJoin
         const bool found = it;
         Mapped * mapped = found ? &it->getMapped() : nullptr;
 
-        /// The prefix sums the offset is taken from were published once, when the build finished
-        /// (`freezeMapsForProbing`), so this skips the per-row "are they computed yet" check that
-        /// `offsetInternal` pays.
         size_t offset = 0;
+        /// Offset lookup is only needed for used flags and needs current bucket-prefix state.
         if constexpr (use_offset)
             offset = found ? data.offsetInternalUnsafe(it) : 0;
 
@@ -266,8 +262,6 @@ KEYGETTER_RANGE_IMPL(range17_key64, UInt64)
 KEYGETTER_RANGE_IMPL(range18_key64, UInt64)
 #undef KEYGETTER_RANGE_IMPL
 
-/// A 256-bucket map reads its keys exactly as its one-bucket counterpart does - the bucket count is
-/// a property of the map, not of how a key is read - so each twin inherits the same key getter.
 #define KEYGETTER_TWO_LEVEL_IMPL(NAME) \
     template <typename Value, typename Mapped, bool use_offset> \
     struct KeyGetterForTypeImpl<HashJoin::Type::two_level_##NAME, Value, Mapped, use_offset> \
@@ -277,10 +271,6 @@ KEYGETTER_RANGE_IMPL(range18_key64, UInt64)
 UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(KEYGETTER_TWO_LEVEL_IMPL)
 #undef KEYGETTER_TWO_LEVEL_IMPL
 
-/// `use_offset` asks the key getter to report a matched cell's global offset. Only a join that keeps
-/// per-offset used flags reads it (see `JoinUsedFlags`), and on a partitioned map an offset is not
-/// free - it has to be placed among the other buckets' cells - so the joins that do not read it do
-/// not ask for it.
 template <HashJoin::Type type, typename Data, bool use_offset>
 struct KeyGetterForType
 {

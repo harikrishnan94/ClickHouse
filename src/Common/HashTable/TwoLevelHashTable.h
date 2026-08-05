@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <mutex>
 #include <type_traits>
 #include <vector>
@@ -31,14 +30,6 @@ struct TwoLevelHashTableGrower : public HashTableGrowerWithPrecalculation<initia
 
 constexpr int DEFAULT_BITS_FOR_BUCKET = 8;
 
-/** Is `Impl` a direct-addressed table - one where the cell for a key is found by indexing a buffer
-  * with the key itself, rather than by probing from a hash?
-  *
-  * Such a table cannot give a bucket its own allocation without multiplying memory by the bucket
-  * count, because every bucket would still have to span the whole key space. Instead
-  * `TwoLevelHashTable` keeps one flat buffer for it and uses the bucket purely to route (see
-  * `FixedRangeStorage`). Specialised next to the table it describes.
-  */
 template <typename Impl>
 struct IsDirectAddressedTable : std::false_type
 {
@@ -52,8 +43,6 @@ template <
     typename Allocator,
     typename ImplTable = HashTable<Key, Cell, Hash, Grower, Allocator>,
     Int32 bits_for_bucket = DEFAULT_BITS_FOR_BUCKET,
-    /// When `void` (default), bucket selection reuses the cell-placement hash.
-    /// Otherwise this functor selects the bucket independently from `Hash`.
     typename BucketHash = void>
 class TwoLevelHashTable : private boost::noncopyable,
                           protected Hash /// empty base optimization
@@ -67,16 +56,11 @@ protected:
 public:
     using Impl = ImplTable;
 
-    /// True when buckets route into one shared cell buffer instead of each owning their cells.
     static constexpr bool isFixedRangeStorage() { return IsDirectAddressedTable<ImplTable>::value; }
 
     static constexpr UInt32 numBuckets() { return static_cast<UInt32>(1) << static_cast<UInt32>(bits_for_bucket); }
 
 private:
-    /// Prefix sums of bucket cell-buffer sizes, shared by both storage kinds' `offsetInternal`.
-    /// `HashJoin` indexes its per-offset RIGHT/FULL flags by these offsets, so they must reflect
-    /// the CURRENT bucket capacities: `compute()` (re)computes them from scratch, and a caller
-    /// that inserts further after taking offsets must call it again before trusting new ones.
     class BucketPrefixSums
     {
     public:
@@ -102,7 +86,6 @@ private:
             return offsetUnsafe(buck, cell_offset);
         }
 
-        /// Caller must have called `compute()` first (and again after any bucket growth).
         size_t offsetUnsafe(size_t buck, size_t cell_offset) const
         {
             chassert(computed);
@@ -132,7 +115,6 @@ private:
         static constexpr UInt32 maxBucket() { return MAX_BUCKET; }
         static constexpr UInt32 bucketShift() { return 32 - bits_for_bucket; }
 
-        /// NOTE Bad for hash tables with more than 2^32 cells.
         static size_t getBucketFromHash(size_t hash_value) { return (hash_value >> bucketShift()) & MAX_BUCKET; }
 
         void reserve(size_t num_elements)
@@ -150,8 +132,6 @@ private:
         {
             if (ptr->isZero(buckets[buck]))
                 return 0;
-            /// With one bucket every prefix is zero, so the offset is the sub-table's own - the same
-            /// expression a single-level table evaluates, with nothing to look up or check.
             if constexpr (bucketCount() == 1)
                 return static_cast<size_t>(ptr - buckets[0].buf) + 1;
             const auto bucket_at = [this](UInt32 i) -> const Impl & { return buckets[i]; };
@@ -167,8 +147,6 @@ private:
             return prefix_sums.offsetUnsafe(buck, static_cast<size_t>(ptr - buckets[buck].buf) + 1);
         }
 
-        /// The iteration partition. Here a bucket owns its cells, so it coincides with the bucket
-        /// partition; a storage that routes into shared cells reports its own partition instead.
         static constexpr UInt32 iterationBuckets() { return bucketCount(); }
         static constexpr UInt32 lastIterationBucket() { return maxBucket(); }
 
@@ -216,30 +194,16 @@ private:
         mutable BucketPrefixSums prefix_sums;
     };
 
-    /** Storage for a direct-addressed `Impl`, where the cell for a key is `buf[key]`.
-      *
-      * There is exactly one table, covering the whole key space, and every bucket IS that table.
-      * That is not a degenerate case - it is the correct one. Addressing does not depend on the
-      * bucket, so routing `emplace`/`find` through any bucket lands on the same cell, and giving a
-      * bucket its own table would multiply memory by the bucket count for no gain.
-      *
-      * The bucket therefore names a *route*, not a region: it selects which lock a key belongs
-      * under, so bucket-parallel builds still get disjointness (distinct keys are distinct cells).
-      * Iteration uses a separate partition - one flat pass - because a bucket's cells are scattered
-      * across the buffer and iterating per bucket would visit the whole table once per bucket.
-      */
     class FixedRangeStorage
     {
     private:
         static constexpr UInt32 MAX_BUCKET = numBuckets() - 1;
 
     public:
+        /// Direct-addressed storage keeps one flat buffer; buckets route locks instead of owning regions.
         FixedRangeStorage()
         {
-            /// `min`/`max` are plain members written by every `emplace`, so bucket-parallel inserts
-            /// would race on them, and the bucket count alone does not say whether the build is
-            /// parallel. The optimization only bounds iteration - lookups never consult it - so it
-            /// is dropped rather than made conditional.
+            /// Do not cache `min`/`max`: parallel inserts race on them.
             flat.disableMinMaxOptimization();
         }
 
@@ -256,7 +220,6 @@ private:
         static constexpr UInt32 bucketShift() { return 32 - bits_for_bucket; }
         static size_t getBucketFromHash(size_t hash_value) { return (hash_value >> bucketShift()) & MAX_BUCKET; }
 
-        /// One flat pass: buckets share the cells, so iterating per bucket would repeat the table.
         static constexpr UInt32 iterationBuckets() { return 1; }
         static constexpr UInt32 lastIterationBucket() { return 0; }
 
@@ -271,9 +234,6 @@ private:
             flat.forEachMapped(func);
         }
 
-        /// Capacity is fixed at construction and the buffer never moves, so there is nothing to
-        /// reserve and no prefix sums to compute: an offset is already global, because there is only
-        /// ever one buffer to be an offset into.
         void reserve(size_t) { }
         void computeBucketPrefix() const { }
 
@@ -303,9 +263,6 @@ public:
     {
     }
 
-    /// Copy the data from another (normal) hash table. It should have the same hash function.
-    /// Constrained so that an integer literal cannot pick this over the size-hint constructor, which
-    /// it would otherwise be a better match for.
     template <typename Source>
     requires(!std::is_arithmetic_v<Source>)
     explicit TwoLevelHashTable(const Source & src)
@@ -347,9 +304,6 @@ public:
     }
 
 protected:
-    /// Iteration walks the storage's iteration partition, which is NOT always the bucket partition:
-    /// a storage that routes many buckets into one shared cell buffer reports a single iteration
-    /// partition, so every populated cell is still visited exactly once.
     typename Impl::iterator beginOfNextNonEmptyBucket(size_t & bucket)
     {
         while (bucket != impls.iterationBuckets() && impls[bucket].empty())
@@ -465,7 +419,6 @@ public:
     const_iterator end() const { return {this, impls.lastIterationBucket(), impls[impls.lastIterationBucket()].end()}; }
     iterator end() { return {this, impls.lastIterationBucket(), impls[impls.lastIterationBucket()].end()}; }
 
-    /// Indexes the iteration partition, not the bucket partition - see `beginOfNextNonEmptyBucket`.
     const_iterator iteratorAt(size_t bucket) const
     {
         if (bucket >= impls.iterationBuckets())
@@ -503,9 +456,6 @@ public:
         return res;
     }
 
-    /// Constrained so that callers testing for a `prefetch` member (`join_prefetch_supported`) see
-    /// it only when the underlying table can actually prefetch. Without the constraint the
-    /// declaration alone would advertise support and the call would fail to compile in the body.
     template <typename KeyHolder>
     void ALWAYS_INLINE prefetch(KeyHolder && key_holder) const
     requires requires(const Impl & impl, size_t key_hash) { impl.prefetchByHash(key_hash); }
@@ -519,7 +469,6 @@ public:
 
     void ALWAYS_INLINE prefetchByHash(size_t key_hash) const
     {
-        /// A hash alone cannot identify the bucket when bucket selection does not derive from it.
         if constexpr (!std::is_void_v<BucketHash>)
             return;
         else
@@ -540,14 +489,7 @@ public:
         emplace(key_holder, it, inserted, hash(keyHolderGetKey(key_holder)));
     }
 
-    /// Synchronization follows the underlying hash table contract and is the caller's
-    /// responsibility. Any external lock must also cover initialization through `it`.
-    ///
-    /// Only the target bucket is touched, so callers holding one lock per bucket may run this
-    /// concurrently for keys that route to different buckets. Nothing shared between buckets is
-    /// written here, by design: a bucket-parallel build must not have to synchronize on anything but
-    /// its own bucket. Whatever the table derives from all the buckets at once - the prefix sums - is
-    /// computed once with `computeBucketPrefix()` when the inserting is over.
+        /// Only the target bucket is touched; synchronize initialization and call `computeBucketPrefix()` after inserts.
     template <typename KeyHolder>
     void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it, bool & inserted, size_t hash_value)
     {
@@ -601,8 +543,6 @@ public:
         }
     }
 
-    /// Aggregate queries answer from the storage rather than looping buckets here: a storage whose
-    /// buckets share one cell buffer would otherwise be counted once per bucket.
     size_t size() const { return impls.size(); }
     bool empty() const { return impls.empty(); }
     size_t getBufferSizeInBytes() const { return impls.getBufferSizeInBytes(); }
@@ -620,46 +560,20 @@ public:
         return impls[buck].has(x);
     }
 
-    /// (Re)compute the bucket prefix sums `offsetInternal` relies on. Call this once, after the
-    /// last insert that may have changed a bucket's capacity, and before anything that reads the
-    /// prefix sums without checking whether they are there: `offsetInternalUnsafe`, which skips the
-    /// "already computed" check `offsetInternal` pays on every call.
     void computeBucketPrefix() const { impls.computeBucketPrefix(); }
 
-    /// Lazily computes the prefix sums on first use, then reuses them - it does NOT notice later
-    /// bucket growth on its own (there is no internal tracking of buffer changes, by design; see
-    /// the class-level comment). A caller that inserts more after taking offsets, and needs
-    /// correct offsets afterward, must call `computeBucketPrefix()` again itself.
-    /// The bucket is recovered from the cell, which only works when a bucket owns its cells: it
-    /// costs a re-hash, and a direct-addressed cell has neither a key nor a hash to re-hash. So a
-    /// storage that routes into one shared buffer answers from the pointer alone, and this branch
-    /// is discarded before `ptr->getHash(*this)` can be instantiated for a cell that has no hash.
+    /// Iteration already knows the bucket, so avoid re-hashing; prefix sums must be current.
     size_t offsetInternal(ConstLookupResult ptr) const
     {
         if constexpr (isFixedRangeStorage())
             return impls.offsetInternal(ptr);
-        /// One bucket routes everything to itself, so there is no bucket to recover and no re-hash
-        /// to pay for it: this is the single-level table's `ptr - buf + 1`.
         else if constexpr (bucketCount() == 1)
             return impls.offsetInternal(ptr, 0);
         else
             return impls.offsetInternal(ptr, getBucketFromHash(bucketRoutingHash(ptr->getKey(), ptr->getHash(*this))));
     }
 
-    /// Offset for a cell reached by ITERATION, which already knows which bucket it is in.
-    ///
-    /// `offsetInternal(ptr)` above has to recover the bucket from the cell, and that costs a re-hash
-    /// of the key on every call - dead work for an iterator, which was handed the bucket to begin
-    /// with. It also pays the "are the prefix sums computed yet" check per call. A full-table scan
-    /// (the RIGHT/FULL non-joined pass) does both per populated cell, so both are worth skipping.
-    ///
-    /// The bucket passed here is an ITERATION bucket. For the storages whose buckets own their
-    /// cells that is the same thing as the bucket partition (`iterationBuckets() == bucketCount()`),
-    /// and for the direct-addressed storage there is one iteration partition and the offset comes
-    /// from the pointer alone, so the argument is unused.
-    ///
-    /// Precondition, same as `offsetInternalUnsafe`: `computeBucketPrefix()` has been called since
-    /// the last change to any bucket's capacity.
+    /// Iteration supplies the bucket and avoids re-hashing; call after `computeBucketPrefix()`.
     size_t ALWAYS_INLINE offsetInternalAtBucket(ConstLookupResult ptr, size_t iteration_bucket) const
     {
         if constexpr (isFixedRangeStorage())

@@ -171,7 +171,6 @@ bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
     /// join that switchToGraceHashJoin is draining.
     std::shared_lock lock(switch_mutex);
 
-    /// Re-check: another thread may have switched while we waited for the lock.
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
         return chosen_join->addBlockToJoin(block, check_limits);
 
@@ -231,13 +230,9 @@ void SpillingHashJoin::switchToGraceHashJoin()
         return;
     }
 
-    /// Single in-memory join path: extract from it and feed the blocks to GraceHashJoin.
-    /// Exclusive lock: waits for all in-flight `addBlockToJoin` (shared lock holders) to complete, so
-    /// nothing is inserted into the in-memory join while it is being drained. There are no slots to hand
-    /// out cooperatively here, so the drain stays inside the lock; it is a one-time event.
+    /// Drain the in-memory join under the exclusive lock after shared `addBlockToJoin` holders leave.
     std::unique_lock lock(switch_mutex);
 
-    /// Re-check: another thread may have already switched.
     if (state.load(std::memory_order_relaxed) != State::COLLECTING)
         return;
 
