@@ -192,13 +192,11 @@ size_t LazyOutput::buildOutputFromBlocksLimitAndOffset(
 
                 if (bytes_limit)
                 {
-                    /// Check if we are still in the same left row or moved to next one
                     while (row_idx >= left_offsets[left_idx])
                         ++left_idx;
                     chassert(left_sizes.size() > left_idx);
                     total_byte_size += left_sizes[left_idx];
 
-                    /// Add size of right matched rows
                     for (const auto & col: block->columns)
                         total_byte_size += col->byteSizeAt(row_num);
                 }

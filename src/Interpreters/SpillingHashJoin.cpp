@@ -55,7 +55,6 @@ SpillingHashJoin::SpillingHashJoin(
         any_take_last_row,
         /*reserve_num_=*/0,
         /*instance_id_=*/"",
-        /*use_two_level_maps_=*/false,
         stats_collecting_params_,
         max_threads_);
     supports_parallel_non_joined_blocks_processing = in_memory_hash_join->supportParallelNonJoinedBlocksProcessing();

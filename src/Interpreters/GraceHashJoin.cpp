@@ -744,7 +744,6 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
         any_take_last_row,
         reserve_num,
         bucket_id,
-        /*use_two_level_maps_=*/false,
         StatsCollectingParams{},
         /// `addBlockToJoinImpl` inserts under `hash_join_mutex`, so this instance only ever sees one
         /// thread at a time however many feed the grace join.

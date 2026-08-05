@@ -103,21 +103,9 @@ struct Inserter
     }
 };
 /// A key getter for one block, built once and handed to everything that reads that block's keys.
-///
-/// Only for a getter whose construction reads the whole block: `HashMethodKeysFixed` packs the
-/// block's fixed-width keys in its constructor - sized by the key column, taking no notice of the
-/// selector it will be used with - so a build that splits the block by bucket would otherwise repack
-/// every row of it once per bucket. A getter that only latches a couple of column pointers is built
-/// per bucket, because a shared one has to live behind a pointer and buys nothing to pay for it. See
-/// `shareKeyGetterAcrossBuckets`.
-///
-/// Sharing is safe on the build path: the getters a join can reach write nothing after their
-/// constructor (the last-element cache is compiled out for every join key getter, and the
-/// LowCardinality getter's probe caches are read by `findKey` only, never by `emplaceKey`).
-///
-/// The type is not known where the holder is created - it follows from the join's map kind, which is
-/// a runtime value - so it is erased here and recovered by the caller that knows it. Every user of
-/// one holder asks for the same type, because they all derive it from the same map.
+/// Share only when construction packs the whole block (`HashMethodKeysFixed`); otherwise build per
+/// bucket so the row loop keeps a stack-local getter. Safe on the build path: getters write nothing
+/// after construction. Type-erased here because the map kind is runtime.
 class BlockKeyGetter
 {
 public:
@@ -138,10 +126,6 @@ private:
     const std::type_info * built_type = nullptr;
 };
 
-/// Whether a block's buckets share one key getter or each build their own. Sharing removes a
-/// per-bucket pass over the block's keys, and costs one allocation per block plus a pointer
-/// indirection the row loop cannot always see through, so it is worth it exactly when construction
-/// is what reads the block.
 template <typename KeyGetter>
 constexpr bool shareKeyGetterAcrossBuckets()
 {
@@ -155,11 +139,6 @@ constexpr bool shareKeyGetterAcrossBuckets()
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 class HashJoinMethods
 {
-    /// Whether the key getters have to report a matched cell's offset: only a join that keeps
-    /// per-offset used flags reads one (see `JoinUsedFlags`), and on a partitioned map producing an
-    /// offset means placing the cell among the other buckets' cells rather than reading a pointer
-    /// difference. The build never reads offsets, but it shares the constant so that a join
-    /// instantiates one key getter rather than two.
     static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;
 
 public:
@@ -172,17 +151,8 @@ public:
         std::vector<Columns> dense_keys;
     };
 
-    /// Insert `selector`'s rows into `maps`, routing each row to its bucket the way `emplace` does.
-    /// The caller has scattered the rows so that every row here belongs to one slot, and holds that
-    /// slot's lock; the slot owns every bucket those rows can reach.
-    ///
-    /// `block_key_getter` belongs to the block, not to the slot: the caller passes the same one to
-    /// every slot of a block and to the scatter pass that split it, so the block's keys are read
-    /// once. See `BlockKeyGetter`.
-    ///
-    /// `dense_keys`, when not null, holds this slot's dense copies of the key columns (see
-    /// `SlotScatter`); the keys are then read from the copies sequentially instead of through the
-    /// selector.
+    /// Insert `selector`'s rows into `maps`. Caller holds the slot lock; `block_key_getter` is shared
+    /// across the block's slots. `dense_keys`, when not null, is this slot's dense key-column copies.
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
@@ -198,14 +168,8 @@ public:
         Arena & pool,
         BuildResult & result);
 
-    /// Split `selector`'s rows by the slot that owns the bucket each row's key routes to, returning
-    /// one selector per slot. Inserts hold the lock of the slot they were handed, and route within
-    /// it by the same function used here, so a row can only reach a bucket that lock covers.
-    ///
-    /// Mirrors `ConcurrentHashJoin::dispatchBlock`: the row groups are the same partition of the
-    /// block, and narrow fixed-size keys are additionally scattered by copying
-    /// (`SlotScatter::dense_keys`) so the insert reads them sequentially, while wider keys keep only
-    /// the selectors, whose insert-side gather costs less than copying them would.
+    /// Split rows by the slot that owns each key's bucket. Mirrors `ConcurrentHashJoin::dispatchBlock`:
+    /// narrow fixed-size keys are also copied into `SlotScatter::dense_keys` for sequential insert.
     static SlotScatter scatterBySlot(
         HashJoin::Type type,
         MapsTemplate & maps,
@@ -235,8 +199,6 @@ private:
     template <typename KeyGetter, bool is_asof_join>
     static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range = {});
 
-    /// The key getter for this block's keys: `block_key_getter`'s, built on first use and then
-    /// reused, or one constructed into `own` - see `shareKeyGetterAcrossBuckets`.
     template <typename KeyGetter, bool is_asof_join>
     static KeyGetter & blockKeyGetter(
         BlockKeyGetter & block_key_getter, std::optional<KeyGetter> & own, const ColumnRawPtrs & key_columns, const Sizes & key_sizes);

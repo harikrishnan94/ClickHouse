@@ -81,7 +81,6 @@ static constexpr std::array<JoinKind, 4> KINDS = {
     JoinKind::Right
 };
 
-/// Init specified join map
 inline bool joinDispatchInit(JoinKind kind, JoinStrictness strictness, HashJoin::MapsVariant & maps, bool prefer_use_maps_all = false)
 {
     return static_for<0, KINDS.size() * STRICTNESSES.size()>([&](auto ij)
@@ -100,7 +99,6 @@ inline bool joinDispatchInit(JoinKind kind, JoinStrictness strictness, HashJoin:
     });
 }
 
-/// Call function on specified join map
 template <typename MapsVariant, typename Func>
 inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, MapsVariant & maps, bool prefer_use_maps_all, Func && func)
 {
@@ -128,7 +126,6 @@ inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, MapsVariant &
     });
 }
 
-/// Call function on specified join map
 template <typename MapsVariant, typename Func>
 inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, std::vector<const MapsVariant *> & mapsv, bool prefer_use_maps_all, Func && func)
 {

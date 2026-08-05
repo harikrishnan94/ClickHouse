@@ -13,7 +13,6 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
     bool any_take_last_row,
     size_t reserve_num,
     const String & instance_id,
-    bool use_two_level_maps,
     const StatsCollectingParams & stats_collecting_params,
     size_t max_threads)
 {
@@ -26,7 +25,7 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
                 any_take_last_row,
                 reserve_num,
                 instance_id,
-                use_two_level_maps,
+                /*use_two_level_maps_=*/false,
                 stats_collecting_params);
         case InMemoryHashJoinKind::Unified:
             return std::make_shared<UnifiedHashJoin>(

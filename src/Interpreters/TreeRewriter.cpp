@@ -779,7 +779,7 @@ void collectJoinedColumns(TableJoin & analyzed_join, ASTTableJoin & table_join,
         }
 
         if (!analyzed_join.oneDisjunct() && !analyzed_join.isHashFamilyEnabled())
-            throw DB::Exception(ErrorCodes::NOT_IMPLEMENTED, "Only `hash` join supports multiple ORs for keys in JOIN ON section");
+            throw DB::Exception(ErrorCodes::NOT_IMPLEMENTED, "Only `hash` and `unified_hash` joins support multiple ORs for keys in JOIN ON section");
     }
 }
 

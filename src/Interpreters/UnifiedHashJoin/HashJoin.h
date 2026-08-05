@@ -47,14 +47,13 @@ class HashJoinMethods;
 
 /// A bucket is the unit of lock granularity for the build. A build thread scatters its block's rows
 /// by slot once, then inserts each group while holding only that slot's lock, so several threads
-/// mutate one shared map concurrently - this is what lets `unified_hash` subsume `parallel_hash`
-/// without replicating the whole join per thread.
+/// mutate one shared map concurrently.
 ///
 /// The bucket count is part of the map's type, as it is for `HashJoin`: a serial build gets the
 /// one-bucket map and a parallel build the 256-bucket one, chosen by `Type` exactly where
 /// `HashJoin` chooses between `key64` and `two_level_key64`. One bucket is the serial case of the
 /// same template rather than a separate kind of table - routing folds to a constant and the single
-/// sub-table is stored inline, so those maps are single-table maps in everything but their name.
+/// sub-table is stored inline.
 constexpr Int32 BITS_FOR_BUCKET_SERIAL = 0;
 constexpr Int32 BITS_FOR_BUCKET_TWO_LEVEL = DEFAULT_BITS_FOR_BUCKET;
 
@@ -63,7 +62,6 @@ constexpr Int32 BITS_FOR_BUCKET_TWO_LEVEL = DEFAULT_BITS_FOR_BUCKET;
 /// while the slot count only needs to track build concurrency.
 constexpr size_t NUM_HASH_TABLE_BUCKETS = 1ull << BITS_FOR_BUCKET_TWO_LEVEL;
 
-/// Whether a right side built by `max_threads` threads uses the two-level maps.
 inline bool useTwoLevelMaps(size_t max_threads)
 {
     return max_threads > 1;
@@ -432,7 +430,6 @@ public:
         }
     }
 
-    /// True for the 256-bucket maps, which is what a parallel build uses.
     static bool isTwoLevelType(Type type)
     {
         switch (type)
@@ -510,13 +507,10 @@ public:
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
         #undef M
 
-        /// A reserve taken from the statistics of a previous, larger run of the same query can be
-        /// far bigger than the memory this one is allowed to use, and it is claimed before
-        /// `SpillingHashJoin` ever gets to check its threshold. `max_reserve_bytes` bounds it; zero
-        /// means unbounded. Buffers run at a 0.5 load factor and round up to a power of two, so a
-        /// reserved entry can cost up to four cells, and we aim at half the budget so that the
-        /// spill trigger and the hand-over peak still fit under it - the same arithmetic as
-        /// `reserveSpaceInHashMaps` in `ConcurrentHashJoin`.
+        /// Bounds a statistics-sourced reserve so it cannot exceed the spill budget before
+        /// `SpillingHashJoin` checks its threshold. Zero means unbounded. Same arithmetic as
+        /// `ConcurrentHashJoin::reserveSpaceInHashMaps` (0.5 load factor, power-of-two round-up,
+        /// aim at half the budget).
         template <typename Table>
         static size_t clampReserve(size_t reserve, size_t max_reserve_bytes)
         {
@@ -546,16 +540,9 @@ public:
             }
         }
 
-        /// Reserve the buckets slot `slot` owns in the variant `which` names, returning how many
-        /// elements were reserved on this slot's behalf (zero for a direct-addressed table, whose
-        /// buffer is sized by the key range rather than by any reserve).
-        ///
-        /// Called by the build thread that takes the slot's first block, under that slot's lock -
-        /// the same lazy, slot-parallel shape as `reserveSpaceInHashMaps` in `ConcurrentHashJoin`,
-        /// and for the same reason: reserving eagerly at construction clears every bucket's buffer
-        /// on one thread before the pipeline exists, which is pure serial wall time (~220 ms for a
-        /// 67M-key hint), while here the clearing is spread over the build threads and overlaps the
-        /// reading of the right side.
+        /// Reserve the buckets slot `slot` owns. Called under that slot's lock by the build thread
+        /// that takes the slot's first block - lazy like `ConcurrentHashJoin::reserveSpaceInHashMaps`,
+        /// so clearing is spread over build threads instead of serialised at construction.
         size_t reserveSlot(Type which, size_t slot, size_t slots, size_t reserve, size_t max_reserve_bytes)
         {
             switch (which)
@@ -859,22 +846,10 @@ private:
     std::optional<TypeIndex> asof_type;
     const ASOFJoinInequality asof_inequality;
 
-    /// The build phase runs on several threads and is split across two levels of locking.
-    ///
-    /// `blocks_mutex` covers the per-BLOCK bookkeeping: the stored-block list and its block-number
-    /// index, the nullmaps, their byte counters, the pending per-row used flags, and the
-    /// shrink decision. All of it is O(1) per block, so holding one lock for it costs nothing -
-    /// unlike the rows, which are the actual work.
-    ///
-    /// `bucket_locks[slot]` covers the rows of every HT bucket mapped to that slot: a build thread
-    /// routes its block's rows to HT buckets once and then inserts each group holding only that
-    /// slot's lock for the whole group, so threads inserting into HT buckets of different slots run
-    /// concurrently. The lock is taken per group and not per row - a per-row acquisition costs more
-    /// than the insert it protects and makes the build scale negatively with the thread count.
-    ///
-    /// A thread holds at most one slot lock at a time and never holds one across `blocks_mutex`,
-    /// so there is no lock order to get wrong. Joining a block takes neither: once the build phase
-    /// is over the hash table is immutable and the used flags are atomic.
+    /// Build uses two locks: `blocks_mutex` for per-block bookkeeping (O(1) per block), and
+    /// `bucket_locks[slot]` for the rows of every HT bucket mapped to that slot. A thread holds at
+    /// most one slot lock at a time and never across `blocks_mutex`. After the build, the table is
+    /// immutable and the used flags are atomic, so joining a block takes neither.
     mutable std::mutex blocks_mutex;
 
     mutable std::vector<BucketLock> bucket_locks;
