@@ -105,28 +105,29 @@ struct BuildResult
     size_t new_keys = 0;
 };
 
-/// `TwoLevelHashTableGrower` - the same growth policy `HashJoin` uses - so that a bucket holding a
-/// given number of keys ends up with the same buffer as its `parallel_hash` counterpart. It stops
-/// quadrupling at 2^15 cells and doubles from there, which matters now that a multi-threaded build
-/// always splits the rows over `NUM_HASH_TABLE_BUCKETS` buckets: quadrupling all the way overshoots
-/// by one step for a bucket of that size and doubles the buffer, which is paid for in page faults
-/// during the build rather than in probe time.
+/// Serial one-bucket maps (`BITS_FOR_BUCKET_SERIAL == 0`) use the same growth policy as plain
+/// `HashJoin`'s flat `HashMap`: `HashTableGrowerWithPrecalculation`, which keeps quadrupling until
+/// size degree 23. Using `TwoLevelHashTableGrower` here was wrong - that policy switches to doubling
+/// at degree 15 because each of 256 parallel buckets is small, and on a single full-size table it
+/// adds two large rehashes for a ~500k-key build (+35-44% `FillingRightJoinSide` vs `hash`).
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMap
-    = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_SERIAL>;
+    = TwoLevelHashMap<Key, Mapped, Hash, HashTableGrowerWithPrecalculation<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_SERIAL>;
 
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using JoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     Key,
     Mapped,
     Hash,
-    TwoLevelHashTableGrower<>,
+    HashTableGrowerWithPrecalculation<>,
     HashTableAllocator,
     HashMapTable,
     BITS_FOR_BUCKET_SERIAL>;
 
 /// The 256-bucket counterparts, for a parallel build. These are the same instantiations
-/// `HashJoin::MapsTemplate` names `two_level_*`.
+/// `HashJoin::MapsTemplate` names `two_level_*`. `TwoLevelHashTableGrower` stops quadrupling at
+/// 2^15 cells and doubles from there, so a bucket of typical parallel size does not overshoot by
+/// one step and double its buffer (paid as page faults during the build).
 template <typename Key, typename Mapped, typename Hash = DefaultHash<Key>>
 using TwoLevelJoinHashMap
     = TwoLevelHashMap<Key, Mapped, Hash, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, BITS_FOR_BUCKET_TWO_LEVEL>;
