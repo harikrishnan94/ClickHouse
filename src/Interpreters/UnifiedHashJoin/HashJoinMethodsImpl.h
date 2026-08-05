@@ -239,14 +239,8 @@ HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
     for (auto & column : indexes)
         result.selectors.emplace_back(std::move(column));
 
-    /// The same policy as `ConcurrentHashJoin::dispatchBlock`: narrow fixed-size keys are scattered
-    /// by copying, so every slot's insert reads its keys sequentially from a dense column instead of
-    /// gathering `key[selector[i]]`, which costs a cache line per row once the block's rows are
-    /// spread over the slots. Wider keys keep the zero-copy selectors, where the gather is cheaper
-    /// than the copy. The threshold is `ConcurrentHashJoin`'s. LowCardinality keys are left
-    /// zero-copy: their getter routes by the dictionary's saved hash, and a scattered copy may
-    /// rebuild dictionaries. The copy indexes the key columns directly, so it needs the selector to
-    /// be the identity.
+    /// Narrow fixed-size keys: copy into dense columns for sequential insert (same threshold as
+    /// `ConcurrentHashJoin::dispatchBlock`). Wider / LowCardinality keys keep zero-copy selectors.
     constexpr size_t threshold = sizeof(IColumn::Selector::value_type);
     size_t max_bytes_per_row = 0;
     for (const auto * column : key_columns)
@@ -400,10 +394,6 @@ KeyGetter & HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::blockKeyGetter(
 {
     const auto create = [&] { return createKeyGetter<KeyGetter, is_asof_join>(key_columns, key_sizes); };
 
-    /// A getter whose construction reads the whole block is shared with the block's other buckets and
-    /// with the scatter pass that routed the rows to them. One that only latches a few column
-    /// pointers is built into `own`, on the caller's stack, where the row loop can see through it -
-    /// there is nothing to save by sharing it. See `shareKeyGetterAcrossBuckets`.
     if constexpr (shareKeyGetterAcrossBuckets<KeyGetter>())
         return block_key_getter.getOrBuild<KeyGetter>(create);
     else

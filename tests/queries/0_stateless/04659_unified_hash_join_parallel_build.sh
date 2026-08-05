@@ -64,11 +64,8 @@ run_all_queries()
         SELECT count(), sum(l.k) FROM l LEFT ANTI JOIN r ON l.k = r.k" "$@"
 }
 
-# Plain in-memory join.
 run_all_queries
-# SpillingHashJoin keeping everything in memory.
 run_all_queries --max_bytes_before_external_join=100000000
-# SpillingHashJoin switching to GraceHashJoin in the middle of a parallel build.
 run_all_queries --max_bytes_before_external_join=8000000
 
 # `unified_hash` derives its bucket count - which is its build-side lock granularity, and the

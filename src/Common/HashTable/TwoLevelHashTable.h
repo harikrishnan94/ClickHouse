@@ -67,8 +67,7 @@ protected:
 public:
     using Impl = ImplTable;
 
-    /// Helper: returns true for a direct-addressed table, where the buckets route into one shared
-    /// cell buffer instead of owning their cells.
+    /// True when buckets route into one shared cell buffer instead of each owning their cells.
     static constexpr bool isFixedRangeStorage() { return IsDirectAddressedTable<ImplTable>::value; }
 
     static constexpr UInt32 numBuckets() { return static_cast<UInt32>(1) << static_cast<UInt32>(bits_for_bucket); }
@@ -94,17 +93,8 @@ private:
             computed = true;
         }
 
-        /// Safe: computes the prefix sums on first use if `compute()` was not already called.
-        /// `offsetInternal` is `const` and reached per row from probe threads that share one table,
-        /// so the first-use computation is synchronized. `compute()` called directly (through
-        /// `computeBucketPrefix`) leaves the flag unarmed, so the first `offset()` after it computes
-        /// again; that is idempotent, and it is what keeps the recompute-after-growth contract
-        /// working alongside the flag.
-        ///
-        /// This is for a caller that has no point at which it can say the inserting is over. A caller
-        /// that does - `Unified::HashJoin`, whose `freezeMapsForProbing` runs at build finish and
-        /// again after any post-build rewrite of the maps - reaches the prefix sums only through
-        /// `offsetInternalUnsafe`, and so never pays the once-flag check per row.
+        /// Lazily computes the prefix sums on first use (`std::call_once`). Prefer
+        /// `offsetUnsafe` in hot loops after an explicit `compute()`.
         template <typename BucketAt>
         size_t offset(UInt32 bucket_count, BucketAt && bucket_at, size_t buck, size_t cell_offset)
         {
@@ -112,9 +102,7 @@ private:
             return offsetUnsafe(buck, cell_offset);
         }
 
-        /// Unsafe: skips the "is it computed" check `offset()` pays on every call, and never
-        /// recomputes. The caller must have called `compute()` itself first (and again after any
-        /// bucket growth) - for hot per-row loops that would otherwise pay that check per row.
+        /// Caller must have called `compute()` first (and again after any bucket growth).
         size_t offsetUnsafe(size_t buck, size_t cell_offset) const
         {
             chassert(computed);

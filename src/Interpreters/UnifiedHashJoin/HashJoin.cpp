@@ -104,27 +104,11 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, slot by slot: take a slot's lock once and, while
-/// holding it, insert the rows the scatter routed to that slot. `per_slot[s]` holds the rows whose
-/// keys route to a bucket slot `s` owns, decided by the same function `emplace` routes by, so the
-/// held lock covers every cell the insert can reach (see `scatterBySlot`).
-///
-/// This is `ConcurrentHashJoin::addBlockToJoin`'s loop: one lock per slot per block, `try_lock` and
-/// skip, yield when nothing is free. The difference is what the slots contain - buckets of one
-/// shared map rather than a whole `HashJoin` each - so there is nothing to merge when the build
-/// ends, and the insert routes within the slot instead of owning a table outright.
-///
-/// Slots are drained with `try_lock`-and-skip rather than in order: a thread that finds a slot busy
-/// moves on and comes back to it later, so build threads working on different blocks interleave
-/// instead of all queueing behind whichever slot they happen to reach first.
-///
-/// The scan starts at a different slot per block rather than always at zero. Every thread has to
-/// visit every slot, so threads that all scan in the same order collide on the same slot at the
-/// same time; block numbers are handed out in sequence, so starting at `block_no % num_slots`
-/// staggers concurrent threads into taking different slots from the first attempt.
-///
-/// A thread holds one slot lock at a time and takes no other lock while holding it, so the loop
-/// cannot deadlock: every slot it waits on is owned by a thread that is itself making progress.
+/// Insert one block's rows into one clause's map, slot by slot. `per_slot[s]` holds the rows whose
+/// keys route to a bucket slot `s` owns (see `scatterBySlot`). Mirrors
+/// `ConcurrentHashJoin::addBlockToJoin`: `try_lock` and skip, start at `block_no % num_slots` so
+/// concurrent blocks do not all queue on slot 0, one slot lock at a time (no deadlock with peers
+/// that also only hold one).
 template <typename Methods, typename Map>
 BuildResult insertIntoSlots(
     HashJoin & join,
@@ -177,13 +161,6 @@ BuildResult insertIntoSlots(
         /// exactly once even while other threads are growing other slots.
         const size_t bytes_before = slot_bytes(slot);
 
-        /// The reserve is applied here, by the thread that takes the slot's first block, rather
-        /// than eagerly at construction - the same lazy, slot-parallel placement as
-        /// `reserveSpaceInHashMaps` in `ConcurrentHashJoin`. Reserving in the constructor clears
-        /// every bucket's buffer on one thread before the pipeline exists: measured as ~220 ms of
-        /// serial wall per query for a 67M-key hint, which was the whole remaining gap to
-        /// `parallel_hash` on large builds. Counted inside the bytes delta, as
-        /// `ConcurrentHashJoin` counts its own; `clampReserve` keeps it under the spill trigger.
         if (reserve_hint && !slot_space_reserved[slot])
         {
             const size_t reserved = map.reserveSlot(type, slot, num_slots, reserve_hint, max_reserve_bytes);
@@ -833,11 +810,9 @@ void HashJoin::initRightBlockStructure(Block & saved_block_sample)
     }
     else if (strictness == JoinStrictness::Asof)
     {
-        /// Save ASOF key
         saved_block_sample.insert(right_table_keys.safeGetByPosition(right_table_keys.columns() - 1));
     }
 
-    /// Save non key columns
     for (auto & column : sample_block_with_columns_to_add)
     {
         if (auto * col = saved_block_sample.findByName(column.name))
@@ -1640,10 +1615,8 @@ private:
 
             while (it != end && row_nums.size() < max_block_size)
             {
-                /// The iterator already knows its bucket, so pass it rather than making
-                /// `offsetInternal` recover it by re-hashing the cell's key once per cell. The
-                /// prefix sums this reads are established by `freezeMapsForProbing()`, which runs at
-                /// build finish and again after any map-replacing post-build pass.
+                /// Prefer `offsetInternalAtBucket`: the iterator already knows its bucket, and the
+                /// prefix sums were established by `freezeMapsForProbing()`.
                 size_t offset = map.offsetInternalAtBucket(it.getPtr(), it.getBucket());
                 if (!parent.isUsed(offset))
                 {
@@ -2055,7 +2028,7 @@ bool HashJoin::rightTableCanBeReranged() const
 
 size_t HashJoin::getAndSetRightTableKeys() const
 {
-    /// `keys_to_join` is maintained by the build itself now, so there is nothing left to set.
+    /// Counter already updated during build; do not reassign from map sizes.
     return getTotalRowCountUnlocked();
 }
 

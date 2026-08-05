@@ -7,7 +7,7 @@
   *
   * A bucket-partitioned table is N independent sub-tables plus a routing function, and that is all a
   * caller may assume. In particular it may NOT assume that a bucket owns a contiguous region of
-  * cells, nor that its own allocation is separate from its neighbours': `RuntimeStorage` gives each
+  * cells, nor that its own allocation is separate from its neighbours': `FixedStorage` gives each
   * bucket its own hash table, while `FixedRangeStorage` addresses one flat direct-addressed buffer
   * and uses the bucket only to route. Both satisfy this concept, which is the point - a build or
   * probe loop written against it works for either, and `bucketCount() == 1` is the serial case
@@ -39,13 +39,12 @@ concept BucketPartitionedTable = requires(
     typename Map::iterator;
     typename Map::const_iterator;
 
-    /// Routing. Identical spelling for every storage kind; see the note above on using the pair.
+    /// Identical spelling for every storage kind; see the note above on using the pair.
     { const_map.hash(key) } -> std::convertible_to<size_t>;
     { const_map.bucketRoutingHash(key, hash_value) } -> std::convertible_to<size_t>;
     { const_map.getBucketFromHash(hash_value) } -> std::convertible_to<size_t>;
     { const_map.bucketCount() } -> std::convertible_to<UInt32>;
 
-    /// Insert and lookup.
     map.emplace(key, lookup, inserted);
     map.emplace(key, lookup, inserted, hash_value);
     { map.find(key) } -> std::same_as<typename Map::LookupResult>;
@@ -61,7 +60,7 @@ concept BucketPartitionedTable = requires(
     /// Requires `computeBucketPrefix()` to have run; see `TwoLevelHashTable`.
     { const_map.offsetInternalAtBucket(const_lookup, size_t{}) } -> std::convertible_to<size_t>;
 
-    /// Sizing. `getBufferSizeInCells()` bounds `offsetInternal`, so the two must agree.
+    /// `getBufferSizeInCells()` bounds `offsetInternal`, so the two must agree.
     { const_map.size() } -> std::convertible_to<size_t>;
     { const_map.empty() } -> std::same_as<bool>;
     { const_map.getBufferSizeInBytes() } -> std::convertible_to<size_t>;

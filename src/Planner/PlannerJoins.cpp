@@ -1439,7 +1439,7 @@ std::shared_ptr<IJoin> chooseJoinAlgorithm(
         return std::make_shared<ConstantJoin>(table_join, right_table_expression_header, params.join_any_take_last_row);
 
     if (!table_join->oneDisjunct() && !table_join->isHashFamilyEnabled() && !table_join->isEnabledAlgorithm(JoinAlgorithm::AUTO))
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Only `hash` join supports multiple ORs for keys in JOIN ON section");
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Only `hash` and `unified_hash` joins support multiple ORs for keys in JOIN ON section");
 
     for (auto algorithm : table_join->getEnabledJoinAlgorithms())
     {

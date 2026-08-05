@@ -262,7 +262,6 @@ Block HashJoinResult::generateBlock(
     MutableColumns columns;
     if (state->state_row_limit > 0)
     {
-        /// columns are empty when using lazy_output
         chassert(std::ranges::all_of(columns, [](const auto & col) { return col->empty(); }));
         columns = copyEmptyColumns(state->columns);
     }
@@ -416,17 +415,13 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
 
     size_t limit_rows_per_key = 0;
     size_t limit_bytes_per_key = 0;
-    /// We can split when using lazy_output with row_refs and offsets
+    /// Split only for lazy_output with row_refs (not joinGet / sorted / materialised columns).
     if (properties.joined_block_split_single_row
         && properties.max_joined_block_rows > 0
-        /// ignore join get, it has any join semantics
         && !properties.is_join_get
         && !offsets.empty()
-        /// check if using lazy_output with row_refs
         && lazy_output.output_by_row_list
-        /// sorted need different build output logic that supports ranges
         && !lazy_output.join_data_sorted
-        /// columns are empty when using lazy_output
         && std::ranges::all_of(columns, [](const auto & col) { return col->empty(); }))
     {
         limit_rows_per_key = properties.max_joined_block_rows;
