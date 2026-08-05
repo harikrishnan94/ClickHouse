@@ -72,16 +72,9 @@ namespace Unified
 {
 size_t slotCountForThreads(size_t max_threads)
 {
-    /// A single build thread cannot contend with anyone, so it gets one slot and the one-bucket
-    /// maps: no scatter pass, one hash table with the whole right side in it, and a lock it always
-    /// gets.
     if (max_threads <= 1)
         return 1;
 
-    /// Rounded up to a power of two, exactly how `ConcurrentHashJoin` sizes its slots
-    /// (`toPowerOfTwo(std::min(slots, 256))`), and capped at the HT bucket count so every slot owns
-    /// at least one HT bucket. A power of two divides `NUM_HASH_TABLE_BUCKETS`, so all slots own
-    /// equally many buckets and `slotForBucket` is a mask.
     return std::min<size_t>(std::bit_ceil(max_threads), NUM_HASH_TABLE_BUCKETS);
 }
 
@@ -104,11 +97,6 @@ Block filterColumnsPresentInSampleBlock(const Block & block, const Block & sampl
     return filtered_block;
 }
 
-/// Insert one block's rows into one clause's map, slot by slot. `per_slot[s]` holds the rows whose
-/// keys route to a bucket slot `s` owns (see `scatterBySlot`). Mirrors
-/// `ConcurrentHashJoin::addBlockToJoin`: `try_lock` and skip, start at `block_no % num_slots` so
-/// concurrent blocks do not all queue on slot 0, one slot lock at a time (no deadlock with peers
-/// that also only hold one).
 template <typename Methods, typename Map>
 BuildResult insertIntoSlots(
     HashJoin & join,
@@ -138,15 +126,10 @@ BuildResult insertIntoSlots(
     chassert(slot_space_reserved.size() == num_slots);
     chassert(num_slots >= 1);
 
-    /// Summed here and published once below rather than added to the shared counter per slot: the
-    /// counter is one cache line every build thread writes, and nothing reads the total between the
-    /// slots of one block - the size-limit check runs once the block is in - so one add per block
-    /// reports the same numbers.
+    /// Publish the aggregate once per block rather than once per slot.
     size_t bytes_added = 0;
 
-    /// The buffer bytes of the buckets this slot owns. Only those buckets can grow while the slot's
-    /// lock is held, and no other thread may touch them, so a delta taken around the insert is both
-    /// race-free and exact. The whole map's total is not: other slots grow concurrently.
+    /// Measure only this slot's buffers under its lock; other slots grow concurrently.
     auto slot_bytes = [&](size_t slot)
     {
         size_t res = pools[slot]->allocatedBytes();
@@ -157,8 +140,6 @@ BuildResult insertIntoSlots(
 
     auto insert_slot = [&](size_t slot)
     {
-        /// Measured under the slot's own lock, so the growth this insert caused is attributed
-        /// exactly once even while other threads are growing other slots.
         const size_t bytes_before = slot_bytes(slot);
 
         if (reserve_hint && !slot_space_reserved[slot])
@@ -192,8 +173,6 @@ BuildResult insertIntoSlots(
         result.new_keys += slot_result.new_keys;
     };
 
-    /// Which slots this block has rows for. Function-local: a thread drains only its own block's
-    /// groups, so no other thread touches this bookkeeping.
     std::vector<char> slot_pending(num_slots, 0);
     size_t slots_left = 0;
     for (size_t slot = 0; slot < num_slots; ++slot)
@@ -205,9 +184,7 @@ BuildResult insertIntoSlots(
         }
     }
 
-    /// A block with no rows must still report `is_inserted` the way a non-empty one would, because
-    /// for the map kinds that keep every block that is what decides whether the block is dropped
-    /// again. Run the (empty) insert once rather than trying to predict its answer here.
+    /// Run the empty insert so maps that retain every block still report `is_inserted`.
     if (slots_left == 0)
     {
         {
@@ -240,10 +217,7 @@ BuildResult insertIntoSlots(
             --slots_left;
         }
 
-        /// Every remaining slot was busy. Yield and retry, the same policy as
-        /// `ConcurrentHashJoin::addBlockToJoin`: blocking on the mutex would park the thread in a
-        /// futex wait whose wake-up latency stalls the build, while a yielded thread stays
-        /// runnable and takes the slot the moment its owner releases it.
+        /// Yield rather than parking on a slot mutex while another build thread inserts.
         if (!made_progress)
             std::this_thread::yield();
     }
@@ -283,7 +257,6 @@ static HashJoin::Type mergeJoinMethods(HashJoin::Type lhs, HashJoin::Type rhs)
 {
     using Type = HashJoin::Type;
 
-    /// How wide a packed fixed-key map is; 0 = not a packed fixed-key map.
     auto packed_rank = [](Type type) -> int
     {
         switch (type)
@@ -444,10 +417,7 @@ HashJoin::HashJoin(
     if (!selected_join_method)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin cannot choose JOIN method without keys");
 
-    /// A build that can run several threads at once takes the 256-bucket maps, so that its threads
-    /// insert into buckets under different slot locks; a serial build takes the one-bucket maps,
-    /// which cost what a single-level table costs. `HashJoin` picks between the same two families
-    /// here, by the same mapping (see `toTwoLevelType`).
+    /// Serial builds use one-bucket maps; parallel builds use 256-bucket maps.
     data->type = useTwoLevelMaps(max_threads) ? toTwoLevelType(*selected_join_method) : *selected_join_method;
 
     LOG_TEST(
@@ -619,17 +589,11 @@ static KeyGetter createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes 
 
 size_t HashJoin::sizeHintForMaps() const
 {
-    /// An explicit reserve from the caller wins: it is a known bound, not a prediction.
     if (reserve_num)
         return reserve_num;
 
-    /// Only a bucket-parallel build predicts its size from statistics, which is the same line
-    /// `ConcurrentHashJoin` draws - it preallocates only when `twoLevelMapIsUsed()`. A serial
-    /// build takes the one-bucket maps and has to cost what plain `HashJoin` costs, and
-    /// `HashJoin` never consults the statistics: it grows from the grower's initial 256 cells.
-    /// Predicting instead sizes the table to the element count, which puts 10k keys in 32768
-    /// cells where growth would have reached 65536 - twice the load factor, and a probe-heavy
-    /// join pays for the longer collision chains in mispredicted branches.
+    /// Use statistics only for bucket-parallel builds; serial builds retain the normal grower's policy.
+    /// Sizing a serial map from the estimate would use a worse load factor than normal growth.
     if (num_slots <= 1)
         return 0;
 
@@ -646,9 +610,7 @@ void HashJoin::dataMapInit(MapsVariant & map)
     if (!data)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin::dataMapInit called with empty data");
 
-    /// No reserve here, deliberately: this runs on one thread, before the pipeline exists, so
-    /// sizing every bucket's buffer here is pure serial wall time. The reserve decided by
-    /// `sizeHintForMaps` is applied lazily and slot-parallel during the build instead - see
+    /// Reserve here would serialize bucket sizing before the build; apply it lazily in
     /// `MapsTemplate::reserveSlot`.
     const bool prefer_use_maps_all = preferUseMapsAll();
     joinDispatchInit(kind, strictness, map, prefer_use_maps_all);
@@ -683,9 +645,7 @@ size_t HashJoin::getTotalRowCountUnlocked() const
     if (!data)
         return 0;
 
-    /// Answered from the running count rather than by asking the maps: during a bucket-parallel
-    /// build the buckets are being mutated, so summing their sizes would race, and it would cost
-    /// O(buckets) on a path that runs once per block.
+    /// Read the running count: summing bucket sizes would race and cost O(buckets) per block.
     return data->keys_to_join.load(std::memory_order_relaxed);
 }
 
@@ -752,15 +712,11 @@ size_t HashJoin::getTotalByteCountUnlocked() const
     if (!data)
         return 0;
 
-    /// The block bytes are read without `blocks_mutex` on the per-block path, where they may be one
-    /// block behind; the bucket bytes are a running sum for the reason given in `recomputeBucketBytes`.
     return data->allocated_size + data->nullmaps_allocated_size + data->bucket_bytes.load(std::memory_order_relaxed);
 }
 
 void HashJoin::setTotals(const Block & block)
 {
-    /// Every parallel `FillingRightJoinSideTransform` pushes a totals block, so this runs concurrently.
-    /// A block without columns carries nothing, so there is no point in taking the mutex for it.
     if (block.empty())
         return;
 
@@ -915,8 +871,6 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
         all_key_columns[column_name] = prepared_key_column;
     }
 
-    /// Everything above touches only the incoming block, so build threads run it concurrently.
-    /// From here on the shared hash table and the stored columns are mutated.
 
     Block block_to_save = filterColumnsPresentInSampleBlock(block, savedBlockSample());
     if (shrink_blocks.load(std::memory_order_relaxed))
@@ -927,8 +881,6 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
     size_t total_rows = 0;
     size_t total_bytes = 0;
     {
-        /// Register the block. One entry per incoming block, whatever the bucket count: the block is
-        /// stored once with its full selector and every bucket's refs point at that one block number.
         StoredBlock * stored_columns = nullptr;
         StoredBlocksList::iterator stored_columns_it;
         size_t data_allocated_bytes = 0;
@@ -948,18 +900,11 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     unset, JoinCommon::getCurrentQueryMemoryUsage(), std::memory_order_relaxed);
             }
 
-            /// Reads `data->sample_block`, which is fixed at construction, so no build thread can be
-            /// changing it while this runs.
             assertBlocksHaveEqualStructureAllowReplicated(data->sample_block, block_to_save, "joined block");
 
-            /// Built here rather than in place under the lock: this copies the block's column
-            /// pointers, finds the replicated ones and measures the entry, none of which any other
-            /// build thread can see yet.
             StoredBlock new_stored_columns(block_to_save.getColumns(), std::move(selector));
             data_allocated_bytes = new_stored_columns.allocatedBytes();
 
-            /// What is left for the lock is only what another build thread can observe: the list
-            /// splice, the block number the index hands out, and the byte total.
             std::lock_guard lock(blocks_mutex);
 
             if (storage_join_lock)
@@ -1048,16 +993,10 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                 {
                     using Methods = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>;
 
-                    /// One selector per slot, pointing either into the scatter's output or - when
-                    /// there is a single slot, so the whole block goes to it - straight at the
-                    /// block's own selector, which avoids materializing a copy of it.
                     const size_t slots = data->num_slots;
                     typename Methods::SlotScatter scattered;
                     std::vector<const ScatteredBlock::Selector *> per_slot(slots, nullptr);
 
-                    /// One key getter for the whole block: the scatter pass and every slot's insert
-                    /// read the same key columns, and building a getter reads all of them (see
-                    /// `BlockKeyGetter`).
                     BlockKeyGetter block_key_getter;
 
                     if (slots == 1)
@@ -1124,8 +1063,6 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
 
             if (!flag_per_row && !is_inserted && !nullmap_stored_for_block)
             {
-                /// `!flag_per_row` implies a single disjunct, so this is the last clause and no
-                /// later iteration can dereference the block we are about to drop.
                 std::lock_guard lock(blocks_mutex);
                 doDebugAsserts();
                 LOG_TRACE(log, "Skipping inserting block with {} rows", rows);
@@ -1136,8 +1073,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                 /// (and dereferences nullptr deterministically in release builds) instead of
                 /// silently reading freed memory.
                 data->stored_columns_index->clearEntry(stored_columns->block_no);
-                /// Erase by iterator, not `pop_back`: another build thread may have appended its
-                /// own block behind ours since we registered.
+                /// Erase by iterator because another build thread may append after registration.
                 data->columns.erase(stored_columns_it);
                 stored_columns = nullptr;
                 doDebugAsserts();
@@ -1509,8 +1445,6 @@ private:
     const HashJoin & parent;
     UInt64 max_block_size;
     bool flag_per_row;
-    /// This stream's share of the right side: it emits the buckets, or the stored blocks, whose
-    /// index is congruent to `bucket_idx` modulo `num_buckets`. `num_buckets <= 1` is the whole side.
     size_t bucket_idx;
     size_t num_buckets;
 
@@ -1553,8 +1487,6 @@ private:
 
         if (flag_per_row)
         {
-            /// The stored blocks are not partitioned by bucket, so streams divide them by the
-            /// globally unique `block_no` instead.
             if (!used_position.has_value())
                 used_position = parent.data->columns.begin();
 
@@ -1591,16 +1523,11 @@ private:
             auto end = map.end();
             const StoredBlock * const * stored_columns = parent.data->stored_columns_index->blocksData();
 
-            /// Streams divide the map by the bucket the iterator reports. That is the *iteration*
-            /// partition, not the routing one (see `TwoLevelHashTable::iteratorAt`), which is all
-            /// this needs: every cell belongs to exactly one iteration bucket, so the streams cover
-            /// the map once between them. For a direct-addressed map the whole flat buffer is
-            /// iteration bucket 0, so stream 0 emits it and the others emit nothing.
+            /// Iteration buckets differ from routing buckets for flat storage; use the iterator's partition.
             auto skipToNextOwnedBucket = [&]() -> bool
             {
                 while (it != end && !isBucketInRange(it.getBucket()))
                 {
-                    /// smallest bucket > current that satisfies: bucket = bucket_idx (mod num_buckets)
                     size_t cur = it.getBucket();
                     size_t next = cur - (cur % num_buckets) + bucket_idx;
                     if (next <= cur)
@@ -1639,8 +1566,7 @@ private:
 
     void fillNullsFromBlocks(MutableColumns & columns_keys_and_right, size_t & rows_added)
     {
-        /// The nullmaps are not partitioned, so only stream 0 emits them; otherwise every stream
-        /// would emit the same NULL-key rows.
+        /// Nullmaps are not partitioned, so only stream 0 may emit them.
         if (bucket_idx != 0)
             return;
 
@@ -1699,8 +1625,7 @@ HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & resu
     if (!JoinCommon::hasNonJoinedBlocks(*table_join))
         return {};
 
-    /// With no join keys every right row is non-joined and none of them sits in a map, so there is
-    /// nothing to partition: stream 0 emits them all.
+    /// With no keys, no row is in a map; only stream 0 emits the stored rows.
     if (num_streams > 1 && table_join->getOnlyClause().key_names_right.empty() && stream_idx != 0)
         return {};
 
@@ -1740,9 +1665,7 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
     data = join.data;
     from_storage_join = true;
 
-    /// The maps come from another join, which may have been built by a different number of threads.
-    /// The locks index the maps' slots, so they have to follow the maps - and so does the per-slot
-    /// reserve bookkeeping. The maps are already built, so nothing is left to reserve.
+    /// Locks and reserve bookkeeping must follow the reused maps' slot count, not this join's threads.
     bucket_locks = std::vector<BucketLock>(data->num_slots);
     map_size_hint = 0;
     slot_space_reserved.assign(data->maps.size(), std::vector<char>(data->num_slots, 1));
@@ -1766,7 +1689,6 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
             });
     }
 
-    /// This join did not build these maps, so it has not published what its own probe reads.
     freezeMapsForProbing();
 }
 
@@ -1787,8 +1709,6 @@ BlocksList HashJoin::releaseJoinedBlocks(bool restructure [[maybe_unused]])
         for (auto & columns : columns_list)
         {
             Block block = sample_block.cloneWithColumns(columns.columns);
-            /// Stored blocks keep their full original columns plus a selector of the rows that were
-            /// actually inserted. Apply it so only those rows are materialized.
             ScatteredBlock scattered(std::move(block), std::move(columns.selector));
             scattered.filterBySelector();
             result.emplace_back(std::move(scattered.getSourceBlock()));
@@ -1972,7 +1892,6 @@ void HashJoin::tryRerangeRightTableDataImpl(Map & map [[maybe_unused]])
             if (new_rows > start_row)
             {
                 const size_t merged_rows = new_rows - start_row;
-                /// Post-build and single-threaded, so any arena will do; bucket 0 always exists.
                 rows_ref.setRange(RowRef(merged.block_no, start_row).encode(), merged_rows, data->poolForBucket(0));
             }
         };
@@ -2028,7 +1947,6 @@ bool HashJoin::rightTableCanBeReranged() const
 
 size_t HashJoin::getAndSetRightTableKeys() const
 {
-    /// Counter already updated during build; do not reassign from map sizes.
     return getTotalRowCountUnlocked();
 }
 
@@ -2555,8 +2473,7 @@ void HashJoin::tryConvertToFixedHashMap()
             if constexpr (std::is_same_v<MapType, MapsOne> || std::is_same_v<MapType, MapsAll>)
             {
                 bool is_signed = !right_table_keys.getByPosition(0).type->isValueRepresentedByUnsignedInteger();
-                /// The source is whichever family this join built with; the range map it converts to
-                /// is the same either way, since its buckets only route (see `JoinFixedHashMap`).
+                /// Both map families route the range map the same way; only storage changes.
                 auto convert = [&]<typename Key>(auto & source_ptr)
                 {
                     if (is_signed)
@@ -2586,8 +2503,6 @@ void HashJoin::onBuildPhaseFinish()
     freezeMapsForProbing();
     reinitUsedFlags();
 
-    /// Finalizing here assumes the build is over and no more blocks will arrive, so a parallel build
-    /// must keep this after its last insertion.
     used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
 
     if (all_values_unique && strictness == JoinStrictness::All && isInnerOrLeft(kind) && data->maps.size() == 1)
@@ -2599,7 +2514,6 @@ void HashJoin::onBuildPhaseFinish()
 
     build_phase_finished = true;
 
-    /// Sync map and arena bytes after the last insert; the running sum tracked only insert deltas.
     recomputeBucketBytes();
 
     LOG_TRACE(
@@ -2629,9 +2543,7 @@ void HashJoin::runPostBuildPhase()
     tryConvertToFixedHashMap();
     publishSharedRuntimeFilters();
 
-    /// These rewrite mapped values and can replace a whole map object, which invalidates both the
-    /// running byte sum the build maintained and the descriptors `onBuildPhaseFinish` published.
-    /// Single-threaded here, so recomputing exactly is cheap and leaves nothing to reason about.
+    /// Recompute after post-build map replacements invalidate the running byte total and descriptors.
     recomputeBucketBytes();
     freezeMapsForProbing();
 }

@@ -752,9 +752,7 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
 
 Block GraceHashJoin::prepareRightBlock(const Block & block)
 {
-    /// Deliberately does not touch `hash_join`: this runs outside `hash_join_mutex`, and the member is
-    /// reset to nullptr while a rehash re-creates it. The structuring depends only on the saved block
-    /// sample, which is the same for every bucket's instance and is cached at construction.
+    /// Do not touch `hash_join` here: this runs outside `hash_join_mutex` while rehash may reset it.
     return HashJoin::prepareRightBlock(block, hash_join_sample_block);
 }
 

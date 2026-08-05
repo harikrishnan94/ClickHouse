@@ -51,10 +51,7 @@ class ConcurrentHashJoin;
 class SpillingHashJoin final : public IJoin
 {
 public:
-    /// Single in-memory join mode: wraps one HashJoin or UnifiedHashJoin.
-    ///
-    /// `max_threads_` is how many threads the pipeline will run `addBlockToJoin` on. It only matters
-    /// for a wrapped join that builds in parallel, which is why it comes last and defaults to one.
+    /// `max_threads_` controls parallelism only for the in-memory UHJ path.
     SpillingHashJoin(
         std::shared_ptr<TableJoin> table_join_,
         SharedHeader left_sample_block_,
@@ -150,10 +147,8 @@ private:
 
     std::atomic<State> state{State::COLLECTING};
 
-    /// In-memory hash join used during COLLECTING phase (single in-memory join mode).
     InMemoryHashJoinPtr in_memory_hash_join;
 
-    /// ConcurrentHashJoin for the slot-splitting path (mutually exclusive with in_memory_hash_join).
     std::shared_ptr<ConcurrentHashJoin> concurrent_join;
 
     /// GraceHashJoin created during overflow. Also assigned to chosen_join.

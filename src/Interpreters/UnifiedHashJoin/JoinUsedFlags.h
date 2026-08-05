@@ -117,9 +117,6 @@ public:
         return !need_flags;
     }
 
-    /// The `FindResult` overloads are written as `if constexpr (use_flags) { ... }` rather than an
-    /// early return, because a join that keeps no flags also asks its key getters for no offset, so
-    /// `getOffset` is not there to compile against.
     template <bool use_flags, bool flag_per_row, typename FindResult>
     void setUsed(const FindResult & f [[maybe_unused]])
     {
@@ -190,6 +187,7 @@ public:
     template <bool use_flags, bool flag_per_row, typename FindResult>
     bool getUsed(const FindResult & f [[maybe_unused]])
     {
+        /// Keep the no-flags instantiation from requiring `FindResult::getOffset`.
         if constexpr (use_flags)
         {
             if constexpr (flag_per_row)

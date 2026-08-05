@@ -180,12 +180,7 @@ HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
     const ScatteredBlock::Selector & selector,
     size_t num_slots)
 {
-    /// The slot picked here must own the bucket the insert will route the row to, and the insert
-    /// routes exactly as a lookup for that key will. Both derive the bucket from the hash the key
-    /// getter hands the map, and every getter reachable from a join lets the map compute that hash
-    /// itself - except the LowCardinality one, which substitutes the dictionary's saved hash, and
-    /// that is the same `StringViewHash` the map would have used. A getter supplying its own
-    /// precomputed hashes would break the equivalence silently, so refuse to compile for one.
+    /// Bucket selection must use the same hash as insertion; a precomputed hash could disagree with map placement.
     if constexpr (requires { KeyGetter::has_pre_computed_hashes; })
         static_assert(!KeyGetter::has_pre_computed_hashes, "Bucket routing assumes the map computes the hash it places by");
 
@@ -199,10 +194,6 @@ HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
 
     const size_t rows = selector.size();
 
-    /// Count, then place, so that each slot's index array is allocated once at its final size.
-    /// Rows filtered by the null map or the ON condition are routed like any other: dropping them
-    /// here would lose the `is_inserted` a NULL key has to produce for a RIGHT/FULL join, and the
-    /// insert loop already skips them.
     PODArray<UInt32> row_to_slot(rows);
     std::vector<size_t> counts(num_slots, 0);
     for (size_t i = 0; i < rows; ++i)
@@ -239,8 +230,6 @@ HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
     for (auto & column : indexes)
         result.selectors.emplace_back(std::move(column));
 
-    /// Narrow fixed-size keys: copy into dense columns for sequential insert (same threshold as
-    /// `ConcurrentHashJoin::dispatchBlock`). Wider / LowCardinality keys keep zero-copy selectors.
     constexpr size_t threshold = sizeof(IColumn::Selector::value_type);
     size_t max_bytes_per_row = 0;
     for (const auto * column : key_columns)
@@ -425,9 +414,6 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
 
     const size_t rows = ScatteredBlock::Selector::size(selector);
 
-    /// With dense keys the getter reads this bucket's copies at its own positions (see
-    /// `BucketScatter`), so it is built over the copies rather than shared across buckets; without
-    /// them it reads the block's key columns through the selector.
     std::optional<KeyGetter> own_key_getter;
     ColumnRawPtrs dense_key_ptrs;
     KeyGetter * key_getter_ptr = nullptr;
@@ -446,8 +432,6 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     /// For ALL and ASOF join always insert values
     result.is_inserted = !mapped_one || is_asof_join;
 
-    /// Software prefetch during the build phase. The decision is taken on the whole map: what
-    /// matters is whether the right side as a whole is too large to sit in cache.
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, HashMap>;
 
     bool use_prefetch = false;
@@ -480,7 +464,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
             continue;
         }
 
-        /// Check condition for right table from ON section
+        /// ON-filtered rows stay out of the map; NULL rows above still mark RIGHT/FULL output.
         if (join_mask.isRowFiltered(ind))
             continue;
 

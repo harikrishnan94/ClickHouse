@@ -415,7 +415,6 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
 
     size_t limit_rows_per_key = 0;
     size_t limit_bytes_per_key = 0;
-    /// Split only for lazy_output with row_refs (not joinGet / sorted / materialised columns).
     if (properties.joined_block_split_single_row
         && properties.max_joined_block_rows > 0
         && !properties.is_join_get
