@@ -458,9 +458,13 @@ public:
             if (!max_reserve_bytes)
                 return reserve;
             if constexpr (requires { sizeof(typename Table::cell_type); })
+            {
                 return std::min(reserve, max_reserve_bytes / (8 * sizeof(typename Table::cell_type)));
+            }
             else
+            {
                 return reserve;
+            }
         }
 
         void create(Type which)
@@ -489,7 +493,9 @@ public:
                 {                                                                                  \
                     using Table = typename decltype(NAME)::element_type;                           \
                     if constexpr (Table::isFixedRangeStorage())                                    \
+                    {                                                                              \
                         return 0;                                                                  \
+                    }                                                                              \
                     else                                                                           \
                     {                                                                              \
                         const size_t clamped = clampReserve<Table>(reserve, max_reserve_bytes);    \
@@ -695,7 +701,7 @@ public:
     void reuseJoinedData(const HashJoin & join);
 
     RightTableDataPtr getJoinedData() const { return data; }
-    BlocksList releaseJoinedBlocks(bool restructure = false) override;
+    BlocksList releaseJoinedBlocks(bool restructure) override;
 
     /// Modify right block (update structure according to sample block) to save it in block list
     static Block prepareRightBlock(const Block & block, const Block & saved_block_sample_);

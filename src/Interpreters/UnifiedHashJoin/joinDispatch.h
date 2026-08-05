@@ -139,7 +139,7 @@ inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, std::vector<c
         {
             if (prefer_use_maps_all)
             {
-                using MapType = typename MapGetter<KINDS[i], STRICTNESSES[j], true>::Map;
+                using MapType = MapGetter<KINDS[i], STRICTNESSES[j], true>::Map;
                 std::vector<const MapType *> v;
                 v.reserve(mapsv.size());
                 for (const auto & el : mapsv)
@@ -151,7 +151,7 @@ inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, std::vector<c
             }
             else
             {
-                using MapType = typename MapGetter<KINDS[i], STRICTNESSES[j], false>::Map;
+                using MapType = MapGetter<KINDS[i], STRICTNESSES[j], false>::Map;
                 std::vector<const MapType *> v;
                 v.reserve(mapsv.size());
                 for (const auto & el : mapsv)

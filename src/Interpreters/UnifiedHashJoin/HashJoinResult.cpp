@@ -44,7 +44,9 @@ static void correctNullabilityInplace(
         }
     }
     else
+    {
         JoinCommon::removeColumnNullability(column);
+    }
 }
 
 static ColumnWithTypeAndName copyLeftKeyColumnToRight(

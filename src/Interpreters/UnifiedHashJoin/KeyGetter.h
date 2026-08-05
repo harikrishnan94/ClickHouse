@@ -33,8 +33,8 @@ struct LowCardinalityKeyGetterForJoin
 {
     using MappedNonConst = std::remove_const_t<Mapped>;
     static constexpr bool has_mapped = !std::is_same_v<Mapped, void>;
-    using EmplaceResult = typename BaseMethod::EmplaceResult;
-    using FindResult = typename BaseMethod::FindResult;
+    using EmplaceResult = BaseMethod::EmplaceResult;
+    using FindResult = BaseMethod::FindResult;
 
     /// Resolving a key needs a dictionary-index lookup; do not advertise it as cheap, which keeps
     /// the probe-loop software prefetch path (which would fight the per-dictionary cache) disabled.
@@ -274,10 +274,10 @@ UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(KEYGETTER_TWO_LEVEL_IMPL)
 template <HashJoin::Type type, typename Data, bool use_offset>
 struct KeyGetterForType
 {
-    using Value = typename Data::value_type;
-    using Mapped_t = typename Data::mapped_type;
+    using Value = Data::value_type;
+    using Mapped_t = Data::mapped_type;
     using Mapped = std::conditional_t<std::is_const_v<Data>, const Mapped_t, Mapped_t>;
-    using Type = typename KeyGetterForTypeImpl<type, Value, Mapped, use_offset>::Type;
+    using Type = KeyGetterForTypeImpl<type, Value, Mapped, use_offset>::Type;
 };
 }
 
