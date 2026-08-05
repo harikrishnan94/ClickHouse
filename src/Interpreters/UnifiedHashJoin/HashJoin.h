@@ -878,11 +878,11 @@ private:
 
     mutable std::vector<BucketLock> bucket_locks;
 
-    /// The reserve decided at construction (an explicit `reserve_num`, else the statistics of
-    /// previous runs) and applied lazily, one slot at a time, by the build thread that takes the
-    /// slot's first block - see `MapsTemplate::reserveSlot`. `slot_space_reserved[clause][slot]`
-    /// says the slot's buckets were already sized; it is only read and written under that slot's
-    /// lock.
+    /// The reserve decided at construction (an explicit `reserve_num`, else - for a
+    /// bucket-parallel build only - the statistics of previous runs; see `sizeHintForMaps`) and
+    /// applied lazily, one slot at a time, by the build thread that takes the slot's first block
+    /// - see `MapsTemplate::reserveSlot`. `slot_space_reserved[clause][slot]` says the slot's
+    /// buckets were already sized; it is only read and written under that slot's lock.
     size_t map_size_hint = 0;
     size_t map_reserve_bytes_cap = 0;
     std::vector<std::vector<char>> slot_space_reserved;
