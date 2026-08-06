@@ -47,6 +47,49 @@ ALWAYS_INLINE bool shouldUseJoinPrefetch(bool enable_prefetch, const Map * map)
         && map->getBufferSizeInBytes() > getMinBytesForPrefetchInJoin();
 }
 
+/** The probe's look-ahead software prefetch as a named type. A lambda's closure type is
+  * minted where the lambda is written - inside `joinRightColumns`, which is instantiated
+  * per (join variant x need_filter) - and every lookup body templated on it multiplied the
+  * same way. This struct's type depends only on (Map, KeyGetter, Selector), which is what
+  * lets the single-clause lookup instantiate per key type alone.
+  *
+  * Semantics are exactly `JoinPrefetcher` driving a `map->prefetch(getKeyHolder(...))`
+  * action: called with the ABSOLUTE row (P5), and the look-ahead is calibrated once when
+  * the absolute row reaches `iterationsToMeasure()`. One instance must therefore live for
+  * the whole probe call - an instance constructed per batch would never calibrate for
+  * `begin > 0` (F11). Members may be null when `use_prefetch` is false; they are only
+  * dereferenced behind that flag.
+  */
+template <typename Map, typename KeyGetter, typename Selector>
+struct ProbePrefetch
+{
+    const Map * map = nullptr;
+    KeyGetter * key_getter = nullptr;
+    const Selector * selector = nullptr;
+    Arena * pool = nullptr;
+    bool use_prefetch = false;
+    size_t total = 0;
+    PrefetchingHelper prefetching{};
+    size_t prefetch_look_ahead = PrefetchingHelper::getInitialLookAheadValue();
+
+    ALWAYS_INLINE void operator()(size_t absolute_row)
+    {
+        if constexpr (join_prefetch_supported<KeyGetter, Map>)
+        {
+            if (!use_prefetch)
+                return;
+
+            /// Estimate optimal look-ahead distance once we have measured iteration latency.
+            if (absolute_row == PrefetchingHelper::iterationsToMeasure())
+                prefetch_look_ahead = prefetching.calcPrefetchLookAhead();
+
+            const size_t prefetch_idx = absolute_row + prefetch_look_ahead;
+            if (prefetch_idx < total)
+                map->prefetch(key_getter->getKeyHolder(selectorIndexAt(*selector, prefetch_idx), *pool));
+        }
+    }
+};
+
 /// Drives the adaptive software prefetch logic in the hash join probe loop.
 template <typename PrefetchAction>
 struct JoinPrefetcher
@@ -1046,16 +1089,39 @@ NO_INLINE void consumeFusedBatch(
     added_columns.lazy_output.row_count += rows_added;
 }
 
-/** The two-phase probe over one block: phase 1 fills the outcomes of a batch of consecutive
-  * rows, phase 2 consumes them, and the scratch is reused by the next batch. Only
-  * `LookupBackend` changes between the lookup algorithms being compared - everything from
-  * `consumeProbeBatch` down is shared, so a side-by-side run isolates lookup cost from emit
-  * cost.
+/** One batch of the single-clause probe's phase 1: fill `outcomes` for rows
+  * `[begin, begin + count)` through the sequential driver. Keyed only on the types the
+  * lookup body needs - (Map, KeyGetter, Selector), the TU-constant `need_flags`, and a
+  * prefetch type that no longer carries `need_filter` (`ProbePrefetch`) - so it
+  * instantiates 64 bodies per TU instead of 128. NO_INLINE (P2): the batch boundary is an
+  * outlined call on purpose, and `runImpl` below it stays NO_INLINE too (P1).
+  */
+template <bool need_flags, typename Map, typename KeyGetter, typename Selector, typename PrefetchAt>
+NO_INLINE void lookupBatch(
+    KeyGetter & key_getter,
+    const Map & map,
+    const Selector & selector,
+    const UInt8 * skip_data,
+    Arena & pool,
+    size_t begin,
+    size_t count,
+    PrefetchAt && prefetch_at,
+    ProbeOutcomes & outcomes)
+{
+    RecordOutcomeSink<need_flags> sink{outcomes};
+    SequentialLookup::run(
+        key_getter, map, selector, skip_data, pool, begin, count,
+        std::forward<PrefetchAt>(prefetch_at), sink);
+}
+
+/** The two-phase probe over one block: `lookupBatch` fills the outcomes of a batch of
+  * consecutive rows, phase 2 consumes them, and the scratch is reused by the next batch.
+  * Keeps `need_filter` only because the consume needs it; both callees are NO_INLINE, so
+  * the shell stays small.
   */
 template <
     JoinKind KIND,
     JoinStrictness STRICTNESS,
-    typename LookupDriver,
     bool need_filter,
     typename MapsTemplate,
     typename Map,
@@ -1079,7 +1145,6 @@ void probeTwoPhase(
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     const size_t scratch_rows = std::min(rows, batch_rows);
-    RecordOutcomeSink<join_features.need_flags> sink{outcomes};
 
     if constexpr (outputIsProbeOutcomes<AddedColumns>(join_features))
     {
@@ -1099,8 +1164,8 @@ void probeTwoPhase(
             {
                 const size_t count = std::min(batch_rows, rows - begin);
                 outcomes.found = row_refs.data() + base + begin;
-                LookupDriver::run(
-                    key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, sink);
+                lookupBatch<join_features.need_flags>(
+                    key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, outcomes);
                 consumeFusedBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
                     outcomes, added_columns, used_flags, begin, count, current_offset);
             }
@@ -1113,8 +1178,8 @@ void probeTwoPhase(
     for (size_t begin = 0; begin < rows; begin += batch_rows)
     {
         const size_t count = std::min(batch_rows, rows - begin);
-        LookupDriver::run(
-            key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, sink);
+        lookupBatch<join_features.need_flags>(
+            key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, outcomes);
         if constexpr (join_features.is_asof_join)
         {
             consumeProbeBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
@@ -1170,27 +1235,17 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (join_features.need_replication)
         added_columns.offsets_to_replicate = IColumn::Offsets(rows);
 
-    /// Software prefetch during the probe phase.
+    /// Software prefetch during the probe phase. One instance for the whole probe call: the
+    /// look-ahead calibration fires once at an absolute row, so a per-batch instance would
+    /// never calibrate past the first batch (F11).
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
 
     bool use_prefetch = false;
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, map);
 
-    auto prefetcher = makeJoinPrefetcher(
-        use_prefetch,
-        rows,
-        [&](size_t k) __attribute__((always_inline))
-        {
-            if constexpr (can_prefetch)
-                map->prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
-        });
-
-    auto prefetch_at = [&](size_t k) __attribute__((always_inline))
-    {
-        if constexpr (can_prefetch)
-            prefetcher.prefetchAt(k);
-    };
+    ProbePrefetch<Map, KeyGetter, Selector> prefetch_at{
+        map, &key_getter, &selector, &pool, use_prefetch, rows};
 
     /// A second pass can only pay for itself when the emit it defers is more than a flag or a
     /// filter bit. SEMI LEFT and ANTI have nothing else per row, so recording an outcome to
@@ -1203,7 +1258,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (split_can_pay)
     {
         ProbeOutcomes outcomes;
-        probeTwoPhase<KIND, STRICTNESS, SequentialLookup, need_filter, MapsTemplate, Map, KeyGetter>(
+        probeTwoPhase<KIND, STRICTNESS, need_filter, MapsTemplate, Map, KeyGetter>(
             key_getter, *map, added_columns, used_flags, selector, skip_data, pool, prefetch_at, outcomes, rows, PROBE_BATCH_ROWS, current_offset);
     }
     else
@@ -1299,7 +1354,8 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     }
 
     /// Software prefetch for multi-map variant. Only prefetch the first map when there is a
-    /// clause to look up (empty join_on_keys leaves key_getter_vector empty).
+    /// clause to look up (empty join_on_keys leaves key_getter_vector empty). One instance
+    /// for the whole probe call, as in the single-clause probe (F11).
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
 
     bool use_prefetch = false;
@@ -1307,20 +1363,13 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
         use_prefetch = !key_getter_vector.empty() && !mapv.empty()
             && shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
 
-    auto prefetcher = makeJoinPrefetcher(
+    ProbePrefetch<Map, KeyGetter, Selector> prefetch_at{
+        mapv.empty() ? nullptr : mapv[0],
+        key_getter_vector.empty() ? nullptr : &key_getter_vector[0],
+        &selector,
+        &pool,
         use_prefetch,
-        rows,
-        [&](size_t k) __attribute__((always_inline))
-        {
-            if constexpr (can_prefetch)
-                mapv[0]->prefetch(key_getter_vector[0].getKeyHolder(selectorIndexAt(selector, k), pool));
-        });
-
-    auto prefetch_at = [&](size_t k) __attribute__((always_inline))
-    {
-        if constexpr (can_prefetch)
-            prefetcher.prefetchAt(k);
-    };
+        rows};
 
     size_t max_joined_rows
         = added_columns.max_joined_block_rows > 0 ? added_columns.max_joined_block_rows : std::numeric_limits<size_t>::max();

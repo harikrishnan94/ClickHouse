@@ -863,7 +863,7 @@ void probeSequentialTwoPhase(
             prefetcher.prefetchAt(k);
     };
 
-    probeTwoPhase<KIND, STRICTNESS, SequentialLookup, need_filter, HashJoin::MapsAll, Map, KeyGetter>(
+    probeTwoPhase<KIND, STRICTNESS, need_filter, HashJoin::MapsAll, Map, KeyGetter>(
         key_getter, map, sink, used_flags, selector, /*skip_data=*/nullptr, pool, prefetch_at, outcomes, rows, batch_size, current_offset);
     sink.applyLazyDefaults();
 }
