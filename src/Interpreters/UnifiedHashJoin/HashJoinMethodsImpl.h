@@ -708,52 +708,6 @@ void processMatch(
     }
 }
 
-/** Sink for the multi-clause probe (C15). Flag-per-row is true; the driver owns clause
-  * iteration and `KnownRowsHolder`, and calls `finish` once per consumed row so C16's
-  * `offsets_to_replicate.push_back` truncates correctly on early exit.
-  */
-template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
-    bool need_filter,
-    typename MapsTemplate,
-    typename AddedColumns>
-struct MultiEmitSink
-{
-    using Features = JoinFeatures<KIND, STRICTNESS, MapsTemplate>;
-    static constexpr bool flag_per_row = true;
-
-    AddedColumns & added_columns;
-    JoinStuff::JoinUsedFlags & used_flags;
-    IColumn::Offset & current_offset;
-
-    ALWAYS_INLINE void miss(size_t /* j */, size_t row)
-    {
-        if constexpr (Features::is_anti_join && Features::left)
-            setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-        addNotFoundRow<Features::add_missing, Features::need_replication>(added_columns, current_offset);
-    }
-
-    template <typename FindResult, typename KnownRows>
-    ALWAYS_INLINE void result(
-        size_t /* j */,
-        size_t row,
-        size_t ind,
-        const FindResult & find_result,
-        KnownRows & known_rows,
-        bool is_last_disjunct)
-    {
-        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
-            find_result, added_columns, used_flags, row, ind, current_offset, known_rows, is_last_disjunct);
-    }
-
-    ALWAYS_INLINE void finish(size_t /* row */)
-    {
-        if constexpr (Features::need_replication)
-            added_columns.offsets_to_replicate.push_back(current_offset);
-    }
-};
-
 /// Adapter so `addFoundRowAll` can append into the pre-select buffer without emitting.
 struct PreSelectedRows
 {
@@ -1180,8 +1134,102 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     return 0;
 }
 
+/** The clause-major emit pass (Stage 3): consumes `outcomes[0..num_clauses)` for rows
+  * `[begin, begin + count)` and produces output the same way `MultiEmitSink` used to, one
+  * row at a time.
+  *
+  * Per row: iterate clauses in order (N5: `is_last_disjunct = (k + 1 == num_clauses)` is
+  * POSITIONAL, not "last clause that matched"); a clause with a zero word at `j` is a miss
+  * for that clause only (N3: skip and no-match both record zero, so this reads identically
+  * whether the row was skipped or genuinely absent); exactly one `miss` (`addNotFoundRow`)
+  * when every clause's word is zero. `current_offset < max_joined_rows` is checked at the
+  * START of each row (F12), matching the old row-major driver
+  * (`ProbeLookup.h` `SequentialMultiLookup::runImpl`'s loop condition) exactly, so the row
+  * that crosses the limit is still fully consumed rather than half-emitted.
+  *
+  * The recorded word is decoded back into a `FindResult` the same way the single-clause
+  * `consumeProbeBatch` does (`mappedFromWord` when the mapped value fits a word, else a
+  * reinterpreted pointer). The offset is always passed as 0: N23 established that
+  * `flag_per_row == true` never reads `FindResult::getOffset()`, so the value is inert
+  * whether or not the TU's `need_flags` makes the type store it.
+  *
+  * Returns rows consumed (<= count); the caller breaks out of the batch loop when this is
+  * less than `count` (max_joined_rows was hit) and returns `begin + consumed` (N7: multi
+  * returns actual rows consumed, unlike the single-clause path's constant `0`).
+  */
+template <
+    JoinKind KIND,
+    JoinStrictness STRICTNESS,
+    bool need_filter,
+    typename MapsTemplate,
+    typename AddedColumns>
+NO_INLINE size_t emitBatch(
+    const std::vector<ProbeOutcomes> & outcomes,
+    size_t num_clauses,
+    AddedColumns & added_columns,
+    JoinStuff::JoinUsedFlags & used_flags,
+    size_t begin,
+    size_t count,
+    size_t max_joined_rows,
+    IColumn::Offset & current_offset)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    static constexpr bool flag_per_row = true; // Always true in multiple maps case
+
+    using Mapped = const typename MapsTemplate::MappedType;
+    using MappedValue = typename MapsTemplate::MappedType;
+    using FindResult = ColumnsHashing::columns_hashing_impl::FindResultImpl<Mapped, join_features.need_flags>;
+
+    size_t j = 0;
+    for (; j < count && current_offset < max_joined_rows; ++j)
+    {
+        const size_t row = begin + j;
+        bool right_row_found = false;
+        KnownRowsHolder<flag_per_row> known_rows;
+        for (size_t k = 0; k < num_clauses; ++k)
+        {
+            const UInt64 word = outcomes[k].found[j];
+            if (!word)
+                continue;
+
+            right_row_found = true;
+            const bool is_last_disjunct = (k + 1 == num_clauses);
+            if constexpr (probe_mapped_fits_word<MappedValue>)
+            {
+                auto mapped_value = mappedFromWord<MappedValue>(word);
+                FindResult find_result(&mapped_value, true, /*off=*/0);
+                processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
+                    find_result, added_columns, used_flags, row, /*ind=*/0, current_offset, known_rows, is_last_disjunct);
+            }
+            else
+            {
+                FindResult find_result(reinterpret_cast<Mapped *>(word), true, /*off=*/0); /// NOLINT(performance-no-int-to-ptr)
+                processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
+                    find_result, added_columns, used_flags, row, /*ind=*/0, current_offset, known_rows, is_last_disjunct);
+            }
+        }
+
+        if (!right_row_found)
+        {
+            if constexpr (join_features.is_anti_join && join_features.left)
+                setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+            addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+        }
+
+        if constexpr (join_features.need_replication)
+            added_columns.offsets_to_replicate.push_back(current_offset);
+    }
+    return j;
+}
+
 /// Joins right table columns which indexes are present in right_indexes using specified map.
 /// Makes filter (1 if row presented in right table) and returns offsets to replicate (for ALL JOINS).
+///
+/// Clause-major (Stage 3): one call to `lookupBatch` per clause per batch fills
+/// `outcomes[k]`, then `emitBatch` consumes all K outcomes for that batch. `lookupBatch` is
+/// the SAME function the single-clause probe uses (P8's "additive, not multiplicative"
+/// design) - multi-clause is just K calls to it, keyed on the same (Map, KeyGetter,
+/// Selector), so it adds nothing to the 64-body instantiation count.
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <
     typename KeyGetter,
@@ -1203,10 +1251,10 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     size_t rows = ScatteredBlock::Selector::size(selector);
 
     /// Per-clause skip bytes, prepared once per call (see `JoinOnKeyColumns::buildRowSkipData`).
-    /// Empty `skip_datas` means the fast path; SequentialMultiLookup folds that into two inner
-    /// loops (P4). A skipped clause is not a missed row (C15).
+    /// Empty `skip_datas` means the fast path; `lookupBatch` folds that into two inner loops
+    /// (P4, same fold the single-clause probe uses). A skipped clause is not a missed row (N3).
     /// Clause count matches `key_getter_vector` / `join_on_keys` (not `mapv`): empty ON keys
-    /// still enter this overload with an empty getter vector.
+    /// still enter this overload with an empty getter vector (N6, N22).
     chassert(key_getter_vector.size() == added_columns.join_on_keys.size());
     chassert(key_getter_vector.size() == mapv.size() || key_getter_vector.empty());
     std::vector<const UInt8 *> skip_datas;
@@ -1260,23 +1308,23 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
         added_columns.offsets_to_replicate.reserve(rows);
     }
 
-    /// Software prefetch for multi-map variant. Only prefetch the first map when there is a
-    /// clause to look up (empty join_on_keys leaves key_getter_vector empty). One instance
-    /// for the whole probe call, as in the single-clause probe (F11).
+    /// Software prefetch: each clause prefetches its own map inside its own `lookupBatch`
+    /// call - a deliberate change from the old row-major driver, which only ever prefetched
+    /// `mapv[0]` (F11). One instance per clause, constructed once for the whole probe call
+    /// (the look-ahead calibration fires once at an absolute row, so a per-batch instance
+    /// would never calibrate past the first batch - same reasoning as the single-clause
+    /// probe's prefetcher).
     constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
-
-    bool use_prefetch = false;
-    if constexpr (can_prefetch)
-        use_prefetch = !key_getter_vector.empty() && !mapv.empty()
-            && shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
-
-    ProbePrefetch<Map, KeyGetter, Selector> prefetch_at{
-        mapv.empty() ? nullptr : mapv[0],
-        key_getter_vector.empty() ? nullptr : &key_getter_vector[0],
-        &selector,
-        &pool,
-        use_prefetch,
-        rows};
+    std::vector<ProbePrefetch<Map, KeyGetter, Selector>> prefetchers;
+    prefetchers.reserve(num_clauses);
+    for (size_t k = 0; k < num_clauses; ++k)
+    {
+        bool use_prefetch_k = false;
+        if constexpr (can_prefetch)
+            use_prefetch_k = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[k]);
+        prefetchers.push_back(ProbePrefetch<Map, KeyGetter, Selector>{
+            mapv[k], &key_getter_vector[k], &selector, &pool, use_prefetch_k, rows});
+    }
 
     size_t max_joined_rows
         = added_columns.max_joined_block_rows > 0 ? added_columns.max_joined_block_rows : std::numeric_limits<size_t>::max();
@@ -1285,23 +1333,82 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     constexpr bool stop_after_first_match = join_features.is_any_or_semi_join
         && !(join_features.is_any_join && (join_features.right || join_features.full));
 
-    MultiEmitSink<KIND, STRICTNESS, need_filter, MapsTemplate, AddedColumns> sink{
-        added_columns, used_flags, current_offset};
+    /// ClauseOutcomes: K scratch buffers, one per clause, sized once for the whole call.
+    /// N23: the multi path never sizes `ProbeOutcomes::offset` - `lookupBatch<false>` below
+    /// always instantiates `RecordOutcomeSink<false>` regardless of the TU's `need_flags`.
+    const size_t scratch_rows = std::min(rows, PROBE_BATCH_ROWS);
+    std::vector<ProbeOutcomes> outcomes(num_clauses);
+    for (auto & outcome : outcomes)
+        outcome.useScratch(scratch_rows, /*need_flags=*/false);
 
-    /// C13: driver stops at a row boundary when current_offset >= max_joined_rows and returns i.
-    /// C15: driver owns clause iteration + KnownRowsHolder; sink stays free of KeyGetter/Map.
-    /// C16: MultiEmitSink::finish push_backs offsets_to_replicate so early exit truncates.
-    const size_t i = SequentialMultiLookup::run<stop_after_first_match, KnownRowsHolder<flag_per_row>>(
-        key_getter_vector,
-        mapv,
-        selector,
-        skip_datas,
-        pool,
-        rows,
-        max_joined_rows,
-        current_offset,
-        prefetch_at,
-        sink);
+    /// Short-circuit scratch (P8, N20, F1): `sc_matched` is batch-position indexed and is
+    /// never handed to the lookup; `sc_combined` is sized to the SOURCE domain - the same
+    /// domain `buildRowSkipData` sizes its buffer to (the left block's row count, read via
+    /// any clause's join_mask_column since every clause is built from the same source
+    /// block) - and is written at `ind`, never at `j`, so it needs no clearing between
+    /// batches (every position read in a batch is written first in that same batch). Both
+    /// stay empty when the join kind cannot short-circuit, so a non-ANY/SEMI join pays
+    /// nothing for them.
+    PODArray<UInt8> sc_matched;
+    IColumn::Filter sc_combined;
+    if constexpr (stop_after_first_match)
+    {
+        sc_matched.resize(scratch_rows);
+        if (num_clauses > 0)
+            sc_combined.resize(added_columns.join_on_keys[0].join_mask_column.getSize());
+    }
+
+    size_t i = 0;
+    for (size_t begin = 0; begin < rows; begin += PROBE_BATCH_ROWS)
+    {
+        const size_t count = std::min(PROBE_BATCH_ROWS, rows - begin);
+        bool any_matched = false;
+        if constexpr (stop_after_first_match)
+            std::fill(sc_matched.begin(), sc_matched.begin() + count, 0);
+
+        for (size_t k = 0; k < num_clauses; ++k)
+        {
+            const UInt8 * skip = skip_datas.empty() ? nullptr : skip_datas[k];
+            if constexpr (stop_after_first_match)
+            {
+                /// Fold matched rows into the next clause's skip mask - equivalent to the
+                /// old row-major `break` on first match (N4). Skipped while nothing has
+                /// matched yet, so the no-skip inner loop still runs when `skip` is null.
+                if (k > 0 && any_matched)
+                {
+                    for (size_t j = 0; j < count; ++j)
+                    {
+                        const size_t ind = selectorIndexAt(selector, begin + j);
+                        chassert(ind < sc_combined.size());
+                        sc_combined[ind] = (skip ? skip[ind] : 0) | sc_matched[j];
+                    }
+                    skip = sc_combined.data();
+                }
+            }
+
+            lookupBatch</*need_flags=*/false>(
+                key_getter_vector[k], *mapv[k], selector, skip, pool, begin, count, prefetchers[k], outcomes[k]);
+
+            if constexpr (stop_after_first_match)
+            {
+                if (k + 1 < num_clauses)
+                {
+                    for (size_t j = 0; j < count; ++j)
+                    {
+                        const UInt8 m = (outcomes[k].found[j] != 0);
+                        sc_matched[j] |= m;
+                        any_matched |= m;
+                    }
+                }
+            }
+        }
+
+        const size_t consumed = emitBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
+            outcomes, num_clauses, added_columns, used_flags, begin, count, max_joined_rows, current_offset);
+        i = begin + consumed;
+        if (consumed < count)
+            break;
+    }
 
     added_columns.applyLazyDefaults();
     return i;
