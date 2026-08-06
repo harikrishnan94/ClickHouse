@@ -66,15 +66,15 @@ struct LazyOutput
 
     /// Resolves RowRef::block_no at emit time; points into the join's StoredColumnsIndex,
     /// which is immutable once the build phase is finished. Used by the cold paths
-    /// (joinGet / ColumnsWithRowNumbers / ASOF). These keep the raw `StoredBlock *` rather than
+    /// (ColumnsWithRowNumbers / ASOF). These keep the raw `StoredBlock *` rather than
     /// the hot-path emit table below because they need the whole block, not just a resolved column:
-    /// per-row `byteSizeAt` accounting (`buildOutputFromBlocksLimitAndOffset`), nullable-column
-    /// dispatch (`buildJoinGetOutput`), and feeding `ColumnsWithRowNumbers` (`buildOutputFromBlocks`).
+    /// per-row `byteSizeAt` accounting (`buildOutputFromBlocksLimitAndOffset`) and feeding
+    /// `ColumnsWithRowNumbers` (`buildOutputFromBlocks`).
     const StoredBlock * const * stored_columns = nullptr;
 
     /// Per output column (parallel to `right_indexes`): the StoredColumnsIndex emit table base pointers,
     /// i.e. the resolved source `const IColumn *` per block and its `ColumnReplicated *` counterpart.
-    /// Filled in the AddedColumns ctor for the hot `fillFromRowRefs` path; empty for joinGet / ASOF.
+    /// Filled in the AddedColumns ctor for the hot `fillFromRowRefs` path; empty for ASOF.
     std::vector<const IColumn * const *> emit_block_columns;
     std::vector<const ColumnReplicated * const *> emit_block_replicated;
 
@@ -116,8 +116,6 @@ struct LazyOutput
         size_t rows_limit,
         size_t bytes_limit) const;
 
-    void buildJoinGetOutput(size_t size_to_reserve, MutableColumns & columns, const UInt64 * row_refs_begin, const UInt64 * row_refs_end) const;
-
     /** Build output from the blocks that extract from the encoded refs, to avoid block cache miss which may cause performance slow down.
      *  And This problem would happen it we directly build output from the encoded refs.
      */
@@ -147,15 +145,13 @@ public:
         std::vector<JoinOnKeyColumns> && join_on_keys_,
         ExpressionActionsPtr additional_filter_expression_,
         const std::vector<std::pair<size_t, size_t>> & additional_filter_required_rhs_pos_,
-        bool is_asof_join,
-        bool is_join_get_)
+        bool is_asof_join)
         : left_block(left_block_.getSourceBlock())
         , join_on_keys(join_on_keys_)
         , additional_filter_expression(additional_filter_expression_)
         , additional_filter_required_rhs_pos(additional_filter_required_rhs_pos_)
         , rows_to_add(left_block_.rows())
         , enable_prefetch(join.enableSoftwarePrefetch())
-        , is_join_get(is_join_get_)
     {
         size_t num_columns_to_add = block_with_columns_to_add.columns();
         if (is_asof_join)
@@ -197,26 +193,14 @@ public:
         for (auto & tn : lazy_output.type_name)
             lazy_output.right_indexes.push_back(saved_block_sample.getPositionByName(tn.name));
 
-        nullable_column_ptrs.resize(lazy_output.right_indexes.size(), nullptr);
-        for (size_t j = 0; j < lazy_output.right_indexes.size(); ++j)
-        {
-            /** If it's joinGetOrNull, we will have nullable columns in result block
-              * even if right column is not nullable in storage (saved_block_sample).
-              */
-            const auto & saved_column = saved_block_sample.getByPosition(lazy_output.right_indexes[j]).column;
-            if (columns[j]->isNullable() && !saved_column->isNullable())
-                nullable_column_ptrs[j] = typeid_cast<ColumnNullable *>(columns[j].get());
-        }
-
         /// Resolve the StoredColumnsIndex emit table for the hot `fillFromRowRefs` path: cache, per output
-        /// column, the per-block base pointers it hands to `fillFromRowRefs`. Only normal joins reach it
-        /// (joinGet and ASOF use the cold per-block paths). `resolveEmitColumns` builds exactly the
-        /// requested positions (this query's `right_indexes`) under the index mutex, so StorageJoin queries
-        /// selecting different right-column subsets each get their columns built rather than reusing a
-        /// table scoped to some other query's columns.
+        /// column, the per-block base pointers it hands to `fillFromRowRefs`. ASOF uses the cold per-block
+        /// paths. `resolveEmitColumns` builds exactly the requested positions (this query's `right_indexes`)
+        /// under the index mutex, so StorageJoin queries selecting different right-column subsets each get
+        /// their columns built rather than reusing a table scoped to some other query's columns.
         if constexpr (lazy)
         {
-            if (!is_join_get && !is_asof_join)
+            if (!is_asof_join)
                 join.getJoinedData()->stored_columns_index->resolveEmitColumns(
                     saved_block_sample.columns(),
                     lazy_output.right_indexes,
@@ -305,14 +289,6 @@ private:
         {
             const auto * column_from_block = to_check.at(lazy_output.right_indexes[j]).get();
             const auto * dest_column = columns[j].get();
-            if (auto * nullable_col = nullable_column_ptrs[j])
-            {
-                if (!is_join_get)
-                    throw Exception(ErrorCodes::LOGICAL_ERROR,
-                                    "Columns {} and {} can have different nullability only in joinGetOrNull",
-                                    dest_column->getName(), column_from_block->getName());
-                dest_column = nullable_col->getNestedColumnPtr().get();
-            }
 
             if (const auto * column_replicated = typeid_cast<const ColumnReplicated *>(column_from_block))
                 column_from_block = column_replicated->getNestedColumn().get();
@@ -332,8 +308,6 @@ private:
         }
     }
 
-    bool is_join_get;
-    std::vector<ColumnNullable *> nullable_column_ptrs;
     size_t lazy_defaults_count = 0;
 
     /// for ASOF

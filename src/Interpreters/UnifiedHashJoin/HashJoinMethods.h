@@ -171,15 +171,13 @@ public:
         const HashJoin & join,
         Block block,
         const Block & block_with_columns_to_add,
-        const MapsTemplateVector & maps_,
-        bool is_join_get = false);
+        const MapsTemplateVector & maps_);
 
     static JoinResultPtr joinBlockImpl(
         const HashJoin & join,
         ScatteredBlock block,
         const Block & block_with_columns_to_add,
-        const MapsTemplateVector & maps_,
-        bool is_join_get = false);
+        const MapsTemplateVector & maps_);
 
 private:
     template <typename KeyGetter, bool is_asof_join>
@@ -240,13 +238,13 @@ private:
 
     /// Joins right table columns which indexes are present in right_indexes using specified map.
     /// Makes filter (1 if row presented in right table) and returns offsets to replicate (for ALL JOINS).
-    /// `fast_path` compiles out the per-row null-map and join-mask checks for the common case of
-    /// non-nullable keys and no ON-section condition (the checks are done at runtime otherwise).
+    /// Skip bytes (null-map / ON-section mask) are prepared at runtime when needed; the lookup
+    /// driver folds `skip_data == nullptr` into two inner loops (P4), so this is no longer a
+    /// template axis.
     template <
         typename KeyGetter,
         typename Map,
         bool need_filter,
-        bool fast_path,
         typename AddedColumns,
         typename Selector>
     static size_t joinRightColumns(
@@ -260,7 +258,6 @@ private:
         typename KeyGetter,
         typename Map,
         bool need_filter,
-        bool fast_path,
         typename AddedColumns,
         typename Selector>
     static size_t joinRightColumns(
@@ -280,28 +277,6 @@ private:
         const ScatteredBlock::Selector & selector,
         bool need_filter [[maybe_unused]],
         bool flag_per_row [[maybe_unused]]);
-
-    /// Cut first num_rows rows from block in place and returns block with remaining rows
-    static Block sliceBlock(Block & block, size_t num_rows);
-
-    /** Since we do not store right key columns,
-      * this function is used to copy left key columns to right key columns.
-      * If the user requests some right columns, we just copy left key columns to right, since they are equal.
-      * Example: SELECT t1.key, t2.key FROM t1 FULL JOIN t2 ON t1.key = t2.key;
-      * In that case for matched rows in t2.key we will use values from t1.key.
-      * However, in some cases we might need to adjust the type of column, e.g. t1.key :: LowCardinality(String) and t2.key :: String
-      * Also, the nullability of the column might be different.
-      * Returns the right column after with necessary adjustments.
-      */
-    static ColumnWithTypeAndName copyLeftKeyColumnToRight(
-        const DataTypePtr & right_key_type,
-        const String & renamed_right_column,
-        const ColumnWithTypeAndName & left_column,
-        const IColumn::Filter * null_map_filter = nullptr);
-
-    static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nullable);
-
-    static void correctNullabilityInplace(ColumnWithTypeAndName & column, bool nullable, const IColumn::Filter & negative_null_map);
 };
 
 /// Instantiate template class ahead in different .cpp files to avoid `too large translation unit`.

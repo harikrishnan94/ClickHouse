@@ -272,19 +272,10 @@ Block HashJoinResult::generateBlock(
         columns = std::move(state->columns);
     }
 
-    if (properties.is_join_get)
-    {
-        lazy_output.buildJoinGetOutput(
-            state->rows_to_reserve, columns,
-            off_data + state->row_ref_begin, off_data + state->row_ref_end);
-    }
-    else
-    {
-        rows_added = lazy_output.buildOutput(
-            state->rows_to_reserve, state->block, state->offsets, columns,
-            off_data + state->row_ref_begin, off_data + state->row_ref_end,
-            state->state_row_offset, state->state_row_limit, state->state_bytes_limit);
-    }
+    rows_added = lazy_output.buildOutput(
+        state->rows_to_reserve, state->block, state->offsets, columns,
+        off_data + state->row_ref_begin, off_data + state->row_ref_end,
+        state->state_row_offset, state->state_row_limit, state->state_bytes_limit);
 
     IColumn::Offsets offsets;
     auto last_offset = state->offsets.empty() ? 0 : state->offsets.back();
@@ -419,7 +410,6 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
     size_t limit_bytes_per_key = 0;
     if (properties.joined_block_split_single_row
         && properties.max_joined_block_rows > 0
-        && !properties.is_join_get
         && !offsets.empty()
         && lazy_output.output_by_row_list
         && !lazy_output.join_data_sorted

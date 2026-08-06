@@ -22,8 +22,6 @@ public:
         size_t avg_joined_bytes_per_row;
 
         bool need_filter;
-        bool is_join_get;
-
         bool joined_block_split_single_row = false;
 
         bool enable_lazy_columns_replication = false;
