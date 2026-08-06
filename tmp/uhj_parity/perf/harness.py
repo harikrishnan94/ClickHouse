@@ -354,11 +354,15 @@ def special_timed_cells() -> list[SpecialTimedCell]:
                        "FROM p_medium_hi AS l INNER JOIN b_medium AS r "
                        "ON l.k = r.k OR l.a = r.a"),
         ),
+        # SEMI cells aggregate r.k, not r.v: with 2 rows per key, which duplicate becomes
+        # the first match is parallel-build-order dependent, so sum(r.v) is nondeterministic
+        # at >1 thread (measured: +-11 in the last digits at t16). r.k == l.k for matched
+        # rows, so the aggregate is stable and still gathers a right column per emitted row.
         SpecialTimedCell(
             cell_id="multi2semi|u64|t1|medium|timed",
             kind="LEFT SEMI",
             group="multi",
-            timed_sql=("SELECT count() AS cnt, sum(l.k) AS s1, sum(r.v) AS s2 "
+            timed_sql=("SELECT count() AS cnt, sum(l.k) AS s1, sum(r.k) AS s2 "
                        "FROM p_medium_hi AS l LEFT SEMI JOIN b_medium AS r "
                        "ON l.k = r.k OR l.a = r.a"),
         ),
@@ -370,13 +374,14 @@ def special_timed_cells() -> list[SpecialTimedCell]:
                        f"FROM {af_l} AS l INNER JOIN {af_r} AS r "
                        "ON l.k = r.k AND l.a < r.a"),
         ),
-        # Short-circuit fold at scale: one large cell at 16 threads.
+        # Short-circuit fold at scale: one large cell at 16 threads. (r.k, not r.v -
+        # see multi2semi|u64|t1|medium above.)
         SpecialTimedCell(
             cell_id="multi2semi|u64|t16|large|timed",
             kind="LEFT SEMI",
             group="multi",
             threads=16,
-            timed_sql=("SELECT count() AS cnt, sum(l.k) AS s1, sum(r.v) AS s2 "
+            timed_sql=("SELECT count() AS cnt, sum(l.k) AS s1, sum(r.k) AS s2 "
                        "FROM p_large_hi AS l LEFT SEMI JOIN b_large AS r "
                        "ON l.k = r.k OR l.a = r.a"),
         ),
@@ -546,14 +551,17 @@ ALGO_SYMBOL_RULES = [
 ]
 
 # Which probe loop ran, read out of the same stacks. Every arm is `unified_hash`; these
-# markers identify the compile-time choice (`if constexpr (split_can_pay)`): `probeTwoPhase`
-# for kinds that pay for a second pass, `EmitSink` for SEMI LEFT / ANTI. Stage 6's
-# cross-binary A/B still needs this positive evidence the intended code ran.
+# markers identify the compile-time choice (`if constexpr (split_can_pay)`).
 #
-# The markers are the two outer functions: `consumeProbeBatch` is inlined into
-# `probeTwoPhase` and never appears, while `probeTwoPhase` and `EmitSink` both do.
+# Split kinds: the marker was `probeTwoPhase` at the Stage 0 baseline and is `lookupBatch`
+# from Stage 1 on - Stage 1 made probeTwoPhase a thin shell that clang inlines into
+# joinRightColumns, so it never appears in a stack any more, while lookupBatch is NO_INLINE
+# and does. Accept either so the same judge works on both sides of the A/B.
+# Fused kinds (SEMI LEFT / ANTI): `EmitSink` never appears as a frame (its methods are
+# ALWAYS_INLINE); it matches via the sink TEMPLATE ARGUMENT in the demangled runImpl name.
 PROBE_SYMBOL_RULES = [
-    ("uhj_split", "DB::Unified::probeTwoPhase"),
+    ("uhj_split_twophase", "DB::Unified::probeTwoPhase"),
+    ("uhj_split_lookupbatch", "DB::Unified::lookupBatch"),
     ("uhj_fused", "DB::Unified::EmitSink"),
 ]
 
@@ -607,7 +615,8 @@ def judge_counts(counts: dict) -> dict:
             verdict = label
             break
 
-    split, fused = counts.get("uhj_split", 0), counts.get("uhj_fused", 0)
+    split = counts.get("uhj_split_twophase", 0) + counts.get("uhj_split_lookupbatch", 0)
+    fused = counts.get("uhj_fused", 0)
     if split >= floor and fused >= floor:
         probe = "CONFLICT"                         # one query cannot have run both loops
     elif split >= floor:

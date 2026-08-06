@@ -60,7 +60,13 @@ def a1_arm_assertion(rows):
         # SEMI/ANTI are forced fused regardless of the arm, so the kind decides too.
         expect = H.expected_probe(r["algo"], r["kind"])
         if chk.get("verdict") != "unified_hash":
-            bad.append((r["cell_id"], r["algo"], f"algorithm={chk.get('verdict')}"))
+            # A query too fast to collect CPU samples proves nothing either way (the tiny
+            # special cells finish in ~1 ms); it lands in the unknown bucket, not wrong-arm.
+            # With plenty of samples but no UHJ marker, something genuinely else ran.
+            if chk.get("verdict") == "UNKNOWN" and chk.get("total_samples", 0) < 20:
+                unknown.append((r["cell_id"], r["algo"], chk.get("total_samples")))
+            else:
+                bad.append((r["cell_id"], r["algo"], f"algorithm={chk.get('verdict')}"))
         elif chk.get("probe_verdict") == "UNKNOWN":
             unknown.append((r["cell_id"], r["algo"], chk.get("total_samples")))
         elif chk.get("probe_verdict") != expect:
