@@ -1,12 +1,9 @@
-/// Microbenchmark: UnifiedHashJoin lookup-driver comparison (multi-threaded).
+/// Microbenchmark: UnifiedHashJoin probe loop (multi-threaded).
 ///
-/// Compares probe shapes that share `SequentialLookup` (the production driver) and differ only
-/// in how matches are emitted:
-///   - emit:     SequentialLookup + EmitSink (fused; production path for SEMI-LEFT / ANTI)
-///   - twophase: SequentialLookup via probeTwoPhase (production path for split_can_pay kinds)
-///
-/// Natural home for P2 per-row-overhead checks when a new LookupDriver is added: plug it into
-/// probeTwoPhase alongside SequentialLookup and keep emit fixed.
+/// Drives the production probe: `lookupBatch` (SequentialLookup + RecordOutcomeSink) with the
+/// consume pass on top, over serial and two-level maps. The fused `EmitSink` shape was deleted
+/// in Stage 2 when every kind moved onto the recording path, so the emit-vs-twophase
+/// comparison no longer exists.
 ///
 /// Run with:
 ///   ./unified_hash_join_probe_loop --verify
@@ -84,10 +81,9 @@ enum class BuildOrder
     Clustered,
 };
 
-/// Probe shapes sharing SequentialLookup; extend with new LookupDrivers for P2 checks.
+/// Probe shape. A single one remains: the production recording probe.
 enum class Driver
 {
-    SequentialEmit,
     SequentialTwoPhase,
 };
 
@@ -106,7 +102,7 @@ struct Config
     size_t block_size = DEFAULT_BLOCK_SIZE;
     size_t batch_size = PROBE_BATCH_ROWS;
     std::vector<Shape> shapes = {Shape::Inner, Shape::Left};
-    std::vector<Driver> drivers = {Driver::SequentialEmit, Driver::SequentialTwoPhase};
+    std::vector<Driver> drivers = {Driver::SequentialTwoPhase};
     MapMode map_mode = MapMode::TwoLevel;
     PrefetchMode prefetch = PrefetchMode::Auto;
     bool need_filter = false;
@@ -213,12 +209,10 @@ void parseConfig(int & argc, char ** argv)
     if (consumeFlag(argc, argv, "--drivers", value) || consumeFlag(argc, argv, "--variants", value))
     {
         g_config.drivers.clear();
-        if (value.find("emit") != std::string::npos)
-            g_config.drivers.push_back(Driver::SequentialEmit);
         if (value.find("twophase") != std::string::npos || value.find("two-phase") != std::string::npos)
             g_config.drivers.push_back(Driver::SequentialTwoPhase);
         if (g_config.drivers.empty())
-            throw std::runtime_error("--drivers must include emit and/or twophase");
+            throw std::runtime_error("--drivers must include twophase (the fused emit shape was removed)");
     }
     if (consumeFlag(argc, argv, "--map", value))
     {
@@ -289,7 +283,7 @@ const char * shapeName(Shape s)
 
 const char * driverName(Driver d)
 {
-    return d == Driver::SequentialEmit ? "seq_emit" : "seq_twophase";
+    return d == Driver::SequentialTwoPhase ? "seq_twophase" : "unknown";
 }
 
 std::string formatCard(size_t c)
@@ -795,42 +789,6 @@ bool resolveUsePrefetch(PrefetchMode mode, size_t map_bytes)
 using RowRangeSelector = std::pair<size_t, size_t>;
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, bool need_filter, typename Map, typename KeyGetter>
-void probeSequentialEmit(
-    const Map & map,
-    KeyGetter & key_getter,
-    Arena & pool,
-    LazySink & sink,
-    JoinStuff::JoinUsedFlags & used_flags,
-    size_t begin,
-    size_t rows,
-    bool use_prefetch)
-{
-    constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
-
-    IColumn::Offset current_offset = 0;
-    const RowRangeSelector selector{begin, 0};
-
-    auto prefetcher = makeJoinPrefetcher(
-        use_prefetch && can_prefetch,
-        rows,
-        [&](size_t k) __attribute__((always_inline))
-        {
-            if constexpr (can_prefetch)
-                map.prefetch(key_getter.getKeyHolder(selectorIndexAt(selector, k), pool));
-        });
-
-    auto prefetch_at = [&](size_t k) __attribute__((always_inline))
-    {
-        if constexpr (can_prefetch)
-            prefetcher.prefetchAt(k);
-    };
-
-    EmitSink<KIND, STRICTNESS, need_filter, HashJoin::MapsAll, LazySink> emit_sink{sink, used_flags, current_offset};
-    SequentialLookup::run(key_getter, map, selector, /*skip_data=*/nullptr, pool, /*begin=*/0, rows, prefetch_at, emit_sink);
-    sink.applyLazyDefaults();
-}
-
-template <JoinKind KIND, JoinStrictness STRICTNESS, bool need_filter, typename Map, typename KeyGetter>
 void probeSequentialTwoPhase(
     const Map & map,
     KeyGetter & key_getter,
@@ -881,11 +839,9 @@ void probeWithDriver(
     size_t batch_size,
     bool use_prefetch)
 {
-    if (driver == Driver::SequentialEmit)
-        probeSequentialEmit<KIND, STRICTNESS, need_filter>(map, key_getter, pool, sink, used_flags, begin, rows, use_prefetch);
-    else
-        probeSequentialTwoPhase<KIND, STRICTNESS, need_filter>(
-            map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
+    chassert(driver == Driver::SequentialTwoPhase);
+    probeSequentialTwoPhase<KIND, STRICTNESS, need_filter>(
+        map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
 }
 
 /// ─── Probe driver ──────────────────────────────────────────────────────────
@@ -903,7 +859,7 @@ struct ProbeParams
     size_t probe_mult = 0;
     size_t threads = 0;
     Shape shape = Shape::Inner;
-    Driver driver = Driver::SequentialEmit;
+    Driver driver = Driver::SequentialTwoPhase;
     bool need_filter = false;
 };
 
@@ -920,7 +876,7 @@ struct ProbeSession
     bool use_prefetch = false;
     bool need_filter = false;
     Shape shape = Shape::Inner;
-    Driver driver = Driver::SequentialEmit;
+    Driver driver = Driver::SequentialTwoPhase;
     bool two_level = true;
 
     std::unique_ptr<std::barrier<>> sync_start;
@@ -1160,30 +1116,11 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
     auto built1
         = useTwoLevelMap(1) ? buildMapImpl<TwoLevelMap>(cardinality, build_mult, 1) : buildMapImpl<SerialMap>(cardinality, build_mult, 1);
 
-    std::pair<std::vector<UInt64>, UInt64> emit;
     std::pair<std::vector<UInt64>, UInt64> twophase;
     if (built1.two_level)
-    {
-        emit = digestsDriver<KIND, need_filter, TwoLevelMap>(built1, probe, Driver::SequentialEmit, /*include_refs=*/true);
         twophase = digestsDriver<KIND, need_filter, TwoLevelMap>(built1, probe, Driver::SequentialTwoPhase, /*include_refs=*/true);
-    }
     else
-    {
-        emit = digestsDriver<KIND, need_filter, SerialMap>(built1, probe, Driver::SequentialEmit, /*include_refs=*/true);
         twophase = digestsDriver<KIND, need_filter, SerialMap>(built1, probe, Driver::SequentialTwoPhase, /*include_refs=*/true);
-    }
-
-    if (emit.first != twophase.first)
-        throw Exception(
-            ErrorCodes::LOGICAL_ERROR,
-            "verify failed: seq_emit != seq_twophase digests for {} card={} build={}x probe={}x",
-            KIND == JoinKind::Inner ? "Inner" : "Left",
-            cardinality,
-            build_mult,
-            probe_mult);
-
-    if (emit.second != twophase.second)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "verify failed: seq_emit out_rows {} != seq_twophase {}", emit.second, twophase.second);
 
     /// Analytic expectation.
     const size_t probe_rows = cardinality * probe_mult;
@@ -1193,11 +1130,11 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
     UInt64 expected = matches * build_mult;
     if constexpr (features.add_missing)
         expected += misses;
-    if (emit.second != expected)
+    if (twophase.second != expected)
         throw Exception(
             ErrorCodes::LOGICAL_ERROR,
             "verify failed: out_rows {} != expected {} (matches={} misses={} build_mult={})",
-            emit.second,
+            twophase.second,
             expected,
             matches,
             misses,
@@ -1208,8 +1145,8 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
     if (thr > 1 && useTwoLevelMap(thr))
     {
         auto built_n = buildMapImpl<TwoLevelMap>(cardinality, build_mult, thr);
-        auto emit_1 = digestsDriver<KIND, need_filter, TwoLevelMap>(built1, probe, Driver::SequentialEmit, /*include_refs=*/false);
-        auto emit_n = digestsDriver<KIND, need_filter, TwoLevelMap>(built_n, probe, Driver::SequentialEmit, /*include_refs=*/false);
+        auto emit_1 = digestsDriver<KIND, need_filter, TwoLevelMap>(built1, probe, Driver::SequentialTwoPhase, /*include_refs=*/false);
+        auto emit_n = digestsDriver<KIND, need_filter, TwoLevelMap>(built_n, probe, Driver::SequentialTwoPhase, /*include_refs=*/false);
         if (emit_n.first != emit_1.first || emit_n.second != emit_1.second)
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR,
@@ -1224,7 +1161,7 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
         cardinality,
         build_mult,
         probe_mult,
-        static_cast<unsigned long long>(emit.second));
+        static_cast<unsigned long long>(twophase.second));
 }
 
 void runVerify()

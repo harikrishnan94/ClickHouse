@@ -112,8 +112,9 @@ ALGOS = ("hash", "parallel_hash", "unified_hash")
 # --------------------------------------------------------------------------
 
 # Stage 1+: one shipping configuration. The probe-batch length is constexpr
-# `PROBE_BATCH_ROWS = 8192` and fused-vs-split is `if constexpr (split_can_pay)`, so there is
-# no within-binary fused/split A/B any more. Correctness is `diff_goldens.py` against Stage 0.
+# `PROBE_BATCH_ROWS = 8192`, and Stage 2 routes every kind through the recording path, so
+# there is no within-binary fused/split A/B any more. Correctness is `diff_goldens.py`
+# against Stage 0.
 #
 # Stage 6: cross-binary timing A/B via `uhj_pre` / `uhj_post` on distinct HTTP ports
 # (`UHJ_PRE_HTTP_PORT` / `UHJ_POST_HTTP_PORT`). Same algo/expect/settings shape; one query in
@@ -126,7 +127,7 @@ POST_HTTP_PORT = int(os.environ.get("UHJ_POST_HTTP_PORT", "8121"))
 ARMS = {
     "uhj_pre": {
         "algo": "unified_hash",
-        # Default for kinds where `split_can_pay`; ALWAYS_FUSED_KINDS override via expected_probe.
+        # Default for non-ALWAYS_FUSED_KINDS on the base binary; see expected_probe.
         "expect": "uhj_split",
         "settings": {},
         "http_port": PRE_HTTP_PORT,
@@ -144,13 +145,17 @@ TEST_ARM = "uhj_post"
 TEST_ARMS = (TEST_ARM,)
 AB_ARMS = (BASELINE_ARM, TEST_ARM)
 
-# Join kinds whose whole per-row emit is a filter bit. `if constexpr (!split_can_pay)` forces
-# them onto EmitSink: SEMI LEFT and every ANTI. The arm assertion has to know that.
+# Kinds whose base-binary probe is the fused `EmitSink` loop: SEMI LEFT and every ANTI.
+# Stage 2 deleted `EmitSink` and `split_can_pay`, so the post-Stage-2 binary records EVERY
+# kind through `lookupBatch`; the fused family only exists on the Stage 0 baseline.
 ALWAYS_FUSED_KINDS = {"LEFT SEMI", "LEFT ANTI", "RIGHT ANTI", "FULL ANTI", "INNER ANTI"}
 
 
 def expected_probe(arm: str, kind: str) -> str:
-    """The probe family a cell of this kind must show on the shipping (or Stage 6) path."""
+    """The probe family a cell of this kind must show on this arm's binary."""
+    if arm != BASELINE_ARM:
+        # Post-Stage-2: one recording path for every kind (the `lookupBatch` marker).
+        return "uhj_split"
     if kind in ALWAYS_FUSED_KINDS or " ANTI" in kind:
         return "uhj_fused"
     return ARMS[arm]["expect"]
@@ -551,14 +556,17 @@ ALGO_SYMBOL_RULES = [
 ]
 
 # Which probe loop ran, read out of the same stacks. Every arm is `unified_hash`; these
-# markers identify the compile-time choice (`if constexpr (split_can_pay)`).
+# markers identify the probe family.
 #
 # Split kinds: the marker was `probeTwoPhase` at the Stage 0 baseline and is `lookupBatch`
 # from Stage 1 on - Stage 1 made probeTwoPhase a thin shell that clang inlines into
 # joinRightColumns, so it never appears in a stack any more, while lookupBatch is NO_INLINE
-# and does. Accept either so the same judge works on both sides of the A/B.
-# Fused kinds (SEMI LEFT / ANTI): `EmitSink` never appears as a frame (its methods are
-# ALWAYS_INLINE); it matches via the sink TEMPLATE ARGUMENT in the demangled runImpl name.
+# and does. Stage 2 then deleted probeTwoPhase (and EmitSink) entirely: on the post binary
+# every kind, SEMI/ANTI included, shows `lookupBatch`. Accept either marker so the same
+# judge works on both sides of the A/B.
+# Fused kinds (SEMI LEFT / ANTI, baseline binary only): `EmitSink` never appears as a frame
+# (its methods are ALWAYS_INLINE); it matches via the sink TEMPLATE ARGUMENT in the
+# demangled runImpl name.
 PROBE_SYMBOL_RULES = [
     ("uhj_split_twophase", "DB::Unified::probeTwoPhase"),
     ("uhj_split_lookupbatch", "DB::Unified::lookupBatch"),

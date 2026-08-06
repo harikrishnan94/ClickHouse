@@ -708,58 +708,6 @@ void processMatch(
     }
 }
 
-/** Sink: do the whole of the join's match processing for a row as its lookup completes.
-  *
-  * This is the fused probe - there is no second pass and nothing is recorded, because each
-  * row's output is produced between its own lookup and the next row's. That is exactly what a
-  * recording sink exists to avoid, and exactly what costs nothing when the emit is cheap.
-  */
-template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
-    bool need_filter,
-    typename MapsTemplate,
-    typename AddedColumns>
-struct EmitSink
-{
-    using Features = JoinFeatures<KIND, STRICTNESS, MapsTemplate>;
-    static constexpr bool flag_per_row = false; /// single-map probe
-
-    AddedColumns & added_columns;
-    JoinStuff::JoinUsedFlags & used_flags;
-    IColumn::Offset & current_offset;
-
-    ALWAYS_INLINE void miss(size_t /* j */, size_t row)
-    {
-        if constexpr (Features::is_anti_join && Features::left)
-            setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-        addNotFoundRow<Features::add_missing, Features::need_replication>(added_columns, current_offset);
-        finish(row);
-    }
-
-    template <typename FindResult>
-    ALWAYS_INLINE void result(size_t j, size_t row, size_t ind, const FindResult & find_result)
-    {
-        if (!find_result.isFound())
-        {
-            miss(j, row);
-            return;
-        }
-
-        KnownRowsHolder<flag_per_row> dummy_known_rows;
-        processMatch<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
-            find_result, added_columns, used_flags, row, ind, current_offset, dummy_known_rows, /*is_last_disjunct=*/true);
-        finish(row);
-    }
-
-private:
-    ALWAYS_INLINE void finish(size_t row)
-    {
-        if constexpr (Features::need_replication)
-            added_columns.offsets_to_replicate[row] = current_offset;
-    }
-};
-
 /** Sink for the multi-clause probe (C15). Flag-per-row is true; the driver owns clause
   * iteration and `KnownRowsHolder`, and calls `finish` once per consumed row so C16's
   * `offsets_to_replicate.push_back` truncates correctly on early exit.
@@ -1114,84 +1062,6 @@ NO_INLINE void lookupBatch(
         std::forward<PrefetchAt>(prefetch_at), sink);
 }
 
-/** The two-phase probe over one block: `lookupBatch` fills the outcomes of a batch of
-  * consecutive rows, phase 2 consumes them, and the scratch is reused by the next batch.
-  * Keeps `need_filter` only because the consume needs it; both callees are NO_INLINE, so
-  * the shell stays small.
-  */
-template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
-    bool need_filter,
-    typename MapsTemplate,
-    typename Map,
-    typename KeyGetter,
-    typename AddedColumns,
-    typename Selector,
-    typename PrefetchAt>
-void probeTwoPhase(
-    KeyGetter & key_getter,
-    const Map & map,
-    AddedColumns & added_columns,
-    JoinStuff::JoinUsedFlags & used_flags,
-    const Selector & selector,
-    const UInt8 * skip_data,
-    Arena & pool,
-    PrefetchAt && prefetch_at,
-    ProbeOutcomes & outcomes,
-    size_t rows,
-    size_t batch_rows,
-    IColumn::Offset & current_offset)
-{
-    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
-    const size_t scratch_rows = std::min(rows, batch_rows);
-
-    if constexpr (outputIsProbeOutcomes<AddedColumns>(join_features))
-    {
-        /// `has_columns_to_add` is what decides whether `appendFromBlock` appends at all; with
-        /// nothing to add there is no output array to write into and no `row_count` to keep.
-        if (added_columns.has_columns_to_add)
-        {
-            auto & row_refs = added_columns.lazy_output.row_refs;
-            const size_t base = row_refs.size();
-            /// Sized once for the whole block, so no batch can reallocate it under the
-            /// pointer phase 1 holds. Every position is written by phase 1, which is why the
-            /// uninitialized resize of a POD array is safe here.
-            row_refs.resize(base + rows);
-            outcomes.useExternal(row_refs.data() + base, scratch_rows, join_features.need_flags);
-
-            for (size_t begin = 0; begin < rows; begin += batch_rows)
-            {
-                const size_t count = std::min(batch_rows, rows - begin);
-                outcomes.found = row_refs.data() + base + begin;
-                lookupBatch<join_features.need_flags>(
-                    key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, outcomes);
-                consumeFusedBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
-                    outcomes, added_columns, used_flags, begin, count, current_offset);
-            }
-            return;
-        }
-    }
-
-    outcomes.useScratch(scratch_rows, join_features.need_flags);
-
-    for (size_t begin = 0; begin < rows; begin += batch_rows)
-    {
-        const size_t count = std::min(batch_rows, rows - begin);
-        lookupBatch<join_features.need_flags>(
-            key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, outcomes);
-        if constexpr (join_features.is_asof_join)
-        {
-            consumeProbeBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
-                outcomes, added_columns, used_flags, selector, begin, count, current_offset);
-        }
-        else
-        {
-            consumeProbeBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
-                outcomes, added_columns, used_flags, begin, count, current_offset);
-        }
-    }
-}
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <
@@ -1247,26 +1117,63 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     ProbePrefetch<Map, KeyGetter, Selector> prefetch_at{
         map, &key_getter, &selector, &pool, use_prefetch, rows};
 
-    /// A second pass can only pay for itself when the emit it defers is more than a flag or a
-    /// filter bit. SEMI LEFT and ANTI have nothing else per row, so recording an outcome to
-    /// hand over is pure overhead - they were the two worst kinds in the matrix, at +1.0% and
-    /// +1.6%, before this exclusion. Compile-time so `(SEMI && left) || ANTI` TUs never
-    /// instantiate `probeTwoPhase` and the other kinds never instantiate `EmitSink` in this path.
-    constexpr bool split_can_pay = !((join_features.is_semi_join && join_features.left) || join_features.is_anti_join);
-
+    /// Every kind probes through the recording path: `lookupBatch` fills the outcomes of a
+    /// batch, the consume pass emits from them, and the scratch is reused by the next batch.
+    /// SEMI LEFT / ANTI used to skip the second pass (`EmitSink`) because their emit was
+    /// judged too cheap to defer; recording measured +1.0% / +1.6% on the old heavy split,
+    /// but with the de-multiplied lookup the recording path is lighter than keeping a
+    /// separate fused loop per kind. The emit itself is unchanged: SEMI LEFT still appends
+    /// the first match's right columns (N21) and LEFT ANTI its defaults, both through the
+    /// same `processMatch` / `addNotFoundRow` arms in the consume pass.
     IColumn::Offset current_offset = 0;
-    if constexpr (split_can_pay)
+    ProbeOutcomes outcomes;
+    const size_t scratch_rows = std::min(rows, PROBE_BATCH_ROWS);
+
+    if constexpr (outputIsProbeOutcomes<AddedColumns>(join_features))
     {
-        ProbeOutcomes outcomes;
-        probeTwoPhase<KIND, STRICTNESS, need_filter, MapsTemplate, Map, KeyGetter>(
-            key_getter, *map, added_columns, used_flags, selector, skip_data, pool, prefetch_at, outcomes, rows, PROBE_BATCH_ROWS, current_offset);
+        /// `has_columns_to_add` is what decides whether `appendFromBlock` appends at all; with
+        /// nothing to add there is no output array to write into and no `row_count` to keep.
+        if (added_columns.has_columns_to_add)
+        {
+            auto & row_refs = added_columns.lazy_output.row_refs;
+            const size_t base = row_refs.size();
+            /// Sized once for the whole block, so no batch can reallocate it under the
+            /// pointer the lookup holds. Every position is written by the lookup, which is
+            /// why the uninitialized resize of a POD array is safe here.
+            row_refs.resize(base + rows);
+            outcomes.useExternal(row_refs.data() + base, scratch_rows, join_features.need_flags);
+
+            for (size_t begin = 0; begin < rows; begin += PROBE_BATCH_ROWS)
+            {
+                const size_t count = std::min(PROBE_BATCH_ROWS, rows - begin);
+                outcomes.found = row_refs.data() + base + begin;
+                lookupBatch<join_features.need_flags>(
+                    key_getter, *map, selector, skip_data, pool, begin, count, prefetch_at, outcomes);
+                consumeFusedBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
+                    outcomes, added_columns, used_flags, begin, count, current_offset);
+            }
+            added_columns.applyLazyDefaults();
+            return 0;
+        }
     }
-    else
+
+    outcomes.useScratch(scratch_rows, join_features.need_flags);
+
+    for (size_t begin = 0; begin < rows; begin += PROBE_BATCH_ROWS)
     {
-        EmitSink<KIND, STRICTNESS, need_filter, MapsTemplate, AddedColumns> sink{
-            added_columns, used_flags, current_offset};
-        SequentialLookup::run(
-            key_getter, *map, selector, skip_data, pool, /*begin=*/0, rows, prefetch_at, sink);
+        const size_t count = std::min(PROBE_BATCH_ROWS, rows - begin);
+        lookupBatch<join_features.need_flags>(
+            key_getter, *map, selector, skip_data, pool, begin, count, prefetch_at, outcomes);
+        if constexpr (join_features.is_asof_join)
+        {
+            consumeProbeBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
+                outcomes, added_columns, used_flags, selector, begin, count, current_offset);
+        }
+        else
+        {
+            consumeProbeBatch<KIND, STRICTNESS, need_filter, MapsTemplate>(
+                outcomes, added_columns, used_flags, begin, count, current_offset);
+        }
     }
 
     added_columns.applyLazyDefaults();
