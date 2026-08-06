@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Run the Unit 0 sweep and write raw per-run records.
+"""Run the sweep and write raw per-run records.
 
-Measures, never judges: every classification lives in `gates.py`, so the thing
-that produces the numbers is not the thing that decides whether they are good.
+After Stage 1 the arms are the single shipping `unified_hash` path declared in
+`harness.ARMS`. Timing A/B across binaries moves to Stage 6 (`uhj_pre` / `uhj_post`).
+
+Measures, never judges: every classification lives in `gates.py` and `ab_report.py`, so
+the thing that produces the numbers is not the thing that decides whether they are good.
 
 Per cell, in order:
-  1. one warm-up run per algorithm, discarded
-  2. one ASSERTION run per algorithm with the CPU profiler on (Gate G0.1),
-     kept out of the timed set so profiling cannot perturb a measurement
-  3. one CHECKSUM run per algorithm (Gate G0.2), likewise untimed
-  4. REPS interleaved timed runs, algorithm order rotated each repetition
+  1. one warm-up run per arm, discarded
+  2. one ASSERTION run per arm with the CPU profiler on (Gate G0.1), kept out of the
+     timed set so profiling cannot perturb a measurement
+  3. one CHECKSUM run per arm (Gate G0.2), likewise untimed
+  4. REPS interleaved timed runs, arm order rotated each repetition
 
 Interleaving with rotation is the point: running all of A then all of B lets
 machine drift masquerade as an effect, and always running A first lets any
@@ -27,6 +30,7 @@ import sys
 import time
 
 import harness as H
+import verify_fused_output as V
 
 RESULTS_DIR = os.path.join(H.PERF_DIR, "results")
 RUNS_PATH = os.path.join(RESULTS_DIR, "runs.jsonl")
@@ -50,15 +54,14 @@ def qid(*parts) -> str:
 
 
 def algos_for(cell: H.Cell, with_context: bool) -> list[str]:
-    """Which algorithms to measure in this cell.
+    """Which arms to measure in this cell.
 
-    Always `unified_hash` and its comparator. The third algorithm is context the
-    mission welcomes but does not require, so it is opt-in.
+    The shipping `unified_hash` path. `--with-context-algo` adds the other implementations
+    as context. Stage 6 will put `uhj_pre` / `uhj_post` into `AB_ARMS`.
     """
-    out = [H.comparator_for(cell.threads), "unified_hash"]
+    out = list(H.AB_ARMS)
     if with_context:
-        third = [a for a in H.ALGOS if a not in out]
-        out += third
+        out += [a for a in H.ALGOS if a != "unified_hash"]
     return [a for a in out if cell.skip_reason(a) is None]
 
 
@@ -74,13 +77,14 @@ def one_run(cell, algo, purpose, rep, run_tag, extra_settings=None):
         settings["query_profiler_cpu_time_period_ns"] = 1_000_000
         settings["query_profiler_real_time_period_ns"] = 0
     q = qid(run_tag, cell.cell_id, algo, purpose, rep)
-    out = H.run_query(sql, settings, query_id=q)
-    return q, out.strip()
+    port = H.http_port_for(algo)
+    out = H.run_query(sql, settings, query_id=q, http_port=port)
+    return q, out.strip(), port
 
 
 def sweep_cell(cell, reps, run_tag, with_context, do_buildonly, fh):
     algos = algos_for(cell, with_context)
-    pending = []   # (query_id, algo, purpose, rep, output)
+    pending = []   # (query_id, out, port, algo, purpose, rep)
 
     for algo in algos:
         one_run(cell, algo, "warmup", 0, run_tag)          # discarded
@@ -96,27 +100,31 @@ def sweep_cell(cell, reps, run_tag, with_context, do_buildonly, fh):
 
     H.flush_logs()
 
-    for q, out, algo, purpose, rep in pending:
+    for q, out, port, algo, purpose, rep in pending:
         rec = {
             "run_tag": run_tag, "cell_id": cell.cell_id, "kind": cell.kind,
             "key": cell.key, "match": cell.match, "threads": cell.threads,
             "card": cell.card, "algo": algo, "purpose": purpose, "rep": rep,
             "query_id": q, "output": out,
+            "http_port": port if port is not None else H.HTTP_PORT,
+            **({"probe_batch_rows": H.PROBE_BATCH_ROWS} if algo in H.ARMS else {}),
         }
         try:
-            rec.update(H.read_run(q))
+            rec.update(H.read_run(q, http_port=port))
         except H.QueryError as exc:
             rec["error"] = str(exc)[:500]
         if purpose == "assert":
             try:
-                rec["algo_check"] = H.assert_algorithm(q)
+                rec["algo_check"] = H.assert_algorithm(q, http_port=port)
             except H.QueryError as exc:
                 rec["algo_check"] = {"verdict": "ERROR", "error": str(exc)[:300]}
         fh.write(json.dumps(rec) + "\n")
     fh.flush()
 
-    # Record the skips explicitly, so Gate G0.6 sees a reason rather than a hole.
-    for algo in H.ALGOS:
+    # Record the skips explicitly, so Gate G0.6 sees a reason rather than a hole. Neither
+    # arm is ever skipped -- both are `unified_hash` and every kind in the matrix runs on
+    # both -- so this only fires for the context implementations.
+    for algo in algos_for(cell, with_context=True):
         reason = cell.skip_reason(algo)
         if reason:
             fh.write(json.dumps({
@@ -137,28 +145,30 @@ def aa_cells():
 
 
 def sweep_aa(cell, reps, run_tag, fh):
-    """Run the SAME algorithm under two labels, interleaved exactly like a real A/B.
+    """Run the SAME arm under two labels, interleaved exactly like a real A/B.
 
     If this reports a significant delta, the instrument is measuring drift and
     every A/B it produced is void -- which is the only reason to trust the rest.
     """
-    labels = ["unified_hash#A", "unified_hash#B"]
+    labels = [f"{H.TEST_ARM}#A", f"{H.TEST_ARM}#B"]
+    port = H.http_port_for(H.TEST_ARM)
     pending = []
     for lab in labels:
-        one_run(cell, "unified_hash", "warmup", 0, run_tag)
+        one_run(cell, H.TEST_ARM, "warmup", 0, run_tag)
     for rep in range(reps):
         order = labels[rep % 2:] + labels[:rep % 2]
         for lab in order:
             q = qid(run_tag, "AA", cell.cell_id, lab, rep)
             sql = H.join_sql(cell, "timed")
-            H.run_query(sql, H.settings_for(cell, "unified_hash"), query_id=q)
+            H.run_query(sql, H.settings_for(cell, H.TEST_ARM), query_id=q, http_port=port)
             pending.append((q, lab, rep))
-    H.flush_logs()
+    H.flush_logs(http_port=port)
     for q, lab, rep in pending:
         rec = {"run_tag": run_tag, "cell_id": cell.cell_id, "threads": cell.threads,
-               "card": cell.card, "algo": lab, "purpose": "aa", "rep": rep, "query_id": q}
+               "card": cell.card, "algo": lab, "purpose": "aa", "rep": rep, "query_id": q,
+               "http_port": port if port is not None else H.HTTP_PORT}
         try:
-            rec.update(H.read_run(q))
+            rec.update(H.read_run(q, http_port=port))
         except H.QueryError as exc:
             rec["error"] = str(exc)[:500]
         fh.write(json.dumps(rec) + "\n")
@@ -179,9 +189,13 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    cells = [c for c in H.all_cells() if args.filter in c.cell_id]
+    # 144-cell matrix + Stage 4+/6 special timed cells (multi / addfilter / ASOF).
+    cells = [c for c in H.all_timed_cells() if args.filter in c.cell_id]
     if args.limit:
         cells = cells[:args.limit]
+
+    # Stage 0 Memory tables for the special timed cells (idempotent) on every A/B arm.
+    V.ensure_special_tables(sorted({H.http_port_for(a) or H.HTTP_PORT for a in H.AB_ARMS}))
 
     # Build-only cross-check subset: spread across thread counts and join kinds
     # rather than taken from the front of the list, so it validates the phase
@@ -190,7 +204,9 @@ def main():
     buildonly_ids = {cells[i].cell_id for i in range(0, len(cells), step)}
 
     print(f"run_tag={args.run_tag} cells={len(cells)} reps={args.reps} "
-          f"buildonly_cells={len(buildonly_ids)}", flush=True)
+          f"buildonly_cells={len(buildonly_ids)} "
+          f"special_timed={sum(1 for c in cells if isinstance(c, H.SpecialTimedCell))}",
+          flush=True)
 
     t_start = time.time()
     with open(args.out, "a") as fh:
