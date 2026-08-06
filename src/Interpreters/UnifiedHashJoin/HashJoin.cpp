@@ -59,12 +59,8 @@ namespace DB
 namespace ErrorCodes
 {
 extern const int NOT_IMPLEMENTED;
-extern const int NO_SUCH_COLUMN_IN_TABLE;
-extern const int INCOMPATIBLE_TYPE_OF_JOIN;
 extern const int LOGICAL_ERROR;
 extern const int SET_SIZE_LIMIT_EXCEEDED;
-extern const int TYPE_MISMATCH;
-extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 extern const int INVALID_JOIN_ON_EXPRESSION;
 }
 
@@ -1203,72 +1199,6 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
         ReadableSize(new_current_memory_usage));
 
     total_bytes_in_join = new_total_bytes_in_join;
-}
-
-DataTypePtr HashJoin::joinGetCheckAndGetReturnType(const DataTypes & data_types, const String & column_name, bool or_null) const
-{
-    size_t num_keys = data_types.size();
-    if (right_table_keys.columns() != num_keys)
-        throw Exception(
-            ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,
-            "Number of join_keys and number of right table key columns for function joinGet{} don't match: passed {}, should be equal to {}",
-            toString(or_null ? "OrNull" : ""),
-            toString(num_keys),
-            toString(right_table_keys.columns()));
-
-    for (size_t i = 0; i < num_keys; ++i)
-    {
-        const auto & left_type_origin = data_types[i];
-        const auto & [c2, right_type_origin, right_name] = right_table_keys.safeGetByPosition(i);
-        auto left_type = removeNullable(recursiveRemoveLowCardinality(left_type_origin));
-        auto right_type = removeNullable(recursiveRemoveLowCardinality(right_type_origin));
-        if (!left_type->equals(*right_type))
-            throw Exception(
-                ErrorCodes::TYPE_MISMATCH,
-                "Type mismatch in joinGet key {}: "
-                "found type {}, while the needed type is {}",
-                i,
-                left_type->getName(),
-                right_type->getName());
-    }
-
-    if (!sample_block_with_columns_to_add.has(column_name))
-        throw Exception(ErrorCodes::NO_SUCH_COLUMN_IN_TABLE, "StorageJoin doesn't contain column {}", column_name);
-
-    auto elem = sample_block_with_columns_to_add.getByName(column_name);
-    if (or_null && JoinCommon::canBecomeNullable(elem.type))
-        elem.type = makeNullable(elem.type);
-    return elem.type;
-}
-
-/// TODO: return multiple columns as named tuple
-/// TODO: return array of values when strictness == JoinStrictness::All
-ColumnWithTypeAndName HashJoin::joinGet(const Block & block, const Block & block_with_columns_to_add) const
-{
-    bool is_valid = (strictness == JoinStrictness::Any || strictness == JoinStrictness::RightAny) && kind == JoinKind::Left;
-    if (!is_valid)
-        throw Exception(ErrorCodes::INCOMPATIBLE_TYPE_OF_JOIN, "joinGet only supports StorageJoin of type Left Any");
-    const auto & key_names_right = table_join->getOnlyClause().key_names_right;
-
-    /// Assemble the key block with correct names.
-    Block keys;
-    for (size_t i = 0; i < block.columns(); ++i)
-    {
-        auto key = block.getByPosition(i);
-        key.name = key_names_right[i];
-        keys.insert(std::move(key));
-    }
-
-    static_assert(
-        !MapGetter<JoinKind::Left, JoinStrictness::Any, false>::flagged,
-        "joinGet are not protected from hash table changes between block processing");
-
-    std::vector<const MapsOne *> maps_vector;
-    maps_vector.push_back(&std::get<MapsOne>(data->maps[0]));
-    auto res = HashJoinMethods<JoinKind::Left, JoinStrictness::Any, MapsOne>::joinBlockImpl(
-        *this, std::move(keys), block_with_columns_to_add, maps_vector, /* is_join_get = */ true)->next();
-    chassert(res.is_last);
-    return res.block.getByPosition(res.block.columns() - 1);
 }
 
 void HashJoin::checkTypesOfKeys(const Block & block) const

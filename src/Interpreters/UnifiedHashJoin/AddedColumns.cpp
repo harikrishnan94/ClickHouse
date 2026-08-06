@@ -132,30 +132,6 @@ std::pair<const IColumn *, size_t> getBlockColumnAndRow(const StoredBlock * bloc
     return {block->columns[column_index].get(), row_num};
 }
 
-void LazyOutput::buildJoinGetOutput(size_t size_to_reserve, MutableColumns & columns, const UInt64 * row_refs_begin, const UInt64 * row_refs_end) const
-{
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        auto & col = columns[i];
-        col->reserve(col->size() + size_to_reserve);
-        for (const UInt64 * row_ref_i = row_refs_begin; row_ref_i != row_refs_end; ++row_ref_i)
-        {
-            if (!*row_ref_i)
-            {
-                type_name[i].type->insertDefaultInto(*col);
-                continue;
-            }
-            chassert(refWordIsInline(*row_ref_i));
-            const auto * block = stored_columns[refWordBlockNo(*row_ref_i)];
-            const auto [column_from_block, row_num] = getBlockColumnAndRow(block, refWordRowNo(*row_ref_i), right_indexes[i]);
-            if (auto * nullable_col = typeid_cast<ColumnNullable *>(col.get()); nullable_col && !column_from_block->isNullable())
-                nullable_col->insertFromNotNullable(*column_from_block, row_num);
-            else
-                col->insertFrom(*column_from_block, row_num);
-        }
-    }
-}
-
 /// Returns how many rows were added to columns, up to rows_limit
 size_t LazyOutput::buildOutputFromBlocksLimitAndOffset(
     MutableColumns & columns, const UInt64 * row_refs_begin, const UInt64 * row_refs_end,
@@ -293,7 +269,7 @@ void AddedColumns<false>::applyLazyDefaults()
 template<>
 void AddedColumns<true>::applyLazyDefaults() {}
 
-/// Materializes one right-table row into the output columns (non-lazy mode and joinGet).
+/// Materializes one right-table row into the output columns (non-lazy mode).
 template <>
 void AddedColumns<false>::appendFromBlock(UInt64 ref_word, const bool has_defaults)
 {
@@ -306,26 +282,11 @@ void AddedColumns<false>::appendFromBlock(UInt64 ref_word, const bool has_defaul
 #ifndef NDEBUG
     checkColumns(block->columns);
 #endif
-    if (is_join_get)
+    size_t right_indexes_size = lazy_output.right_indexes.size();
+    for (size_t j = 0; j < right_indexes_size; ++j)
     {
-        size_t right_indexes_size = lazy_output.right_indexes.size();
-        for (size_t j = 0; j < right_indexes_size; ++j)
-        {
-            const auto [column_from_block, src_row_num] = getBlockColumnAndRow(block, row_num, lazy_output.right_indexes[j]);
-            if (auto * nullable_col = nullable_column_ptrs[j])
-                nullable_col->insertFromNotNullable(*column_from_block, src_row_num);
-            else
-                columns[j]->insertFrom(*column_from_block, src_row_num);
-        }
-    }
-    else
-    {
-        size_t right_indexes_size = lazy_output.right_indexes.size();
-        for (size_t j = 0; j < right_indexes_size; ++j)
-        {
-            const auto [column_from_block, src_row_num] = getBlockColumnAndRow(block, row_num, lazy_output.right_indexes[j]);
-            columns[j]->insertFrom(*column_from_block, src_row_num);
-        }
+        const auto [column_from_block, src_row_num] = getBlockColumnAndRow(block, row_num, lazy_output.right_indexes[j]);
+        columns[j]->insertFrom(*column_from_block, src_row_num);
     }
 }
 

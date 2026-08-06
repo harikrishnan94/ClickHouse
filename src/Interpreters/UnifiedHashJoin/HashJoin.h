@@ -234,12 +234,6 @@ public:
       */
     JoinResultPtr joinBlock(Block block) override;
 
-    /// Check joinGet arguments and infer the return type.
-    DataTypePtr joinGetCheckAndGetReturnType(const DataTypes & data_types, const String & column_name, bool or_null) const;
-
-    /// Used by joinGet function that turns StorageJoin into a dictionary.
-    ColumnWithTypeAndName joinGet(const Block & block, const Block & block_with_columns_to_add) const;
-
     bool isFilled() const override { return from_storage_join; }
 
     /// One shared map uses bucket locks; unlike `ConcurrentHashJoin`, it needs no per-thread merge.
@@ -337,9 +331,9 @@ public:
         UNIFIED_APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(M) \
         UNIFIED_APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M)
 
-    /// Used for reading from StorageJoin and applying joinGet function. The single-LowCardinality-key
-    /// maps store key values in maps physically identical to their non-LowCardinality counterparts, so
-    /// they are read back the same way (the output key column is the parent LowCardinality type).
+    /// Used for reading from StorageJoin. The single-LowCardinality-key maps store key values in maps
+    /// physically identical to their non-LowCardinality counterparts, so they are read back the same
+    /// way (the output key column is the parent LowCardinality type).
     #define UNIFIED_APPLY_FOR_JOIN_VARIANTS_LIMITED(M) \
         M(key8)                                \
         M(key16)                               \
