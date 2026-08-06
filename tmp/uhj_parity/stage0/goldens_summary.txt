@@ -1,0 +1,18 @@
+Stage 0 UHJ checksum goldens
+total_cells=166
+addfilter=1
+addfilter_extra=5
+any=1
+asof_inner=1
+asof_left=1
+c13_split=1
+matrix=144
+multi=1
+multi2=3
+multi3=3
+nullable_filter=1
+nullable_multi=2
+semi_right=2
+arms=uhj_ship (arm_fused=arm_split=shipping)
+arm_agreement=n/a (single shipping path)
+elapsed_seconds=67.7

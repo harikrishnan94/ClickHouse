@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""A shape sweep: does `unified_hash` beat `parallel_hash` outside the narrow matrix?
+"""A shape sweep of the two `unified_hash` probe loops, fused and split.
 
-The 144-cell matrix the fix set was measured on pins the build side to 30M rows at 16 and
-64 threads (`THREAD_CARDS` pairs the many-threaded points with `large` only), so the
-"faster in every cell" claim was never tested where a fixed per-row cost matters most:
-a small, cache-resident build side driven by many threads. This searches that space.
+The 144-cell matrix pins the build side to 30M rows at 16 and 64 threads (`THREAD_CARDS`
+pairs the many-threaded points with `large` only), so it never covers the regime where a
+fixed per-row cost matters most: a small, cache-resident build side driven by many threads.
+That is exactly where the split probe's scratch traffic is least likely to pay for itself,
+since there is no memory latency to overlap. This searches that space.
 
 Axes:
   build rows      2^17 (131072) .. 2^26 (67.1M), powers of two - 10 points
@@ -54,7 +55,9 @@ PROBE_ROWS_MAX = 1 << 28          # 4x the largest build side
 BUILD_SIZES = [1 << e for e in range(17, 27)]
 PROBE_MULTS = [1, 2, 4]
 THREADS = [16, 64]
-ALGOS = ["parallel_hash", "unified_hash"]
+
+# After Stage 1 the arms are the shipping path in harness.ARMS (Stage 6 adds binary A/B).
+ARMS = list(H.AB_ARMS)
 
 # name -> (build key column, rows per key, what the query reads besides the key)
 #   narrow  the RowRefList path with nothing gathered from either side
@@ -107,9 +110,10 @@ def sql(shape, build_rows, mult):
     )
 
 
-def settings(algo, threads):
+def settings(arm, threads):
     s = dict(H.PINNED_SETTINGS)
-    s["join_algorithm"] = algo
+    s["join_algorithm"] = H.ARMS[arm]["algo"]
+    s.update(H.ARMS[arm]["settings"])
     s["max_threads"] = threads
     # A guard, not a limit anyone should hit: a runaway cell should fail loudly rather
     # than take the host down. 200 GiB of the 317 GiB free at the time of writing.
@@ -178,8 +182,8 @@ def run(tag, reps, out, filt):
     cells = [(sh, b, m, t) for sh in SHAPES for b in BUILD_SIZES
              for m in PROBE_MULTS for t in THREADS
              if filt in cell_id(sh, b, m, t)]
-    print(f"tag={tag} cells={len(cells)} reps={reps} "
-          f"queries={len(cells) * len(ALGOS) * (reps + 1)}", flush=True)
+    print(f"tag={tag} cells={len(cells)} reps={reps} arms={','.join(ARMS)} "
+          f"queries={len(cells) * len(ARMS) * (reps + 1)}", flush=True)
     t_start = time.time()
     with open(out, "a") as fh:
         for i, (sh, b, m, th) in enumerate(cells, 1):
@@ -187,10 +191,10 @@ def run(tag, reps, out, filt):
             q = sql(sh, b, m)
             pend, err = [], None
             try:
-                for a in ALGOS:                                  # warm the page cache
+                for a in ARMS:                                   # warm the page cache
                     H.run_query(q, settings(a, th), query_id=qid(tag, cid, a, "warm"))
                 for rep in range(reps):
-                    for a in ALGOS[rep % 2:] + ALGOS[:rep % 2]:   # rotate
+                    for a in ARMS[rep % 2:] + ARMS[:rep % 2]:     # rotate
                         i_ = qid(tag, cid, a, rep)
                         out_txt = H.run_query(q, settings(a, th), query_id=i_)
                         pend.append((i_, a, rep, out_txt.strip()))
@@ -233,7 +237,7 @@ def report(tag, path):
     cells = sorted({c for c, _ in med})
     rows = []
     for c in cells:
-        a, b = med.get((c, "parallel_hash")), med.get((c, "unified_hash"))
+        a, b = med.get((c, H.BASELINE_ARM)), med.get((c, H.TEST_ARM))
         if not a or not b:
             continue
         sh, br, mu, th = c.split("|")
@@ -246,7 +250,7 @@ def report(tag, path):
     # answers must agree, or a timing comparison is meaningless
     bad = [c for c, d in outs.items() if len(d) == 2 and len(set.union(*d.values())) != 1]
     print(f"tag={tag}: {len(rows)} comparable cells; "
-          f"answer mismatches between the two algorithms: {len(bad)}")
+          f"answer mismatches between the two arms: {len(bad)}")
     for c in bad[:5]:
         print(f"   MISMATCH {c}: {outs[c]}")
     print()
@@ -276,7 +280,8 @@ def report(tag, path):
     for b in BUILD_SIZES:
         show(f"build={b:>9d} rows", [r for r in rows if r["build"] == b])
     losers = sorted([r for r in rows if r["w"] > 2], key=lambda r: -r["w"])
-    print(f"\ncells where unified_hash is more than 2% SLOWER on wall: {len(losers)}")
+    print(f"\ncells where {H.TEST_ARM} is more than 2% SLOWER on wall than "
+          f"{H.BASELINE_ARM}: {len(losers)}")
     for r in losers[:25]:
         print(f"   {r['w']:+7.1f}% wall  {r['c']:+7.1f}% cpu  {r['cell']}")
     return 0
