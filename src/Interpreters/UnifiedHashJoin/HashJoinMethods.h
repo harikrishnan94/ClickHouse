@@ -135,12 +135,6 @@ class HashJoinMethods
     static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;
 
 public:
-    struct SlotScatter
-    {
-        std::vector<ScatteredBlock::Selector> selectors;
-        std::vector<Columns> dense_keys;
-    };
-
     static void insertFromBlockImpl(
         HashJoin & join,
         HashJoin::Type type,
@@ -155,15 +149,6 @@ public:
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
         BuildResult & result);
-
-    static SlotScatter scatterBySlot(
-        HashJoin::Type type,
-        MapsTemplate & maps,
-        BlockKeyGetter & block_key_getter,
-        const ColumnRawPtrs & key_columns,
-        const Sizes & key_sizes,
-        const ScatteredBlock::Selector & selector,
-        size_t num_slots);
 
     using MapsTemplateVector = std::vector<const MapsTemplate *>;
 
@@ -201,15 +186,6 @@ private:
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
         BuildResult & result);
-
-    template <typename KeyGetter, typename HashMap>
-    static SlotScatter scatterBySlotTypeCase(
-        const HashMap & map,
-        BlockKeyGetter & block_key_getter,
-        const ColumnRawPtrs & key_columns,
-        const Sizes & key_sizes,
-        const ScatteredBlock::Selector & selector,
-        size_t num_slots);
 
     template <typename AddedColumns>
     static size_t switchJoinRightColumns(

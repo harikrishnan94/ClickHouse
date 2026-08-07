@@ -45,6 +45,7 @@
 
 #include <Interpreters/UnifiedHashJoin/HashJoinMethods.h>
 #include <Interpreters/UnifiedHashJoin/JoinUsedFlags.h>
+#include <Interpreters/UnifiedHashJoin/SlotScatter.h>
 
 #include <Processors/QueryPlan/RuntimeFilterLookup.h>
 
@@ -992,7 +993,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     using Methods = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>;
 
                     const size_t slots = data->num_slots;
-                    typename Methods::SlotScatter scattered;
+                    SlotScatter scattered;
                     std::vector<const ScatteredBlock::Selector *> per_slot(slots, nullptr);
 
                     BlockKeyGetter block_key_getter;
@@ -1003,8 +1004,13 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     }
                     else
                     {
-                        scattered = Methods::scatterBySlot(
-                            data->type, map, block_key_getter, key_columns, key_sizes[onexpr_idx], stored_columns->selector, slots);
+                        using Map = std::decay_t<decltype(map)>;
+                        constexpr MapsKind maps_kind = std::is_same_v<Map, HashJoin::MapsOne> ? MapsKind::One
+                            : std::is_same_v<Map, HashJoin::MapsAll>                          ? MapsKind::All
+                                                                                              : MapsKind::Asof;
+                        scattered = scatterBlockBySlot(
+                            data->type, maps_kind, key_columns, key_sizes[onexpr_idx], stored_columns->selector, slots,
+                            strictness_ == JoinStrictness::Asof);
                         for (size_t slot = 0; slot < slots; ++slot)
                             per_slot[slot] = &scattered.selectors[slot];
                     }
@@ -1547,11 +1553,28 @@ HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & resu
     return getNonJoinedBlocks(left_sample_block, result_sample_block, max_block_size, 0, 1);
 }
 
+namespace
+{
+
+/// True when at least one disjunct has equi keys. With no keys anywhere, no right row is
+/// recorded as used and non-joined emission is kept on a single stream (see below). The
+/// non-joined scan itself is clause-agnostic: with multiple disjuncts it walks the stored
+/// blocks and checks the per-row used flags, which any clause's match sets.
+bool anyClauseHasRightKeys(const TableJoin & table_join)
+{
+    for (const auto & clause : table_join.getClauses())
+        if (!clause.key_names_right.empty())
+            return true;
+    return false;
+}
+
+}
+
 bool HashJoin::supportParallelNonJoinedBlocksProcessing() const
 {
     return table_join->allowParallelNonJoinedRowsProcessing()
         && JoinCommon::hasNonJoinedBlocks(*table_join)
-        && !table_join->getOnlyClause().key_names_right.empty();
+        && anyClauseHasRightKeys(*table_join);
 }
 
 IBlocksStreamPtr
@@ -1562,7 +1585,7 @@ HashJoin::getNonJoinedBlocks(const Block & left_sample_block, const Block & resu
         return {};
 
     /// With no keys, no row is in a map; only stream 0 emits the stored rows.
-    if (num_streams > 1 && table_join->getOnlyClause().key_names_right.empty() && stream_idx != 0)
+    if (num_streams > 1 && !anyClauseHasRightKeys(*table_join) && stream_idx != 0)
         return {};
 
     size_t left_columns_count = left_sample_block.columns();
