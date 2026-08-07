@@ -285,7 +285,10 @@ public:
         }
     }
 
-    size_t hash(const Key & x) const { return Hash::operator()(x); }
+    /// Routing and hashing do not read table state; keeping them static lets
+    /// slot routing (e.g. build-side scatter) run without a table instance.
+    /// Hashers are stateless; some (e.g. `TrivialHash`) have a non-static `operator()`.
+    static size_t hash(const Key & x) { return Hash{}(x); }
 
     static size_t ALWAYS_INLINE getBucketFromHash(size_t hash_value) { return Storage::getBucketFromHash(hash_value); }
 
@@ -295,7 +298,7 @@ public:
     void reserve(size_t num_elements) { impls.reserve(num_elements); }
 
     template <typename K>
-    size_t ALWAYS_INLINE bucketRoutingHash(const K & key, size_t cell_hash_value) const
+    static size_t ALWAYS_INLINE bucketRoutingHash(const K & key, size_t cell_hash_value)
     {
         if constexpr (std::is_void_v<BucketHash>)
             return cell_hash_value;

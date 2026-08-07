@@ -180,119 +180,6 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
 }
 
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
-HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::SlotScatter
-HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlot(
-    HashJoin::Type type,
-    MapsTemplate & maps,
-    BlockKeyGetter & block_key_getter,
-    const ColumnRawPtrs & key_columns,
-    const Sizes & key_sizes,
-    const ScatteredBlock::Selector & selector,
-    size_t num_slots)
-{
-    switch (type)
-    {
-#define M(TYPE) \
-    case HashJoin::Type::TYPE: \
-        return scatterBySlotTypeCase< \
-            typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>, needs_offset>::Type>( \
-            *maps.TYPE, block_key_getter, key_columns, key_sizes, selector, num_slots);
-
-            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
-#undef M
-    }
-    UNREACHABLE();
-}
-
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
-template <typename KeyGetter, typename HashMap>
-HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::SlotScatter
-HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::scatterBySlotTypeCase(
-    const HashMap & map,
-    BlockKeyGetter & block_key_getter,
-    const ColumnRawPtrs & key_columns,
-    const Sizes & key_sizes,
-    const ScatteredBlock::Selector & selector,
-    size_t num_slots)
-{
-    /// Bucket selection must use the same hash as insertion; a precomputed hash could disagree with map placement.
-    if constexpr (requires { KeyGetter::has_pre_computed_hashes; })
-        static_assert(!KeyGetter::has_pre_computed_hashes, "Bucket routing assumes the map computes the hash it places by");
-
-    constexpr bool is_asof_join = STRICTNESS == JoinStrictness::Asof;
-    std::optional<KeyGetter> own_key_getter;
-    auto & key_getter = blockKeyGetter<KeyGetter, is_asof_join>(block_key_getter, own_key_getter, key_columns, key_sizes);
-
-    /// Key holders are only read here, never persisted into the map, so nothing allocated through
-    /// this outlives the call. String key holders do not touch it at all.
-    Arena scratch_pool;
-
-    const size_t rows = selector.size();
-
-    PODArray<UInt32> row_to_slot(rows);
-    std::vector<size_t> counts(num_slots, 0);
-    for (size_t i = 0; i < rows; ++i)
-    {
-        auto key_holder = key_getter.getKeyHolder(selector[i], scratch_pool);
-        const auto & key = keyHolderGetKey(key_holder);
-
-        size_t hash_value = 0;
-        if constexpr (requires { key_getter.routingHashForRow(map, selector[i], scratch_pool); })
-            hash_value = key_getter.routingHashForRow(map, selector[i], scratch_pool);
-        else
-            hash_value = map.hash(key);
-
-        const size_t bucket = map.getBucketFromHash(map.bucketRoutingHash(key, hash_value));
-        const auto slot = static_cast<UInt32>(slotForBucket(bucket, num_slots));
-        row_to_slot[i] = slot;
-        ++counts[slot];
-    }
-
-    std::vector<ScatteredBlock::Selector::IndexesPtr> indexes;
-    indexes.reserve(num_slots);
-    for (size_t slot = 0; slot < num_slots; ++slot)
-    {
-        auto column = ScatteredBlock::Selector::Indexes::create();
-        column->getData().reserve(counts[slot]);
-        indexes.push_back(std::move(column));
-    }
-
-    for (size_t i = 0; i < rows; ++i)
-        indexes[row_to_slot[i]]->getData().push_back(selector[i]);
-
-    SlotScatter result;
-    result.selectors.reserve(num_slots);
-    for (auto & column : indexes)
-        result.selectors.emplace_back(std::move(column));
-
-    constexpr size_t threshold = sizeof(IColumn::Selector::value_type);
-    size_t max_bytes_per_row = 0;
-    for (const auto * column : key_columns)
-        max_bytes_per_row += (column->valuesHaveFixedSize() && !column->lowCardinality()) ? column->sizeOfValueIfFixed() : threshold + 1;
-
-    const bool selector_is_identity = selector.isContinuousRange() && selector.getRange().first == 0
-        && !key_columns.empty() && selector.getRange().second == key_columns[0]->size();
-
-    if (max_bytes_per_row <= threshold && selector_is_identity)
-    {
-        IColumn::Selector column_selector(rows);
-        for (size_t i = 0; i < rows; ++i)
-            column_selector[i] = row_to_slot[i];
-
-        result.dense_keys.resize(num_slots);
-        for (const auto * column : key_columns)
-        {
-            auto parts = column->scatter(num_slots, column_selector);
-            chassert(parts.size() == num_slots);
-            for (size_t slot = 0; slot < num_slots; ++slot)
-                result.dense_keys[slot].push_back(std::move(parts[slot]));
-        }
-    }
-
-    return result;
-}
-
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     const HashJoin & join, Block block, const Block & block_with_columns_to_add, const MapsTemplateVector & maps_)
 {
@@ -1167,9 +1054,10 @@ template <
     JoinStrictness STRICTNESS,
     bool need_filter,
     typename MapsTemplate,
-    typename AddedColumns>
+    typename AddedColumns,
+    typename ProbeOutcomesAllocator>
 NO_INLINE size_t emitBatch(
-    const std::vector<ProbeOutcomes> & outcomes,
+    const std::vector<ProbeOutcomes, ProbeOutcomesAllocator> & outcomes,
     size_t num_clauses,
     AddedColumns & added_columns,
     JoinStuff::JoinUsedFlags & used_flags,
