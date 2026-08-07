@@ -1408,7 +1408,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     /// N23: the multi path never sizes `ProbeOutcomes::offset` - `lookupBatch<false>` below
     /// always instantiates `RecordOutcomeSink<false>` regardless of the TU's `need_flags`.
     const size_t scratch_rows = std::min(rows, PROBE_BATCH_ROWS);
-    std::vector<ProbeOutcomes> outcomes(num_clauses);
+    VectorWithMemoryTracking<ProbeOutcomes> outcomes(num_clauses);
     for (auto & outcome : outcomes)
         outcome.useScratch(scratch_rows, /*need_flags=*/false);
 
@@ -1435,7 +1435,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
         const size_t count = std::min(PROBE_BATCH_ROWS, rows - begin);
         bool any_matched = false;
         if constexpr (stop_after_first_match)
-            std::fill(sc_matched.begin(), sc_matched.begin() + count, 0);
+            std::fill_n(sc_matched.begin(), count, 0);
 
         for (size_t k = 0; k < num_clauses; ++k)
         {
