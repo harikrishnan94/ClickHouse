@@ -1,9 +1,9 @@
 /// Microbenchmark: UnifiedHashJoin probe loop (multi-threaded).
 ///
-/// Drives the production probe: `lookupBatch` (SequentialLookup + RecordOutcomeSink) with the
-/// consume pass on top, over serial and two-level maps. The fused `EmitSink` shape was deleted
-/// in Stage 2 when every kind moved onto the recording path, so the emit-vs-twophase
-/// comparison no longer exists.
+/// Drives the production probe: `lookupBatch` with the consume pass on top, over serial and
+/// two-level maps. `probeSequentialTwoPhase` below reproduces the batch loop of
+/// `HashJoinMethods::joinRightColumns`, which is a class-template member this harness cannot
+/// call directly.
 ///
 /// Run with:
 ///   ./unified_hash_join_probe_loop --verify
@@ -59,8 +59,6 @@ using namespace DB::Unified;
 namespace
 {
 
-/// ─── CLI / config ──────────────────────────────────────────────────────────
-
 enum class MapMode
 {
     TwoLevel,
@@ -81,12 +79,6 @@ enum class BuildOrder
     Clustered,
 };
 
-/// Probe shape. A single one remains: the production recording probe.
-enum class Driver
-{
-    SequentialTwoPhase,
-};
-
 enum class Shape
 {
     Inner,
@@ -102,7 +94,6 @@ struct Config
     size_t block_size = DEFAULT_BLOCK_SIZE;
     size_t batch_size = PROBE_BATCH_ROWS;
     std::vector<Shape> shapes = {Shape::Inner, Shape::Left};
-    std::vector<Driver> drivers = {Driver::SequentialTwoPhase};
     MapMode map_mode = MapMode::TwoLevel;
     PrefetchMode prefetch = PrefetchMode::Auto;
     bool need_filter = false;
@@ -206,14 +197,6 @@ void parseConfig(int & argc, char ** argv)
         if (g_config.shapes.empty())
             throw std::runtime_error("--shapes must include inner and/or left");
     }
-    if (consumeFlag(argc, argv, "--drivers", value) || consumeFlag(argc, argv, "--variants", value))
-    {
-        g_config.drivers.clear();
-        if (value.find("twophase") != std::string::npos || value.find("two-phase") != std::string::npos)
-            g_config.drivers.push_back(Driver::SequentialTwoPhase);
-        if (g_config.drivers.empty())
-            throw std::runtime_error("--drivers must include twophase (the fused emit shape was removed)");
-    }
     if (consumeFlag(argc, argv, "--map", value))
     {
         if (value == "two-level")
@@ -281,11 +264,6 @@ const char * shapeName(Shape s)
     return s == Shape::Inner ? "AllInner" : "AllLeft";
 }
 
-const char * driverName(Driver d)
-{
-    return d == Driver::SequentialTwoPhase ? "seq_twophase" : "unknown";
-}
-
 std::string formatCard(size_t c)
 {
     if (c >= 1'000'000 && c % 1'000'000 == 0)
@@ -308,8 +286,6 @@ bool useTwoLevelMap(size_t threads)
     }
     return true;
 }
-
-/// ─── Key generation ────────────────────────────────────────────────────────
 
 ALWAYS_INLINE UInt64 mixSeed(UInt64 x, UInt64 seed)
 {
@@ -373,8 +349,6 @@ ALWAYS_INLINE UInt64 probeKeyAt(UInt64 r, size_t cardinality, size_t probe_mult,
     return keyOf(cardinality + j, seed);
 }
 
-/// ─── LazySink ──────────────────────────────────────────────────────────────
-
 struct LazySink
 {
     static constexpr bool isLazy() { return true; }
@@ -383,7 +357,7 @@ struct LazySink
     IColumn::Filter filter;
     IColumn::Offsets matched_rows;
     IColumn::Offsets offsets_to_replicate;
-    /// Required by probeTwoPhase's outputIsProbeOutcomes / consumeFusedBatch path (AllLeft).
+    /// Selects the fused arm of the probe loop, exactly as `AddedColumns` does in production.
     bool has_columns_to_add = true;
 
     void appendFromBlock(UInt64 ref_word, bool) { lazy_output.addRef(ref_word); }
@@ -421,8 +395,6 @@ struct LazySink
         return hash.get64();
     }
 };
-
-/// ─── Data caches ───────────────────────────────────────────────────────────
 
 struct BuildColumnCache
 {
@@ -556,8 +528,6 @@ const ProbeColumnCache & ensureProbeColumn(size_t cardinality, size_t probe_mult
     };
     return g_probe_cache;
 }
-
-/// ─── Map wrappers ──────────────────────────────────────────────────────────
 
 using TwoLevelMap = TwoLevelJoinHashMap<UInt64, RowRefList, HashCRC32<UInt64>>;
 using SerialMap = JoinHashMap<UInt64, RowRefList, HashCRC32<UInt64>>;
@@ -772,8 +742,6 @@ const BuiltMap & ensureBuiltMap(size_t cardinality, size_t build_mult, size_t th
     return g_built_map;
 }
 
-/// ─── Probe loops (production SequentialLookup drivers) ─────────────────────
-
 bool resolveUsePrefetch(PrefetchMode mode, size_t map_bytes)
 {
     switch (mode)
@@ -821,30 +789,49 @@ void probeSequentialTwoPhase(
             prefetcher.prefetchAt(k);
     };
 
-    probeTwoPhase<KIND, STRICTNESS, need_filter, HashJoin::MapsAll, Map, KeyGetter>(
-        key_getter, map, sink, used_flags, selector, /*skip_data=*/nullptr, pool, prefetch_at, outcomes, rows, batch_size, current_offset);
+    /// The batch loop of `HashJoinMethods::joinRightColumns`, reproduced here because the
+    /// production one is a member of a class template that needs an `AddedColumns` this
+    /// harness does not build. Both arms of the fused/recording split are driven, chosen by
+    /// the same `outputIsProbeOutcomes` predicate the production loop uses.
+    constexpr JoinFeatures<KIND, STRICTNESS, HashJoin::MapsAll> join_features;
+    const size_t scratch_rows = std::min(rows, batch_size);
+
+    if constexpr (outputIsProbeOutcomes<LazySink>(join_features))
+    {
+        if (sink.has_columns_to_add)
+        {
+            auto & row_refs = sink.lazy_output.row_refs;
+            const size_t base = row_refs.size();
+            row_refs.resize(base + rows);
+            outcomes.useExternal(row_refs.data() + base, scratch_rows, join_features.need_flags);
+
+            for (size_t j = 0; j < rows; j += batch_size)
+            {
+                const size_t count = std::min(batch_size, rows - j);
+                outcomes.found = row_refs.data() + base + j;
+                lookupBatch<join_features.need_flags>(
+                    key_getter, map, selector, /*skip_data=*/nullptr, pool, j, count, prefetch_at, outcomes);
+                consumeFusedBatch<KIND, STRICTNESS, need_filter, HashJoin::MapsAll>(
+                    outcomes, sink, used_flags, j, count, current_offset);
+            }
+            sink.applyLazyDefaults();
+            return;
+        }
+    }
+
+    outcomes.useScratch(scratch_rows, join_features.need_flags);
+
+    for (size_t j = 0; j < rows; j += batch_size)
+    {
+        const size_t count = std::min(batch_size, rows - j);
+        lookupBatch<join_features.need_flags>(
+            key_getter, map, selector, /*skip_data=*/nullptr, pool, j, count, prefetch_at, outcomes);
+        consumeProbeBatch<KIND, STRICTNESS, need_filter, HashJoin::MapsAll>(
+            outcomes, sink, used_flags, j, count, current_offset);
+    }
+
     sink.applyLazyDefaults();
 }
-
-template <JoinKind KIND, JoinStrictness STRICTNESS, bool need_filter, typename Map, typename KeyGetter>
-void probeWithDriver(
-    Driver driver,
-    const Map & map,
-    KeyGetter & key_getter,
-    Arena & pool,
-    LazySink & sink,
-    JoinStuff::JoinUsedFlags & used_flags,
-    size_t begin,
-    size_t rows,
-    size_t batch_size,
-    bool use_prefetch)
-{
-    chassert(driver == Driver::SequentialTwoPhase);
-    probeSequentialTwoPhase<KIND, STRICTNESS, need_filter>(
-        map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
-}
-
-/// ─── Probe driver ──────────────────────────────────────────────────────────
 
 struct ProbeStats
 {
@@ -859,7 +846,6 @@ struct ProbeParams
     size_t probe_mult = 0;
     size_t threads = 0;
     Shape shape = Shape::Inner;
-    Driver driver = Driver::SequentialTwoPhase;
     bool need_filter = false;
 };
 
@@ -876,7 +862,6 @@ struct ProbeSession
     bool use_prefetch = false;
     bool need_filter = false;
     Shape shape = Shape::Inner;
-    Driver driver = Driver::SequentialTwoPhase;
     bool two_level = true;
 
     std::unique_ptr<std::barrier<>> sync_start;
@@ -973,8 +958,8 @@ void ProbeSession::startWorkers()
 
                         sink.startBlock(rows, need_filter_v || Features::need_filter, Features::need_replication);
 
-                        probeWithDriver<KIND, STRICTNESS, need_filter_v>(
-                            driver, map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
+                        probeSequentialTwoPhase<KIND, STRICTNESS, need_filter_v>(
+                            map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
 
                         benchmark::DoNotOptimize(sink.lazy_output.row_refs.data());
                         benchmark::DoNotOptimize(sink.offsets_to_replicate.data());
@@ -1003,7 +988,6 @@ void configureSession(ProbeSession & session, const ProbeParams & p, const Built
     session.use_prefetch = resolveUsePrefetch(g_config.prefetch, built.bytes());
     session.need_filter = p.need_filter;
     session.shape = p.shape;
-    session.driver = p.driver;
     session.two_level = built.two_level;
 
     if (built.two_level)
@@ -1042,11 +1026,9 @@ void configureSession(ProbeSession & session, const ProbeParams & p, const Built
     }
 }
 
-/// ─── Verification ──────────────────────────────────────────────────────────
-
 template <JoinKind KIND, bool need_filter, typename Map>
 std::pair<std::vector<UInt64>, UInt64>
-digestsDriver(const BuiltMap & built, const ProbeColumnCache & probe, Driver driver, bool include_refs)
+digestsProbe(const BuiltMap & built, const ProbeColumnCache & probe, bool include_refs)
 {
     constexpr JoinStrictness STRICTNESS = JoinStrictness::All;
     constexpr JoinFeatures<KIND, STRICTNESS, HashJoin::MapsAll> features;
@@ -1081,8 +1063,8 @@ digestsDriver(const BuiltMap & built, const ProbeColumnCache & probe, Driver dri
         const size_t rows = std::min(block_size, probe_rows - begin);
         sink.startBlock(rows, need_filter || features.need_filter, features.need_replication);
 
-        probeWithDriver<KIND, STRICTNESS, need_filter>(
-            driver, map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
+        probeSequentialTwoPhase<KIND, STRICTNESS, need_filter>(
+            map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
 
         if (include_refs)
         {
@@ -1116,11 +1098,11 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
     auto built1
         = useTwoLevelMap(1) ? buildMapImpl<TwoLevelMap>(cardinality, build_mult, 1) : buildMapImpl<SerialMap>(cardinality, build_mult, 1);
 
-    std::pair<std::vector<UInt64>, UInt64> twophase;
+    std::pair<std::vector<UInt64>, UInt64> probed;
     if (built1.two_level)
-        twophase = digestsDriver<KIND, need_filter, TwoLevelMap>(built1, probe, Driver::SequentialTwoPhase, /*include_refs=*/true);
+        probed = digestsProbe<KIND, need_filter, TwoLevelMap>(built1, probe, /*include_refs=*/true);
     else
-        twophase = digestsDriver<KIND, need_filter, SerialMap>(built1, probe, Driver::SequentialTwoPhase, /*include_refs=*/true);
+        probed = digestsProbe<KIND, need_filter, SerialMap>(built1, probe, /*include_refs=*/true);
 
     /// Analytic expectation.
     const size_t probe_rows = cardinality * probe_mult;
@@ -1130,11 +1112,11 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
     UInt64 expected = matches * build_mult;
     if constexpr (features.add_missing)
         expected += misses;
-    if (twophase.second != expected)
+    if (probed.second != expected)
         throw Exception(
             ErrorCodes::LOGICAL_ERROR,
             "verify failed: out_rows {} != expected {} (matches={} misses={} build_mult={})",
-            twophase.second,
+            probed.second,
             expected,
             matches,
             misses,
@@ -1145,8 +1127,8 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
     if (thr > 1 && useTwoLevelMap(thr))
     {
         auto built_n = buildMapImpl<TwoLevelMap>(cardinality, build_mult, thr);
-        auto emit_1 = digestsDriver<KIND, need_filter, TwoLevelMap>(built1, probe, Driver::SequentialTwoPhase, /*include_refs=*/false);
-        auto emit_n = digestsDriver<KIND, need_filter, TwoLevelMap>(built_n, probe, Driver::SequentialTwoPhase, /*include_refs=*/false);
+        auto emit_1 = digestsProbe<KIND, need_filter, TwoLevelMap>(built1, probe, /*include_refs=*/false);
+        auto emit_n = digestsProbe<KIND, need_filter, TwoLevelMap>(built_n, probe, /*include_refs=*/false);
         if (emit_n.first != emit_1.first || emit_n.second != emit_1.second)
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR,
@@ -1161,7 +1143,7 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
         cardinality,
         build_mult,
         probe_mult,
-        static_cast<unsigned long long>(twophase.second));
+        static_cast<unsigned long long>(probed.second));
 }
 
 void runVerify()
@@ -1194,8 +1176,6 @@ void runVerify()
         }
     }
 }
-
-/// ─── Benchmark registration ────────────────────────────────────────────────
 
 void BM_Build(benchmark::State & state, size_t cardinality, size_t build_mult, size_t threads)
 {
@@ -1266,7 +1246,7 @@ void registerBenchmarks()
 {
     std::fprintf(
         stderr,
-        "uhj_probe_loop: drivers=seq_emit|seq_twophase block_size=%zu batch_size=%zu seed=%llu map=%s prefetch=%s need_filter=%d match_rate=%.3f\n",
+        "uhj_probe_loop: block_size=%zu batch_size=%zu seed=%llu map=%s prefetch=%s need_filter=%d match_rate=%.3f\n",
         g_config.block_size,
         g_config.batch_size,
         static_cast<unsigned long long>(g_config.seed),
@@ -1289,24 +1269,20 @@ void registerBenchmarks()
 
                 for (Shape shape : g_config.shapes)
                 {
-                    for (Driver driver : g_config.drivers)
+                    for (size_t pm : g_config.probe_mults)
                     {
-                        for (size_t pm : g_config.probe_mults)
-                        {
-                            ProbeParams params{
-                                .cardinality = card,
-                                .build_mult = bm,
-                                .probe_mult = pm,
-                                .threads = thr,
-                                .shape = shape,
-                                .driver = driver,
-                                .need_filter = g_config.need_filter,
-                            };
-                            const std::string name = std::string(shapeName(shape)) + "/" + driverName(driver)
-                                + "/card=" + formatCard(card) + "/build=" + std::to_string(bm) + "x/probe=" + std::to_string(pm)
-                                + "x/thr=" + std::to_string(thr);
-                            benchmark::RegisterBenchmark(name.c_str(), [=](benchmark::State & st) { BM_Probe(st, params); })->UseRealTime();
-                        }
+                        ProbeParams params{
+                            .cardinality = card,
+                            .build_mult = bm,
+                            .probe_mult = pm,
+                            .threads = thr,
+                            .shape = shape,
+                            .need_filter = g_config.need_filter,
+                        };
+                        const std::string name = std::string(shapeName(shape)) + "/card=" + formatCard(card)
+                            + "/build=" + std::to_string(bm) + "x/probe=" + std::to_string(pm) + "x/thr="
+                            + std::to_string(thr);
+                        benchmark::RegisterBenchmark(name.c_str(), [=](benchmark::State & st) { BM_Probe(st, params); })->UseRealTime();
                     }
                 }
             }
