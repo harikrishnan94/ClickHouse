@@ -1,0 +1,17 @@
+=== ClickHouse started inside cgroup ===
+server_pid=3021517
+server_cgroup=0::/uhj_versions_bench/run
+cgroup_memory.max=34359738368
+cgroup_memory.swap.max=0
+cgroup_cpuset.cpus=0-15
+cgroup_cpu.max=1600000 100000
+version=26.8.1.1
+max_threads=16
+--- MemoryWorker / cgroup log lines ---
+9:2026.08.12 00:16:48.786172 [ 3021532 ] {} <Information> CgroupsReader: Will create cgroup reader from '/sys/fs/cgroup/uhj_versions_bench/run' (cgroups version: v2)
+10:2026.08.12 00:16:48.786371 [ 3021532 ] {} <Information> AsynchronousMetrics: Will use cgroup reader from '/sys/fs/cgroup/uhj_versions_bench/run' (cgroups version: v2)
+35:2026.08.12 00:16:48.804324 [ 3021532 ] {} <Information> CgroupsMemoryUsageObserver: Started cgroup current memory usage observer thread
+36:2026.08.12 00:16:48.804478 [ 3021630 ] {} <Information> CgroupsMemoryUsageObserver: Memory amount initially available to the process is 32.00 GiB
+--- asynchronous_metrics CGroup* (may be empty: openCgroupv2MetricFile string-concat bug) ---
+OSMemoryTotal	398346911744
+OK: ClickHouse max_threads=16 (target 16); cgroup membership and memory.max verified above

@@ -1,0 +1,4 @@
+baseline_sha=3218492309c2b8ee687ae881f5b74111b62b9a18
+uhj_sha=801d289ec529a0b722ce056983cc75dc4f0e2d44
+8e7e7d93a55a5747e17bd0843a9a4696cf5931ad44785bd81241ff7b6db9d50e  /mnt/data/uhj_versions_bench/bin/clickhouse-baseline
+8359f2f059d27cfc266ec6589b6d808b4560ec50da77c32597c14f0546027ff6  /mnt/data/uhj_versions_bench/bin/clickhouse-uhj

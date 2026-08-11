@@ -139,14 +139,29 @@ stop_server() {
 
 start_server() {
     stop_server
-    # Start INSIDE the cgroup so the server process inherits the limits.
-    # cgroup_wrap execs the command; we background via the wrap's child.
-    nohup "${WRAP}" -- "${BIN}" server --config-file="${SERVER_DIR}/config.xml" \
-        >"${SERVER_LOG}" 2>&1 &
-    echo $! > "${PIDFILE}"
+    # Start from a helper that migrates ITSELF into the cgroup before exec, so
+    # ClickHouse observes the constrained affinity (max_threads) at startup.
+    local cg helper
+    cg="$("${WRAP}" --print-cg | awk -F= '/^cg=/{print $2}')"
+    helper="${SERVER_DIR}/start_in_cgroup.sh"
+    cat > "${helper}" <<EOF
+#!/bin/bash
+echo \$\$ | sudo tee ${cg}/cgroup.procs >/dev/null
+exec "${BIN}" server --config-file="${SERVER_DIR}/config.xml"
+EOF
+    chmod +x "${helper}"
+    nohup "${helper}" >"${SERVER_LOG}" 2>&1 &
+    local spid=$!
+    echo "${spid}" > "${PIDFILE}"
     local i
     for i in $(seq 1 120); do
-        server_alive && return 0
+        if server_alive; then
+            if ! grep -q 'uhj_versions_bench' "/proc/${spid}/cgroup" 2>/dev/null; then
+                echo "WARN: server pid ${spid} not in uhj_versions_bench: $(cat /proc/${spid}/cgroup 2>/dev/null)" >&2
+            fi
+            echo "server up pid=${spid} cgroup=$(cat /proc/${spid}/cgroup) max_threads=$(client --query "SELECT getSetting('max_threads')")" >&2
+            return 0
+        fi
         sleep 1
     done
     echo "server failed to start; log:" >&2

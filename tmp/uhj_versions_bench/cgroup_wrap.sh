@@ -60,18 +60,17 @@ pick_cpus() {
 }
 
 ensure_controllers() {
-    # Enable cpuset + memory on the root if needed, then on our parent.
+    # Enable cpuset + memory + cpu on the root if needed, then on our parent.
     local ctrl
-    for ctrl in cpuset memory; do
+    for ctrl in cpuset memory cpu; do
         if ! grep -qw "${ctrl}" /sys/fs/cgroup/cgroup.controllers 2>/dev/null; then
             echo "cgroup_wrap: controller ${ctrl} not available" >&2
             exit 1
         fi
     done
-    # Enable on root subtree if not already.
     local cur
     cur="$(cat /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true)"
-    for ctrl in cpuset memory; do
+    for ctrl in cpuset memory cpu; do
         if ! grep -qw "${ctrl}" <<<"${cur}"; then
             echo "+${ctrl}" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null
         fi
@@ -85,7 +84,7 @@ setup_cgroup() {
     # Parent must delegate controllers to children.
     local cur
     cur="$(cat "${CGROOT}/cgroup.subtree_control" 2>/dev/null || true)"
-    for ctrl in cpuset memory; do
+    for ctrl in cpuset memory cpu; do
         if ! grep -qw "${ctrl}" <<<"${cur}"; then
             echo "+${ctrl}" | sudo tee "${CGROOT}/cgroup.subtree_control" >/dev/null
         fi

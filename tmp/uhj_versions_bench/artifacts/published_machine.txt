@@ -1,0 +1,6 @@
+machine= c7a.4xlarge
+actual_version= 26.7.1.498
+kind= versions-benchmark
+from=versions/results/master.json
+run-benchmark.sh default machine=c7a.4xlarge
+host note: this run is ARM Neoverse-V2 (no SMT); published is AMD c7a.4xlarge

@@ -1,0 +1,241 @@
+=== host ===
+host_nproc=96
+host_mem_kb=389010656
+swap=0B 0B
+
+=== sibling groups (first 20) ===
+/sys/devices/system/cpu/cpu0/topology/thread_siblings_list: 0
+/sys/devices/system/cpu/cpu1/topology/thread_siblings_list: 1
+/sys/devices/system/cpu/cpu2/topology/thread_siblings_list: 2
+/sys/devices/system/cpu/cpu3/topology/thread_siblings_list: 3
+/sys/devices/system/cpu/cpu4/topology/thread_siblings_list: 4
+/sys/devices/system/cpu/cpu5/topology/thread_siblings_list: 5
+/sys/devices/system/cpu/cpu6/topology/thread_siblings_list: 6
+/sys/devices/system/cpu/cpu7/topology/thread_siblings_list: 7
+/sys/devices/system/cpu/cpu8/topology/thread_siblings_list: 8
+/sys/devices/system/cpu/cpu9/topology/thread_siblings_list: 9
+/sys/devices/system/cpu/cpu10/topology/thread_siblings_list: 10
+/sys/devices/system/cpu/cpu11/topology/thread_siblings_list: 11
+/sys/devices/system/cpu/cpu12/topology/thread_siblings_list: 12
+/sys/devices/system/cpu/cpu13/topology/thread_siblings_list: 13
+/sys/devices/system/cpu/cpu14/topology/thread_siblings_list: 14
+/sys/devices/system/cpu/cpu15/topology/thread_siblings_list: 15
+/sys/devices/system/cpu/cpu16/topology/thread_siblings_list: 16
+/sys/devices/system/cpu/cpu17/topology/thread_siblings_list: 17
+/sys/devices/system/cpu/cpu18/topology/thread_siblings_list: 18
+/sys/devices/system/cpu/cpu19/topology/thread_siblings_list: 19
+/sys/devices/system/cpu/cpu20/topology/thread_siblings_list: 20
+/sys/devices/system/cpu/cpu21/topology/thread_siblings_list: 21
+/sys/devices/system/cpu/cpu22/topology/thread_siblings_list: 22
+/sys/devices/system/cpu/cpu23/topology/thread_siblings_list: 23
+/sys/devices/system/cpu/cpu24/topology/thread_siblings_list: 24
+/sys/devices/system/cpu/cpu25/topology/thread_siblings_list: 25
+/sys/devices/system/cpu/cpu26/topology/thread_siblings_list: 26
+/sys/devices/system/cpu/cpu27/topology/thread_siblings_list: 27
+/sys/devices/system/cpu/cpu28/topology/thread_siblings_list: 28
+/sys/devices/system/cpu/cpu29/topology/thread_siblings_list: 29
+/sys/devices/system/cpu/cpu30/topology/thread_siblings_list: 30
+/sys/devices/system/cpu/cpu31/topology/thread_siblings_list: 31
+
+=== cgroup_wrap --verify ===
+=== emulation verify ===
+nproc=16
+--- lscpu -e ---
+CPU NODE SOCKET CORE L1d:L1i:L2:L3 ONLINE
+  0    0      0    0 0:0:0:0          yes
+  1    0      0    1 1:1:1:0          yes
+  2    0      0    2 2:2:2:0          yes
+  3    0      0    3 3:3:3:0          yes
+  4    0      0    4 4:4:4:0          yes
+  5    0      0    5 5:5:5:0          yes
+  6    0      0    6 6:6:6:0          yes
+  7    0      0    7 7:7:7:0          yes
+  8    0      0    8 8:8:8:0          yes
+  9    0      0    9 9:9:9:0          yes
+ 10    0      0   10 10:10:10:0       yes
+ 11    0      0   11 11:11:11:0       yes
+ 12    0      0   12 12:12:12:0       yes
+ 13    0      0   13 13:13:13:0       yes
+ 14    0      0   14 14:14:14:0       yes
+ 15    0      0   15 15:15:15:0       yes
+ 16    0      0   16 16:16:16:0       yes
+ 17    0      0   17 17:17:17:0       yes
+ 18    0      0   18 18:18:18:0       yes
+ 19    0      0   19 19:19:19:0       yes
+ 20    0      0   20 20:20:20:0       yes
+ 21    0      0   21 21:21:21:0       yes
+ 22    0      0   22 22:22:22:0       yes
+ 23    0      0   23 23:23:23:0       yes
+ 24    0      0   24 24:24:24:0       yes
+ 25    0      0   25 25:25:25:0       yes
+ 26    0      0   26 26:26:26:0       yes
+ 27    0      0   27 27:27:27:0       yes
+ 28    0      0   28 28:28:28:0       yes
+ 29    0      0   29 29:29:29:0       yes
+ 30    0      0   30 30:30:30:0       yes
+ 31    0      0   31 31:31:31:0       yes
+ 32    0      0   32 32:32:32:0       yes
+ 33    0      0   33 33:33:33:0       yes
+ 34    0      0   34 34:34:34:0       yes
+ 35    0      0   35 35:35:35:0       yes
+ 36    0      0   36 36:36:36:0       yes
+ 37    0      0   37 37:37:37:0       yes
+ 38    0      0   38 38:38:38:0       yes
+ 39    0      0   39 39:39:39:0       yes
+ 40    0      0   40 40:40:40:0       yes
+ 41    0      0   41 41:41:41:0       yes
+ 42    0      0   42 42:42:42:0       yes
+ 43    0      0   43 43:43:43:0       yes
+ 44    0      0   44 44:44:44:0       yes
+ 45    0      0   45 45:45:45:0       yes
+ 46    0      0   46 46:46:46:0       yes
+ 47    0      0   47 47:47:47:0       yes
+ 48    0      0   48 48:48:48:0       yes
+ 49    0      0   49 49:49:49:0       yes
+ 50    0      0   50 50:50:50:0       yes
+ 51    0      0   51 51:51:51:0       yes
+ 52    0      0   52 52:52:52:0       yes
+ 53    0      0   53 53:53:53:0       yes
+ 54    0      0   54 54:54:54:0       yes
+ 55    0      0   55 55:55:55:0       yes
+ 56    0      0   56 56:56:56:0       yes
+ 57    0      0   57 57:57:57:0       yes
+ 58    0      0   58 58:58:58:0       yes
+ 59    0      0   59 59:59:59:0       yes
+ 60    0      0   60 60:60:60:0       yes
+ 61    0      0   61 61:61:61:0       yes
+ 62    0      0   62 62:62:62:0       yes
+ 63    0      0   63 63:63:63:0       yes
+ 64    0      0   64 64:64:64:0       yes
+ 65    0      0   65 65:65:65:0       yes
+ 66    0      0   66 66:66:66:0       yes
+ 67    0      0   67 67:67:67:0       yes
+ 68    0      0   68 68:68:68:0       yes
+ 69    0      0   69 69:69:69:0       yes
+ 70    0      0   70 70:70:70:0       yes
+ 71    0      0   71 71:71:71:0       yes
+ 72    0      0   72 72:72:72:0       yes
+ 73    0      0   73 73:73:73:0       yes
+ 74    0      0   74 74:74:74:0       yes
+ 75    0      0   75 75:75:75:0       yes
+ 76    0      0   76 76:76:76:0       yes
+ 77    0      0   77 77:77:77:0       yes
+ 78    0      0   78 78:78:78:0       yes
+ 79    0      0   79 79:79:79:0       yes
+ 80    0      0   80 80:80:80:0       yes
+ 81    0      0   81 81:81:81:0       yes
+ 82    0      0   82 82:82:82:0       yes
+ 83    0      0   83 83:83:83:0       yes
+ 84    0      0   84 84:84:84:0       yes
+ 85    0      0   85 85:85:85:0       yes
+ 86    0      0   86 86:86:86:0       yes
+ 87    0      0   87 87:87:87:0       yes
+ 88    0      0   88 88:88:88:0       yes
+ 89    0      0   89 89:89:89:0       yes
+ 90    0      0   90 90:90:90:0       yes
+ 91    0      0   91 91:91:91:0       yes
+ 92    0      0   92 92:92:92:0       yes
+ 93    0      0   93 93:93:93:0       yes
+ 94    0      0   94 94:94:94:0       yes
+ 95    0      0   95 95:95:95:0       yes
+--- cgroup ---
+cpuset.cpus=0-15
+memory.max=34359738368
+memory.swap.max=0
+self_cgroup=0::/uhj_versions_bench/run
+
+=== nproc / lscpu inside wrapper ===
+nproc=16
+CPU NODE SOCKET CORE L1d:L1i:L2:L3 ONLINE
+  0    0      0    0 0:0:0:0          yes
+  1    0      0    1 1:1:1:0          yes
+  2    0      0    2 2:2:2:0          yes
+  3    0      0    3 3:3:3:0          yes
+  4    0      0    4 4:4:4:0          yes
+  5    0      0    5 5:5:5:0          yes
+  6    0      0    6 6:6:6:0          yes
+  7    0      0    7 7:7:7:0          yes
+  8    0      0    8 8:8:8:0          yes
+  9    0      0    9 9:9:9:0          yes
+ 10    0      0   10 10:10:10:0       yes
+ 11    0      0   11 11:11:11:0       yes
+ 12    0      0   12 12:12:12:0       yes
+ 13    0      0   13 13:13:13:0       yes
+ 14    0      0   14 14:14:14:0       yes
+ 15    0      0   15 15:15:15:0       yes
+ 16    0      0   16 16:16:16:0       yes
+ 17    0      0   17 17:17:17:0       yes
+ 18    0      0   18 18:18:18:0       yes
+
+=== cgroup memory.max / swap.max ===
+cg=/sys/fs/cgroup/uhj_versions_bench/run
+memory.max=34359738368
+memory.swap.max=0
+cpuset.cpus=0-15
+OK: cgroup limits match target (cpus=16, mem=34359738368, swap=0)
+
+=== over-limit allocation must be OOM-killed ===
+1 GiB
+2 GiB
+3 GiB
+4 GiB
+5 GiB
+6 GiB
+7 GiB
+8 GiB
+9 GiB
+10 GiB
+11 GiB
+12 GiB
+13 GiB
+14 GiB
+15 GiB
+16 GiB
+17 GiB
+18 GiB
+19 GiB
+20 GiB
+21 GiB
+22 GiB
+23 GiB
+24 GiB
+25 GiB
+26 GiB
+27 GiB
+28 GiB
+29 GiB
+30 GiB
+31 GiB
+/mnt/ch/ClickHouse/tmp/uhj_versions_bench/verify_emulation.sh: line 75: 3019724 Killed                     "${WRAP}" -- python3 - <<'PY'
+import sys
+chunks=[]
+try:
+    for i in range(40):
+        chunks.append(bytearray(1024*1024*1024))  # 1 GiB
+        print(i+1, "GiB", flush=True)
+    print("UNEXPECTED_SURVIVED")
+except MemoryError:
+    print("MemoryError")
+    sys.exit(2)
+PY
+
+alloc_exit=137
+OK: over-limit allocation killed (rc=137)
+=== ClickHouse started inside cgroup ===
+server_pid=3021517
+server_cgroup=0::/uhj_versions_bench/run
+cgroup_memory.max=34359738368
+cgroup_memory.swap.max=0
+cgroup_cpuset.cpus=0-15
+cgroup_cpu.max=1600000 100000
+version=26.8.1.1
+max_threads=16
+--- MemoryWorker / cgroup log lines ---
+9:2026.08.12 00:16:48.786172 [ 3021532 ] {} <Information> CgroupsReader: Will create cgroup reader from '/sys/fs/cgroup/uhj_versions_bench/run' (cgroups version: v2)
+10:2026.08.12 00:16:48.786371 [ 3021532 ] {} <Information> AsynchronousMetrics: Will use cgroup reader from '/sys/fs/cgroup/uhj_versions_bench/run' (cgroups version: v2)
+35:2026.08.12 00:16:48.804324 [ 3021532 ] {} <Information> CgroupsMemoryUsageObserver: Started cgroup current memory usage observer thread
+36:2026.08.12 00:16:48.804478 [ 3021630 ] {} <Information> CgroupsMemoryUsageObserver: Memory amount initially available to the process is 32.00 GiB
+--- asynchronous_metrics CGroup* (may be empty: openCgroupv2MetricFile string-concat bug) ---
+OSMemoryTotal	398346911744
+OK: ClickHouse max_threads=16 (target 16); cgroup membership and memory.max verified above
+verify_emulation done -> /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/verify/

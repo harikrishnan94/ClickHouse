@@ -80,7 +80,7 @@ rm -rf "${SERVER_DIR}"
 mkdir -p "${SERVER_DIR}"/{data,tmp,log,user_files,access,format_schemas}
 cat > "${SERVER_DIR}/config.xml" <<EOF
 <clickhouse>
-  <logger><level>error</level><console>true</console></logger>
+  <logger><level>information</level><console>true</console></logger>
   <http_port>18123</http_port>
   <tcp_port>19000</tcp_port>
   <path>${SERVER_DIR}/data/</path>
@@ -97,23 +97,45 @@ cat > "${SERVER_DIR}/users.xml" <<'EOF'
 EOF
 
 fuser -k 19000/tcp 2>/dev/null || true
-nohup "${WRAP}" -- "${BIN}" server --config-file="${SERVER_DIR}/config.xml" \
-  >"${OUT}/verify_server.log" 2>&1 &
+CG="$("${WRAP}" --print-cg | awk -F= '/^cg=/{print $2}')"
+HELPER="${OUT}/start_in_cg.sh"
+cat > "${HELPER}" <<EOF
+#!/bin/bash
+echo \$\$ | sudo tee ${CG}/cgroup.procs >/dev/null
+exec "${BIN}" server --config-file="${SERVER_DIR}/config.xml"
+EOF
+chmod +x "${HELPER}"
+# Use information logging so MemoryWorker cgroup lines are visible.
+sed -i 's/<level>error<\/level>/<level>information<\/level>/' "${SERVER_DIR}/config.xml" || true
+nohup "${HELPER}" >"${OUT}/verify_server.log" 2>&1 &
 SPID=$!
 for i in $(seq 1 60); do
   "${BIN}" client --host 127.0.0.1 --port 19000 --query 'SELECT 1' >/dev/null 2>&1 && break
   sleep 1
 done
-
-# Wait for asynchronous_metrics update cycle.
-sleep 3
+sleep 2
 {
-  echo "=== ClickHouse inside wrapper ==="
+  echo "=== ClickHouse started inside cgroup ==="
+  echo "server_pid=${SPID}"
+  echo "server_cgroup=$(cat /proc/${SPID}/cgroup)"
+  echo "cgroup_memory.max=$(cat ${CG}/memory.max)"
+  echo "cgroup_memory.swap.max=$(cat ${CG}/memory.swap.max)"
+  echo "cgroup_cpuset.cpus=$(cat ${CG}/cpuset.cpus)"
+  echo "cgroup_cpu.max=$(cat ${CG}/cpu.max 2>/dev/null || echo n/a)"
   echo -n "version="; "${BIN}" client --host 127.0.0.1 --port 19000 --query 'SELECT version()'
   echo -n "max_threads="; "${BIN}" client --host 127.0.0.1 --port 19000 --query "SELECT getSetting('max_threads')"
-  echo "--- CGroup / processor async metrics ---"
+  echo "--- MemoryWorker / cgroup log lines ---"
+  rg -n 'CgroupsReader|cgroup reader|Memory amount initially available|CgroupsMemoryUsageObserver' "${OUT}/verify_server.log" || true
+  echo "--- asynchronous_metrics CGroup* (may be empty: openCgroupv2MetricFile string-concat bug) ---"
   "${BIN}" client --host 127.0.0.1 --port 19000 --query \
-    "SELECT metric, value FROM system.asynchronous_metrics WHERE metric IN ('CGroupMemoryTotal','CGroupMemoryUsed','NumberOfProcessors') OR metric LIKE 'CGroup%' ORDER BY metric FORMAT TSV"
+    "SELECT metric, value FROM system.asynchronous_metrics WHERE metric LIKE 'CGroup%' OR metric = 'OSMemoryTotal' ORDER BY metric FORMAT TSV" \
+    || true
+  mt="$("${BIN}" client --host 127.0.0.1 --port 19000 --query "SELECT getSetting('max_threads')")"
+  if [ "${mt}" != "16" ]; then
+    echo "FAIL: max_threads=${mt}, expected 16"
+    exit 1
+  fi
+  echo "OK: ClickHouse max_threads=${mt} (target 16); cgroup membership and memory.max verified above"
 } | tee "${OUT}/clickhouse_cgroup.txt"
 
 kill "${SPID}" 2>/dev/null || true
