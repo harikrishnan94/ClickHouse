@@ -13,11 +13,14 @@ DATA="${DATA:-${WORK}/data}"
 ARM="${ARM:?set ARM=baseline|uhj}"
 ROUND="${ROUND:-1}"
 TRIES="${TRIES:-6}"                 # 1 cold + 5 hot — same as run-version.sh
-QUERY_TIMEOUT="${QUERY_TIMEOUT:-300}"  # raised vs 100s: constrained 32 GiB / ARM host
+QUERY_TIMEOUT="${QUERY_TIMEOUT:-600}"  # raised vs 100s: constrained 32 GiB / ARM host
 LOAD_DATASETS="${LOAD_DATASETS:-coffeeshop tpch tpcds job}"
 PHASE="${PHASE:-all}"               # load | bench | all
 PORT="${PORT:-19010}"
 HTTP_PORT="${HTTP_PORT:-18110}"
+# Shared on-disk tables across arms (swap only binary + users.xml). Stronger
+# comparability and one load instead of two.
+SHARED_DIR="${WORK}/server_shared"
 SERVER_DIR="${WORK}/server_${ARM}"
 LOG_DIR="${WORK}/logs"
 RESULT_DIR="${WORK}/results"
@@ -40,14 +43,15 @@ esac
 
 [ -x "${BIN}" ] || { echo "missing binary ${BIN}" >&2; exit 1; }
 [ -x "${WRAP}" ] || { echo "missing ${WRAP}" >&2; exit 1; }
-mkdir -p "${SERVER_DIR}"/{config.d,users.d,data,log,tmp,user_files,format_schemas,access} \
+mkdir -p "${SHARED_DIR}"/{data,tmp,user_files,format_schemas,access} \
+         "${SERVER_DIR}"/{log,config.d,users.d} \
          "${LOG_DIR}" "${RESULT_DIR}"
 
 VERSION_LABEL="${ARM}_r${ROUND}"
 OUT="${RESULT_DIR}/${VERSION_LABEL}.json"
 LOAD_STATS="${LOG_DIR}/${VERSION_LABEL}.loadtimes.tsv"
 SERVER_LOG="${LOG_DIR}/${VERSION_LABEL}.server.log"
-PIDFILE="${SERVER_DIR}/clickhouse-server.pid"
+PIDFILE="${WORK}/clickhouse-server.pid"
 
 # ---- minimal server config (mirrors docker image defaults we care about) ----
 cat > "${SERVER_DIR}/config.xml" <<EOF
@@ -61,14 +65,14 @@ cat > "${SERVER_DIR}/config.xml" <<EOF
     </logger>
     <http_port>${HTTP_PORT}</http_port>
     <tcp_port>${PORT}</tcp_port>
-    <path>${SERVER_DIR}/data/</path>
-    <tmp_path>${SERVER_DIR}/tmp/</tmp_path>
-    <user_files_path>${SERVER_DIR}/user_files/</user_files_path>
-    <format_schema_path>${SERVER_DIR}/format_schemas/</format_schema_path>
-    <access_control_path>${SERVER_DIR}/access/</access_control_path>
+    <path>${SHARED_DIR}/data/</path>
+    <tmp_path>${SHARED_DIR}/tmp/</tmp_path>
+    <user_files_path>${SHARED_DIR}/user_files/</user_files_path>
+    <format_schema_path>${SHARED_DIR}/format_schemas/</format_schema_path>
+    <access_control_path>${SHARED_DIR}/access/</access_control_path>
     <user_directories>
         <users_xml><path>${SERVER_DIR}/users.xml</path></users_xml>
-        <local_directory><path>${SERVER_DIR}/access/</path></local_directory>
+        <local_directory><path>${SHARED_DIR}/access/</path></local_directory>
     </user_directories>
     <mark_cache_size>5368709120</mark_cache_size>
     <uncompressed_cache_size>0</uncompressed_cache_size>
