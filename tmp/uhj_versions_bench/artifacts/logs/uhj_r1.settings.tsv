@@ -1,0 +1,3 @@
+join_algorithm	unified_hash
+max_memory_usage	0
+max_threads	auto(16)

@@ -1,0 +1,1 @@
+direct,parallel_hash,hash

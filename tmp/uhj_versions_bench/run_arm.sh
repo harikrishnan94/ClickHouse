@@ -368,10 +368,13 @@ case "${PHASE}" in
     load)
         start_server
         load_data
-        echo "loaded; leaving server running (pid $(cat "${PIDFILE}"))"
+        stop_server
+        echo "loaded; server stopped (shared data ready)"
         ;;
     bench)
-        server_alive || start_server
+        # Always (re)start so the arm's binary + users.xml are the ones running.
+        stop_server
+        start_server
         run_benchmark
         stop_server
         ;;

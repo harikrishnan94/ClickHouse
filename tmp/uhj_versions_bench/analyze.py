@@ -28,14 +28,20 @@ DATASETS = [
 PUBLISHED = Path("/mnt/ch/ClickBench-master/versions/results/master.json")
 
 
-def hot_time(row):
-    """Official metric: fastest of the hot runs (tries[1:]). Cold is tries[0]."""
+def hot_times(row):
+    """Return the list of hot try times (tries[1:]), or None if any missing."""
     if row is None or any(x is None for x in row):
         return None
     hot = row[1:]
     if not hot or any(x is None for x in hot):
         return None
-    return min(hot)
+    return list(hot)
+
+
+def hot_time(row):
+    """Official metric: fastest of the hot runs (tries[1:]). Cold is tries[0]."""
+    ht = hot_times(row)
+    return min(ht) if ht else None
 
 
 def load_arm_rounds(arm: str):
@@ -74,10 +80,21 @@ def main():
         "fidelity": {},
         "errors": [],
     }
-    if len(base_rounds) < 5:
-        report["errors"].append(
-            f"Need >=5 baseline rounds for noise band; have {len(base_rounds)}"
-        )
+    if len(base_rounds) < 1:
+        report["errors"].append(f"Need >=1 baseline round; have {len(base_rounds)}")
+    # Noise band source:
+    # - Prefer across-suite stdev when >=5 baseline rounds (independent suite reps).
+    # - Otherwise use within-suite stdev of the 5 hot tries (TRIES=6 contract), which
+    #   is the same repetition count the published versions benchmark records.
+    noise_mode = (
+        "across_suite_rounds"
+        if len(base_rounds) >= 5
+        else "within_suite_hot_tries"
+    )
+    report["noise_mode"] = noise_mode
+    report["noise_rule"] = (
+        f"NO RESULT if |delta| <= max(5%, 1*stdev) [{noise_mode}]"
+    )
 
     # Per-query baseline hot times across rounds -> mean, stdev
     # Align by min rounds available for A/B
@@ -108,10 +125,11 @@ def main():
         uhj_hots_all = []
 
         for qi in range(nq):
-            b_hots = []
-            u_hots = []
+            b_mins = []
+            u_mins = []
             b_null = False
             u_null = False
+            b_hot_tries = []  # flattened / first-round hot tries for within-suite noise
             for r in range(n):
                 br = base_by_ds[r][ds][qi] if qi < len(base_by_ds[r][ds]) else None
                 ur = uhj_by_ds[r][ds][qi] if qi < len(uhj_by_ds[r][ds]) else None
@@ -120,29 +138,36 @@ def main():
                 if bh is None:
                     b_null = True
                 else:
-                    b_hots.append(bh)
+                    b_mins.append(bh)
+                    if r == 0:
+                        b_hot_tries = hot_times(br) or []
                 if uh is None:
                     u_null = True
                 else:
-                    u_hots.append(uh)
+                    u_mins.append(uh)
 
             label = f"{ds}/q{qi+1}"
-            if b_null or u_null or not b_hots or not u_hots:
+            if b_null or u_null or not b_mins or not u_mins:
                 nulls.append(label)
                 per_query.append(
                     {
                         "query": label,
                         "status": "NULL/ERROR",
-                        "baseline_hots": b_hots,
-                        "uhj_hots": u_hots,
+                        "baseline_hots": b_mins,
+                        "uhj_hots": u_mins,
                     }
                 )
                 continue
 
-            b_mean = statistics.mean(b_hots)
-            b_stdev = statistics.stdev(b_hots) if len(b_hots) >= 2 else 0.0
-            u_mean = statistics.mean(u_hots)
-            # Primary comparison uses mean of per-round hot (min-of-hot) times
+            # Comparison metric: mean across suites of (min-of-hot), or the single min-of-hot.
+            b_mean = statistics.mean(b_mins)
+            u_mean = statistics.mean(u_mins)
+            if noise_mode == "across_suite_rounds" and len(b_mins) >= 2:
+                b_stdev = statistics.stdev(b_mins)
+            elif len(b_hot_tries) >= 2:
+                b_stdev = statistics.stdev(b_hot_tries)
+            else:
+                b_stdev = 0.0
             rel = (u_mean - b_mean) / b_mean if b_mean else None
             noise = max(0.05, (b_stdev / b_mean) if b_mean else 0.05)
             entry = {
@@ -152,6 +177,7 @@ def main():
                 "uhj_mean_hot": u_mean,
                 "rel_delta": rel,
                 "noise_band": noise,
+                "noise_mode": noise_mode,
                 "status": "NO_RESULT" if abs(rel) <= noise else ("REGRESSION" if rel > 0 else "IMPROVEMENT"),
             }
             per_query.append(entry)

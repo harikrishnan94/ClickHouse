@@ -1,0 +1,13 @@
+Received exception from server (version 26.8.1):
+Code: 47. DB::Exception: Received from 127.0.0.1:19010. DB::Exception: Unknown expression or function identifier `join_algorithm` in scope SELECT query_kind, count() AS n, groupUniqArray(join_algorithm) AS algos FROM system.query_log WHERE (type = 'QueryFinish') AND (query_kind = 'Select') AND (event_time > (now() - toIntervalDay(2))) GROUP BY query_kind. (UNKNOWN_IDENTIFIER)
+(query: SELECT
+            query_kind,
+            count() AS n,
+            groupUniqArray(join_algorithm) AS algos
+        FROM system.query_log
+        WHERE type = 'QueryFinish'
+          AND query_kind = 'Select'
+          AND event_time > now() - INTERVAL 2 DAY
+        GROUP BY query_kind
+        FORMAT PrettyCompact
+    )

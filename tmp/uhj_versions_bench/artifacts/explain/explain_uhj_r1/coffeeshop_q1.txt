@@ -1,0 +1,33 @@
+Output: order_date, city, sum(sales_amount), avg(sum(sales_amount)) OVER (PARTITION BY city ORDER BY order_date ASC ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+
+Sorting (Sorting for ORDER BY)
+│  Sort description: city ASC, order_date ASC
+└──Window (Window step for window \'PARTITION BY city ORDER BY order_date ASC ROWS BETWEEN 6 PRECEDING AND CURRENT ROW\')
+   │  Window: (PARTITION BY city ORDER BY order_date ASC)
+   │  Functions: avg(sum(sales_amount)) OVER (PARTITION BY city ORDER BY order_date ASC ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+   └──Sorting (Sorting for window \'PARTITION BY city ORDER BY order_date ASC ROWS BETWEEN 6 PRECEDING AND CURRENT ROW\')
+      │  Sort description: city ASC, order_date ASC
+      └──Aggregating
+         │  Keys: order_date, city
+         │  Aggregates: sum(sales_amount)
+         │  Skip merging: 0
+         └──Join (JOIN FillRightFirst)
+            │  f[721043477] ⋈ l[no_stats~1000]
+            │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+            │  Result rows: 721043477
+            │  Join conditions: location_id = location_id
+            │  Output:
+            │    Left:  order_date, sales_amount
+            │    Right: city
+            ├──ReadFromMergeTree (coffeeshop.fact_sales)
+            │     Read type: Default
+            │     Parts: 201 | Granules: 88449
+            │     Output: location_id, order_date, sales_amount
+            │     Runtime filters: RF1(location_id, location_id from coffeeshop.dim_locations)
+            └──BuildRuntimeFilter (Build runtime join filter on location_id)
+               │  Filter id: RF1
+               │  Source table: coffeeshop.dim_locations
+               └──ReadFromMergeTree (coffeeshop.dim_locations)
+                     Read type: Default
+                     Parts: 1 | Granules: 1
+                     Output: city, location_id

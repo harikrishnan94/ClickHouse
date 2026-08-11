@@ -1,0 +1,14 @@
+Output: l_returnflag, l_linestatus, sumCount(l_quantity).1, sumCount(l_extendedprice).1, sum(l_extendedprice * (1 − l_discount)), sum(l_extendedprice * (1 − l_discount) * (1 + l_tax)), sumCount(l_quantity).1 / toFloat64(sumCount(l_quantity).2), sumCount(l_extendedprice).1 / toFloat64(sumCount(l_extendedprice).2), avg(l_discount), count()
+
+Sorting (Sorting for ORDER BY)
+│  Sort description: l_returnflag ASC, l_linestatus ASC
+└──Aggregating
+   │  Keys: l_returnflag, l_linestatus
+   │  Aggregates: sumCount(l_quantity), sumCount(l_extendedprice), sum(l_extendedprice * (1 − l_discount)), sum(l_extendedprice * (1 − l_discount) * (1 + l_tax)), avg(l_discount), count()
+   │  Skip merging: 0
+   └──ReadFromMergeTree (tpch.lineitem)
+         Read type: Default
+         Parts: 577 | Granules: 32570
+         Output: l_returnflag, l_linestatus, l_quantity, l_extendedprice, l_discount, l_tax
+         Prewhere filter
+         Prewhere filter column:  l_shipdate <= \'1998-09-02\'

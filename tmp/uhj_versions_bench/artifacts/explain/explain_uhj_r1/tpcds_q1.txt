@@ -1,0 +1,105 @@
+Output: c_customer_id
+
+Limit (preliminary LIMIT)
+│  Limit 100
+│  Offset 0
+└──Sorting (Sorting for ORDER BY)
+   │  Sort description: c_customer_id ASC
+   │  Limit 100
+   └──Join (JOIN FillRightFirst)
+      │  R0[no_stats~?] ⋈ ctr1[no_stats~?] ⋈ store[no_stats~?] ⋈ customer[no_stats~466000]
+      │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+      │  Join conditions: sr_customer_sk = c_customer_sk
+      │  Output:
+      │    Left:  ctr_total_return, __table6
+      │    Right: c_customer_id
+      ├──Join (JOIN FillRightFirst)
+      │  │  R0[no_stats~?] ⋈ ctr1[no_stats~?] ⋈ store[no_stats~?]
+      │  │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+      │  │  Join conditions: sr_store_sk = s_store_sk
+      │  │  Output:
+      │  │    Left:  ctr_customer_sk, ctr_total_return, __table6
+      │  │    Right: Empty
+      │  ├──Filter
+      │  │  │  Filter column: sum(sr_return_amt) > CAST(avg(sum(sr_return_amt)) * 1.2 AS Nullable(Float64))
+      │  │  └──Join (JOIN FillRightFirst)
+      │  │     │  R0[no_stats~?] ⋈ ctr1[no_stats~?]
+      │  │     │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+      │  │     │  Join conditions: sr_store_sk = sr_store_sk
+      │  │     │  Output:
+      │  │     │    Left:  __table6
+      │  │     │    Right: ctr_store_sk, ctr_customer_sk, ctr_total_return
+      │  │     ├──Aggregating
+      │  │     │  │  Keys: sr_store_sk
+      │  │     │  │  Aggregates: avg(sum(sr_return_amt))
+      │  │     │  │  Skip merging: 0
+      │  │     │  └──Aggregating
+      │  │     │     │  Keys: sr_customer_sk, sr_store_sk
+      │  │     │     │  Aggregates: sum(sr_return_amt)
+      │  │     │     │  Skip merging: 0
+      │  │     │     └──Join (JOIN FillRightFirst)
+      │  │     │        │  store_returns[3039984] ⋈ date_dim[no_stats~?]
+      │  │     │        │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+      │  │     │        │  Join conditions: sr_returned_date_sk = d_date_sk
+      │  │     │        │  Output:
+      │  │     │        │    Left:  sr_store_sk, sr_return_amt, sr_customer_sk
+      │  │     │        │    Right: Empty
+      │  │     │        ├──ReadFromMergeTree (tpcds.store_returns)
+      │  │     │        │     Read type: Default
+      │  │     │        │     Parts: 4 | Granules: 1126
+      │  │     │        │     Output: sr_store_sk, sr_returned_date_sk, sr_return_amt, sr_customer_sk
+      │  │     │        │     Prewhere filter
+      │  │     │        │     Prewhere filter column:  sr_store_sk = sr_store_sk
+      │  │     │        │     Runtime filters: RF5(sr_returned_date_sk, d_date_sk from tpcds.date_dim) AND RF2(sr_store_sk, s_store_sk from tpcds.store) AND RF4(sr_store_sk, sr_store_sk)
+      │  │     │        └──BuildRuntimeFilter (Build runtime join filter on d_date_sk)
+      │  │     │           │  Filter id: RF5
+      │  │     │           │  Source table: tpcds.date_dim
+      │  │     │           └──ReadFromMergeTree (tpcds.date_dim)
+      │  │     │                 Read type: Default
+      │  │     │                 Parts: 1 | Granules: 9
+      │  │     │                 Output: d_date_sk
+      │  │     │                 Prewhere filter
+      │  │     │                 Prewhere filter column:  d_year = 2000
+      │  │     └──BuildRuntimeFilter (Build runtime join filter on ctr_store_sk)
+      │  │        │  Filter id: RF4
+      │  │        └──Aggregating
+      │  │           │  Keys: sr_customer_sk, sr_store_sk
+      │  │           │  Aggregates: sum(sr_return_amt)
+      │  │           │  Skip merging: 0
+      │  │           └──Join (JOIN FillRightFirst)
+      │  │              │  store_returns[9212074] ⋈ date_dim[no_stats~?]
+      │  │              │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+      │  │              │  Join conditions: sr_returned_date_sk = d_date_sk
+      │  │              │  Output:
+      │  │              │    Left:  sr_customer_sk, sr_store_sk, sr_return_amt
+      │  │              │    Right: Empty
+      │  │              ├──ReadFromMergeTree (tpcds.store_returns)
+      │  │              │     Read type: Default
+      │  │              │     Parts: 4 | Granules: 1126
+      │  │              │     Output: sr_customer_sk, sr_store_sk, sr_returned_date_sk, sr_return_amt
+      │  │              │     Runtime filters: RF1(sr_customer_sk, c_customer_sk from tpcds.customer) AND RF2(sr_store_sk, s_store_sk from tpcds.store) AND RF3(sr_returned_date_sk, d_date_sk from tpcds.date_dim)
+      │  │              └──BuildRuntimeFilter (Build runtime join filter on d_date_sk)
+      │  │                 │  Filter id: RF3
+      │  │                 │  Source table: tpcds.date_dim
+      │  │                 └──ReadFromMergeTree (tpcds.date_dim)
+      │  │                       Read type: Default
+      │  │                       Parts: 1 | Granules: 9
+      │  │                       Output: d_date_sk
+      │  │                       Prewhere filter
+      │  │                       Prewhere filter column:  d_year = 2000
+      │  └──BuildRuntimeFilter (Build runtime join filter on s_store_sk)
+      │     │  Filter id: RF2
+      │     │  Source table: tpcds.store
+      │     └──ReadFromMergeTree (tpcds.store)
+      │           Read type: Default
+      │           Parts: 1 | Granules: 1
+      │           Output: s_store_sk
+      │           Prewhere filter
+      │           Prewhere filter column:  s_state = \'TN\'
+      └──BuildRuntimeFilter (Build runtime join filter on c_customer_sk)
+         │  Filter id: RF1
+         │  Source table: tpcds.customer
+         └──ReadFromMergeTree (tpcds.customer)
+               Read type: Default
+               Parts: 1 | Granules: 57
+               Output: c_customer_id, c_customer_sk

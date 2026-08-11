@@ -1,0 +1,7 @@
+--- /mnt/data/uhj_versions_bench/logs/baseline_r1.settings.tsv	2026-08-12 00:49:50.628516224 +0530
++++ /mnt/data/uhj_versions_bench/logs/uhj_r1.settings.tsv	2026-08-12 02:25:24.244099587 +0530
+@@ -1,3 +1,3 @@
+-join_algorithm	direct,parallel_hash,hash
++join_algorithm	unified_hash
+ max_memory_usage	0
+ max_threads	auto(16)

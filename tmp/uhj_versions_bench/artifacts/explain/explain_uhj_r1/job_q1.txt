@@ -1,0 +1,74 @@
+Output: min(note), min(title), min(production_year)
+
+Aggregating
+│  Keys:
+│  Aggregates: min(note), min(title), min(production_year)
+│  Skip merging: 0
+└──Join (JOIN FillRightFirst)
+   │  mi_idx[no_stats~1380035] ⋈ it[no_stats~?] ⋈ t[no_stats~2528312] ⋈ (ct[no_stats~?] ⋈ mc[no_stats~?])
+   │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+   │  Join conditions: movie_id = movie_id
+   │  Output:
+   │    Left:  title, production_year
+   │    Right: note
+   ├──Join (JOIN FillRightFirst)
+   │  │  mi_idx[no_stats~1380035] ⋈ it[no_stats~?] ⋈ t[no_stats~2528312]
+   │  │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+   │  │  Join conditions: movie_id = id
+   │  │  Output:
+   │  │    Left:  movie_id
+   │  │    Right: title, production_year
+   │  ├──Join (JOIN FillRightFirst)
+   │  │  │  mi_idx[no_stats~1380035] ⋈ it[no_stats~?]
+   │  │  │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+   │  │  │  Join conditions: info_type_id = id
+   │  │  │  Output:
+   │  │  │    Left:  movie_id
+   │  │  │    Right: Empty
+   │  │  ├──ReadFromMergeTree (job.movie_info_idx)
+   │  │  │     Read type: Default
+   │  │  │     Parts: 2 | Granules: 169
+   │  │  │     Output: movie_id, info_type_id
+   │  │  │     Runtime filters: RF2(movie_id, movie_id) AND RF3(movie_id, id from job.title) AND RF4(info_type_id, id from job.info_type)
+   │  │  └──BuildRuntimeFilter (Build runtime join filter on id)
+   │  │     │  Filter id: RF4
+   │  │     │  Source table: job.info_type
+   │  │     └──ReadFromMergeTree (job.info_type)
+   │  │           Read type: Default
+   │  │           Parts: 1 | Granules: 1
+   │  │           Output: id
+   │  │           Prewhere filter
+   │  │           Prewhere filter column:  info = \'top 250 rank\'
+   │  └──BuildRuntimeFilter (Build runtime join filter on id)
+   │     │  Filter id: RF3
+   │     │  Source table: job.title
+   │     └──ReadFromMergeTree (job.title)
+   │           Read type: Default
+   │           Parts: 3 | Granules: 310
+   │           Output: id, title, production_year
+   │           Runtime filters: RF2(id, movie_id)
+   └──BuildRuntimeFilter (Build runtime join filter on movie_id)
+      │  Filter id: RF2
+      └──Join (JOIN FillRightFirst)
+         │  ct[no_stats~?] ⋈ mc[no_stats~?]
+         │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(UnifiedHashJoin)
+         │  Join conditions: id = company_type_id
+         │  Output:
+         │    Left:  Empty
+         │    Right: note, movie_id
+         ├──ReadFromMergeTree (job.company_type)
+         │     Read type: Default
+         │     Parts: 1 | Granules: 1
+         │     Output: id
+         │     Prewhere filter
+         │     Prewhere filter column:  kind = \'production companies\'
+         │     Runtime filters: RF1(id, company_type_id from job.movie_companies)
+         └──BuildRuntimeFilter (Build runtime join filter on company_type_id)
+            │  Filter id: RF1
+            │  Source table: job.movie_companies
+            └──ReadFromMergeTree (job.movie_companies)
+                  Read type: Default
+                  Parts: 3 | Granules: 320
+                  Output: note, company_type_id, movie_id
+                  Prewhere filter
+                  Prewhere filter column:  (note LIKE \'%(co-production)%\' OR note LIKE \'%(presents)%\') AND note NOT LIKE \'%(as Metro-Goldwyn-Mayer Pictures)%\'
