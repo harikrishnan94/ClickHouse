@@ -1,0 +1,22 @@
+Output: count()
+
+Aggregating
+│  Keys:
+│  Aggregates: count()
+│  Skip merging: 0
+└──Join (JOIN FillRightFirst)
+   │  a[no_stats~1000] ⋈ b[no_stats~1000]
+   │  Type: inner | Strictness: all | Algorithm: SpillingHashJoin(HashJoin)
+   │  Result rows: 1000
+   │  Join conditions: a = a
+   │  Output:
+   │    Left:  __join_result_dummy
+   │    Right: Empty
+   ├──ReadFromMergeTree (smoke.t)
+   │     Read type: Default
+   │     Parts: 1 | Granules: 1
+   │     Output: a
+   └──ReadFromMergeTree (smoke.t)
+         Read type: Default
+         Parts: 1 | Granules: 1
+         Output: a
