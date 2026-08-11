@@ -129,7 +129,7 @@ constexpr bool shareKeyGetterAcrossBuckets()
 }
 
 /// MapsTemplate is one of MapsOne, MapsAll and MapsAsof
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 class HashJoinMethods
 {
     static constexpr bool needs_offset = JoinFeatures<KIND, STRICTNESS, MapsTemplate>::need_flags;

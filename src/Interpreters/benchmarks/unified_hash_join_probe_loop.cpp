@@ -545,10 +545,10 @@ struct MapTraits<SerialMap>
 };
 
 template <typename Map>
-using BuildKeyGetter = typename KeyGetterForType<MapTraits<Map>::type, Map, /*use_offset=*/false>::Type;
+using BuildKeyGetter = KeyGetterForType<MapTraits<Map>::type, Map, /*use_offset=*/false>::Type;
 
 template <typename Map>
-using ProbeKeyGetter = typename KeyGetterForType<MapTraits<Map>::type, const Map, /*use_offset=*/false>::Type;
+using ProbeKeyGetter = KeyGetterForType<MapTraits<Map>::type, const Map, /*use_offset=*/false>::Type;
 
 struct BuiltMap
 {
@@ -753,7 +753,7 @@ bool resolveUsePrefetch(PrefetchMode mode, size_t map_bytes)
 /// Contiguous row range into the key column: selectorIndexAt returns first + k.
 using RowRangeSelector = std::pair<size_t, size_t>;
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, bool need_filter, typename Map, typename KeyGetter>
+template <JoinKind KIND, JoinStrictness STRICTNESS, bool need_filter, typename Map, typename KeyGetter> // NOLINT(readability-identifier-naming)
 void probeSequentialTwoPhase(
     const Map & map,
     KeyGetter & key_getter,
@@ -869,7 +869,7 @@ struct ProbeSession
     const BuiltMap * built = nullptr;
     const ProbeColumnCache * probe = nullptr;
 
-    template <JoinKind KIND, bool need_filter_v, typename Map>
+    template <JoinKind KIND, bool need_filter_v, typename Map> // NOLINT(readability-identifier-naming)
     void startWorkers();
 
     void stopWorkers()
@@ -902,11 +902,11 @@ struct ProbeSession
     }
 };
 
-template <JoinKind KIND, bool need_filter_v, typename Map>
+template <JoinKind KIND, bool need_filter_v, typename Map> // NOLINT(readability-identifier-naming)
 void ProbeSession::startWorkers()
 {
-    constexpr JoinStrictness STRICTNESS = JoinStrictness::All;
-    using Features = JoinFeatures<KIND, STRICTNESS, HashJoin::MapsAll>;
+    constexpr JoinStrictness strictness = JoinStrictness::All;
+    using Features = JoinFeatures<KIND, strictness, HashJoin::MapsAll>;
 
     const Map & map = [&]() -> const Map &
     {
@@ -953,7 +953,7 @@ void ProbeSession::startWorkers()
 
                         sink.startBlock(rows, need_filter_v || Features::need_filter, Features::need_replication);
 
-                        probeSequentialTwoPhase<KIND, STRICTNESS, need_filter_v>(
+                        probeSequentialTwoPhase<KIND, strictness, need_filter_v>(
                             map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
 
                         benchmark::DoNotOptimize(sink.lazy_output.row_refs.data());
@@ -1021,12 +1021,12 @@ void configureSession(ProbeSession & session, const ProbeParams & p, const Built
     }
 }
 
-template <JoinKind KIND, bool need_filter, typename Map>
+template <JoinKind KIND, bool need_filter, typename Map> // NOLINT(readability-identifier-naming)
 std::pair<std::vector<UInt64>, UInt64>
 digestsProbe(const BuiltMap & built, const ProbeColumnCache & probe, bool include_refs)
 {
-    constexpr JoinStrictness STRICTNESS = JoinStrictness::All;
-    constexpr JoinFeatures<KIND, STRICTNESS, HashJoin::MapsAll> features;
+    constexpr JoinStrictness strictness = JoinStrictness::All;
+    constexpr JoinFeatures<KIND, strictness, HashJoin::MapsAll> features;
 
     const Map & map = [&]() -> const Map &
     {
@@ -1058,7 +1058,7 @@ digestsProbe(const BuiltMap & built, const ProbeColumnCache & probe, bool includ
         const size_t rows = std::min(block_size, probe_rows - begin);
         sink.startBlock(rows, need_filter || features.need_filter, features.need_replication);
 
-        probeSequentialTwoPhase<KIND, STRICTNESS, need_filter>(
+        probeSequentialTwoPhase<KIND, strictness, need_filter>(
             map, key_getter, pool, sink, used_flags, begin, rows, batch_size, use_prefetch);
 
         if (include_refs)
@@ -1084,7 +1084,7 @@ digestsProbe(const BuiltMap & built, const ProbeColumnCache & probe, bool includ
     return {std::move(digests), total_out};
 }
 
-template <JoinKind KIND, bool need_filter>
+template <JoinKind KIND, bool need_filter> // NOLINT(readability-identifier-naming)
 void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
 {
     constexpr JoinFeatures<KIND, JoinStrictness::All, HashJoin::MapsAll> features;

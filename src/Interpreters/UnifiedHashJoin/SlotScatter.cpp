@@ -34,7 +34,7 @@ SlotScatter scatterImpl(
     size_t num_slots,
     bool is_asof)
 {
-    using KeyGetter = typename Traits::KeyGetter;
+    using KeyGetter = Traits::KeyGetter;
 
     /// Bucket selection must use the same hash as insertion; a precomputed hash could disagree with map placement.
     if constexpr (requires { KeyGetter::has_pre_computed_hashes; })
@@ -164,8 +164,10 @@ SlotScatter scatterBlockBySlot(
                 } \
             } \
             else \
+            { \
                 return scatterImpl<SlotScatterTraits<HashJoin::Type::NAME, MapOne>>( \
                     key_columns, key_sizes, selector, num_slots, is_asof); \
+            } \
         }
 
             UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)

@@ -106,7 +106,7 @@ ALWAYS_INLINE auto makeJoinPrefetcher(bool use_prefetch, size_t total, PrefetchA
         use_prefetch, total, std::forward<PrefetchAction>(prefetch_action)};
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     HashJoin & join,
     HashJoin::Type type,
@@ -163,7 +163,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     }
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     const HashJoin & join, Block block, const Block & block_with_columns_to_add, const MapsTemplateVector & maps_)
 {
@@ -171,7 +171,7 @@ JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     return joinBlockImpl(join, std::move(scattered_block), block_with_columns_to_add, maps_);
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     const HashJoin & join,
     ScatteredBlock block,
@@ -251,7 +251,7 @@ JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     return join_result;
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename KeyGetter, bool is_asof_join>
 KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const ColumnRawPtrs & key_columns, const Sizes & key_sizes, HashJoin::RightTableData::KeyRange key_range)
 {
@@ -280,7 +280,7 @@ KeyGetter HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::createKeyGetter(const
     return getter;
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename KeyGetter, bool is_asof_join>
 KeyGetter & HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::blockKeyGetter(
     BlockKeyGetter & block_key_getter, std::optional<KeyGetter> & own, const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
@@ -293,7 +293,7 @@ KeyGetter & HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::blockKeyGetter(
         return own.emplace(create());
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename KeyGetter, typename HashMap, typename Selector>
 void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCase(
     HashJoin & join,
@@ -386,7 +386,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImplTypeCas
     }
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename AddedColumns>
 size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightColumns(
     const std::vector<const MapsTemplate *> & mapv,
@@ -420,7 +420,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::switchJoinRightColumns(
     }
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename KeyGetter, typename Map, typename AddedColumns>
 size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsSwitchNullability(
     std::vector<KeyGetter> && key_getter_vector,
@@ -437,7 +437,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsSwitchNu
             std::forward<std::vector<KeyGetter>>(key_getter_vector), mapv, added_columns, selector, used_flags);
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename KeyGetter, typename Map, bool need_filter, typename AddedColumns>
 size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsSwitchMultipleDisjuncts(
     std::vector<KeyGetter> && key_getter_vector,
@@ -508,8 +508,8 @@ struct PreSelectedRows
   * of every `joinRightColumns` instantiation. Non-ASOF: no Selector (ASOF overload keeps it).
   */
 template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
+    JoinKind KIND, // NOLINT(readability-identifier-naming)
+    JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
     bool need_filter,
     typename MapsTemplate,
     typename AddedColumns>
@@ -525,8 +525,8 @@ NO_INLINE void consumeProbeBatch(
     static_assert(!join_features.is_asof_join);
     static constexpr bool flag_per_row = false; /// the two-phase probe is single-map only
 
-    using Mapped = const typename MapsTemplate::MappedType;
-    using MappedValue = typename MapsTemplate::MappedType;
+    using Mapped = const MapsTemplate::MappedType;
+    using MappedValue = MapsTemplate::MappedType;
     using FindResult = ColumnsHashing::columns_hashing_impl::FindResultImpl<Mapped, join_features.need_flags>;
 
     const UInt64 * const found = outcomes.found;
@@ -550,7 +550,7 @@ NO_INLINE void consumeProbeBatch(
             /// Rebuild mapped on the stack from the recorded word; cell is not touched again.
             const size_t ind = 0;
             MappedValue mapped_value_storage{};
-            Mapped * mapped_ptr;
+            Mapped * mapped_ptr = nullptr;
             if constexpr (probe_mapped_fits_word<MappedValue>)
             {
                 mapped_value_storage = mappedFromWord<MappedValue>(word);
@@ -637,8 +637,8 @@ NO_INLINE void consumeProbeBatch(
 
 /// ASOF consume: needs the selector for the probe row's asof key.
 template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
+    JoinKind KIND, // NOLINT(readability-identifier-naming)
+    JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
     bool need_filter,
     typename MapsTemplate,
     typename AddedColumns,
@@ -656,8 +656,8 @@ NO_INLINE void consumeProbeBatch(
     static_assert(join_features.is_asof_join);
     static constexpr bool flag_per_row = false;
 
-    using Mapped = const typename MapsTemplate::MappedType;
-    using MappedValue = typename MapsTemplate::MappedType;
+    using Mapped = const MapsTemplate::MappedType;
+    using MappedValue = MapsTemplate::MappedType;
     using FindResult = ColumnsHashing::columns_hashing_impl::FindResultImpl<Mapped, join_features.need_flags>;
 
     const UInt64 * const found = outcomes.found;
@@ -681,7 +681,7 @@ NO_INLINE void consumeProbeBatch(
 
             /// ASOF: word is a pointer into the cell (`!probe_mapped_fits_word`).
             MappedValue mapped_value_storage{};
-            Mapped * mapped_ptr;
+            Mapped * mapped_ptr = nullptr;
             if constexpr (probe_mapped_fits_word<MappedValue>)
             {
                 mapped_value_storage = mappedFromWord<MappedValue>(word);
@@ -776,8 +776,8 @@ constexpr bool outputIsProbeOutcomes(const JoinFeaturesT & join_features)
 /** Fused phase 2: words already in `row_refs`; only bookkeeping (prefix sum + used flags).
   */
 template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
+    JoinKind KIND, // NOLINT(readability-identifier-naming)
+    JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
     bool need_filter,
     typename MapsTemplate,
     typename AddedColumns>
@@ -843,7 +843,7 @@ NO_INLINE void lookupBatch(
 }
 
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <
     typename KeyGetter,
     typename Map,
@@ -954,8 +954,8 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
   * Returns rows consumed; caller breaks when `< count`.
   */
 template <
-    JoinKind KIND,
-    JoinStrictness STRICTNESS,
+    JoinKind KIND, // NOLINT(readability-identifier-naming)
+    JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
     bool need_filter,
     typename MapsTemplate,
     typename AddedColumns,
@@ -973,8 +973,8 @@ NO_INLINE size_t emitBatch(
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     static constexpr bool flag_per_row = true; // Always true in multiple maps case
 
-    using Mapped = const typename MapsTemplate::MappedType;
-    using MappedValue = typename MapsTemplate::MappedType;
+    using Mapped = const MapsTemplate::MappedType;
+    using MappedValue = MapsTemplate::MappedType;
     using FindResult = ColumnsHashing::columns_hashing_impl::FindResultImpl<Mapped, join_features.need_flags>;
 
     size_t j = 0;
@@ -993,7 +993,7 @@ NO_INLINE size_t emitBatch(
             const bool is_last_disjunct = (k + 1 == num_clauses);
 
             MappedValue mapped_value_storage{};
-            Mapped * mapped_ptr;
+            Mapped * mapped_ptr = nullptr;
             if constexpr (probe_mapped_fits_word<MappedValue>)
             {
                 mapped_value_storage = mappedFromWord<MappedValue>(word);
@@ -1079,7 +1079,7 @@ NO_INLINE size_t emitBatch(
 
 /// Joins right columns for `right_indexes`; builds filter and ALL replication offsets.
 /// Clause-major: K× `lookupBatch` then `emitBatch` — same keyed bodies as single-clause.
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <
     typename KeyGetter,
     typename Map,
@@ -1362,7 +1362,7 @@ static ColumnPtr buildAdditionalFilter(
   * Store plain offsets, not `FindResult`: a rebuilt `Mapped*` would dangle after return, and
   * later code only needs `getOffset()`. Filled only when `!flag_per_row`.
   */
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate, typename KnownRows>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate, typename KnownRows> // NOLINT(readability-identifier-naming)
 NO_INLINE size_t collectAdditionalFilterBatch(
     const std::vector<ProbeOutcomes> & outcomes,
     size_t num_clauses,
@@ -1375,7 +1375,7 @@ NO_INLINE size_t collectAdditionalFilterBatch(
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
     constexpr bool flag_per_row = std::is_same_v<KnownRows, KnownRowsHolder<true>>;
-    using MappedValue = typename MapsTemplate::MappedType;
+    using MappedValue = MapsTemplate::MappedType;
 
     PreSelectedRows view{selected_rows};
 
@@ -1408,7 +1408,7 @@ NO_INLINE size_t collectAdditionalFilterBatch(
     return j;
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 template <typename KeyGetter, typename Map, typename AddedColumns>
 size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAdditionalFilter(
     std::vector<KeyGetter> && key_getter_vector,
@@ -1674,7 +1674,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
                     {
                         /// Reconstruct `FindResult` from the offset only — `setUsed<need_flags, false>`
                         /// never reads `getMapped()`.
-                        using Mapped = const typename MapsTemplate::MappedType;
+                        using Mapped = const MapsTemplate::MappedType;
                         using FindResult = ColumnsHashing::columns_hashing_impl::FindResultImpl<Mapped, join_features.need_flags>;
                         FindResult find_result(nullptr, true, selected_offsets[find_result_index]);
                         used_flags.template setUsed<join_features.need_flags, false>(find_result);
