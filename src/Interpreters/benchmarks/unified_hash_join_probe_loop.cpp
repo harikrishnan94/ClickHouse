@@ -1,9 +1,6 @@
-/// Microbenchmark: UnifiedHashJoin probe loop (multi-threaded).
-///
-/// Drives the production probe: `lookupBatch` with the consume pass on top, over serial and
-/// two-level maps. `probeSequentialTwoPhase` below reproduces the batch loop of
-/// `HashJoinMethods::joinRightColumns`, which is a class-template member this harness cannot
-/// call directly.
+/// Microbenchmark: UnifiedHashJoin probe (`lookupBatch` + consume) on serial / two-level maps.
+/// `probeSequentialTwoPhase` reproduces `HashJoinMethods::joinRightColumns`'s batch loop
+/// (class-template member this harness cannot call directly).
 ///
 /// Run with:
 ///   ./unified_hash_join_probe_loop --verify
@@ -357,7 +354,7 @@ struct LazySink
     IColumn::Filter filter;
     IColumn::Offsets matched_rows;
     IColumn::Offsets offsets_to_replicate;
-    /// Selects the fused arm of the probe loop, exactly as `AddedColumns` does in production.
+    /// Same fused-arm predicate as production `AddedColumns`.
     bool has_columns_to_add = true;
 
     void appendFromBlock(UInt64 ref_word, bool) { lazy_output.addRef(ref_word); }
@@ -789,10 +786,8 @@ void probeSequentialTwoPhase(
             prefetcher.prefetchAt(k);
     };
 
-    /// The batch loop of `HashJoinMethods::joinRightColumns`, reproduced here because the
-    /// production one is a member of a class template that needs an `AddedColumns` this
-    /// harness does not build. Both arms of the fused/recording split are driven, chosen by
-    /// the same `outputIsProbeOutcomes` predicate the production loop uses.
+    /// Reproduces `joinRightColumns`'s batch loop (needs `AddedColumns` the harness lacks).
+    /// Fused vs recording chosen by `outputIsProbeOutcomes`, as in production.
     constexpr JoinFeatures<KIND, STRICTNESS, HashJoin::MapsAll> join_features;
     const size_t scratch_rows = std::min(rows, batch_size);
 
