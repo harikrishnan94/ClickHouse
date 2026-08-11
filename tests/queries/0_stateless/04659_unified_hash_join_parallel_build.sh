@@ -7,13 +7,12 @@ CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 set -e
 
-# The right side is read by several threads, so `unified_hash` fills its single hash table concurrently.
-# Every query aggregates, because the order in which right blocks are inserted is not deterministic.
+# Concurrent right-side fill into one HT; aggregate so insert order cannot change the answer.
 COMMON=(--enable_analyzer=1 --max_threads=16 --max_block_size=10000)
 
-# Duplicate keys on the right, for ALL strictness.
+# Duplicate right keys (ALL).
 RIGHT_DUP="SELECT number % 200000 AS k, toInt64(number) AS v, toString(number % 200000) AS s FROM numbers_mt(300000)"
-# Unique keys on the right, for ANY/SEMI/ANTI, where a match is picked arbitrarily among duplicates.
+# Unique right keys (ANY/SEMI/ANTI pick among duplicates arbitrarily).
 RIGHT_UNIQ="SELECT number AS k, toInt64(number) * 2 AS v, toString(number) AS s FROM numbers_mt(200000)"
 LEFT="SELECT number % 250000 AS k, toString(number % 250000) AS s FROM numbers_mt(300000)"
 
@@ -68,24 +67,22 @@ run_all_queries
 run_all_queries --max_bytes_before_external_join=100000000
 run_all_queries --max_bytes_before_external_join=8000000
 
-# `unified_hash` derives its bucket count - which is its build-side lock granularity, and the
-# partitioning the rows are routed by - from `max_threads`, so the answer must not depend on it.
-# 1 is the serial case, where routing is skipped entirely; 3 rounds up to a bucket count that does
-# not divide the thread count; 64 gives many more buckets than there are rows per bucket.
+# Bucket count (build lock granularity / routing) comes from `max_threads`; answer must not.
+# 1 = serial; 3 = buckets that do not divide threads; 64 = more buckets than rows/bucket.
 for threads in 1 3 64
 do
     compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_DUP)
         SELECT count(), sum(l.k), sum(r.v) FROM l INNER JOIN r ON l.k = r.k" --max_threads="$threads"
     compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_DUP)
         SELECT count(), sum(l.k), sum(r.v) FROM l FULL JOIN r ON l.k = r.k" --max_threads="$threads"
-    # A string key, so the per-bucket arenas the keys are copied into are exercised too.
+    # String key also exercises per-bucket arenas.
     compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_DUP)
         SELECT count(), sum(r.v) FROM l INNER JOIN r ON l.s = r.s" --max_threads="$threads"
     compare_join_algorithms "WITH l AS ($LEFT), r AS ($RIGHT_UNIQ)
         SELECT count(), sum(l.k) FROM l LEFT SEMI JOIN r ON l.k = r.k" --max_threads="$threads"
 done
 
-# The right side must actually be filled by more than one thread.
+# Right side must be filled by more than one thread.
 count_filling_transforms()
 {
     $CLICKHOUSE_CLIENT --enable_analyzer=1 --max_threads=8 --join_algorithm=unified_hash "$@" -q \
