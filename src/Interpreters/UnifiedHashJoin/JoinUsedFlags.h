@@ -42,7 +42,7 @@ public:
     /// Update size for vector with flags.
     /// Calling this method invalidates existing flags.
     /// It can be called several times, but all of them should happen before using this structure.
-    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
     void reinit(size_t size)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)
@@ -59,7 +59,7 @@ public:
 
     /// Update size for vector with flags same as `reinit` but allows the updated size to be smaller.
     /// Must be called only before using this structure.
-    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
     void reinitAllowShrinking(size_t size)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)
@@ -69,7 +69,7 @@ public:
         }
     }
 
-    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
     void reinit(UInt32 block_no, size_t rows, const ScatteredBlock::Selector & selector)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)

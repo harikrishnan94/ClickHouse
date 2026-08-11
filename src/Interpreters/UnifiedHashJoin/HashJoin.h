@@ -41,7 +41,7 @@ namespace JoinStuff
 class JoinUsedFlags;
 }
 
-template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
 class HashJoinMethods;
 
 /// Bucket count selects the serial one-bucket or parallel 256-bucket map; slots lock the buckets during build.
@@ -732,7 +732,7 @@ private:
     friend class NotJoinedHash;
     friend class DB::JoinSource;
 
-    template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
     friend class HashJoinMethods;
 
     bool addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits);
@@ -850,7 +850,7 @@ private:
     bool rightTableCanBeReranged() const;
     void tryRerangeRightTableData();
 
-    template <JoinKind KIND, typename Map, JoinStrictness STRICTNESS>
+    template <JoinKind KIND, typename Map, JoinStrictness STRICTNESS> // NOLINT(readability-identifier-naming)
     void tryRerangeRightTableDataImpl(Map & map);
 
     bool canConvertToFixedHashMap() const;

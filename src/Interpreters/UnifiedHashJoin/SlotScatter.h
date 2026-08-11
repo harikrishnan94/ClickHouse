@@ -31,11 +31,11 @@ struct SlotScatter
 /// maps, while fixed-range maps must be the clause's actual `MapsOne`/`MapsAll`/`MapsAsof`
 /// table. Routing forwards to the map's own statics, so scatter cannot diverge from the map's
 /// placement by construction.
-template <HashJoin::Type TYPE, typename RepMap>
+template <HashJoin::Type TYPE, typename RepMap> // NOLINT(readability-identifier-naming)
 struct SlotScatterTraits
 {
     using Map = RepMap;
-    using KeyGetter = typename KeyGetterForType<TYPE, RepMap, false>::Type;
+    using KeyGetter = KeyGetterForType<TYPE, RepMap, false>::Type;
 
     template <typename K>
     static size_t hash(const K & key) { return RepMap::hash(key); }
