@@ -15,20 +15,11 @@ namespace DB
 namespace Unified
 {
 
-/** The probe of the single-map `joinRightColumns`, as two independent choices.
-  *
-  * A LOOKUP DRIVER walks a range of rows and hands each row's lookup result to a SINK. The
-  * driver is the swappable part - the ordinary sequential `findKey` below, or later an
-  * out-of-order ring that overlaps the dependent loads of many rows' hash-table walks. The
-  * sink decides what the join does with each result.
-  *
-  * There is one loop, not two, because the sink is what makes the probe fused or two-phase:
-  *   - a sink that emits the match straight away IS the fused probe, and nothing runs after it;
-  *   - a sink that records the outcome hands the batch to a second pass, which lets the
-  *     batch's lookups overlap each other's memory latency instead of each one waiting for the
-  *     previous row's output to be emitted.
-  * Whether that second pass earns its scratch traffic depends on the join kind, so the choice
-  * lives at the call site instead of in a second copy of the loop.
+/** Single-map probe lookup: walk a row range, record each `findKey` outcome, then let a
+  * second pass emit. Recording (rather than emitting inside the loop) lets later rows'
+  * hash-table walks overlap the memory latency of earlier ones; whether that pays for the
+  * scratch traffic is a call-site choice (`lookupBatch` + consume), not a second copy of
+  * this loop.
   */
 
 /// Rows looked up before their matches are processed. Measured flat from 256 to 65536 over a
@@ -78,12 +69,12 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
         return RowRef::fromWord(word);
 }
 
-/** What a recording sink hands to the second pass, indexed by the row's position in the batch.
+/** What the recording pass hands to the emit pass, indexed by the row's position in the batch.
   *
   * `found[j]`:
   *   0         - the row matched nothing. A miss and a row excluded by the skip bytes (a NULL
   *               key or an ON-section condition) are recorded the same way, because the emit
-  *               treats them the same way - so no sink and no second pass carries skip logic.
+  *               treats them the same way - so no second pass carries skip logic.
   *   otherwise - the matched cell's mapped value COPIED BY VALUE when it fits a word, else the
   *               bits of a pointer to the mapped value inside the cell (ASOF's `AsofRowRefs`).
   *               Copying it out in the same visit that reads the cell is what keeps the second
@@ -96,11 +87,11 @@ ALWAYS_INLINE Mapped mappedFromWord(UInt64 word)
   */
 struct ProbeOutcomes
 {
-    /// The sink writes `found[0 .. count)`. This is a raw pointer rather than the array itself
+    /// The lookup writes `found[0 .. count)`. This is a raw pointer rather than the array itself
     /// because for some joins the outcomes ARE the output: a lazy ALL join that adds missing
     /// rows appends exactly one word per probe row to `LazyOutput::row_refs`, and that word is
-    /// the one the sink already has - a match's cell word, or zero, which is what `addDefault`
-    /// appends for a miss. Pointing the sink straight at that array saves writing every word
+    /// the one the lookup already has - a match's cell word, or zero, which is what `addDefault`
+    /// appends for a miss. Pointing the lookup straight at that array saves writing every word
     /// twice. `scratch` is the storage for the joins where that does not hold.
     UInt64 * found = nullptr;
     PODArray<UInt64> offset;
@@ -114,7 +105,7 @@ struct ProbeOutcomes
             offset.resize(rows);
     }
 
-    /// `external` must have room for `rows`, and must not be reallocated while the sink and
+    /// `external` must have room for `rows`, and must not be reallocated while the lookup and
     /// the second pass run over it.
     void useExternal(UInt64 * external, size_t rows, bool need_flags)
     {
@@ -124,84 +115,8 @@ struct ProbeOutcomes
     }
 };
 
-/** The ordinary lookup driver: one `findKey` per row, in row order.
-  *
-  * `prefetch_at` is the probe's look-ahead software prefetch, called with the ABSOLUTE row so
-  * its look-ahead reaches past the end of a batch; a driver that drives its own prefetching
-  * ignores it.
-  *
-  * Every row of `[begin, begin + count)` reaches the sink exactly once, in row order. Both
-  * properties are part of the contract: a recording sink's second pass reads the whole range
-  * and cannot tell an unwritten entry from a miss, and an emitting sink must produce output
-  * rows in row order. A driver that completes lookups out of order must still deliver them to
-  * the sink in order, or only be used with sinks that write by position.
-  *
-  * `fast_path` (skip_data == nullptr) is folded per P4: ONE `run` instantiation dispatches to
-  * two NO_INLINE inner loops, so the single-map probe is no longer instantiated x2 for
-  * skip vs no-skip. The loops stay outlined: ALWAYS_INLINE here doubled the hot `run` body
-  * (both skip and no-skip loops in one I-cache footprint) and regressed String keys ~3%+.
-  */
-struct SequentialLookup
-{
-    template <typename KeyGetter, typename Map, typename Selector, typename PrefetchAt, typename Sink>
-    static void run(
-        KeyGetter & key_getter,
-        const Map & map,
-        const Selector & selector,
-        const UInt8 * skip_data,
-        Arena & pool,
-        size_t begin,
-        size_t count,
-        PrefetchAt && prefetch_at,
-        Sink && sink)
-    {
-        if (skip_data == nullptr)
-            runImpl</*with_skip=*/false>(
-                key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, sink);
-        else
-            runImpl</*with_skip=*/true>(
-                key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, sink);
-    }
-
-    template <bool with_skip, typename KeyGetter, typename Map, typename Selector, typename PrefetchAt, typename Sink>
-    NO_INLINE static void runImpl(
-        KeyGetter & key_getter,
-        const Map & map,
-        const Selector & selector,
-        const UInt8 * skip_data [[maybe_unused]],
-        Arena & pool,
-        size_t begin,
-        size_t count,
-        PrefetchAt && prefetch_at,
-        Sink && sink)
-    {
-        for (size_t j = 0; j < count; ++j)
-        {
-            prefetch_at(begin + j);
-
-            const size_t ind = selectorIndexAt(selector, begin + j);
-
-            if constexpr (with_skip)
-            {
-                if (skip_data[ind])
-                {
-                    sink.miss(j, begin + j);
-                    continue;
-                }
-            }
-
-            sink.result(j, begin + j, ind, key_getter.findKey(map, ind, pool));
-        }
-    }
-};
-
-/** Sink: record the outcome and emit nothing, so a second pass can do the whole emit later.
-  *
-  * The hit/miss test here was also tried as a conditional move rather than a branch, on the
-  * theory that mispredicting it inside the lookup discards the speculation that overlaps the
-  * next rows' misses. It removed exactly one branch from the generated loop and changed
-  * nothing measurable - within +-1% over a 25-cell cardinality x match-rate grid, at every
-  * match rate including the 50% worst case - so the branch stays and the variant is gone.
+/** Record the outcome and emit nothing, so a second pass can do the whole emit later.
+  * Branch preferred over cmov here; the difference was not measurable.
   */
 template <bool need_flags>
 struct RecordOutcomeSink
@@ -229,6 +144,71 @@ struct RecordOutcomeSink
 
         if constexpr (need_flags)
             outcomes.offset[j] = find_result.getOffset();
+    }
+};
+
+/** One `findKey` per row, in row order. Writes every position of `[0, count)` so a miss and an
+  * unwritten entry are never confused, and delivers results in row order for the emit pass.
+  *
+  * `prefetch_at` is the probe's look-ahead software prefetch, called with the ABSOLUTE row so
+  * its look-ahead reaches past the end of a batch.
+  *
+  * `fast_path` (skip_data == nullptr) folds into two NO_INLINE inner loops so the single-map
+  * probe is not instantiated twice for skip vs no-skip. The loops stay outlined: ALWAYS_INLINE
+  * here doubled the hot `run` body and regressed String keys ~3%+.
+  */
+struct SequentialLookup
+{
+    template <bool need_flags, typename KeyGetter, typename Map, typename Selector, typename PrefetchAt>
+    static void run(
+        KeyGetter & key_getter,
+        const Map & map,
+        const Selector & selector,
+        const UInt8 * skip_data,
+        Arena & pool,
+        size_t begin,
+        size_t count,
+        PrefetchAt && prefetch_at,
+        ProbeOutcomes & outcomes)
+    {
+        RecordOutcomeSink<need_flags> sink{outcomes};
+        if (skip_data == nullptr)
+            runImpl</*with_skip=*/false, need_flags>(
+                key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, sink);
+        else
+            runImpl</*with_skip=*/true, need_flags>(
+                key_getter, map, selector, skip_data, pool, begin, count, prefetch_at, sink);
+    }
+
+    template <bool with_skip, bool need_flags, typename KeyGetter, typename Map, typename Selector, typename PrefetchAt>
+    NO_INLINE static void runImpl(
+        KeyGetter & key_getter,
+        const Map & map,
+        const Selector & selector,
+        const UInt8 * skip_data [[maybe_unused]],
+        Arena & pool,
+        size_t begin,
+        size_t count,
+        PrefetchAt && prefetch_at,
+        RecordOutcomeSink<need_flags> & sink)
+    {
+        for (size_t j = 0; j < count; ++j)
+        {
+            prefetch_at(begin + j);
+
+            const size_t ind = selectorIndexAt(selector, begin + j);
+
+            if constexpr (with_skip)
+            {
+                if (skip_data[ind])
+                {
+                    sink.miss(j, begin + j);
+                    continue;
+                }
+            }
+
+            sink.result(j, begin + j, ind, key_getter.findKey(map, ind, pool));
+        }
     }
 };
 

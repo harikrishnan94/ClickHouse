@@ -215,7 +215,7 @@ private:
     /// Joins right table columns which indexes are present in right_indexes using specified map.
     /// Makes filter (1 if row presented in right table) and returns offsets to replicate (for ALL JOINS).
     /// Skip bytes (null-map / ON-section mask) are prepared at runtime when needed; the lookup
-    /// driver folds `skip_data == nullptr` into two inner loops (P4), so this is no longer a
+    /// driver folds `skip_data == nullptr` into two inner loops, so this is no longer a
     /// template axis.
     template <
         typename KeyGetter,
