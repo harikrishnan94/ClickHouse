@@ -733,7 +733,9 @@ ALWAYS_INLINE void consumeProbeBatchImpl(
 }
 
 /// NO_INLINE to keep the body out of every `joinRightColumns` instantiation. Non-ASOF: no
-/// Selector in the keying (ASOF overload below keeps it).
+/// Selector in the keying (ASOF overload below keeps it). Do not collapse the two wrappers into
+/// one entry taking `const Selector *`: non-ASOF callers then materialize a dead `nullptr`
+/// argument at every call site, measured at +3430 `.text` instructions over the join TUs.
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
     JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
