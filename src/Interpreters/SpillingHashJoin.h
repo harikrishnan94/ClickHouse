@@ -138,6 +138,7 @@ private:
 
     void switchToGraceHashJoin();
     void tryConvertSlots();
+    void tryConvertChunks();
 
     LoggerPtr log;
     std::shared_ptr<TableJoin> table_join;
@@ -149,6 +150,7 @@ private:
     bool any_take_last_row;
     size_t max_bytes_before_external_join;
     InMemoryHashJoinKind in_memory_kind;
+    size_t max_threads = 1;
 
     IInMemoryHashJoin & collectingJoin();
     const IInMemoryHashJoin & collectingJoin() const;

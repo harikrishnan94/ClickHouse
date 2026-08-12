@@ -13,6 +13,18 @@ public:
 
     virtual BlocksList releaseJoinedBlocks(bool restructure = false) = 0;
 
+    /// Parallel spill convert: default is a single chunk wrapping `releaseJoinedBlocks(false)`.
+    virtual size_t getNumReleaseChunks() const { return 1; }
+    virtual BlocksList releaseJoinedBlocksChunk(size_t chunk_idx)
+    {
+        if (chunk_idx != 0)
+            return {};
+        return releaseJoinedBlocks(false);
+    }
+
+    /// Drop remaining map/arena storage after a chunked convert has drained all worker lists.
+    virtual void releaseJoinSideStorage() { }
+
     virtual const Block & savedBlockSample() const = 0;
 
     virtual size_t getAndSetRightTableKeys() const = 0;

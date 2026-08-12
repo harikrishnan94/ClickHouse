@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -607,10 +608,21 @@ public:
     using NullmapList = std::deque<NullMapHolder>;
     using StoredBlocksList = std::list<StoredBlock>;
 
+    /// Private to one build thread: that thread alone appends/erases. Shared maps still use
+    /// `bucket_locks`; `stored_columns_index` stays process-wide for global `block_no`.
+    struct WorkerStoredData
+    {
+        StoredBlocksList columns;
+        NullmapList nullmaps;
+        /// Set after this worker's list was rewritten for the current `shrink_blocks` claim.
+        bool shrink_done = false;
+    };
+
     struct RightTableData
     {
-        explicit RightTableData(size_t slots)
+        explicit RightTableData(size_t slots, size_t num_workers)
             : num_slots(slots)
+            , workers(std::max<size_t>(1, num_workers))
         {
             pools.reserve(slots);
             for (size_t i = 0; i < slots; ++i)
@@ -628,8 +640,9 @@ public:
         /// join tab2 on [not_joined(t1.x = t2.x)] and t1.y = t2.y
         std::vector<MapsVariant> maps;
         Block sample_block; /// Block as it would appear in the BlockList
-        StoredBlocksList columns; /// Columns of "right" table.
-        NullmapList nullmaps; /// Nullmaps for blocks of "right" table (if needed)
+
+        /// One entry per build worker (`max_threads`). Not keyed by hash slot.
+        std::vector<WorkerStoredData> workers;
 
         StoredColumnsIndexPtr stored_columns_index = std::make_shared<StoredColumnsIndex>();
 
@@ -683,6 +696,16 @@ public:
                 return 0;
             return rows_to_join.load(std::memory_order_relaxed) / keys;
         }
+
+        bool hasStoredColumns() const
+        {
+            for (const auto & worker : workers)
+            {
+                if (!worker.columns.empty())
+                    return true;
+            }
+            return false;
+        }
     };
 
     /// For INNER/LEFT ALL JOINs, if the right side has no duplicates inside the join key columns,
@@ -704,6 +727,9 @@ public:
 
     RightTableDataPtr getJoinedData() const { return data; }
     BlocksList releaseJoinedBlocks(bool restructure) override;
+    size_t getNumReleaseChunks() const override;
+    BlocksList releaseJoinedBlocksChunk(size_t chunk_idx) override;
+    void releaseJoinSideStorage() override;
 
     /// Modify right block (update structure according to sample block) to save it in block list
     static Block prepareRightBlock(const Block & block, const Block & saved_block_sample_);
@@ -763,11 +789,11 @@ private:
     std::optional<TypeIndex> asof_type;
     const ASOFJoinInequality asof_inequality;
 
-    /// Build threads use `blocks_mutex` for stored-block bookkeeping and `bucket_locks` for inserts.
-    /// A thread holds at most one bucket lock and never holds it with `blocks_mutex`.
-    mutable std::mutex blocks_mutex;
-
+    /// Hash-slot locks for shared map inserts only. Stored-block lists are private per build worker.
     mutable std::vector<BucketLock> bucket_locks;
+
+    /// First `addBlockToJoin` on a thread claims an index in `[0, workers.size())`.
+    mutable std::atomic<size_t> next_worker = 0;
 
     /// Reserve is applied lazily per slot; `slot_space_reserved` is protected by that slot's lock.
     size_t map_size_hint = 0;
@@ -809,8 +835,8 @@ private:
     bool enable_prefetch = true;
 
     /// When tracked memory consumption is more than a threshold, we will shrink to fit stored
-    /// blocks. Set under `blocks_mutex`, but read without it on the per-block path, where a stale
-    /// `false` only means one more block is stored unshrunk before the next one shrinks it.
+    /// blocks. Claimed with CAS; each build thread then rewrites only its private worker list.
+    /// A stale `false` only means one more block is stored unshrunk before the next one shrinks it.
     std::atomic<bool> shrink_blocks = false;
     std::atomic<Int64> memory_usage_before_adding_blocks = 0;
 
@@ -833,8 +859,7 @@ private:
     /// If set HashJoin instance is not available for modification (addBlockToJoin)
     TableLockHolder storage_join_lock = nullptr;
 
-    /// Counterparts of the public accessors for callers that already hold `blocks_mutex`,
-    /// and for the probe path, which must not contend on it.
+    /// Probe / post-build accessors. Totals use atomics; no join-wide blocks mutex.
     size_t getTotalRowCountUnlocked() const;
     size_t getTotalByteCountUnlocked() const;
 
@@ -852,6 +877,9 @@ private:
 
     bool isUsedByAnotherAlgorithm() const;
     bool canRemoveColumnsFromLeftBlock() const;
+
+    size_t claimWorkerId() const;
+    void shrinkWorkerStoredBlocks(WorkerStoredData & worker);
 
     void validateAdditionalFilterExpression(std::shared_ptr<ExpressionActions> additional_filter_expression);
     bool needUsedFlagsForPerRightTableRow(std::shared_ptr<TableJoin> table_join_) const;
