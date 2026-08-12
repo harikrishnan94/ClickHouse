@@ -501,4 +501,15 @@ bool allowParallelHashJoin(
     JoinKind kind,
     bool is_special_storage,
     bool one_disjunct);
+
+/// Kinds for which a multi-bucket / multi-slot hash layout is correct.
+bool parallelHashLayoutKindSupported(JoinKind kind);
+
+/// Size gate shared by ConcurrentHashJoin selection and UHJ map layout:
+/// missing estimate prefers the parallel layout; otherwise compare to the threshold.
+bool preferParallelHashBySize(std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold);
+
+/// UHJ 256-bucket layout: kind must allow parallel maps, and the size gate must prefer parallel.
+/// Unlike `allowParallelHashJoin`, this ignores algorithm list / special storage / multi-OR.
+bool preferUnifiedParallelLayout(JoinKind kind, std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold);
 }

@@ -1068,6 +1068,10 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                         StatsCollectingParams{},
                         /*any_take_last_row_=*/false,
                         in_memory_kind);
+                const bool use_parallel_layout = preferUnifiedParallelLayout(
+                    analyzed_join->kind(),
+                    /*rhs_size_estimation=*/std::nullopt,
+                    /*parallel_hash_join_threshold=*/0);
                 return std::make_shared<SpillingHashJoin>(
                     analyzed_join,
                     std::make_shared<const Block>(std::move(left_sample_block)),
@@ -1078,7 +1082,8 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                     StatsCollectingParams{},
                     /*any_take_last_row_=*/false,
                     in_memory_kind,
-                    settings[Setting::max_threads]);
+                    settings[Setting::max_threads],
+                    use_parallel_layout);
             }
         }
 
@@ -1086,9 +1091,21 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             return std::make_shared<ConcurrentHashJoin>(
                 analyzed_join, settings[Setting::max_threads], right_sample_block, StatsCollectingParams{});
         if (unified)
+        {
+            const bool use_parallel_layout = preferUnifiedParallelLayout(
+                analyzed_join->kind(),
+                /*rhs_size_estimation=*/std::nullopt,
+                /*parallel_hash_join_threshold=*/0);
             return std::make_shared<UnifiedHashJoin>(
-                analyzed_join, right_sample_block, /*any_take_last_row_=*/false, /*reserve_num_=*/0, /*instance_id_=*/"",
-                StatsCollectingParams{}, settings[Setting::max_threads]);
+                analyzed_join,
+                right_sample_block,
+                /*any_take_last_row_=*/false,
+                /*reserve_num_=*/0,
+                /*instance_id_=*/"",
+                StatsCollectingParams{},
+                settings[Setting::max_threads],
+                use_parallel_layout);
+        }
         return std::make_shared<HashJoin>(analyzed_join, right_sample_block);
     }
 

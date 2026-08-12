@@ -1317,11 +1317,25 @@ bool allowParallelHashJoin(
 {
     if (std::ranges::none_of(join_algorithms, [](auto algo) { return algo == JoinAlgorithm::PARALLEL_HASH; }))
         return false;
-    if (kind != JoinKind::Left && kind != JoinKind::Inner
-        && kind != JoinKind::Right && kind != JoinKind::Full)
+    if (!parallelHashLayoutKindSupported(kind))
         return false;
     if (is_special_storage || !one_disjunct)
         return false;
     return true;
+}
+
+bool parallelHashLayoutKindSupported(JoinKind kind)
+{
+    return kind == JoinKind::Left || kind == JoinKind::Inner || kind == JoinKind::Right || kind == JoinKind::Full;
+}
+
+bool preferParallelHashBySize(std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold)
+{
+    return !rhs_size_estimation || *rhs_size_estimation >= parallel_hash_join_threshold;
+}
+
+bool preferUnifiedParallelLayout(JoinKind kind, std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold)
+{
+    return parallelHashLayoutKindSupported(kind) && preferParallelHashBySize(rhs_size_estimation, parallel_hash_join_threshold);
 }
 }

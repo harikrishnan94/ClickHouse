@@ -14,7 +14,8 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
     size_t reserve_num,
     const String & instance_id,
     const StatsCollectingParams & stats_collecting_params,
-    size_t max_threads)
+    size_t max_threads,
+    bool use_parallel_layout)
 {
     switch (kind)
     {
@@ -35,7 +36,8 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
                 reserve_num,
                 instance_id,
                 stats_collecting_params,
-                max_threads);
+                max_threads,
+                use_parallel_layout);
     }
 }
 

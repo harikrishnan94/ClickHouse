@@ -36,7 +36,8 @@ SpillingHashJoin::SpillingHashJoin(
     const StatsCollectingParams & stats_collecting_params_,
     bool any_take_last_row_,
     InMemoryHashJoinKind in_memory_kind_,
-    size_t max_threads_)
+    size_t max_threads_,
+    bool use_parallel_layout_)
     : log(getLogger("SpillingHashJoin"))
     , table_join(std::move(table_join_))
     , left_sample_block(std::move(left_sample_block_))
@@ -56,7 +57,8 @@ SpillingHashJoin::SpillingHashJoin(
         /*reserve_num_=*/0,
         /*instance_id_=*/"",
         stats_collecting_params_,
-        max_threads_);
+        max_threads_,
+        use_parallel_layout_);
     supports_parallel_non_joined_blocks_processing = in_memory_hash_join->supportParallelNonJoinedBlocksProcessing();
 }
 

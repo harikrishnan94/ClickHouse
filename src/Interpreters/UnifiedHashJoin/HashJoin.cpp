@@ -281,7 +281,8 @@ HashJoin::HashJoin(
     size_t reserve_num_,
     const String & instance_id_,
     const StatsCollectingParams & stats_collecting_params_,
-    size_t max_threads_)
+    size_t max_threads_,
+    bool use_parallel_layout_)
     : table_join(table_join_)
     , kind(table_join->kind())
     , strictness(table_join->strictness())
@@ -289,7 +290,8 @@ HashJoin::HashJoin(
     , reserve_num(reserve_num_)
     , instance_id(instance_id_)
     , max_threads(std::max<size_t>(1, max_threads_))
-    , num_slots(slotCountForThreads(max_threads))
+    , use_parallel_layout(use_parallel_layout_)
+    , num_slots(use_parallel_layout ? slotCountForThreads(max_threads) : 1)
     , asof_inequality(table_join->getAsofInequality())
     , data(std::make_shared<RightTableData>(num_slots))
     , right_sample_block(*right_sample_block_)
@@ -414,8 +416,8 @@ HashJoin::HashJoin(
     if (!selected_join_method)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin cannot choose JOIN method without keys");
 
-    /// Serial builds use one-bucket maps; parallel builds use 256-bucket maps.
-    data->type = useTwoLevelMaps(max_threads) ? toTwoLevelType(*selected_join_method) : *selected_join_method;
+    /// Serial layout uses one-bucket maps; parallel layout uses 256-bucket maps (even with one slot).
+    data->type = useTwoLevelMaps(use_parallel_layout) ? toTwoLevelType(*selected_join_method) : *selected_join_method;
 
     LOG_TEST(
         log,

@@ -1220,8 +1220,8 @@ static std::shared_ptr<IJoin> tryCreateJoin(
         {
             if (table_join->allowParallelHashJoin() && !unified)
             {
-                const bool use_parallel_hash = !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH) || !params.rhs_size_estimation
-                    || (*params.rhs_size_estimation >= params.parallel_hash_join_threshold);
+                const bool use_parallel_hash = !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH)
+                    || preferParallelHashBySize(params.rhs_size_estimation, params.parallel_hash_join_threshold);
                 if (use_parallel_hash)
                 {
                     return std::make_shared<SpillingHashJoin>(
@@ -1238,6 +1238,8 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 }
             }
 
+            const bool use_parallel_layout
+                = preferUnifiedParallelLayout(table_join->kind(), params.rhs_size_estimation, params.parallel_hash_join_threshold);
             return std::make_shared<SpillingHashJoin>(
                 table_join,
                 left_table_expression_header,
@@ -1248,13 +1250,14 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 stats_collecting_params,
                 params.join_any_take_last_row,
                 in_memory_kind,
-                params.max_threads);
+                params.max_threads,
+                use_parallel_layout);
         }
 
         if (table_join->allowParallelHashJoin() && !unified)
         {
-            const bool use_parallel_hash = !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH) || !params.rhs_size_estimation
-                || (*params.rhs_size_estimation >= params.parallel_hash_join_threshold);
+            const bool use_parallel_hash = !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH)
+                || preferParallelHashBySize(params.rhs_size_estimation, params.parallel_hash_join_threshold);
             if (use_parallel_hash)
             {
                 return std::make_shared<ConcurrentHashJoin>(
@@ -1268,9 +1271,17 @@ static std::shared_ptr<IJoin> tryCreateJoin(
 
         if (unified)
         {
+            const bool use_parallel_layout
+                = preferUnifiedParallelLayout(table_join->kind(), params.rhs_size_estimation, params.parallel_hash_join_threshold);
             return std::make_shared<UnifiedHashJoin>(
-                table_join, right_table_expression_header, params.join_any_take_last_row, /*reserve_num_=*/0, /*instance_id_=*/"",
-                stats_collecting_params, params.max_threads);
+                table_join,
+                right_table_expression_header,
+                params.join_any_take_last_row,
+                /*reserve_num_=*/0,
+                /*instance_id_=*/"",
+                stats_collecting_params,
+                params.max_threads,
+                use_parallel_layout);
         }
 
         return std::make_shared<HashJoin>(

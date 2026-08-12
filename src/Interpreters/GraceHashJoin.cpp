@@ -737,6 +737,10 @@ IBlocksStreamPtr GraceHashJoin::getDelayedBlocks()
 
 GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bucket_id, size_t reserve_num)
 {
+    /// Inserts are serialized under `hash_join_mutex`. Prefer 256-bucket maps when the kind
+    /// allows them; there is no RHS size estimate at this point.
+    const bool use_parallel_layout
+        = preferUnifiedParallelLayout(table_join->kind(), /*rhs_size_estimation=*/std::nullopt, /*parallel_hash_join_threshold=*/0);
     return createInMemoryHashJoin(
         in_memory_kind,
         table_join,
@@ -745,9 +749,8 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
         reserve_num,
         bucket_id,
         StatsCollectingParams{},
-        /// `addBlockToJoinImpl` inserts under `hash_join_mutex`, so this instance only ever sees one
-        /// thread at a time however many feed the grace join.
-        /*max_threads=*/1);
+        /*max_threads=*/1,
+        use_parallel_layout);
 }
 
 Block GraceHashJoin::prepareRightBlock(const Block & block)

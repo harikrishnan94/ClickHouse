@@ -13,7 +13,7 @@ enum class InMemoryHashJoinKind : uint8_t
     Unified,
 };
 
-/// `max_threads` controls UHJ bucket/lock parallelism; use 1 when the caller serializes inserts.
+/// `max_threads` controls UHJ slot parallelism; `use_parallel_layout` selects 256-bucket vs 1-bucket maps.
 InMemoryHashJoinPtr createInMemoryHashJoin(
     InMemoryHashJoinKind kind,
     const std::shared_ptr<TableJoin> & table_join,
@@ -22,6 +22,6 @@ InMemoryHashJoinPtr createInMemoryHashJoin(
     size_t reserve_num,
     const String & instance_id,
     const StatsCollectingParams & stats_collecting_params,
-    size_t max_threads);
-
+    size_t max_threads,
+    bool use_parallel_layout = true);
 }

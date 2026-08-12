@@ -51,7 +51,7 @@ class ConcurrentHashJoin;
 class SpillingHashJoin final : public IJoin
 {
 public:
-    /// `max_threads_` controls parallelism only for the in-memory UHJ path.
+    /// `max_threads_` / `use_parallel_layout_` control the in-memory UHJ path only.
     SpillingHashJoin(
         std::shared_ptr<TableJoin> table_join_,
         SharedHeader left_sample_block_,
@@ -62,7 +62,8 @@ public:
         const StatsCollectingParams & stats_collecting_params_ = {},
         bool any_take_last_row_ = false,
         InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash,
-        size_t max_threads_ = 1);
+        size_t max_threads_ = 1,
+        bool use_parallel_layout_ = true);
 
     /// Concurrent mode: wraps a ConcurrentHashJoin.
     SpillingHashJoin(

@@ -50,9 +50,9 @@ constexpr Int32 BITS_FOR_BUCKET_TWO_LEVEL = DEFAULT_BITS_FOR_BUCKET;
 
 constexpr size_t NUM_HASH_TABLE_BUCKETS = 1ull << BITS_FOR_BUCKET_TWO_LEVEL;
 
-inline bool useTwoLevelMaps(size_t max_threads)
+inline bool useTwoLevelMaps(bool use_parallel_layout)
 {
-    return max_threads > 1;
+    return use_parallel_layout;
 }
 
 /// Lock/arena slots are a power of two, capped at `NUM_HASH_TABLE_BUCKETS`.
@@ -197,7 +197,8 @@ public:
         size_t reserve_num_ = 0,
         const String & instance_id_ = "",
         const StatsCollectingParams & stats_collecting_params_ = {},
-        size_t max_threads_ = 1);
+        size_t max_threads_ = 1,
+        bool use_parallel_layout_ = true);
 
     ~HashJoin() override;
 
@@ -215,7 +216,14 @@ public:
         SharedHeader right_sample_block_) const override
     {
         return std::make_shared<HashJoin>(
-            table_join_, right_sample_block_, any_take_last_row, reserve_num, instance_id, StatsCollectingParams{}, max_threads);
+            table_join_,
+            right_sample_block_,
+            any_take_last_row,
+            reserve_num,
+            instance_id,
+            StatsCollectingParams{},
+            max_threads,
+            use_parallel_layout);
     }
 
     /** Add block of data from right hand of JOIN to the map.
@@ -749,6 +757,7 @@ private:
     const String instance_id;
 
     const size_t max_threads;
+    const bool use_parallel_layout;
     const size_t num_slots;
 
     std::optional<TypeIndex> asof_type;
