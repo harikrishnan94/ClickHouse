@@ -1,0 +1,14 @@
+
+ Performance counter stats for process id '3520767':
+
+      985151339009      cycles                                                                  (74.95%)
+     1124931453981      instructions                                                            (74.97%)
+      189977296266      branches                                                                (75.00%)
+        1951569265      branch-misses                                                           (75.04%)
+      346220434520      cache-references                                                        (75.04%)
+       11628752448      cache-misses                                                            (75.03%)
+       35039414522      stalled-cycles-frontend                                                 (62.49%)
+      733698421030      stalled-cycles-backend                                                  (62.46%)
+
+      30.013331012 seconds time elapsed
+

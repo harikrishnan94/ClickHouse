@@ -1,0 +1,14 @@
+
+ Performance counter stats for process id '3518936':
+
+      916292572617      cycles                                                                  (75.01%)
+     1241515601925      instructions                                                            (74.99%)
+      209283421268      branches                                                                (74.99%)
+        2365720858      branch-misses                                                           (75.02%)
+      379323036732      cache-references                                                        (75.02%)
+       14489455065      cache-misses                                                            (75.01%)
+       47885596697      stalled-cycles-frontend                                                 (62.50%)
+      627538363829      stalled-cycles-backend                                                  (62.50%)
+
+      30.013927529 seconds time elapsed
+

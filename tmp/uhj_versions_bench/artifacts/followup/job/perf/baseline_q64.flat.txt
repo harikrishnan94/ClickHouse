@@ -1,0 +1,13 @@
+    57.10%  QueryPipelineEx  clickhouse-baseline  [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+     5.83%  QueryPipelineEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int, false, true, false>
+     4.63%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     4.30%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+     2.53%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5ecab4
+     1.90%  QueryPipelineEx  clickhouse-baseline  [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::PODArray<...>, 63ul,
+     1.08%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     1.00%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5e4458
+     0.96%  QueryPipelineEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<16ul, true>(char const*, char*, unsigned long, unsigned long)
+     0.90%  QueryPipelineEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int, false, true, false>
+     0.89%  QueryPipelineEx  clickhouse-baseline  [.] HashTable<...>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, TwoLevelHashT
+     0.88%  QueryPipelineEx  libc.so.6            [.] 0x00000000000a9b24
+     0.82%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::computeHashPair(char const*, unsigned long, unsigned long)

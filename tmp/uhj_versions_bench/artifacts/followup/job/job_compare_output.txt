@@ -1,0 +1,67 @@
+
+===== JOB, variant=default =====
+queries compared: 113  nulls: 0
+geomean baseline=0.07625s  uhj=0.08419s  delta=+10.41%
+outside noise: 36 regressions, 8 improvements; 69 NO_RESULT
+top regressions:
+   q2        17.0ms ->    113.0ms    +564.7%  (band +-5.0%)
+   q4        17.0ms ->    109.0ms    +541.2%  (band +-5.0%)
+   q23       94.0ms ->    493.0ms    +424.5%  (band +-5.0%)
+   q64      115.0ms ->    503.0ms    +337.4%  (band +-5.0%)
+   q68       54.0ms ->    157.0ms    +190.7%  (band +-14.1%)
+   q88       63.0ms ->    163.0ms    +158.7%  (band +-66.7%)
+   q57      115.0ms ->    288.0ms    +150.4%  (band +-5.0%)
+   q90       86.0ms ->    179.0ms    +108.1%  (band +-61.2%)
+   q106     105.0ms ->    190.0ms     +81.0%  (band +-48.8%)
+   q105     110.0ms ->    199.0ms     +80.9%  (band +-5.0%)
+   q89       90.0ms ->    156.0ms     +73.3%  (band +-5.0%)
+   q108     120.0ms ->    199.0ms     +65.8%  (band +-5.0%)
+   q43       35.0ms ->     55.0ms     +57.1%  (band +-15.7%)
+   q22       32.0ms ->     48.0ms     +50.0%  (band +-5.0%)
+   q29      115.0ms ->    163.0ms     +41.7%  (band +-38.4%)
+top improvements:
+   q41      197.0ms ->     50.0ms     -74.6%  (band +-5.0%)
+   q26     1948.0ms ->    679.0ms     -65.1%  (band +-14.4%)
+   q63      154.0ms ->     67.0ms     -56.5%  (band +-5.0%)
+   q7        36.0ms ->     29.0ms     -19.4%  (band +-5.0%)
+   q55       69.0ms ->     59.0ms     -14.5%  (band +-5.0%)
+   q33      115.0ms ->    100.0ms     -13.0%  (band +-5.0%)
+   q65      105.0ms ->     96.0ms      -8.6%  (band +-5.0%)
+   q10      132.0ms ->    125.0ms      -5.3%  (band +-5.0%)
+
+===== JOB, variant=nostats =====
+queries compared: 113  nulls: 0
+geomean baseline=0.08734s  uhj=0.08479s  delta=-2.93%
+outside noise: 6 regressions, 20 improvements; 87 NO_RESULT
+top regressions:
+   q64      395.0ms ->    499.0ms     +26.3%  (band +-5.0%)
+   q23      378.0ms ->    475.0ms     +25.7%  (band +-5.0%)
+   q56      228.0ms ->    258.0ms     +13.2%  (band +-5.0%)
+   q58      255.0ms ->    285.0ms     +11.8%  (band +-5.0%)
+   q57      256.0ms ->    286.0ms     +11.7%  (band +-5.0%)
+   q59      240.0ms ->    266.0ms     +10.8%  (band +-5.0%)
+top improvements:
+   q61      135.0ms ->     96.0ms     -28.9%  (band +-9.1%)
+   q108     225.0ms ->    194.0ms     -13.8%  (band +-5.0%)
+   q106     218.0ms ->    189.0ms     -13.3%  (band +-5.0%)
+   q34      141.0ms ->    123.0ms     -12.8%  (band +-5.0%)
+   q7        32.0ms ->     28.0ms     -12.5%  (band +-5.0%)
+   q2       130.0ms ->    116.0ms     -10.8%  (band +-6.6%)
+   q47      124.0ms ->    111.0ms     -10.5%  (band +-5.0%)
+   q4       125.0ms ->    112.0ms     -10.4%  (band +-6.1%)
+   q14       75.0ms ->     69.0ms      -8.0%  (band +-5.0%)
+   q112      65.0ms ->     60.0ms      -7.7%  (band +-5.0%)
+
+[baseline/default] queries whose HOT runs are >1.5x SLOWER than the cold run (plan-flip signature): 1
+   q26   cold    853.0ms  hot   1948.0ms  x2.3
+
+[baseline/nostats] no hot-slower-than-cold plan-flip signature
+
+[uhj/default] no hot-slower-than-cold plan-flip signature
+
+[uhj/nostats] no hot-slower-than-cold plan-flip signature
+
+===== verdict =====
+delta with statistics ON  (as benchmarked): +10.41%
+delta with statistics OFF (same plan both) : -2.93%
+=> regression does NOT survive: it was a plan/statistics artifact.

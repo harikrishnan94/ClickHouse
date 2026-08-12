@@ -148,8 +148,9 @@ The two headline outliers in `artifacts/SUMMARY.md` are measurement artifacts:
   166k-row build side that uhj never sees.
 
 Since q8 drives the TPC-H geomean, the `−18%` TPC-H figure does not survive either. The JOB
-`+11%` regression is unaffected by this mechanism (JOB shows no cold/warm plan flip) and
-remains the one standing result from the original run.
+`+11%` regression was re-tested separately and does not survive either — see
+`JOB_REGRESSION.md`: at equal plans uhj is 2.9% faster on JOB, with a genuine but much
+smaller regression left on 7 of 113 queries.
 
 Any future A/B against a `parallel_hash`-containing default must either set
 `collect_hash_table_stats_during_joins=0` on both arms, or wire `unified_hash` into

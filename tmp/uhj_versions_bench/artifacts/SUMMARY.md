@@ -1,12 +1,16 @@
 # uhj-parity vs merge-base — ClickBench versions (TPC-H / TPC-DS / JOB / Coffeeshop)
 
-> **Superseded in part — read `FOLLOWUP.md` first.** The `tpch/q8` and `tpcds/q54`
-> outliers below are not join-algorithm effects. Both arms re-plan differently on warm
-> runs because the hash-table-statistics cache is only wired up when `parallel_hash` is in
-> `join_algorithm`, so the baseline arm changes its join order after run 1 and the uhj arm
-> never does. With `collect_hash_table_stats_during_joins=0` the two engines agree on both
-> queries. The TPC-H `−18%` geomean is driven by q8 and does not survive; the JOB `+11%`
-> regression is unaffected and still stands.
+> **Superseded — read `FOLLOWUP.md` and `JOB_REGRESSION.md` first.** Every headline number
+> below is confounded. Both arms re-plan differently on warm runs because the
+> hash-table-statistics cache is only wired up when `parallel_hash` is in `join_algorithm`,
+> so the baseline arm changes its join order after run 1 and the uhj arm never does. With
+> `collect_hash_table_stats_during_joins=0` on both arms:
+>
+> - tpch `−18%` — does not survive (driven by q8, a baseline plan flip to a 1.2B-row build).
+> - tpcds q54 `+7330%` — not a uhj regression (baseline plan flip to a 166k-row build).
+> - job `+11%` — **also does not survive**; at equal plans uhj is 2.9% *faster* on JOB.
+>   A genuine but much smaller regression remains on 7 of 113 JOB queries
+>   (+11% to +26%, all with 23M+ row build sides), offset by 20 genuine improvements.
 
 ## Verdict
 

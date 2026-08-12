@@ -1,0 +1,36 @@
+arm=baseline q64 join_algorithm=direct,parallel_hash,hash
+  warm1: 3.091s
+  warm2: 0.431s
+  warm3: 0.402s
+sampling 40s while looping the query (server pid 3513576)
+=== baseline q64 hotspots ===
+    57.10%  QueryPipelineEx  clickhouse-baseline  [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+     5.83%  QueryPipelineEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int, false, true, false>
+     4.63%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     4.30%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+     2.53%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5ecab4
+     1.90%  QueryPipelineEx  clickhouse-baseline  [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::PODArray<...>, 63ul,
+     1.08%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     1.00%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5e4458
+     0.96%  QueryPipelineEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<16ul, true>(char const*, char*, unsigned long, unsigned long)
+     0.90%  QueryPipelineEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int, false, true, false>
+     0.89%  QueryPipelineEx  clickhouse-baseline  [.] HashTable<...>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, TwoLevelHashT
+     0.88%  QueryPipelineEx  libc.so.6            [.] 0x00000000000a9b24
+     0.82%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::computeHashPair(char const*, unsigned long, unsigned long)
+JOBPERF_DONE baseline q64
+arm=uhj q64 join_algorithm=unified_hash
+  warm1: 0.554s
+  warm2: 0.506s
+  warm3: 0.498s
+sampling 40s while looping the query (server pid 3515822)
+=== uhj q64 hotspots ===
+    65.85%  QueryPipelineEx  clickhouse-uhj     [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+     4.97%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int, false, false
+     3.69%  QueryPipelineEx  clickhouse-uhj     [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     3.35%  QueryPipelineEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+     2.60%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5ecab4
+     1.81%  QueryPipelineEx  clickhouse-uhj     [.] DB::Unified::scatterBlockBySlot(DB::Unified::HashJoin::Type, DB::Unified::MapsKind, std::__1::vector<...> > const&, st
+     1.04%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5e4458
+     0.92%  QueryPipelineEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     0.86%  QueryPipelineEx  clickhouse-uhj     [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::PODArray<...>, 63ul, 6
+JOBPERF_DONE uhj q64
