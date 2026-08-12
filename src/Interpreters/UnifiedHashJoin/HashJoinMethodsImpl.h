@@ -548,6 +548,120 @@ struct PreSelectedRows
     PODArray<UInt64> & container;
 };
 
+/// Rebuilds a mapped view from a recorded outcome word without touching the cell:
+/// by value into `storage` when the mapped fits a word, else by pointer into the cell (ASOF).
+template <typename MappedValue>
+ALWAYS_INLINE const MappedValue * mappedFromOutcomeWord(UInt64 word, MappedValue & storage)
+{
+    if constexpr (probe_mapped_fits_word<MappedValue>)
+    {
+        storage = mappedFromWord<MappedValue>(word);
+        return &storage;
+    }
+    else
+    {
+        return reinterpret_cast<const MappedValue *>(word); /// NOLINT(performance-no-int-to-ptr)
+    }
+}
+
+/// One default/miss row: ANTI LEFT marks the filter; the replication offset follows at the caller.
+template <bool anti_left, bool add_missing, bool need_replication, bool need_filter, typename AddedColumns>
+ALWAYS_INLINE void addMissRow(AddedColumns & added_columns, size_t row, IColumn::Offset & current_offset)
+{
+    if constexpr (anti_left)
+        setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+    addNotFoundRow<add_missing, need_replication>(added_columns, current_offset);
+}
+
+/** The per-match KIND × STRICTNESS ladder shared by the single-clause consume and the
+  * clause-major emit. Call-site differences arrive as parameters: `flag_per_row` (single-map
+  * probe = false, multi-clause emit = true), `known_rows` (dummy when no per-row limit exists),
+  * `is_last_disjunct` (true for a single clause), `ind` (probe row for ASOF, 0 otherwise).
+  */
+template <
+    JoinKind KIND, // NOLINT(readability-identifier-naming)
+    JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
+    bool need_filter,
+    bool flag_per_row,
+    typename MapsTemplate,
+    typename FindResult,
+    typename AddedColumns,
+    typename KnownRows>
+ALWAYS_INLINE void matchFoundRow(
+    FindResult & find_result,
+    AddedColumns & added_columns,
+    JoinStuff::JoinUsedFlags & used_flags,
+    size_t row,
+    size_t ind,
+    IColumn::Offset & current_offset,
+    KnownRows & known_rows,
+    bool is_last_disjunct)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    using MappedValue = MapsTemplate::MappedType;
+    auto & mapped = find_result.getMapped();
+
+    if constexpr (join_features.is_asof_join)
+    {
+        const IColumn & left_asof_key = added_columns.leftAsofKey();
+        const auto * row_ref = mapped->findAsof(left_asof_key, ind);
+        if (row_ref)
+        {
+            setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+            added_columns.appendFromBlock(row_ref->encode(), join_features.add_missing);
+        }
+        else
+        {
+            addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
+        }
+    }
+    else if constexpr (join_features.is_all_join)
+    {
+        setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+        used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
+        /// `setUsed` already marked the list; `addFoundRowAll` must not `setUsedOnce` again.
+        addFoundRowAll<MappedValue, join_features.add_missing>(
+            mapped, added_columns, current_offset, known_rows, nullptr, is_last_disjunct);
+    }
+    else if constexpr ((join_features.is_any_join || join_features.is_semi_join) && join_features.right)
+    {
+        /// Use first appeared left key + it needs left columns replication
+        bool used_once = used_flags.template setUsedOnce<join_features.need_flags, flag_per_row>(find_result);
+        if (used_once)
+        {
+            auto used_flags_opt = join_features.need_flags ? &used_flags : nullptr;
+            setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+            addFoundRowAll<MappedValue, join_features.add_missing>(
+                mapped, added_columns, current_offset, known_rows, used_flags_opt, is_last_disjunct);
+        }
+    }
+    else if constexpr (join_features.is_any_join && join_features.inner)
+    {
+        /// Use first appeared left key only
+        bool used_once = used_flags.template setUsedOnce<join_features.need_flags, flag_per_row>(find_result);
+        if (used_once)
+        {
+            setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+            added_columns.appendFromBlock(firstRefWord(mapped), join_features.add_missing);
+        }
+    }
+    else if constexpr (join_features.is_any_join && join_features.full)
+    {
+        /// TODO
+    }
+    else if constexpr (join_features.is_anti_join)
+    {
+        if constexpr (join_features.right && join_features.need_flags)
+            used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
+    }
+    else /// ANY LEFT, SEMI LEFT, old ANY (RightAny)
+    {
+        setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
+        used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
+        added_columns.appendFromBlock(firstRefWord(mapped), join_features.add_missing);
+    }
+}
+
 /** Emit from recorded `ProbeOutcomes` (no HT / skip re-check; skips already recorded as misses).
   * Keyed on Mapped, not Map/KeyGetter, so emit is not ×32 key types.
   * `selector` is non-null only for ASOF, which needs the probe row's asof key.
@@ -599,85 +713,19 @@ ALWAYS_INLINE void consumeProbeBatchImpl(
 
             /// Rebuild mapped on the stack from the recorded word; cell is not touched again.
             MappedValue mapped_value_storage{};
-            Mapped * mapped_ptr = nullptr;
-            if constexpr (probe_mapped_fits_word<MappedValue>)
-            {
-                mapped_value_storage = mappedFromWord<MappedValue>(word);
-                mapped_ptr = &mapped_value_storage;
-            }
-            else
-            {
-                mapped_ptr = reinterpret_cast<Mapped *>(word); /// NOLINT(performance-no-int-to-ptr)
-            }
+            Mapped * mapped_ptr = mappedFromOutcomeWord<MappedValue>(word, mapped_value_storage);
             FindResult find_result(mapped_ptr, true, offset);
-            auto & mapped = find_result.getMapped();
 
-            if constexpr (join_features.is_asof_join)
-            {
-                const IColumn & left_asof_key = added_columns.leftAsofKey();
-                const auto * row_ref = mapped->findAsof(left_asof_key, ind);
-                if (row_ref)
-                {
-                    setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-                    added_columns.appendFromBlock(row_ref->encode(), join_features.add_missing);
-                }
-                else
-                {
-                    addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
-                }
-            }
-            else if constexpr (join_features.is_all_join)
-            {
-                setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-                used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
-                /// `setUsed` already marked the list; `addFoundRowAll` must not `setUsedOnce` again.
-                addFoundRowAll<MappedValue, join_features.add_missing>(mapped, added_columns, current_offset, dummy_known_rows, nullptr, /*is_last_disjunct=*/true);
-            }
-            else if constexpr ((join_features.is_any_join || join_features.is_semi_join) && join_features.right)
-            {
-                /// Use first appeared left key + it needs left columns replication
-                bool used_once = used_flags.template setUsedOnce<join_features.need_flags, flag_per_row>(find_result);
-                if (used_once)
-                {
-                    auto used_flags_opt = join_features.need_flags ? &used_flags : nullptr;
-                    setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-                    addFoundRowAll<MappedValue, join_features.add_missing>(mapped, added_columns, current_offset, dummy_known_rows, used_flags_opt, /*is_last_disjunct=*/true);
-                }
-            }
-            else if constexpr (join_features.is_any_join && join_features.inner)
-            {
-                bool used_once = used_flags.template setUsedOnce<join_features.need_flags, flag_per_row>(find_result);
-
-                /// Use first appeared left key only
-                if (used_once)
-                {
-                    setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-                    added_columns.appendFromBlock(firstRefWord(mapped), join_features.add_missing);
-                }
-            }
-            else if constexpr (join_features.is_any_join && join_features.full)
-            {
-                /// TODO
-            }
-            else if constexpr (join_features.is_anti_join)
-            {
-                if constexpr (join_features.right && join_features.need_flags)
-                    used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
-            }
-            else /// ANY LEFT, SEMI LEFT, old ANY (RightAny)
-            {
-                setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-                used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
-                added_columns.appendFromBlock(firstRefWord(mapped), join_features.add_missing);
-            }
+            matchFoundRow<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
+                find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows, /*is_last_disjunct=*/true);
         }
 
         if (!right_row_found)
-        {
-            if constexpr (join_features.is_anti_join && join_features.left)
-                setUsed<need_filter>(added_columns.filter, i, added_columns.matched_rows);
-            addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
-        }
+            addMissRow<
+                join_features.is_anti_join && join_features.left,
+                join_features.add_missing,
+                join_features.need_replication,
+                need_filter>(added_columns, i, current_offset);
 
         if constexpr (join_features.need_replication)
             added_columns.offsets_to_replicate[i] = current_offset;
@@ -942,83 +990,20 @@ NO_INLINE size_t emitBatch(
             const bool is_last_disjunct = (k + 1 == num_clauses);
 
             MappedValue mapped_value_storage{};
-            Mapped * mapped_ptr = nullptr;
-            if constexpr (probe_mapped_fits_word<MappedValue>)
-            {
-                mapped_value_storage = mappedFromWord<MappedValue>(word);
-                mapped_ptr = &mapped_value_storage;
-            }
-            else
-            {
-                mapped_ptr = reinterpret_cast<Mapped *>(word); /// NOLINT(performance-no-int-to-ptr)
-            }
+            Mapped * mapped_ptr = mappedFromOutcomeWord<MappedValue>(word, mapped_value_storage);
             FindResult find_result(mapped_ptr, true, /*off=*/0);
-            auto & mapped = find_result.getMapped();
 
             /// `is_last_disjunct` is the multi-clause difference from single-clause sites.
-            const size_t ind = 0;
-            if constexpr (join_features.is_asof_join)
-            {
-                const IColumn & left_asof_key = added_columns.leftAsofKey();
-                const auto * row_ref = mapped->findAsof(left_asof_key, ind);
-                if (row_ref)
-                {
-                    setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-                    added_columns.appendFromBlock(row_ref->encode(), join_features.add_missing);
-                }
-                else
-                {
-                    addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
-                }
-            }
-            else if constexpr (join_features.is_all_join)
-            {
-                setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-                used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
-                addFoundRowAll<MappedValue, join_features.add_missing>(mapped, added_columns, current_offset, known_rows, nullptr, is_last_disjunct);
-            }
-            else if constexpr ((join_features.is_any_join || join_features.is_semi_join) && join_features.right)
-            {
-                bool used_once = used_flags.template setUsedOnce<join_features.need_flags, flag_per_row>(find_result);
-                if (used_once)
-                {
-                    auto used_flags_opt = join_features.need_flags ? &used_flags : nullptr;
-                    setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-                    addFoundRowAll<MappedValue, join_features.add_missing>(mapped, added_columns, current_offset, known_rows, used_flags_opt, is_last_disjunct);
-                }
-            }
-            else if constexpr (join_features.is_any_join && join_features.inner)
-            {
-                bool used_once = used_flags.template setUsedOnce<join_features.need_flags, flag_per_row>(find_result);
-                if (used_once)
-                {
-                    setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-                    added_columns.appendFromBlock(firstRefWord(mapped), join_features.add_missing);
-                }
-            }
-            else if constexpr (join_features.is_any_join && join_features.full)
-            {
-                /// TODO
-            }
-            else if constexpr (join_features.is_anti_join)
-            {
-                if constexpr (join_features.right && join_features.need_flags)
-                    used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
-            }
-            else /// ANY LEFT, SEMI LEFT, old ANY (RightAny)
-            {
-                setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-                used_flags.template setUsed<join_features.need_flags, flag_per_row>(find_result);
-                added_columns.appendFromBlock(firstRefWord(mapped), join_features.add_missing);
-            }
+            matchFoundRow<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
+                find_result, added_columns, used_flags, row, /*ind=*/0, current_offset, known_rows, is_last_disjunct);
         }
 
         if (!right_row_found)
-        {
-            if constexpr (join_features.is_anti_join && join_features.left)
-                setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-            addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
-        }
+            addMissRow<
+                join_features.is_anti_join && join_features.left,
+                join_features.add_missing,
+                join_features.need_replication,
+                need_filter>(added_columns, row, current_offset);
 
         if constexpr (join_features.need_replication)
             added_columns.offsets_to_replicate.push_back(current_offset);
