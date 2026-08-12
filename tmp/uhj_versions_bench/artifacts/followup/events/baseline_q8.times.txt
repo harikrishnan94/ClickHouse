@@ -1,0 +1,6 @@
+run1 9.238 query_id=baseline_q8_run1
+run2 357.409 query_id=baseline_q8_run2
+run3 353.320 query_id=baseline_q8_run3
+run4 353.702 query_id=baseline_q8_run4
+run5 354.364 query_id=baseline_q8_run5
+run6 353.143 query_id=baseline_q8_run6

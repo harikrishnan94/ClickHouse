@@ -1,0 +1,180 @@
+server up pid=3332650 cgroup=0::/uhj_versions_bench/run max_threads=16 join_algorithm=direct,parallel_hash,hash
+=== baseline q8: EXPLAIN PLAN ===
+=== baseline q8: 6 timed runs (1 cold + 5 hot) ===
+run1 9.238 query_id=baseline_q8_run1
+run2 357.409 query_id=baseline_q8_run2
+run3 353.320 query_id=baseline_q8_run3
+run4 353.702 query_id=baseline_q8_run4
+run5 354.364 query_id=baseline_q8_run5
+run6 353.143 query_id=baseline_q8_run6
+=== baseline q8: per-run ProfileEvents ===
+Row 1:
+──────
+query_id: baseline_q8_run1
+sec:      9.246
+mem:      1.94 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9583, RuntimeFilterBlocksSkipped=10115, RuntimeFilterRowsChecked=240608923, RuntimeFilterRowsPassed=1996539, RuntimeFilterRowsSkipped=258446508
+
+Row 2:
+──────
+query_id: baseline_q8_run2
+sec:      357.857
+mem:      12.10 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1081, RuntimeFilterBlocksSkipped=9514, RuntimeFilterRowsChecked=33691586, RuntimeFilterRowsPassed=15656246, RuntimeFilterRowsSkipped=232206156
+
+Row 3:
+──────
+query_id: baseline_q8_run3
+sec:      353.78
+mem:      12.25 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1087, RuntimeFilterBlocksSkipped=9508, RuntimeFilterRowsChecked=33699942, RuntimeFilterRowsPassed=12267038, RuntimeFilterRowsSkipped=232197800
+
+Row 4:
+──────
+query_id: baseline_q8_run4
+sec:      354.168
+mem:      12.23 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1091, RuntimeFilterBlocksSkipped=9504, RuntimeFilterRowsChecked=33730960, RuntimeFilterRowsPassed=12298056, RuntimeFilterRowsSkipped=232166782
+
+Row 5:
+──────
+query_id: baseline_q8_run5
+sec:      354.83
+mem:      12.24 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1084, RuntimeFilterBlocksSkipped=9511, RuntimeFilterRowsChecked=33710072, RuntimeFilterRowsPassed=12277168, RuntimeFilterRowsSkipped=232187670
+
+Row 6:
+──────
+query_id: baseline_q8_run6
+sec:      353.609
+mem:      12.25 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1089, RuntimeFilterBlocksSkipped=9506, RuntimeFilterRowsChecked=33638380, RuntimeFilterRowsPassed=12205476, RuntimeFilterRowsSkipped=232259362
+=== baseline q8: perf record (pid 3332650, 25s) ===
+[ perf record: Woken up 4 times to write data ]
+[ perf record: Captured and wrote 3.073 MB /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/repro/baseline_q8.perf.data (8339 samples) ]
+--- top hotspots ---
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'armv8_pmuv3_0/cycles/P'
+# Event count (approx.): 83837756551
+#
+# Overhead  Command          Shared Object        Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  ...................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    33.16%  QueryPipelineEx  clickhouse-baseline  [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+            |          
+             --32.77%--insert (inlined)
+                       |          
+                        --32.48%--insertAll (inlined)
+                                  insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodOneNumber<PairNoInit<unsigned int, DB::RowRefList>, DB::RowRefList, unsigned int, false, true, false>, HashMapTable<unsigned int, HashMapCell<unsigned int, DB::RowRefList, HashCRC32<unsigned int>, HashTableNoState, PairNoInit<unsigned int, DB::RowRefList> >, HashCRC32<unsigned int>, HashTableGrowerWithPrecalculation<8UL>, Allocator<true, true> >, std::__1::pair<unsigned long, unsigned long> > (inlined)
+                                  insertFromBlockImpl (inlined)
+                                  operator()<std::__1::integral_constant<DB::JoinKind, (DB::JoinKind)0>, std::__1::integral_constant<DB::JoinStrictness, (DB::JoinStrictness)3>, DB::HashJoin::MapsTemplate<DB::RowRefList> > (inlined)
+                                  operator()<std::__1::integral_constant<int, 8> > (inlined)
+                                  func_wrapper<(lambda at src/Interpreters/joinDispatch.h:105:62) &, std::__1::integral_constant<int, 8> > (inlined)
+                                  static_for_impl<int, 0, (lambda at src/Interpreters/joinDispatch.h:105:62), 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23> (inlined)
+                                  static_for<0, 24, (lambda at src/Interpreters/joinDispatch.h:105:62)> (inlined)
+                                  joinDispatch<std::__1::variant<DB::HashJoin::MapsTemplate<DB::RowRef>, DB::HashJoin::MapsTemplate<DB::RowRefList>, DB::HashJoin::MapsTemplate<std::__1::unique_ptr<DB::SortedLookupVectorBase, std::__1::default_delete<DB::SortedLookupVectorBase> > > >, (lambda at src/Interpreters/HashJoin/HashJoin.cpp:800:17)> (inlined)
+                                  addBlockToJoin (inlined)
+                                  index (inlined)
+                                  valueless_by_exception (inlined)
+                                  __destroy (inlined)
+                                  ~__dtor (inlined)
+                                  ~variant (inlined)
+                                  ~Selector (inlined)
+                                  addBlockToJoin (inlined)
+                                  |          
+                                  |--17.23%--operator-> (inlined)
+                                  |          addBlockToJoinImpl (inlined)
+=== baseline q54: EXPLAIN PLAN ===
+=== baseline q54: 6 timed runs (1 cold + 5 hot) ===
+run1 30.998 query_id=baseline_q54_run1
+run2 0.412 query_id=baseline_q54_run2
+run3 0.472 query_id=baseline_q54_run3
+run4 0.386 query_id=baseline_q54_run4
+run5 0.378 query_id=baseline_q54_run5
+run6 0.378 query_id=baseline_q54_run6
+=== baseline q54: per-run ProfileEvents ===
+Row 1:
+──────
+query_id: baseline_q54_run1
+sec:      31.042
+mem:      11.60 GiB
+events:   JoinBuildTableRowCount=91971348, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=672, RuntimeFilterBlocksSkipped=9104, RuntimeFilterRowsChecked=15707483, RuntimeFilterRowsPassed=6321621, RuntimeFilterRowsSkipped=187095464
+
+Row 2:
+──────
+query_id: baseline_q54_run2
+sec:      0.413
+mem:      49.77 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13274, RuntimeFilterBlocksSkipped=8160, RuntimeFilterRowsChecked=171191507, RuntimeFilterRowsPassed=70786010, RuntimeFilterRowsSkipped=105472514
+
+Row 3:
+──────
+query_id: baseline_q54_run3
+sec:      0.473
+mem:      33.76 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13284, RuntimeFilterBlocksSkipped=8150, RuntimeFilterRowsChecked=171195241, RuntimeFilterRowsPassed=70789639, RuntimeFilterRowsSkipped=105467983
+
+Row 4:
+──────
+query_id: baseline_q54_run4
+sec:      0.387
+mem:      37.65 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13282, RuntimeFilterBlocksSkipped=8152, RuntimeFilterRowsChecked=171177845, RuntimeFilterRowsPassed=70772277, RuntimeFilterRowsSkipped=105486313
+
+Row 5:
+──────
+query_id: baseline_q54_run5
+sec:      0.379
+mem:      37.67 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13289, RuntimeFilterBlocksSkipped=8145, RuntimeFilterRowsChecked=171195621, RuntimeFilterRowsPassed=70790060, RuntimeFilterRowsSkipped=105472346
+
+Row 6:
+──────
+query_id: baseline_q54_run6
+sec:      0.379
+mem:      41.78 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13290, RuntimeFilterBlocksSkipped=8144, RuntimeFilterRowsChecked=171221867, RuntimeFilterRowsPassed=70816334, RuntimeFilterRowsSkipped=105443300
+=== baseline q54: perf record (pid 3332650, 25s) ===
+[ perf record: Woken up 1 times to write data ]
+[ perf record: Captured and wrote 1.459 MB /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/repro/baseline_q54.perf.data (1266 samples) ]
+--- top hotspots ---
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'armv8_pmuv3_0/cycles/P'
+# Event count (approx.): 857897159
+#
+# Overhead  Command          Shared Object        Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  ...................  .............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    15.79%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6c3bc424
+            |
+            ---0xffffb5cd6c3bc424
+               |          
+               |--7.82%--0xffffb5cd6c3bca5c
+               |          |          
+               |          |--6.18%--0xffffb5cd6c3bcb38
+               |          |          0xffffb5cd6c3bcc0c
+               |          |          0xffffb5cd6b2cba10
+               |          |          0xffffb5cd6b2cbf00
+               |          |          0xffffb5cd6b382398
+               |          |          0xffffb5cd6b27d878
+               |          |          0xffffb5cd6b27dbfc
+               |          |          0xffffb5cd6ac46ca8
+               |          |          0xffffb5cd6ac46d7c
+               |          |          0xffffb5cd6ac46ea0
+               |          |          0xffffb5cd6c5e4460
+               |          |          0xffffb5cd6c5e4c90
+               |          |          0xffffb5cd6abf1e98
+               |          |          0xfd87a81b5aec
+               |          |          0xfd87a81a8490
+               |          |          readImpl (inlined)
+               |          |          nextImpl (inlined)
+               |          |          next (inlined)
+REPRO_DONE baseline

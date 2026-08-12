@@ -1,0 +1,47 @@
+### q8 join_algorithm=parallel_hash,hash
+    run1 9.084s
+    run2 358.673s
+    PLAN: DIFFERS cold vs warm (87 lines)
+    cold order: (tpch.supplier) (tpch.nation) (tpch.nation) (tpch.region) (tpch.lineitem) (tpch.part) (tpch.orders) (tpch.customer) 
+    warm order: (tpch.customer) (tpch.orders) (tpch.part) (tpch.lineitem) (tpch.supplier) (tpch.nation) (tpch.nation) (tpch.region) 
+       ┌─query_id───────────────────────┬─────sec─┬─build_rows─┬─rf_checked─┬─rf_blocks─┐
+    1. │ ctl_q8_parallel_hash+hash_run1 │   9.094 │   25916097 │  240674459 │      9584 │
+    2. │ ctl_q8_parallel_hash+hash_run2 │ 359.125 │ 1212609641 │   33708979 │      1079 │
+       └────────────────────────────────┴─────────┴────────────┴────────────┴───────────┘
+### q8 join_algorithm=hash
+    run1 10.311s
+    run2 1.532s
+    run3 1.525s
+    PLAN: identical cold vs warm
+    cold order: (tpch.supplier) (tpch.nation) (tpch.nation) (tpch.region) (tpch.lineitem) (tpch.part) (tpch.orders) (tpch.customer) 
+    warm order: (tpch.supplier) (tpch.nation) (tpch.nation) (tpch.region) (tpch.lineitem) (tpch.part) (tpch.orders) (tpch.customer) 
+       ┌─query_id─────────┬────sec─┬─build_rows─┬─rf_checked─┬─rf_blocks─┐
+    1. │ ctl_q8_hash_run1 │ 10.318 │   25916097 │  240608923 │      9583 │
+    2. │ ctl_q8_hash_run2 │  1.541 │   25916097 │  241854107 │      9618 │
+    3. │ ctl_q8_hash_run3 │  1.533 │   25916097 │  241854107 │      9618 │
+       └──────────────────┴────────┴────────────┴────────────┴───────────┘
+### q54 join_algorithm=parallel_hash,hash
+    run1 32.040s
+    run2 0.515s
+    run3 0.389s
+    PLAN: DIFFERS cold vs warm (41 lines)
+    cold order: (tpcds.store_returns) (tpcds.date_dim) (tpcds.store_sales) (tpcds.store) (tpcds.date_dim) 
+    warm order: (tpcds.store_sales) (tpcds.store_returns) (tpcds.date_dim) (tpcds.store) (tpcds.date_dim) 
+       ┌─query_id────────────────────────┬────sec─┬─build_rows─┬─rf_checked─┬─rf_blocks─┐
+    1. │ ctl_q54_parallel_hash+hash_run1 │ 32.083 │   91965216 │   15700931 │       683 │
+    2. │ ctl_q54_parallel_hash+hash_run2 │  0.517 │     166051 │  171186763 │     13288 │
+    3. │ ctl_q54_parallel_hash+hash_run3 │   0.39 │     166051 │  171190595 │     13291 │
+       └─────────────────────────────────┴────────┴────────────┴────────────┴───────────┘
+### q54 join_algorithm=hash
+    run1 38.745s
+    run2 36.339s
+    run3 37.009s
+    PLAN: identical cold vs warm
+    cold order: (tpcds.store_returns) (tpcds.date_dim) (tpcds.store_sales) (tpcds.store) (tpcds.date_dim) 
+    warm order: (tpcds.store_returns) (tpcds.date_dim) (tpcds.store_sales) (tpcds.store) (tpcds.date_dim) 
+       ┌─query_id──────────┬────sec─┬─build_rows─┬─rf_checked─┬─rf_blocks─┐
+    1. │ ctl_q54_hash_run1 │ 38.773 │   91976969 │   15797588 │       675 │
+    2. │ ctl_q54_hash_run2 │ 36.368 │   91989147 │   15807249 │       675 │
+    3. │ ctl_q54_hash_run3 │ 37.038 │   91987630 │   15826555 │       676 │
+       └───────────────────┴────────┴────────────┴────────────┴───────────┘
+CONTROL_DONE

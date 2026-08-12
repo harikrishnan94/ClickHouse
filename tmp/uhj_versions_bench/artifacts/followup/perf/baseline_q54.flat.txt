@@ -1,0 +1,12 @@
+    15.79%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6c3bc424
+     9.66%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6c3bc400
+     5.55%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6c3bc418
+     3.24%  AsyncMetrics     clickhouse-baseline  [.] DB::IMergeTreeDataPart::getIndexGranularityBytes() const
+     2.82%  AsyncMetrics     clickhouse-baseline  [.] DB::MergeTreeData::getMaxPartsCountAndSizeForPartitionWithState(DB::MergeTreeDataPartState) const
+     2.75%  MergeMutate      clickhouse-baseline  [.] DB::ColumnTuple::ColumnTuple(std::__1::vector<COW<DB::IColumn>::mutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::mutable_
+     1.66%  ThreadPool       [vdso]               [.] 0x000000000000055c
+     1.63%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6b162aac
+     1.63%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6b2cc4c0
+     1.62%  AsyncMetrics     clickhouse-baseline  [.] DB::IMergeTreeDataPart::getIndexSizeInAllocatedBytes() const
+     1.62%  AsyncMetrics     clickhouse-baseline  [.] arena_stats_merge
+     1.62%  AsyncMetrics     libc.so.6            [.] 0x00000000000aa4f8

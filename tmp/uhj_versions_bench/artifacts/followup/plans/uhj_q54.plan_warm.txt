@@ -1,0 +1,39 @@
+Output: s_store_name, s_company_id, s_street_number, s_street_name, s_street_type, s_suite_number, s_city, s_county, s_state, s_zip, countIf(sr_returned_date_sk − ss_sold_date_sk <= 30), countIf(sr_returned_date_sk − ss_sold_date_sk > 30 AND sr_returned_date_sk − ss_sold_date_sk <= 60), countIf(sr_returned_date_sk − ss_sold_date_sk > 60 AND sr_returned_date_sk − ss_sold_date_sk <= 90), countIf(sr_returned_date_sk − ss_sold_date_sk > 90 AND sr_returned_date_sk − ss_sold_date_sk <= 120), countIf(sr_returned_date_sk − ss_sold_date_sk > 120)
+
+Expression (Project names)
+└──Limit (preliminary LIMIT)
+   └──Sorting (Sorting for ORDER BY)
+      └──Expression ((Before ORDER BY + Projection))
+         └──Aggregating
+            └──Expression
+               └──Join (JOIN FillRightFirst)
+                  ├──Expression (Left Pre Join Actions)
+                  │  └──Expression
+                  │     └──Join (JOIN FillRightFirst)
+                  │        ├──Expression
+                  │        │  └──Join (JOIN FillRightFirst)
+                  │        │     ├──Expression (Left Pre Join Actions)
+                  │        │     │  └──Expression
+                  │        │     │     └──Join (JOIN FillRightFirst)
+                  │        │     │        ├──Expression
+                  │        │     │        │  └──ReadFromMergeTree (tpcds.store_returns)
+                  │        │     │        └──Expression (Right Pre Join Actions)
+                  │        │     │           └──BuildRuntimeFilter (Build runtime join filter on d_date_sk)
+                  │        │     │              └──Expression ((WHERE + Change column names to column identifiers))
+                  │        │     │                 └──ReadFromMergeTree (tpcds.date_dim)
+                  │        │     └──Expression
+                  │        │        └──BuildRuntimeFilter (Build runtime join filter on ss_customer_sk)
+                  │        │           └──Expression
+                  │        │              └──BuildRuntimeFilter (Build runtime join filter on ss_item_sk)
+                  │        │                 └──Expression
+                  │        │                    └──BuildRuntimeFilter (Build runtime join filter on ss_ticket_number)
+                  │        │                       └──Expression
+                  │        │                          └──ReadFromMergeTree (tpcds.store_sales)
+                  │        └──Expression (Right Pre Join Actions)
+                  │           └──BuildRuntimeFilter (Build runtime join filter on s_store_sk)
+                  │              └──Expression (Change column names to column identifiers)
+                  │                 └──ReadFromMergeTree (tpcds.store)
+                  └──Expression (Right Pre Join Actions)
+                     └──BuildRuntimeFilter (Build runtime join filter on d_date_sk)
+                        └──Expression (Change column names to column identifiers)
+                           └──ReadFromMergeTree (tpcds.date_dim)

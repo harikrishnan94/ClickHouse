@@ -1,0 +1,87 @@
+--- /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/warmstate/baseline_q8.plan_cold.txt	2026-08-12 11:22:40.067470975 +0530
++++ /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/warmstate/baseline_q8.plan_warm.txt	2026-08-12 11:34:40.687453823 +0530
+@@ -8,42 +8,46 @@
+             └──Join (JOIN FillRightFirst)
+                ├──Expression (Left Pre Join Actions)
+                │  └──Expression
+-               │     └──Join (JOIN FillRightFirst)
+-               │        ├──Expression
+-               │        │  └──Join (JOIN FillRightFirst)
+-               │        │     ├──Expression
+-               │        │     │  └──Join (JOIN FillRightFirst)
+-               │        │     │     ├──Expression
+-               │        │     │     │  └──Join (JOIN FillRightFirst)
+-               │        │     │     │     ├──Expression
+-               │        │     │     │     │  └──Join (JOIN FillRightFirst)
+-               │        │     │     │     │     ├──Expression
+-               │        │     │     │     │     │  └──ReadFromMergeTree (tpch.supplier)
+-               │        │     │     │     │     └──Expression (Right Pre Join Actions)
+-               │        │     │     │     │        └──BuildRuntimeFilter (Build runtime join filter on n_nationkey)
+-               │        │     │     │     │           └──Expression (Change column names to column identifiers)
+-               │        │     │     │     │              └──ReadFromMergeTree (tpch.nation)
+-               │        │     │     │     └──Expression
+-               │        │     │     │        └──Join (JOIN FillRightFirst)
+-               │        │     │     │           ├──Expression
+-               │        │     │     │           │  └──ReadFromMergeTree (tpch.nation)
+-               │        │     │     │           └──Expression (Right Pre Join Actions)
+-               │        │     │     │              └──Expression ((WHERE + Change column names to column identifiers))
+-               │        │     │     │                 └──ReadFromMergeTree (tpch.region)
+-               │        │     │     └──Expression
+-               │        │     │        └──BuildRuntimeFilter (Build runtime join filter on l_suppkey)
+-               │        │     │           └──Expression
+-               │        │     │              └──ReadFromMergeTree (tpch.lineitem)
+-               │        │     └──Expression (Right Pre Join Actions)
+-               │        │        └──BuildRuntimeFilter (Build runtime join filter on p_partkey)
+-               │        │           └──Expression ((WHERE + Change column names to column identifiers))
+-               │        │              └──ReadFromMergeTree (tpch.part)
+-               │        └──Expression
+-               │           └──BuildRuntimeFilter (Build runtime join filter on o_orderkey)
+-               │              └──Expression
+-               │                 └──ReadFromMergeTree (tpch.orders)
++               │     └──ReadFromMergeTree (tpch.customer)
+                └──Expression (Right Pre Join Actions)
+-                  └──BuildRuntimeFilter (Build runtime join filter on c_nationkey)
+-                     └──BuildRuntimeFilter (Build runtime join filter on c_custkey)
+-                        └──Expression (Change column names to column identifiers)
+-                           └──ReadFromMergeTree (tpch.customer)
++                  └──BuildRuntimeFilter (Build runtime join filter on n_nationkey)
++                     └──BuildRuntimeFilter (Build runtime join filter on o_custkey)
++                        └──Expression (Post Join Actions)
++                           └──Join (JOIN FillRightFirst)
++                              ├──Expression (Left Pre Join Actions)
++                              │  └──Expression
++                              │     └──ReadFromMergeTree (tpch.orders)
++                              └──Expression (Right Pre Join Actions)
++                                 └──BuildRuntimeFilter (Build runtime join filter on l_orderkey)
++                                    └──Expression (Post Join Actions)
++                                       └──Join (JOIN FillRightFirst)
++                                          ├──Expression (Left Pre Join Actions)
++                                          │  └──Expression
++                                          │     └──ReadFromMergeTree (tpch.part)
++                                          └──Expression (Right Pre Join Actions)
++                                             └──BuildRuntimeFilter (Build runtime join filter on l_partkey)
++                                                └──Expression (Post Join Actions)
++                                                   └──Join (JOIN FillRightFirst)
++                                                      ├──Expression (Left Pre Join Actions)
++                                                      │  └──Expression
++                                                      │     └──ReadFromMergeTree (tpch.lineitem)
++                                                      └──Expression (Right Pre Join Actions)
++                                                         └──BuildRuntimeFilter (Build runtime join filter on s_suppkey)
++                                                            └──Expression (Post Join Actions)
++                                                               └──Join (JOIN FillRightFirst)
++                                                                  ├──Expression
++                                                                  │  └──Join (JOIN FillRightFirst)
++                                                                  │     ├──Expression (Left Pre Join Actions)
++                                                                  │     │  └──Expression
++                                                                  │     │     └──ReadFromMergeTree (tpch.supplier)
++                                                                  │     └──Expression (Right Pre Join Actions)
++                                                                  │        └──BuildRuntimeFilter (Build runtime join filter on n_nationkey)
++                                                                  │           └──Expression (Change column names to column identifiers)
++                                                                  │              └──ReadFromMergeTree (tpch.nation)
++                                                                  └──Expression
++                                                                     └──Join (JOIN FillRightFirst)
++                                                                        ├──Expression
++                                                                        │  └──ReadFromMergeTree (tpch.nation)
++                                                                        └──Expression (Right Pre Join Actions)
++                                                                           └──Expression ((WHERE + Change column names to column identifiers))
++                                                                              └──ReadFromMergeTree (tpch.region)

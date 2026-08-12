@@ -1,0 +1,72 @@
+server up join_algorithm=direct,parallel_hash,hash max_threads=16
+--- baseline/q8: default settings, fresh stats cache ---
+  run1(default) 9.466
+  run2(default) 357.026
+  run3(default) 352.962
+  PLAN: DIFFERS cold vs warm (87 diff lines) -> /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/warmstate/baseline_q8.plan_diff.txt
+  cold join order: ReadFromMergeTree (tpch.supplier) ReadFromMergeTree (tpch.nation) ReadFromMergeTree (tpch.nation) ReadFromMergeTree (tpch.region) ReadFromMergeTree (tpch.lineitem) ReadFromMergeTree (tpch.part) ReadFromMergeTree (tpch.orders) ReadFromMergeTree (tpch.customer) 
+  warm join order: ReadFromMergeTree (tpch.customer) ReadFromMergeTree (tpch.orders) ReadFromMergeTree (tpch.part) ReadFromMergeTree (tpch.lineitem) ReadFromMergeTree (tpch.supplier) ReadFromMergeTree (tpch.nation) ReadFromMergeTree (tpch.nation) ReadFromMergeTree (tpch.region) 
+--- baseline/q8: collect_hash_table_stats_during_joins=0 ---
+  run1(nostats) 0.898
+  run2(nostats) 0.735
+--- baseline/q8: join_runtime_filter_size_from_hash_table_stats=0 ---
+  run1(norfstats) 353.527
+  run2(norfstats) 353.247
+--- baseline/q8: enable_join_runtime_filters=0 ---
+  run1(norf) 350.472
+  run2(norf) 350.979
+    ┌─query_id───────────────┬─────sec─┬─mem───────┬─rf_created─┬─rf_checked─┬─rf_passed─┬─rf_blk_skipped─┬─prealloc─┬──sel_rows─┬─sel_marks─┐
+ 1. │ baseline_q8_run1       │   9.246 │ 1.94 GiB  │          6 │  240608923 │   1996539 │          10115 │        0 │ 272643171 │     36836 │
+ 2. │ baseline_q8_run2       │ 357.857 │ 12.10 GiB │          6 │   33691586 │  15656246 │           9514 │        0 │ 272643171 │     36836 │
+ 3. │ baseline_q8_run3       │  353.78 │ 12.25 GiB │          6 │   33699942 │  12267038 │           9508 │  4265664 │ 272643171 │     36836 │
+ 4. │ baseline_q8_run4       │ 354.168 │ 12.23 GiB │          6 │   33730960 │  12298056 │           9504 │  4265664 │ 272643171 │     36836 │
+ 5. │ baseline_q8_run5       │  354.83 │ 12.24 GiB │          6 │   33710072 │  12277168 │           9511 │  4265664 │ 272643171 │     36836 │
+ 6. │ baseline_q8_run6       │ 353.609 │ 12.25 GiB │          6 │   33638380 │  12205476 │           9506 │  4265664 │ 272643171 │     36836 │
+ 7. │ baseline_q8_def1       │   9.572 │ 1.94 GiB  │          6 │  240739995 │   2127611 │          10113 │        0 │ 272643171 │     36836 │
+ 8. │ baseline_q8_def2       │  357.02 │ 12.11 GiB │          6 │   33692819 │  15657479 │           9520 │        0 │ 272643171 │     36836 │
+ 9. │ baseline_q8_def3       │ 353.478 │ 12.25 GiB │          6 │   33691546 │  12258642 │           9508 │  4265664 │ 272643171 │     36836 │
+10. │ baseline_q8_def1       │   9.474 │ 1.94 GiB  │          6 │  240543387 │   1931003 │          10116 │        0 │ 272643171 │     36836 │
+11. │ baseline_q8_def2       │ 357.466 │ 12.09 GiB │          6 │   33689807 │  15654467 │           9517 │        0 │ 272643171 │     36836 │
+12. │ baseline_q8_def3       │ 353.412 │ 12.24 GiB │          6 │   33687800 │  12254896 │           9506 │  4265664 │ 272643171 │     36836 │
+13. │ baseline_q8_nostats1   │   0.908 │ 1.92 GiB  │          6 │  240805531 │   2193147 │          10112 │        0 │ 272643171 │     36836 │
+14. │ baseline_q8_nostats2   │   0.744 │ 1.92 GiB  │          6 │  240805531 │   2193147 │          10112 │        0 │ 272643171 │     36836 │
+15. │ baseline_q8_norfstats1 │ 353.985 │ 12.24 GiB │          6 │   33698823 │  15663483 │           9510 │  4265664 │ 272643171 │     36836 │
+16. │ baseline_q8_norfstats2 │ 353.706 │ 12.25 GiB │          6 │   33687572 │  15652232 │           9507 │  4265664 │ 272643171 │     36836 │
+17. │ baseline_q8_norf1      │ 350.933 │ 12.23 GiB │          0 │          0 │         0 │              0 │  4265664 │ 272643171 │     36836 │
+18. │ baseline_q8_norf2      │ 351.439 │ 12.22 GiB │          0 │          0 │         0 │              0 │  4265664 │ 272643171 │     36836 │
+    └────────────────────────┴─────────┴───────────┴────────────┴────────────┴───────────┴────────────────┴──────────┴───────────┴───────────┘
+server up join_algorithm=direct,parallel_hash,hash max_threads=16
+--- baseline/q54: default settings, fresh stats cache ---
+  run1(default) 31.188
+  run2(default) 0.562
+  run3(default) 0.381
+  PLAN: DIFFERS cold vs warm (41 diff lines) -> /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/warmstate/baseline_q54.plan_diff.txt
+  cold join order: ReadFromMergeTree (tpcds.store_returns) ReadFromMergeTree (tpcds.date_dim) ReadFromMergeTree (tpcds.store_sales) ReadFromMergeTree (tpcds.store) ReadFromMergeTree (tpcds.date_dim) 
+  warm join order: ReadFromMergeTree (tpcds.store_sales) ReadFromMergeTree (tpcds.store_returns) ReadFromMergeTree (tpcds.date_dim) ReadFromMergeTree (tpcds.store) ReadFromMergeTree (tpcds.date_dim) 
+--- baseline/q54: collect_hash_table_stats_during_joins=0 ---
+  run1(nostats) 31.386
+  run2(nostats) 30.990
+--- baseline/q54: join_runtime_filter_size_from_hash_table_stats=0 ---
+  run1(norfstats) 0.387
+  run2(norfstats) 0.403
+--- baseline/q54: enable_join_runtime_filters=0 ---
+  run1(norf) 0.390
+  run2(norf) 0.375
+    ┌─query_id────────────────┬────sec─┬─mem───────┬─rf_created─┬─rf_checked─┬─rf_passed─┬─rf_blk_skipped─┬─prealloc─┬──sel_rows─┬─sel_marks─┐
+ 1. │ baseline_q54_run1       │ 31.042 │ 11.60 GiB │          6 │   15707483 │   6321621 │           9104 │        0 │ 101523115 │     12397 │
+ 2. │ baseline_q54_run2       │  0.413 │ 49.77 MiB │          6 │  171191507 │  70786010 │           8160 │        0 │ 101523115 │     12397 │
+ 3. │ baseline_q54_run3       │  0.473 │ 33.76 MiB │          6 │  171195241 │  70789639 │           8150 │        0 │ 101523115 │     12397 │
+ 4. │ baseline_q54_run4       │  0.387 │ 37.65 MiB │          6 │  171177845 │  70772277 │           8152 │        0 │ 101523115 │     12397 │
+ 5. │ baseline_q54_run5       │  0.379 │ 37.67 MiB │          6 │  171195621 │  70790060 │           8145 │        0 │ 101523115 │     12397 │
+ 6. │ baseline_q54_run6       │  0.379 │ 41.78 MiB │          6 │  171221867 │  70816334 │           8144 │        0 │ 101523115 │     12397 │
+ 7. │ baseline_q54_def1       │  31.23 │ 11.59 GiB │          6 │   15773976 │   6387252 │           9105 │        0 │ 101523115 │     12397 │
+ 8. │ baseline_q54_def2       │  0.564 │ 54.85 MiB │          6 │  171176153 │  70770621 │           8156 │        0 │ 101523115 │     12397 │
+ 9. │ baseline_q54_def3       │  0.382 │ 50.31 MiB │          6 │  171208399 │  70802727 │           8147 │        0 │ 101523115 │     12397 │
+10. │ baseline_q54_nostats1   │ 31.429 │ 11.58 GiB │          6 │   15779840 │   6391441 │           9101 │        0 │ 101523115 │     12397 │
+11. │ baseline_q54_nostats2   │ 31.033 │ 11.58 GiB │          6 │   15757057 │   6372199 │           9115 │        0 │ 101523115 │     12397 │
+12. │ baseline_q54_norfstats1 │  0.388 │ 41.07 MiB │          6 │  171178745 │  70773226 │           8145 │        0 │ 101523115 │     12397 │
+13. │ baseline_q54_norfstats2 │  0.404 │ 34.30 MiB │          6 │  171186270 │  70780594 │           8150 │        0 │ 101523115 │     12397 │
+14. │ baseline_q54_norf1      │  0.391 │ 56.07 MiB │          0 │          0 │         0 │              0 │        0 │ 101523115 │     12397 │
+15. │ baseline_q54_norf2      │  0.376 │ 64.29 MiB │          0 │          0 │         0 │              0 │        0 │ 101523115 │     12397 │
+    └─────────────────────────┴────────┴───────────┴────────────┴────────────┴───────────┴────────────────┴──────────┴───────────┴───────────┘
+WARMSTATE_DONE baseline

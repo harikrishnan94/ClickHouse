@@ -1,0 +1,6 @@
+run1 30.998 query_id=baseline_q54_run1
+run2 0.412 query_id=baseline_q54_run2
+run3 0.472 query_id=baseline_q54_run3
+run4 0.386 query_id=baseline_q54_run4
+run5 0.378 query_id=baseline_q54_run5
+run6 0.378 query_id=baseline_q54_run6

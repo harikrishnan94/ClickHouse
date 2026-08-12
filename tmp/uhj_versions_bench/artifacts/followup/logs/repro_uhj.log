@@ -1,0 +1,92 @@
+server up pid=3359476 cgroup=0::/uhj_versions_bench/run max_threads=16 join_algorithm=unified_hash
+=== uhj q8: EXPLAIN PLAN ===
+=== uhj q8: 6 timed runs (1 cold + 5 hot) ===
+run1 9.265 query_id=uhj_q8_run1
+run2 0.762 query_id=uhj_q8_run2
+run3 0.889 query_id=uhj_q8_run3
+run4 0.721 query_id=uhj_q8_run4
+run5 0.747 query_id=uhj_q8_run5
+run6 0.738 query_id=uhj_q8_run6
+=== uhj q8: per-run ProfileEvents ===
+Row 1:
+──────
+query_id: uhj_q8_run1
+sec:      9.27
+mem:      1.72 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9581, RuntimeFilterBlocksSkipped=10117, RuntimeFilterRowsChecked=240477851, RuntimeFilterRowsPassed=1865467, RuntimeFilterRowsSkipped=258577580
+
+Row 2:
+──────
+query_id: uhj_q8_run2
+sec:      0.767
+mem:      1.69 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=24453056, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9618, RuntimeFilterBlocksSkipped=10080, RuntimeFilterRowsChecked=241854107, RuntimeFilterRowsPassed=3241723, RuntimeFilterRowsSkipped=257201324
+
+Row 3:
+──────
+query_id: uhj_q8_run3
+sec:      0.894
+mem:      1.72 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=24453056, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9618, RuntimeFilterBlocksSkipped=10080, RuntimeFilterRowsChecked=241854107, RuntimeFilterRowsPassed=3241723, RuntimeFilterRowsSkipped=257201324
+
+Row 4:
+──────
+query_id: uhj_q8_run4
+sec:      0.726
+mem:      1.71 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=24453056, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9618, RuntimeFilterBlocksSkipped=10080, RuntimeFilterRowsChecked=241854107, RuntimeFilterRowsPassed=3241723, RuntimeFilterRowsSkipped=257201324
+
+Row 5:
+──────
+query_id: uhj_q8_run5
+sec:      0.752
+mem:      1.69 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=24453056, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9618, RuntimeFilterBlocksSkipped=10080, RuntimeFilterRowsChecked=241854107, RuntimeFilterRowsPassed=3241723, RuntimeFilterRowsSkipped=257201324
+
+Row 6:
+──────
+query_id: uhj_q8_run6
+sec:      0.743
+mem:      1.69 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=24453056, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9617, RuntimeFilterBlocksSkipped=10081, RuntimeFilterRowsChecked=241788571, RuntimeFilterRowsPassed=3176187, RuntimeFilterRowsSkipped=257266860
+=== uhj q8: perf record (pid 3359476, 25s) ===
+[ perf record: Woken up 1 times to write data ]
+[ perf record: Captured and wrote 1.402 MB /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/repro/uhj_q8.perf.data (1335 samples) ]
+--- top hotspots ---
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'armv8_pmuv3_0/cycles/P'
+# Event count (approx.): 1476756537
+#
+# Overhead  Command         Shared Object      Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ..............  .................  ..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    18.94%  clickhouse-uhj  [kernel.kallsyms]  [k] 0xffffb5cd6c5f944c
+            |
+            ---0xffffb5cd6c5f944c
+               |          
+               |--11.58%--0xffffb5cd6b1e3f40
+               |          0xffffb5cd6b1819b0
+               |          0xffffb5cd6b182b80
+               |          0xffffb5cd6b1dffb0
+               |          0xffffb5cd6b1e0054
+               |          0xffffb5cd6ac46ca8
+               |          0xffffb5cd6ac46d7c
+               |          0xffffb5cd6ac46ea0
+               |          0xffffb5cd6c5e4460
+               |          0xffffb5cd6c5e4c90
+               |          0xffffb5cd6abf1e98
+               |          __madvise
+               |          edata_zeroed_set (inlined)
+               |          extent_dalloc_wrapper
+               |          pac_decay_stashed (inlined)
+               |          pac_decay_to_limit
+               |          pac_decay_try_purge (inlined)
+               |          pac_maybe_decay_purge
+               |          arena_decay_impl (inlined)
+               |          arena_decay_dirty (inlined)
+=== uhj q54: EXPLAIN PLAN ===
+=== uhj q54: 6 timed runs (1 cold + 5 hot) ===

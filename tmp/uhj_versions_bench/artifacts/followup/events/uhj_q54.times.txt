@@ -1,0 +1,6 @@
+run1 29.842 query_id=uhj_q54_run1
+run2 29.395 query_id=uhj_q54_run2
+run3 28.280 query_id=uhj_q54_run3
+run4 28.996 query_id=uhj_q54_run4
+run5 29.384 query_id=uhj_q54_run5
+run6 28.914 query_id=uhj_q54_run6

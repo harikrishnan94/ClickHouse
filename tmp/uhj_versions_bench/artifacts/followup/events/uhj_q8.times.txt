@@ -1,0 +1,6 @@
+run1 9.265 query_id=uhj_q8_run1
+run2 0.762 query_id=uhj_q8_run2
+run3 0.889 query_id=uhj_q8_run3
+run4 0.721 query_id=uhj_q8_run4
+run5 0.747 query_id=uhj_q8_run5
+run6 0.738 query_id=uhj_q8_run6

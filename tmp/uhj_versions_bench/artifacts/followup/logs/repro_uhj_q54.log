@@ -1,0 +1,91 @@
+server up pid=3364064 cgroup=0::/uhj_versions_bench/run max_threads=16 join_algorithm=unified_hash
+=== uhj q54: EXPLAIN PLAN ===
+=== uhj q54: 6 timed runs (1 cold + 5 hot) ===
+run1 29.842 query_id=uhj_q54_run1
+run2 29.395 query_id=uhj_q54_run2
+run3 28.280 query_id=uhj_q54_run3
+run4 28.996 query_id=uhj_q54_run4
+run5 29.384 query_id=uhj_q54_run5
+run6 28.914 query_id=uhj_q54_run6
+=== uhj q54: per-run ProfileEvents ===
+Row 1:
+──────
+query_id: uhj_q54_run1
+sec:      29.872
+mem:      9.75 GiB
+events:   JoinBuildTableRowCount=91969267, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, HashJoinPreallocatedElementsInHashTables=78030313, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=674, RuntimeFilterBlocksSkipped=9110, RuntimeFilterRowsChecked=15720161, RuntimeFilterRowsPassed=6332218, RuntimeFilterRowsSkipped=187082573
+
+Row 2:
+──────
+query_id: uhj_q54_run2
+sec:      29.424
+mem:      9.74 GiB
+events:   JoinBuildTableRowCount=91973481, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, HashJoinPreallocatedElementsInHashTables=78103474, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=675, RuntimeFilterBlocksSkipped=9109, RuntimeFilterRowsChecked=15761763, RuntimeFilterRowsPassed=6378034, RuntimeFilterRowsSkipped=187041431
+
+Row 3:
+──────
+query_id: uhj_q54_run3
+sec:      28.309
+mem:      9.74 GiB
+events:   JoinBuildTableRowCount=91971776, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, HashJoinPreallocatedElementsInHashTables=78101332, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=676, RuntimeFilterBlocksSkipped=9116, RuntimeFilterRowsChecked=15739307, RuntimeFilterRowsPassed=6353873, RuntimeFilterRowsSkipped=187064060
+
+Row 4:
+──────
+query_id: uhj_q54_run4
+sec:      29.026
+mem:      9.73 GiB
+events:   JoinBuildTableRowCount=91969845, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, HashJoinPreallocatedElementsInHashTables=78097605, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=676, RuntimeFilterBlocksSkipped=9116, RuntimeFilterRowsChecked=15770297, RuntimeFilterRowsPassed=6382932, RuntimeFilterRowsSkipped=187032993
+
+Row 5:
+──────
+query_id: uhj_q54_run5
+sec:      29.414
+mem:      9.73 GiB
+events:   JoinBuildTableRowCount=91971874, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, HashJoinPreallocatedElementsInHashTables=78099304, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=674, RuntimeFilterBlocksSkipped=9118, RuntimeFilterRowsChecked=15773059, RuntimeFilterRowsPassed=6387723, RuntimeFilterRowsSkipped=187030393
+
+Row 6:
+──────
+query_id: uhj_q54_run6
+sec:      28.943
+mem:      9.74 GiB
+events:   JoinBuildTableRowCount=91975160, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, HashJoinPreallocatedElementsInHashTables=78103595, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=684, RuntimeFilterBlocksSkipped=9124, RuntimeFilterRowsChecked=15774749, RuntimeFilterRowsPassed=6392699, RuntimeFilterRowsSkipped=187029024
+=== uhj q54: perf record (pid 3364064, 25s) ===
+[ perf record: Woken up 6 times to write data ]
+[ perf record: Captured and wrote 3.177 MB /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/repro/uhj_q54.perf.data (8035 samples) ]
+--- top hotspots ---
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'armv8_pmuv3_0/cycles/P'
+# Event count (approx.): 84234473378
+#
+# Overhead  Command          Shared Object      Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  .................  ......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    33.34%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> >::insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodKeysFixed<PairNoInit<wide::integer<256ul, unsigned int>, DB::RowRefList>, wide::integer<256ul, unsigned int>, DB::RowRefList, false, false, false, false>, TwoLevelHashMapTable<wide::integer<256ul, unsigned int>, HashMapCell<wide::integer<256ul, unsigned int>, DB::RowRefList, UInt256HashCRC32, HashTableNoState, PairNoInit<wide::integer<256ul, unsigned int>, DB::RowRefList> >, UInt256HashCRC32, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, 0>, std::__1::pair<unsigned long, unsigned long> >(DB::Unified::HashJoin&, TwoLevelHashMapTable<wide::integer<256ul, unsigned int>, HashMapCell<wide::integer<256ul, unsigned int>, DB::RowRefList, UInt256HashCRC32, HashTableNoState, PairNoInit<wide::integer<256ul, unsigned int>, DB::RowRefList> >, UInt256HashCRC32, HashTableGrowerWithPrecalculation<8ul>, Allocator<true, true>, HashMapTable, 0>&, DB::Unified::BlockKeyGetter&, std::__1::vector<DB::IColumn const*, std::__1::allocator<DB::IColumn const*> > const&, std::__1::vector<unsigned long, std::__1::allocator<unsigned long> > const&, unsigned int, std::__1::pair<unsigned long, unsigned long> const&, std::__1::vector<COW<DB::IColumn>::immutable_ptr<DB::IColumn>, std::__1::allocator<COW<DB::IColumn>::immutable_ptr<DB::IColumn> > > const*, DB::PODArray<char8_t, 4096ul, Allocator<false, false>, 63ul, 64ul> const*, DB::JoinCommon::JoinMask const&, DB::Arena&, DB::Unified::BuildResult&)
+            |          
+            |--24.94%--insertFromBlockImplTypeCase<DB::ColumnsHashing::HashMethodKeysFixed<PairNoInit<wide::integer<256UL, unsigned int>, DB::RowRefList>, wide::integer<256UL, unsigned int>, DB::RowRefList, false, false, false, false>, TwoLevelHashMapTable<wide::integer<256UL, unsigned int>, HashMapCell<wide::integer<256UL, unsigned int>, DB::RowRefList, UInt256HashCRC32, HashTableNoState, PairNoInit<wide::integer<256UL, unsigned int>, DB::RowRefList> >, UInt256HashCRC32, HashTableGrowerWithPrecalculation<8UL>, Allocator<true, true>, HashMapTable, 0>, std::__1::pair<unsigned long, unsigned long> > (inlined)
+            |          insertFromBlockImpl (inlined)
+            |          operator() (inlined)
+            |          ~unique_lock (inlined)
+            |          insertIntoSlots<DB::Unified::HashJoinMethods<(DB::JoinKind)0, (DB::JoinStrictness)3, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> >, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> > (inlined)
+            |          operator()<std::__1::integral_constant<DB::JoinKind, (DB::JoinKind)0>, std::__1::integral_constant<DB::JoinStrictness, (DB::JoinStrictness)3>, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList> > (inlined)
+            |          operator()<std::__1::integral_constant<int, 8> > (inlined)
+            |          func_wrapper<(lambda at src/Interpreters/UnifiedHashJoin/joinDispatch.h:105:62) &, std::__1::integral_constant<int, 8> > (inlined)
+            |          static_for_impl<int, 0, (lambda at src/Interpreters/UnifiedHashJoin/joinDispatch.h:105:62), 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23> (inlined)
+            |          addBlockToJoin (inlined)
+            |          index (inlined)
+            |          valueless_by_exception (inlined)
+            |          __destroy (inlined)
+            |          ~__dtor (inlined)
+            |          ~variant (inlined)
+            |          ~Selector (inlined)
+            |          addBlockToJoin (inlined)
+            |          |          
+            |          |--19.40%--operator-> (inlined)
+            |          |          addBlockToJoinImpl (inlined)
+            |          |          operator() (inlined)
+            |          |          ~vector (inlined)
+REPRO_DONE uhj

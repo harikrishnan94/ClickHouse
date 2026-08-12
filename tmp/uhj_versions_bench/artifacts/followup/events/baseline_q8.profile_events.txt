@@ -1,0 +1,41 @@
+Row 1:
+──────
+query_id: baseline_q8_run1
+sec:      9.246
+mem:      1.94 GiB
+events:   JoinBuildTableRowCount=25916097, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=9583, RuntimeFilterBlocksSkipped=10115, RuntimeFilterRowsChecked=240608923, RuntimeFilterRowsPassed=1996539, RuntimeFilterRowsSkipped=258446508
+
+Row 2:
+──────
+query_id: baseline_q8_run2
+sec:      357.857
+mem:      12.10 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1081, RuntimeFilterBlocksSkipped=9514, RuntimeFilterRowsChecked=33691586, RuntimeFilterRowsPassed=15656246, RuntimeFilterRowsSkipped=232206156
+
+Row 3:
+──────
+query_id: baseline_q8_run3
+sec:      353.78
+mem:      12.25 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1087, RuntimeFilterBlocksSkipped=9508, RuntimeFilterRowsChecked=33699942, RuntimeFilterRowsPassed=12267038, RuntimeFilterRowsSkipped=232197800
+
+Row 4:
+──────
+query_id: baseline_q8_run4
+sec:      354.168
+mem:      12.23 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1091, RuntimeFilterBlocksSkipped=9504, RuntimeFilterRowsChecked=33730960, RuntimeFilterRowsPassed=12298056, RuntimeFilterRowsSkipped=232166782
+
+Row 5:
+──────
+query_id: baseline_q8_run5
+sec:      354.83
+mem:      12.24 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1084, RuntimeFilterBlocksSkipped=9511, RuntimeFilterRowsChecked=33710072, RuntimeFilterRowsPassed=12277168, RuntimeFilterRowsSkipped=232187670
+
+Row 6:
+──────
+query_id: baseline_q8_run6
+sec:      353.609
+mem:      12.25 GiB
+events:   JoinBuildTableRowCount=1212609641, SelectedParts=759, SelectedMarks=36836, SelectedRows=272643171, HashJoinPreallocatedElementsInHashTables=4265664, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=1089, RuntimeFilterBlocksSkipped=9506, RuntimeFilterRowsChecked=33638380, RuntimeFilterRowsPassed=12205476, RuntimeFilterRowsSkipped=232259362

@@ -1,0 +1,9 @@
+    18.94%  clickhouse-uhj  [kernel.kallsyms]  [k] 0xffffb5cd6c5f944c
+    12.23%  AsyncMetrics    [kernel.kallsyms]  [k] 0xffffb5cd6c3bc424
+    10.60%  clickhouse-uhj  [kernel.kallsyms]  [k] 0xffffb5cd6b16d990
+     2.77%  AsyncMetrics    [kernel.kallsyms]  [k] 0xffffb5cd6c3bc400
+     2.73%  AsyncMetrics    [kernel.kallsyms]  [k] 0xffffb5cd6c3bc418
+     2.09%  MemoryWorker    [kernel.kallsyms]  [k] 0xffffb5cd6b24b354
+     1.84%  AsyncMetrics    clickhouse-uhj     [.] std::__1::__tree<...>, DB::MergeTreeData::LessDataPart, std::__1::allocator<...> > >::__insert_range_unique[abi:fqe220101]<...>, std::__1::
+     1.83%  AsyncMetrics    [kernel.kallsyms]  [k] 0xffffb5cd6c3bc408
+     1.28%  ThreadPool      libc.so.6          [.] 0x0000000000095aec

@@ -1,0 +1,12 @@
+    33.34%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList>, wide::integer<256ul, unsigned int>, DB::RowRe
+     7.12%  QueryPipelineEx  clickhouse-uhj     [.] LZ4_compress_fast_extState
+     5.26%  QueryPipelineEx  clickhouse-uhj     [.] DB::IColumnHelper<DB::ColumnVector<long>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::PODArray<...>, 63ul, 64ul> const&) const
+     4.86%  QueryPipelineEx  clickhouse-uhj     [.] DB::countColumnsSizeInSelector(unsigned long, DB::PODArray<...>, 63ul, 64ul> const&)
+     4.79%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c59fc04
+     4.18%  QueryPipelineEx  clickhouse-uhj     [.] HashTable<wide::integer<256ul, unsigned int>, HashMapCell<wide::integer<256ul, unsigned int>, DB::RowRefList, UInt256HashCRC32, HashTableN
+     2.86%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5f944c
+     2.53%  clickhouse-uhj   [kernel.kallsyms]  [k] 0xffffb5cd6c5f944c
+     2.04%  QueryPipelineEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<8ul, false>(char const*, char*, unsigned long, unsigned long)
+     1.79%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5e30c4
+     1.60%  QueryPipelineEx  clickhouse-uhj     [.] DB::IColumnHelper<DB::ColumnVector<unsigned int>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::PODArray<...>, 63ul, 64ul> const&
+     1.49%  QueryPipelineEx  clickhouse-uhj     [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)

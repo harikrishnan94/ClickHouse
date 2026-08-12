@@ -1,5 +1,13 @@
 # uhj-parity vs merge-base — ClickBench versions (TPC-H / TPC-DS / JOB / Coffeeshop)
 
+> **Superseded in part — read `FOLLOWUP.md` first.** The `tpch/q8` and `tpcds/q54`
+> outliers below are not join-algorithm effects. Both arms re-plan differently on warm
+> runs because the hash-table-statistics cache is only wired up when `parallel_hash` is in
+> `join_algorithm`, so the baseline arm changes its join order after run 1 and the uhj arm
+> never does. With `collect_hash_table_stats_during_joins=0` the two engines agree on both
+> queries. The TPC-H `−18%` geomean is driven by q8 and does not survive; the JOB `+11%`
+> regression is unaffected and still stands.
+
 ## Verdict
 
 On an emulated `c7a.4xlarge` (16 vCPU / 32 GiB cgroup) with the ClickBench
@@ -44,7 +52,7 @@ per arm on this host).
 - `tpch/q5` — baseline only: timeout >600s after a 503s first try; uhj completed.
 - `tpcds/q5` — `Illegal type Variant(Decimal(7,2), Float64)` for `sum` (both).
 - `tpcds/q14`, `tpcds/q15` — `INTERSECT ALL` / missing subquery alias (both).
-  These match published nulls on older/awkward SQL; not join-algorithm specific.
+  These match published nulls on awkward SQL; not join-algorithm specific.
 
 ## Effects that drive the geomeans
 

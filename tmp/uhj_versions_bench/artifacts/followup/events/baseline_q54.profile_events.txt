@@ -1,0 +1,41 @@
+Row 1:
+──────
+query_id: baseline_q54_run1
+sec:      31.042
+mem:      11.60 GiB
+events:   JoinBuildTableRowCount=91971348, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=672, RuntimeFilterBlocksSkipped=9104, RuntimeFilterRowsChecked=15707483, RuntimeFilterRowsPassed=6321621, RuntimeFilterRowsSkipped=187095464
+
+Row 2:
+──────
+query_id: baseline_q54_run2
+sec:      0.413
+mem:      49.77 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13274, RuntimeFilterBlocksSkipped=8160, RuntimeFilterRowsChecked=171191507, RuntimeFilterRowsPassed=70786010, RuntimeFilterRowsSkipped=105472514
+
+Row 3:
+──────
+query_id: baseline_q54_run3
+sec:      0.473
+mem:      33.76 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13284, RuntimeFilterBlocksSkipped=8150, RuntimeFilterRowsChecked=171195241, RuntimeFilterRowsPassed=70789639, RuntimeFilterRowsSkipped=105467983
+
+Row 4:
+──────
+query_id: baseline_q54_run4
+sec:      0.387
+mem:      37.65 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13282, RuntimeFilterBlocksSkipped=8152, RuntimeFilterRowsChecked=171177845, RuntimeFilterRowsPassed=70772277, RuntimeFilterRowsSkipped=105486313
+
+Row 5:
+──────
+query_id: baseline_q54_run5
+sec:      0.379
+mem:      37.67 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13289, RuntimeFilterBlocksSkipped=8145, RuntimeFilterRowsChecked=171195621, RuntimeFilterRowsPassed=70790060, RuntimeFilterRowsSkipped=105472346
+
+Row 6:
+──────
+query_id: baseline_q54_run6
+sec:      0.379
+mem:      41.78 MiB
+events:   JoinBuildTableRowCount=166051, SelectedParts=11, SelectedMarks=12397, SelectedRows=101523115, RuntimeFiltersCreated=6, RuntimeFilterBlocksProcessed=13290, RuntimeFilterBlocksSkipped=8144, RuntimeFilterRowsChecked=171221867, RuntimeFilterRowsPassed=70816334, RuntimeFilterRowsSkipped=105443300

@@ -1,0 +1,41 @@
+--- /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/control/q54_parallel_hash+hash.plan_cold.txt	2026-08-12 12:07:41.098909118 +0530
++++ /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/control/q54_parallel_hash+hash.plan_warm.txt	2026-08-12 12:08:14.358997251 +0530
+@@ -12,23 +12,21 @@
+                   │     └──Join (JOIN FillRightFirst)
+                   │        ├──Expression
+                   │        │  └──Join (JOIN FillRightFirst)
+-                  │        │     ├──Expression (Left Pre Join Actions)
+-                  │        │     │  └──Expression
+-                  │        │     │     └──Join (JOIN FillRightFirst)
+-                  │        │     │        ├──Expression
+-                  │        │     │        │  └──ReadFromMergeTree (tpcds.store_returns)
+-                  │        │     │        └──Expression (Right Pre Join Actions)
+-                  │        │     │           └──BuildRuntimeFilter (Build runtime join filter on d_date_sk)
+-                  │        │     │              └──Expression ((WHERE + Change column names to column identifiers))
+-                  │        │     │                 └──ReadFromMergeTree (tpcds.date_dim)
+-                  │        │     └──Expression
+-                  │        │        └──BuildRuntimeFilter (Build runtime join filter on ss_customer_sk)
+-                  │        │           └──Expression
+-                  │        │              └──BuildRuntimeFilter (Build runtime join filter on ss_item_sk)
+-                  │        │                 └──Expression
+-                  │        │                    └──BuildRuntimeFilter (Build runtime join filter on ss_ticket_number)
+-                  │        │                       └──Expression
+-                  │        │                          └──ReadFromMergeTree (tpcds.store_sales)
++                  │        │     ├──Expression
++                  │        │     │  └──ReadFromMergeTree (tpcds.store_sales)
++                  │        │     └──Expression (Right Pre Join Actions)
++                  │        │        └──BuildRuntimeFilter (Build runtime join filter on sr_customer_sk)
++                  │        │           └──BuildRuntimeFilter (Build runtime join filter on sr_item_sk)
++                  │        │              └──BuildRuntimeFilter (Build runtime join filter on sr_ticket_number)
++                  │        │                 └──Expression (Post Join Actions)
++                  │        │                    └──Join (JOIN FillRightFirst)
++                  │        │                       ├──Expression (Left Pre Join Actions)
++                  │        │                       │  └──Expression
++                  │        │                       │     └──ReadFromMergeTree (tpcds.store_returns)
++                  │        │                       └──Expression (Right Pre Join Actions)
++                  │        │                          └──BuildRuntimeFilter (Build runtime join filter on d_date_sk)
++                  │        │                             └──Expression ((WHERE + Change column names to column identifiers))
++                  │        │                                └──ReadFromMergeTree (tpcds.date_dim)
+                   │        └──Expression (Right Pre Join Actions)
+                   │           └──BuildRuntimeFilter (Build runtime join filter on s_store_sk)
+                   │              └──Expression (Change column names to column identifiers)
