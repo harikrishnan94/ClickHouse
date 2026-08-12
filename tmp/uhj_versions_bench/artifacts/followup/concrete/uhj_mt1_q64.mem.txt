@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '3669678':
+
+      113816919544      cpu_cycles                                                            
+       33765958569      mem_access                                                            
+        1481291608      l1d_cache_refill                                                      
+         856803936      l2d_cache_refill                                                      
+        1790508108      ll_cache_miss_rd                                                      
+         516291039      dtlb_walk                                                             
+
+      40.003849179 seconds time elapsed
+

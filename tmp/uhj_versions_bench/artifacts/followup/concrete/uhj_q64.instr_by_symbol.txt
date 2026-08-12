@@ -1,0 +1,32 @@
+    18.75%  QueryPipelineEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+    14.88%  QueryPipelineEx  clickhouse-uhj     [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+     8.95%  QueryPipelineEx  clickhouse-uhj     [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     7.64%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5ecab4
+     6.73%  QueryPipelineEx  clickhouse-uhj     [.] DB::Unified::scatterBlockBySlot(DB::Unified::HashJoin::Type, DB::Unified::MapsKind, std::__1::vect
+     4.38%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsign
+     4.32%  QueryPipelineEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     3.39%  QueryPipelineEx  clickhouse-uhj     [.] DB::BloomFilter::computeHashPair(char const*, unsigned long, unsigned long)
+     2.60%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5e4458
+     2.41%  QueryPipelineEx  clickhouse-uhj     [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::PO
+     2.16%  QueryPipelineEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<16ul, true>(char const*, char*, unsigned long, uns
+     1.95%  QueryPipelineEx  libc.so.6          [.] __sched_yield
+     1.71%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6bc55d0c
+     1.50%  QueryPipelineEx  clickhouse-uhj     [.] DB::ApproximateRuntimeFilter::insertIntoBloomFilter(COW<DB::IColumn>::immutable_ptr<DB::IColumn>)
+     1.33%  QueryPipelineEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<8ul, false>(char const*, char*, unsigned long, uns
+     1.28%  QueryPipelineEx  clickhouse-uhj     [.] DB::countColumnsSizeInSelector(unsigned long, DB::PODArray<...>, 63ul, 64ul> const&)
+     1.05%  QueryPipelineEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<32ul, false>(char const*, char*, unsigned long, un
+     1.03%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::SequentialLookup::runImpl<...>, DB::RowRefList const, unsigned int, false, false
+     0.96%  QueryPipelineEx  clickhouse-uhj     [.] DB::BloomFilter::findHashPairs(DB::BloomFilterHashPair const*, unsigned long, char8_t*) const
+     0.75%  QueryPipelineEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash128WithSeed(char const*, unsigned long, CityHash_v1_0_2::uint128)
+     0.73%  QueryPipelineEx  clickhouse-uhj     [.] HashTable<...>, HashTableNoState, PairNoInit<...> >, HashCRC32<unsigned int>, TwoLevelHashTableGro
+     0.68%  QueryPipelineEx  [kernel.kallsyms]  [k] 0xffffb5cd6adad7dc
+     0.57%  QueryPipelineEx  clickhouse-uhj     [.] __AArch64ADRPThunk__ZN15CityHash_v1_0_218CityHash64WithSeedEPKcmm
+     0.56%  QueryPipelineEx  clickhouse-uhj     [.] DB::countBytesInFilter(DB::PODArray<...>, 63ul, 64ul> const&)
+     0.47%  QueryPipelineEx  libc.so.6          [.] 0x00000000000a9b24
+     0.46%  QueryPipelineEx  clickhouse-uhj     [.] bool func_wrapper<...>, DB::Unified::HashJoin::MapsTemplate<DB::RowRefList>, DB::Unified::HashJoin
+     0.46%  QueryPipelineEx  clickhouse-uhj     [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::fillFromRowRefs(std::__1::sha
+     0.40%  QueryPipelineEx  clickhouse-uhj     [.] void miniselect::floyd_rivest_detail::floyd_rivest_select_loop<...>&, long>(unsigned long*, long, 
+     0.39%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Set::insertFromBlockImplCase<...>, HashTableNoState>, HashCRC32<unsigned int>, HashTableG
+     0.38%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::consumeProbeBatch<...>, DB::Unified::AddedColumns<true> >(DB::Unified::ProbeOutc
+     0.36%  QueryPipelineEx  clickhouse-uhj     [.] DB::ColumnString::insertFrom(DB::IColumn const&, unsigned long)
+     0.34%  QueryPipelineEx  clickhouse-uhj     [.] void DB::Unified::LazyOutput::buildOutputFromBlocks<false>(unsigned long, std::__1::vector<COW<DB:

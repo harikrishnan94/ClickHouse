@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Same counters as deep_metrics.sh, but the loop counts its own iterations so every
-# counter can be reported per query rather than per 30s window.
+# Attribute retired instructions per symbol, both arms, same plan.
+#
+# The whole-query counters show uhj retiring ~1.02 G more instructions per execution of
+# q64 than baseline. RowRefList::insert is byte-identical and called an identical number of
+# times, so that billion is executed by the code AROUND it. This records inst_retired (not
+# cycles) so the profile ranks by work done rather than by time waited.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="${HERE}/work"; OUT="${WORK}/deep"; WRAP="${HERE}/cgroup_wrap.sh"
+WORK="${HERE}/work"; OUT="${WORK}/instr"; WRAP="${HERE}/cgroup_wrap.sh"
 VB="${CLICKBENCH_VERSIONS:-/mnt/ch/ClickBench-master/versions}"
-PORT=19010; SAMPLE="${SAMPLE:-30}"; mkdir -p "${OUT}"
-ARM="${ARM:?}"; QIDX="${QIDX:-64}"
+PORT=19010; SAMPLE="${SAMPLE:-30}"; QIDX="${QIDX:-64}"; mkdir -p "${OUT}"
+ARM="${ARM:?}"
 EXTRA=(--collect_hash_table_stats_during_joins=0)
 [ -n "${MT:-}" ] && EXTRA+=(--max_threads=${MT})
-[ -n "${PF:-}" ] && EXTRA+=(--enable_software_prefetch_in_join=${PF})
 TAG="${TAG:-}"
 case "${ARM}" in
     baseline) BIN="${WORK}/bin/clickhouse-baseline"; JOIN_XML="" ;;
@@ -49,32 +52,26 @@ start_server() {
 }
 Q="$(sed -n "${QIDX}p" "${VB}/queries/job.sql")"; Q="${Q%;}"
 BASE="${OUT}/${ARM}${TAG}_q${QIDX}"
-
-run_pass() {  # run_pass <tag> <event-group>
-    local tag="$1" events="$2" cnt=0
-    local cf="${BASE}.${tag}.iters"
-    : > "${cf}"
-    ( n=0; end=$((SECONDS + SAMPLE + 8))
-      while [ ${SECONDS} -lt ${end} ]; do
-          client --database job --format=Null "${EXTRA[@]}" --query "${Q}" >/dev/null 2>&1 && n=$((n+1))
-          echo "${n}" > "${cf}"
-      done ) &
-    local loop=$!
-    sleep 2                      # let the loop reach steady state before counting
-    cnt=$(cat "${cf}" 2>/dev/null || echo 0)
-    sudo perf stat -p "$(pgrep -f "${BIN} server" | head -1)" -e "${events}" \
-        -- sleep "${SAMPLE}" 2> "${BASE}.${tag}.txt" || true
-    local cnt2; cnt2=$(cat "${cf}" 2>/dev/null || echo 0)
-    kill "${loop}" 2>/dev/null || true; wait "${loop}" 2>/dev/null || true
-    echo "ITERS_${tag}=$((cnt2 - cnt))"
-    echo "$((cnt2 - cnt))" > "${BASE}.${tag}.itercount"
-    cat "${BASE}.${tag}.txt"
-}
-
 start_server
 for i in 1 2 3; do client --database job --format=Null "${EXTRA[@]}" --query "${Q}" >/dev/null 2>&1 || true; done
-echo "=== ${ARM} q${QIDX} ==="
-run_pass core '{cpu_cycles,inst_retired,stall_frontend,stall_backend,stall_backend_mem,br_mis_pred_retired}'
-run_pass mem  '{cpu_cycles,mem_access,l1d_cache_refill,l2d_cache_refill,ll_cache_miss_rd,dtlb_walk}'
+CF="${BASE}.iters"; : > "${CF}"
+( n=0; end=$((SECONDS + SAMPLE + 8))
+  while [ ${SECONDS} -lt ${end} ]; do
+      client --database job --format=Null "${EXTRA[@]}" --query "${Q}" >/dev/null 2>&1 && n=$((n+1))
+      echo "${n}" > "${CF}"
+  done ) &
+LOOP=$!
+sleep 2
+c0=$(cat "${CF}" 2>/dev/null || echo 0)
+sudo perf record -p "$(pgrep -f "${BIN} server" | head -1)" -o "${BASE}.instr.perf.data" \
+    -e inst_retired -c 4000037 -- sleep "${SAMPLE}" >/dev/null 2>&1 || true
+c1=$(cat "${CF}" 2>/dev/null || echo 0)
+kill "${LOOP}" 2>/dev/null || true; wait "${LOOP}" 2>/dev/null || true
+echo "ITERS=$((c1 - c0))" | tee "${BASE}.itercount"
+sudo chown "$(id -u):$(id -g)" "${BASE}.instr.perf.data" 2>/dev/null || true
+perf report -i "${BASE}.instr.perf.data" --stdio -g none --no-children --percent-limit 0.3 2>/dev/null \
+  | rg '^\s+[0-9]+\.[0-9]+%' | sed -E 's/<[^>]{25,}>/<...>/g' | cut -c1-150 > "${BASE}.instr_by_symbol.txt" || true
+echo "=== ${ARM}: retired instructions by symbol ==="
+head -30 "${BASE}.instr_by_symbol.txt"
 stop_server
-echo "NORM_DONE ${ARM}"
+echo "INSTR_DONE ${ARM}"

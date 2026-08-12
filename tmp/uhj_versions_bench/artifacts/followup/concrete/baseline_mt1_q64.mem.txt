@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '3667673':
+
+      119226182303      cpu_cycles                                                            
+       40250751894      mem_access                                                            
+        1960139663      l1d_cache_refill                                                      
+        1076041342      l2d_cache_refill                                                      
+        2077937579      ll_cache_miss_rd                                                      
+         635446494      dtlb_walk                                                             
+
+      40.004006069 seconds time elapsed
+

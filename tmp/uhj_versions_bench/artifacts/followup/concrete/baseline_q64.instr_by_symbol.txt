@@ -1,0 +1,34 @@
+    19.84%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+    14.73%  QueryPipelineEx  clickhouse-baseline  [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+     9.41%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     6.11%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5ecab4
+     4.59%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     4.31%  QueryPipelineEx  clickhouse-baseline  [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::scatter(unsigned long, DB::
+     3.66%  QueryPipelineEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int,
+     3.59%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::computeHashPair(char const*, unsigned long, unsigned long)
+     2.49%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5e4458
+     2.37%  QueryPipelineEx  clickhouse-baseline  [.] DB::countColumnsSizeInSelector(unsigned long, DB::PODArray<...>, 63ul, 64ul> const&)
+     2.22%  QueryPipelineEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<16ul, true>(char const*, char*, unsigned long, u
+     1.59%  QueryPipelineEx  clickhouse-baseline  [.] std::__1::vector<...> > DB::calculateHashes<...>, DB::RowRefList, unsigned int, false, true, fal
+     1.51%  QueryPipelineEx  libc.so.6            [.] __sched_yield
+     1.49%  QueryPipelineEx  clickhouse-baseline  [.] DB::ApproximateRuntimeFilter::insertIntoBloomFilter(COW<DB::IColumn>::immutable_ptr<DB::IColumn>
+     1.39%  QueryPipelineEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<8ul, false>(char const*, char*, unsigned long, u
+     1.37%  QueryPipelineEx  clickhouse-baseline  [.] unsigned long DB::HashJoinMethods<...> >::joinRightColumns<...>, DB::RowRefList const, unsigned 
+     1.35%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6bc55d0c
+     1.31%  QueryPipelineEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int,
+     1.04%  QueryPipelineEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<32ul, false>(char const*, char*, unsigned long, 
+     1.02%  QueryPipelineEx  clickhouse-baseline  [.] DB::BloomFilter::findHashPairs(DB::BloomFilterHashPair const*, unsigned long, char8_t*) const
+     0.78%  QueryPipelineEx  clickhouse-baseline  [.] HashTable<...>, HashTableNoState, PairNoInit<...> >, HashCRC32<unsigned int>, TwoLevelHashTableG
+     0.74%  QueryPipelineEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash128WithSeed(char const*, unsigned long, CityHash_v1_0_2::uint128)
+     0.62%  QueryPipelineEx  clickhouse-baseline  [.] __AArch64ADRPThunk__ZN15CityHash_v1_0_218CityHash64WithSeedEPKcmm
+     0.61%  QueryPipelineEx  clickhouse-baseline  [.] DB::countBytesInFilter(DB::PODArray<...>, 63ul, 64ul> const&)
+     0.57%  QueryPipelineEx  [kernel.kallsyms]    [k] 0xffffb5cd6adad7dc
+     0.55%  QueryPipelineEx  clickhouse-baseline  [.] DB::ConcurrentHashJoin::addBlockToJoin(DB::Block const&, bool)
+     0.49%  QueryPipelineEx  libc.so.6            [.] 0x00000000000a9b24
+     0.48%  QueryPipelineEx  clickhouse-baseline  [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::fillFromRowRefs(std::__1::s
+     0.43%  QueryPipelineEx  clickhouse-baseline  [.] void miniselect::floyd_rivest_detail::floyd_rivest_select_loop<...>&, long>(unsigned long*, long
+     0.42%  QueryPipelineEx  clickhouse-baseline  [.] void DB::Set::insertFromBlockImplCase<...>, HashTableNoState>, HashCRC32<unsigned int>, HashTabl
+     0.38%  QueryPipelineEx  clickhouse-baseline  [.] decltype(auto) std::__1::__variant_detail::__visitation::__base::__dispatcher<1ul>::__dispatch[a
+     0.36%  QueryPipelineEx  clickhouse-baseline  [.] DB::ColumnString::insertFrom(DB::IColumn const&, unsigned long)
+     0.36%  QueryPipelineEx  clickhouse-baseline  [.] void DB::LazyOutput::buildOutputFromBlocks<false>(unsigned long, std::__1::vector<COW<DB::IColum
+     0.32%  QueryPipelineEx  clickhouse-baseline  [.] DB::ConcurrentHashJoin::dispatchBlock(std::__1::vector<...>, std::__1::allocator<char> >, std::_

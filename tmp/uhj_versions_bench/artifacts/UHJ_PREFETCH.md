@@ -1,5 +1,12 @@
 # Exactly why uhj is slower in `RowRefList::insert` — JOB q64
 
+> **Superseded by `CONCRETE_DIFF.md`.** What follows measures a *symptom*. The causes are
+> two source-level differences: `scatterBlockBySlot`, an extra per-row pass uhj runs when
+> `max_threads >= 2` (+1.58 G instructions/query), and `BITS_FOR_BUCKET_SERIAL = 0`, which
+> makes uhj build one flat 42 M-entry table at `max_threads = 1` where baseline builds 256
+> sub-tables (+14.9% LL misses, +8.3% dTLB walks). The claim below that the two arms do
+> "the same work" is true only of the leaf function, not of the query.
+
 **uhj's build is 11% faster than baseline with software prefetch disabled, and 20% slower
 with it enabled. The regression is not the insert path — it is that uhj converts only about
 a quarter of the prefetch into actual memory-level parallelism.**

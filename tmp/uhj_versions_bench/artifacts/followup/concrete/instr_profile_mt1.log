@@ -1,0 +1,61 @@
+ITERS=6
+=== baseline: retired instructions by symbol ===
+    24.70%  QueryPullPipeEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+    14.01%  QueryPullPipeEx  clickhouse-baseline  [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+    11.83%  QueryPullPipeEx  clickhouse-baseline  [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     8.32%  QueryPullPipeEx  clickhouse-baseline  [.] void DB::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsigned int,
+     6.06%  QueryPullPipeEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     4.50%  QueryPullPipeEx  clickhouse-baseline  [.] DB::BloomFilter::computeHashPair(char const*, unsigned long, unsigned long)
+     4.13%  QueryPullPipeEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<16ul, true>(char const*, char*, unsigned long, u
+     1.91%  QueryPullPipeEx  clickhouse-baseline  [.] DB::ApproximateRuntimeFilter::insertIntoBloomFilter(COW<DB::IColumn>::immutable_ptr<DB::IColumn>
+     1.82%  QueryPullPipeEx  clickhouse-baseline  [.] unsigned long DB::HashJoinMethods<...> >::joinRightColumns<...>, DB::RowRefList const, unsigned 
+     1.50%  QueryPullPipeEx  clickhouse-baseline  [.] CityHash_v1_0_2::CityHash128WithSeed(char const*, unsigned long, CityHash_v1_0_2::uint128)
+     1.34%  QueryPullPipeEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<8ul, false>(char const*, char*, unsigned long, u
+     1.33%  QueryPullPipeEx  clickhouse-baseline  [.] DB::BloomFilter::findHashPairs(DB::BloomFilterHashPair const*, unsigned long, char8_t*) const
+     1.15%  QueryPullPipeEx  clickhouse-baseline  [.] HashTable<...>, HashTableNoState, PairNoInit<...> >, HashCRC32<unsigned int>, TwoLevelHashTableG
+     1.07%  QueryPullPipeEx  clickhouse-baseline  [.] DB::countBytesInFilter(DB::PODArray<...>, 63ul, 64ul> const&)
+     1.00%  QueryPullPipeEx  clickhouse-baseline  [.] bool LZ4::(anonymous namespace)::decompressImpl<32ul, false>(char const*, char*, unsigned long, 
+     0.81%  QueryPullPipeEx  clickhouse-baseline  [.] __AArch64ADRPThunk__ZN15CityHash_v1_0_218CityHash64WithSeedEPKcmm
+     0.70%  QueryPullPipeEx  libc.so.6            [.] 0x00000000000a9b24
+     0.63%  QueryPullPipeEx  clickhouse-baseline  [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::fillFromRowRefs(std::__1::s
+     0.57%  QueryPullPipeEx  clickhouse-baseline  [.] void miniselect::floyd_rivest_detail::floyd_rivest_select_loop<...>&, long>(unsigned long*, long
+     0.56%  clickhouse-base  [kernel.kallsyms]    [k] 0xffffb5cd6c5f944c
+     0.46%  QueryPullPipeEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5f944c
+     0.46%  AsyncMetrics     [kernel.kallsyms]    [k] 0xffffb5cd6c3bc424
+     0.46%  QueryPullPipeEx  clickhouse-baseline  [.] void DB::LazyOutput::buildOutputFromBlocks<false>(unsigned long, std::__1::vector<COW<DB::IColum
+     0.37%  QueryPullPipeEx  clickhouse-baseline  [.] DB::ColumnString::insertFrom(DB::IColumn const&, unsigned long)
+     0.31%  QueryPullPipeEx  [kernel.kallsyms]    [k] 0xffffb5cd6c59fc04
+     0.30%  QueryPullPipeEx  [kernel.kallsyms]    [k] 0xffffb5cd6c5a01a0
+INSTR_DONE baseline
+ITERS=5
+=== uhj: retired instructions by symbol ===
+    24.37%  QueryPullPipeEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash64WithSeed(char const*, unsigned long, unsigned long)
+    15.04%  QueryPullPipeEx  clickhouse-uhj     [.] DB::RowRefList::insert(unsigned long, DB::Arena&)
+    11.41%  QueryPullPipeEx  clickhouse-uhj     [.] DB::BloomFilter::addHashPairs(DB::BloomFilterHashPair const*, unsigned long)
+     8.08%  QueryPullPipeEx  clickhouse-uhj     [.] void DB::Unified::HashJoinMethods<...> >::insertFromBlockImplTypeCase<...>, DB::RowRefList, unsign
+     5.31%  QueryPullPipeEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash64(char const*, unsigned long)
+     4.17%  QueryPullPipeEx  clickhouse-uhj     [.] DB::BloomFilter::computeHashPair(char const*, unsigned long, unsigned long)
+     4.01%  QueryPullPipeEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<16ul, true>(char const*, char*, unsigned long, uns
+     1.90%  QueryPullPipeEx  clickhouse-uhj     [.] DB::ApproximateRuntimeFilter::insertIntoBloomFilter(COW<DB::IColumn>::immutable_ptr<DB::IColumn>)
+     1.29%  QueryPullPipeEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<8ul, false>(char const*, char*, unsigned long, uns
+     1.24%  QueryPullPipeEx  clickhouse-uhj     [.] DB::BloomFilter::findHashPairs(DB::BloomFilterHashPair const*, unsigned long, char8_t*) const
+     1.18%  QueryPullPipeEx  clickhouse-uhj     [.] CityHash_v1_0_2::CityHash128WithSeed(char const*, unsigned long, CityHash_v1_0_2::uint128)
+     1.13%  QueryPullPipeEx  clickhouse-uhj     [.] void DB::Unified::SequentialLookup::runImpl<...>, DB::RowRefList const, unsigned int, false, false
+     0.99%  QueryPullPipeEx  clickhouse-uhj     [.] HashTable<...>, HashTableNoState, PairNoInit<...> >, HashCRC32<unsigned int>, HashTableGrowerWithP
+     0.90%  clickhouse-uhj   [kernel.kallsyms]  [k] 0xffffb5cd6c5f944c
+     0.87%  QueryPullPipeEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5f944c
+     0.86%  QueryPullPipeEx  clickhouse-uhj     [.] bool LZ4::(anonymous namespace)::decompressImpl<32ul, false>(char const*, char*, unsigned long, un
+     0.80%  QueryPullPipeEx  clickhouse-uhj     [.] __AArch64ADRPThunk__ZN15CityHash_v1_0_218CityHash64WithSeedEPKcmm
+     0.75%  QueryPullPipeEx  clickhouse-uhj     [.] DB::countBytesInFilter(DB::PODArray<...>, 63ul, 64ul> const&)
+     0.70%  QueryPullPipeEx  clickhouse-uhj     [.] void DB::Unified::consumeProbeBatch<...>, DB::Unified::AddedColumns<true> >(DB::Unified::ProbeOutc
+     0.65%  QueryPullPipeEx  libc.so.6          [.] 0x00000000000a9b24
+     0.61%  QueryPullPipeEx  clickhouse-uhj     [.] DB::IColumnHelper<DB::ColumnVector<int>, DB::ColumnFixedSizeHelper>::fillFromRowRefs(std::__1::sha
+     0.59%  AsyncMetrics     [kernel.kallsyms]  [k] 0xffffb5cd6c3bc424
+     0.53%  QueryPullPipeEx  clickhouse-uhj     [.] void miniselect::floyd_rivest_detail::floyd_rivest_select_loop<...>&, long>(unsigned long*, long, 
+     0.45%  QueryPullPipeEx  clickhouse-uhj     [.] void DB::Unified::LazyOutput::buildOutputFromBlocks<false>(unsigned long, std::__1::vector<COW<DB:
+     0.44%  QueryPullPipeEx  clickhouse-uhj     [.] DB::ColumnString::insertFrom(DB::IColumn const&, unsigned long)
+     0.44%  QueryPullPipeEx  [kernel.kallsyms]  [k] 0xffffb5cd6b15d91c
+     0.36%  QueryPullPipeEx  [kernel.kallsyms]  [k] 0xffffb5cd6c5f95b8
+     0.35%  QueryPullPipeEx  [kernel.kallsyms]  [k] 0xffffb5cd6c59fc04
+     0.34%  clickhouse-uhj   [kernel.kallsyms]  [k] 0xffffb5cd6b16d990
+INSTR_DONE uhj
