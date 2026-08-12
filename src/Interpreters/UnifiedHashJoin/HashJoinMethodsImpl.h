@@ -106,13 +106,11 @@ ALWAYS_INLINE auto makeJoinPrefetcher(bool use_prefetch, size_t total, PrefetchA
         use_prefetch, total, std::forward<PrefetchAction>(prefetch_action)};
 }
 
-/// True when the clause drops rows: NULL keys or a non-trivial ON condition.
 inline ALWAYS_INLINE bool clauseSkipsRows(const JoinOnKeyColumns & keys)
 {
     return keys.null_map || keys.join_mask_column.getKind() != JoinCommon::JoinMask::Kind::AllTrue;
 }
 
-/// Per-row skip bytes for one ON clause; nullptr when the clause skips nothing.
 template <typename Sel>
 ALWAYS_INLINE const UInt8 * buildClauseSkipData(const JoinOnKeyColumns & keys, IColumn::Filter & buffer, const Sel & sel, size_t rows)
 {
@@ -124,7 +122,7 @@ ALWAYS_INLINE const UInt8 * buildClauseSkipData(const JoinOnKeyColumns & keys, I
         return keys.buildRowSkipData(buffer, sel.first, rows);
 }
 
-/// Fills `skip_datas`/`skip_buffers` per clause; leaves `skip_datas` empty when no clause skips.
+/// Leaves `skip_datas` empty, not a vector of nullptrs, when no clause skips.
 template <typename Sel>
 ALWAYS_INLINE void buildClauseSkipDatas(
     const std::vector<JoinOnKeyColumns> & join_on_keys,
@@ -554,8 +552,7 @@ struct PreSelectedRows
     PODArray<UInt64> & container;
 };
 
-/// Rebuilds a mapped view from a recorded outcome word without touching the cell:
-/// by value into `storage` when the mapped fits a word, else by pointer into the cell (ASOF).
+/// The recorded word is the mapped value itself, except for ASOF where it points into the cell.
 template <typename MappedValue>
 ALWAYS_INLINE const MappedValue * mappedFromOutcomeWord(UInt64 word, MappedValue & storage)
 {
@@ -570,7 +567,7 @@ ALWAYS_INLINE const MappedValue * mappedFromOutcomeWord(UInt64 word, MappedValue
     }
 }
 
-/// One default/miss row: ANTI LEFT marks the filter; the replication offset follows at the caller.
+/// Does not write `offsets_to_replicate`; the caller does.
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
     JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
@@ -585,9 +582,8 @@ ALWAYS_INLINE void addMissRow(AddedColumns & added_columns, size_t row, IColumn:
     addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
 }
 
-/** The per-match KIND × STRICTNESS ladder, shared by the single-clause consume and the
-  * clause-major emit. `ind` is the source row and is read only by ASOF. With a single disjunct
-  * nothing can be a duplicate, so that caller passes the no-op `KnownRowsHolder<false>`.
+/** The per-match KIND × STRICTNESS ladder, shared by the single-clause and clause-major stages.
+  * `ind` is read by ASOF only; a single disjunct cannot duplicate, hence its `KnownRowsHolder<false>`.
   */
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
@@ -657,7 +653,7 @@ ALWAYS_INLINE void matchFoundRow(
     }
     else if constexpr (join_features.is_any_join && join_features.full)
     {
-        /// Unreachable: ANY FULL JOIN is rejected in `TreeRewriter` with `NOT_IMPLEMENTED`.
+        /// Unreachable: `TreeRewriter` rejects ANY FULL JOIN.
     }
     else if constexpr (join_features.is_anti_join)
     {
@@ -738,10 +734,10 @@ ALWAYS_INLINE void consumeProbeBatchImpl(
     }
 }
 
-/// NO_INLINE to keep the body out of every `joinRightColumns` instantiation. Non-ASOF: no
-/// Selector in the keying (ASOF overload below keeps it). Do not collapse the two wrappers into
-/// one entry taking `const Selector *`: non-ASOF callers then materialize a dead `nullptr`
-/// argument at every call site, measured at +3430 `.text` instructions over the join TUs.
+/** `NO_INLINE` keeps the body out of every `joinRightColumns` instantiation; the non-ASOF wrapper drops
+  * Selector from its keying. Do not collapse the two into one entry taking `const Selector *`: non-ASOF
+  * callers then materialize a dead `nullptr`, measured at +3430 `.text` instructions over the join TUs.
+  */
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
     JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
@@ -760,7 +756,6 @@ NO_INLINE void consumeProbeBatch(
         outcomes, added_columns, used_flags, nullptr, begin, count, current_offset);
 }
 
-/// ASOF consume: needs the selector for the probe row's asof key.
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
     JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
@@ -1397,8 +1392,7 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
             return i;
         };
 
-        /// RIGHT/FULL always mark per row (the call site passes flag_per_row = true for them);
-        /// for LEFT/INNER it depends on the disjunct count at runtime.
+        /// RIGHT/FULL always mark per row, so fold the branch and drop the dead `KnownRowsHolder<false>`.
         if constexpr (join_features.right || join_features.full)
         {
             chassert(flag_per_row);
