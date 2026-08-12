@@ -106,11 +106,17 @@ ALWAYS_INLINE auto makeJoinPrefetcher(bool use_prefetch, size_t total, PrefetchA
         use_prefetch, total, std::forward<PrefetchAction>(prefetch_action)};
 }
 
+/// True when the clause drops rows: NULL keys or a non-trivial ON condition.
+inline ALWAYS_INLINE bool clauseSkipsRows(const JoinOnKeyColumns & keys)
+{
+    return keys.null_map || keys.join_mask_column.getKind() != JoinCommon::JoinMask::Kind::AllTrue;
+}
+
 /// Per-row skip bytes for one ON clause; nullptr when the clause skips nothing.
 template <typename Sel>
 ALWAYS_INLINE const UInt8 * buildClauseSkipData(const JoinOnKeyColumns & keys, IColumn::Filter & buffer, const Sel & sel, size_t rows)
 {
-    if (!keys.null_map && keys.join_mask_column.getKind() == JoinCommon::JoinMask::Kind::AllTrue)
+    if (!clauseSkipsRows(keys))
         return nullptr;
     if constexpr (std::is_same_v<std::decay_t<Sel>, ScatteredBlock::Indexes>)
         return keys.buildRowSkipData(buffer, sel);
@@ -131,7 +137,7 @@ ALWAYS_INLINE void buildClauseSkipDatas(
     bool any_skip = false;
     for (size_t d = 0; d < num_clauses; ++d)
     {
-        if (join_on_keys[d].null_map || join_on_keys[d].join_mask_column.getKind() != JoinCommon::JoinMask::Kind::AllTrue)
+        if (clauseSkipsRows(join_on_keys[d]))
         {
             any_skip = true;
             break;
@@ -203,7 +209,7 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         break; \
     }
 
-        UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
+            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
     }
 }
@@ -565,18 +571,23 @@ ALWAYS_INLINE const MappedValue * mappedFromOutcomeWord(UInt64 word, MappedValue
 }
 
 /// One default/miss row: ANTI LEFT marks the filter; the replication offset follows at the caller.
-template <bool anti_left, bool add_missing, bool need_replication, bool need_filter, typename AddedColumns>
+template <
+    JoinKind KIND, // NOLINT(readability-identifier-naming)
+    JoinStrictness STRICTNESS, // NOLINT(readability-identifier-naming)
+    bool need_filter,
+    typename MapsTemplate,
+    typename AddedColumns>
 ALWAYS_INLINE void addMissRow(AddedColumns & added_columns, size_t row, IColumn::Offset & current_offset)
 {
-    if constexpr (anti_left)
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    if constexpr (join_features.is_anti_join && join_features.left)
         setUsed<need_filter>(added_columns.filter, row, added_columns.matched_rows);
-    addNotFoundRow<add_missing, need_replication>(added_columns, current_offset);
+    addNotFoundRow<join_features.add_missing, join_features.need_replication>(added_columns, current_offset);
 }
 
-/** The per-match KIND × STRICTNESS ladder shared by the single-clause consume and the
-  * clause-major emit. Call-site differences arrive as parameters: `flag_per_row` (single-map
-  * probe = false, multi-clause emit = true), `known_rows` (dummy when no per-row limit exists),
-  * `is_last_disjunct` (true for a single clause), `ind` (probe row for ASOF, 0 otherwise).
+/** The per-match KIND × STRICTNESS ladder, shared by the single-clause consume and the
+  * clause-major emit. `ind` is the source row and is read only by ASOF. With a single disjunct
+  * nothing can be a duplicate, so that caller passes the no-op `KnownRowsHolder<false>`.
   */
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
@@ -585,8 +596,7 @@ template <
     bool flag_per_row,
     typename MapsTemplate,
     typename FindResult,
-    typename AddedColumns,
-    typename KnownRows>
+    typename AddedColumns>
 ALWAYS_INLINE void matchFoundRow(
     FindResult & find_result,
     AddedColumns & added_columns,
@@ -594,7 +604,7 @@ ALWAYS_INLINE void matchFoundRow(
     size_t row,
     size_t ind,
     IColumn::Offset & current_offset,
-    KnownRows & known_rows,
+    KnownRowsHolder<flag_per_row> & known_rows,
     bool is_last_disjunct)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
@@ -647,7 +657,7 @@ ALWAYS_INLINE void matchFoundRow(
     }
     else if constexpr (join_features.is_any_join && join_features.full)
     {
-        /// TODO
+        /// Unreachable: ANY FULL JOIN is rejected in `TreeRewriter` with `NOT_IMPLEMENTED`.
     }
     else if constexpr (join_features.is_anti_join)
     {
@@ -664,7 +674,6 @@ ALWAYS_INLINE void matchFoundRow(
 
 /** Emit from recorded `ProbeOutcomes` (no HT / skip re-check; skips already recorded as misses).
   * Keyed on Mapped, not Map/KeyGetter, so emit is not ×32 key types.
-  * `selector` is non-null only for ASOF, which needs the probe row's asof key.
   */
 template <
     JoinKind KIND, // NOLINT(readability-identifier-naming)
@@ -683,7 +692,9 @@ ALWAYS_INLINE void consumeProbeBatchImpl(
     IColumn::Offset & current_offset)
 {
     constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
-    static_assert(join_features.is_asof_join != std::is_same_v<Selector, std::nullptr_t>);
+    static_assert(
+        join_features.is_asof_join != std::is_same_v<Selector, std::nullptr_t>,
+        "the selector is passed for ASOF only, which needs the probe row for its asof key");
     static constexpr bool flag_per_row = false; /// the two-phase probe is single-map only
 
     using Mapped = const MapsTemplate::MappedType;
@@ -711,21 +722,16 @@ ALWAYS_INLINE void consumeProbeBatchImpl(
             if constexpr (join_features.need_flags)
                 offset = offsets[j];
 
-            /// Rebuild mapped on the stack from the recorded word; cell is not touched again.
             MappedValue mapped_value_storage{};
             Mapped * mapped_ptr = mappedFromOutcomeWord<MappedValue>(word, mapped_value_storage);
             FindResult find_result(mapped_ptr, true, offset);
 
             matchFoundRow<KIND, STRICTNESS, need_filter, flag_per_row, MapsTemplate>(
-                find_result, added_columns, used_flags, i, ind, current_offset, dummy_known_rows, /*is_last_disjunct=*/true);
+                find_result, added_columns, used_flags, /*row=*/i, ind, current_offset, dummy_known_rows, /*is_last_disjunct=*/true);
         }
 
         if (!right_row_found)
-            addMissRow<
-                join_features.is_anti_join && join_features.left,
-                join_features.add_missing,
-                join_features.need_replication,
-                need_filter>(added_columns, i, current_offset);
+            addMissRow<KIND, STRICTNESS, need_filter, MapsTemplate>(added_columns, i, current_offset);
 
         if constexpr (join_features.need_replication)
             added_columns.offsets_to_replicate[i] = current_offset;
@@ -1001,11 +1007,7 @@ NO_INLINE size_t emitBatch(
         }
 
         if (!right_row_found)
-            addMissRow<
-                join_features.is_anti_join && join_features.left,
-                join_features.add_missing,
-                join_features.need_replication,
-                need_filter>(added_columns, row, current_offset);
+            addMissRow<KIND, STRICTNESS, need_filter, MapsTemplate>(added_columns, row, current_offset);
 
         if constexpr (join_features.need_replication)
             added_columns.offsets_to_replicate.push_back(current_offset);
