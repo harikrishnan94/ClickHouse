@@ -437,8 +437,8 @@ HashJoin::HashJoin(
     map_reserve_bytes_cap = table_join->maxBytesBeforeExternalJoin();
     slot_space_reserved.assign(data->maps.size(), std::vector<char>(num_slots, 0));
 
-    /// `bucket_bytes` tracks insert deltas only; do not seed it from empty map buffers here or
-    /// `SpillingHashJoin` sees ~1 MiB before the first row and spills immediately.
+    /// Maps allocate their empty buffers in create(); insert deltas only track later growth, so seed that footprint here.
+    recomputeBucketBytes();
 
     if (table_join->getMixedJoinExpression())
     {
