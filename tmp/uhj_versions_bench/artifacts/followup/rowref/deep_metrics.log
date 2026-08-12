@@ -1,0 +1,58 @@
+baseline q64: hot run 0.432s
+--- pass 1: core counters ---
+
+ Performance counter stats for process id '3544024':
+
+      943320077358      cpu_cycles                                                            
+     1278332290097      inst_retired                                                          
+       47013197670      stall_frontend                                                        
+      646790978946      stall_backend                                                         
+      553982609766      stall_backend_mem                                                     
+        2201381695      br_mis_pred_retired                                                   
+
+      30.004281515 seconds time elapsed
+
+--- pass 2: memory counters ---
+
+ Performance counter stats for process id '3544024':
+
+     1003785525533      cpu_cycles                                                            
+      421247932316      mem_access                                                            
+       15745972305      l1d_cache_refill                                                      
+        8606513299      l2d_cache_refill                                                      
+       13131440707      ll_cache_miss_rd                                                      
+        3985033504      dtlb_walk                                                             
+
+      30.004578298 seconds time elapsed
+
+--- pass 3: per-symbol attribution + annotation ---
+### cpu_cycles: share of samples per symbol (top 6)
+uhj q64: hot run 0.496s
+--- pass 1: core counters ---
+
+ Performance counter stats for process id '3547260':
+
+     1070819547406      cpu_cycles                                                            
+     1223031679014      inst_retired                                                          
+       35532124797      stall_frontend                                                        
+      799329491408      stall_backend                                                         
+      681845599169      stall_backend_mem                                                     
+        1930450206      br_mis_pred_retired                                                   
+
+      30.004538219 seconds time elapsed
+
+--- pass 2: memory counters ---
+
+ Performance counter stats for process id '3547260':
+
+     1074336071302      cpu_cycles                                                            
+      379699529650      mem_access                                                            
+       12668764057      l1d_cache_refill                                                      
+        7011818908      l2d_cache_refill                                                      
+       11147231677      ll_cache_miss_rd                                                      
+        3287953132      dtlb_walk                                                             
+
+      30.004613948 seconds time elapsed
+
+--- pass 3: per-symbol attribution + annotation ---
+### cpu_cycles: share of samples per symbol (top 6)

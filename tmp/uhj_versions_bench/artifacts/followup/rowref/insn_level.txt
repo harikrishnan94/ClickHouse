@@ -1,0 +1,30 @@
+disassembly identical (modulo branch addresses): True; 200 instructions
+
+===== cpu_cycles: samples inside RowRefList::insert  baseline=668879  uhj=836125 =====
+   off    base%    uhj%    delta  instruction
+0x0170   57.27%  39.21%  -18.06%  cmp	x9, #0x5
+0x0058   29.04%  26.34%   -2.70%  ubfx	x10, x8, #1, #7
+0x0054    2.51%  26.26%  +23.75%  lsr	x9, x8, #8
+0x016c    4.78%   3.06%   -1.73%  ubfx	x9, x8, #1, #7
+
+===== l1d_cache_refill: samples inside RowRefList::insert  baseline=282551  uhj=265776 =====
+   off    base%    uhj%    delta  instruction
+0x0170   58.34%  38.85%  -19.49%  cmp	x9, #0x5
+0x0058   29.77%  26.44%   -3.33%  ubfx	x10, x8, #1, #7
+0x0054    1.72%  28.48%  +26.75%  lsr	x9, x8, #8
+0x016c    3.62%   1.82%   -1.80%  ubfx	x9, x8, #1, #7
+
+===== ll_cache_miss_rd: samples inside RowRefList::insert  baseline=532270  uhj=526493 =====
+   off    base%    uhj%    delta  instruction
+0x0170   61.87%  44.46%  -17.41%  cmp	x9, #0x5
+0x0058   26.32%  25.02%   -1.30%  ubfx	x10, x8, #1, #7
+0x0054    1.55%  24.00%  +22.44%  lsr	x9, x8, #8
+0x016c    3.56%   1.73%   -1.83%  ubfx	x9, x8, #1, #7
+
+===== dtlb_walk: samples inside RowRefList::insert  baseline=250806  uhj=222355 =====
+   off    base%    uhj%    delta  instruction
+0x0170   52.94%  30.26%  -22.68%  cmp	x9, #0x5
+0x0058   39.15%  33.80%   -5.35%  ubfx	x10, x8, #1, #7
+0x0054    2.52%  32.52%  +30.00%  lsr	x9, x8, #8
+0x016c    2.57%   1.07%   -1.50%  ubfx	x9, x8, #1, #7
+

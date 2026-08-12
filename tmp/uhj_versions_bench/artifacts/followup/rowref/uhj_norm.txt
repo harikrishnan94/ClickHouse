@@ -1,0 +1,203 @@
+Disassembly of section .text:
+<_ZN2DB10RowRefList6insertEmRNS_5ArenaE>:
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x20>
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	stp	x29, x30, [sp, #-0x40]!
+               	stp	x24, x23, [sp, #0x10]
+               	stp	x22, x21, [sp, #0x20]
+               	stp	x20, x19, [sp, #0x30]
+               	mov	x29, sp
+               	ldr	x8, [x0]
+               	mov	x19, x0
+               	mov	x20, x1
+               	cbz	x8,  <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x12c>
+               	mov	x21, x2
+               	tbnz	x8, #0x3f,  <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x94>
+               	and	x22, x8, #
+               	ldr	x8, [x22]
+               	lsr	x9, x8, #8
+               	ubfx	x10, x8, #1, #7
+               	cmp	x10, x9
+               	add	x23, x9, #0x1
+               	b.ne	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x164>
+               	cmp	x8, #0x6ff
+               	b.hi	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x194>
+               	add	w10, w8, #0x2
+               	mov	w11, #0x701             // =1793
+               	add	x9, x22, x9, lsl #3
+               	and	x10, x10, #0xfe
+               	and	x8, x8, x11
+               	orr	x8, x10, x8
+               	str	x20, [x9, #0x8]
+               	str	x8, [x22]
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x2c8>
+               	ldr	x9, [x21, #0x48]
+               	ldr	x10, [x21, #0x20]
+               	ldr	x8, [x21, #0x30]
+               	add	x9, x9, #0x40
+               	cmp	x10, x8
+               	str	x9, [x21, #0x48]
+               	b.eq	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0xe8>
+               	ldr	x9, [x21, #0x28]
+               	sub	x8, x8, x9
+               	cmp	x8, #0x3f
+               	b.ls	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0xe8>
+               	ldp	x10, x8, [x21, #0x28]
+               	sub	x8, x8, x10
+               	subs	x11, x8, #0x40
+               	b.lo	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0xe8>
+               	add	x9, x10, #0x7
+               	and	x8, x9, #
+               	cbz	x8,  <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0xe8>
+               	sub	x10, x8, x10
+               	cmp	x10, x11
+               	b.ls	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x108>
+               	mov	x0, x21
+               	mov	w1, #0x48               // =72
+               	bl	 <__AArch64ADRPThunk__ZN2DB5Arena14addMemoryChunkEm>
+               	ldp	x10, x8, [x21, #0x28]
+               	sub	x8, x8, x10
+               	subs	x11, x8, #0x40
+               	b.lo	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0xe8>
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0xd0>
+               	add	x10, x8, #0x40
+               	mov	w11, #0x204             // =516
+               	lsr	x9, x9, #48
+               	str	x10, [x21, #0x28]
+               	str	x11, [x8]
+               	ldr	x10, [x19]
+               	stp	x10, x20, [x8, #0x8]
+               	cbnz	x9,  <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x31c>
+               	orr	x20, x8, #
+               	str	x20, [x19]
+               	ldp	x20, x19, [sp, #0x30]
+               	ldp	x22, x21, [sp, #0x20]
+               	ldp	x24, x23, [sp, #0x10]
+               	ldp	x29, x30, [sp], #0x40
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x160>
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	ret
+               	ldr	x24, [x22, #0x38]
+               	ldr	x8, [x24]
+               	ubfx	x9, x8, #1, #7
+               	cmp	x9, #0x5
+               	b.hi	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x208>
+               	add	w10, w8, #0x2
+               	add	x9, x24, x9, lsl #3
+               	lsr	x10, x10, #1
+               	str	x20, [x9, #0x10]
+               	bfi	x8, x10, #1, #7
+               	str	x8, [x24]
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x2c8>
+               	ldr	x9, [x21, #0x48]
+               	ldr	x10, [x21, #0x20]
+               	ldr	x8, [x21, #0x30]
+               	add	x9, x9, #0x40
+               	cmp	x10, x8
+               	str	x9, [x21, #0x48]
+               	b.eq	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x1e8>
+               	ldr	x9, [x21, #0x28]
+               	sub	x8, x8, x9
+               	cmp	x8, #0x3f
+               	b.ls	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x1e8>
+               	ldp	x9, x8, [x21, #0x28]
+               	sub	x8, x8, x9
+               	subs	x10, x8, #0x40
+               	b.lo	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x1e8>
+               	add	x8, x9, #0x7
+               	and	x8, x8, #
+               	cbz	x8,  <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x1e8>
+               	sub	x9, x8, x9
+               	cmp	x9, x10
+               	b.ls	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x27c>
+               	mov	x0, x21
+               	mov	w1, #0x48               // =72
+               	bl	 <__AArch64ADRPThunk__ZN2DB5Arena14addMemoryChunkEm>
+               	ldp	x9, x8, [x21, #0x28]
+               	sub	x8, x8, x9
+               	subs	x10, x8, #0x40
+               	b.lo	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x1e8>
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x1d0>
+               	ldr	x9, [x21, #0x48]
+               	ldr	x10, [x21, #0x20]
+               	ldr	x8, [x21, #0x30]
+               	add	x9, x9, #0x40
+               	cmp	x10, x8
+               	str	x9, [x21, #0x48]
+               	b.eq	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x25c>
+               	ldr	x9, [x21, #0x28]
+               	sub	x8, x8, x9
+               	cmp	x8, #0x3f
+               	b.ls	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x25c>
+               	ldp	x9, x8, [x21, #0x28]
+               	sub	x8, x8, x9
+               	subs	x10, x8, #0x40
+               	b.lo	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x25c>
+               	add	x8, x9, #0x7
+               	and	x8, x8, #
+               	cbz	x8,  <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x25c>
+               	sub	x9, x8, x9
+               	cmp	x9, x10
+               	b.ls	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x2b0>
+               	mov	x0, x21
+               	mov	w1, #0x48               // =72
+               	bl	 <__AArch64ADRPThunk__ZN2DB5Arena14addMemoryChunkEm>
+               	ldp	x9, x8, [x21, #0x28]
+               	sub	x8, x8, x9
+               	subs	x10, x8, #0x40
+               	b.lo	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x25c>
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x244>
+               	adrp	x9,  <_ZZN12_GLOBAL__N_126AArch64InstructionSelector18selectIndexedStoreERN4llvm13GIndexedStoreERNS1_19MachineRegisterInfoEE10GPROpcodes+0x6e0>
+               	add	x10, x8, #0x40
+               	ldr	q0, [x9, #0x250]
+               	str	x10, [x21, #0x28]
+               	str	q0, [x8]
+               	ldr	x9, [x22, #0x38]
+               	stp	x9, x20, [x8, #0x10]
+               	ldr	x9, [x22]
+               	str	x8, [x22, #0x38]
+               	and	x9, x9, #
+               	orr	x8, x9, #0xc
+               	str	x8, [x22]
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x2c8>
+               	add	x9, x8, #0x40
+               	mov	w10, #0x2               // =2
+               	str	x20, [x8, #0x10]
+               	str	x9, [x21, #0x28]
+               	stp	x10, x24, [x8]
+               	str	x8, [x22, #0x38]
+               	mov	w9, #0x7fff             // =32767
+               	ldrb	w8, [x22]
+               	cmp	x23, x9
+               	csel	x9, x23, x9, lo
+               	orr	x8, x8, x23, lsl #8
+               	orr	x20, x22, x9, lsl #48
+               	str	x8, [x22]
+               	str	x20, [x19]
+               	ldp	x20, x19, [sp, #0x30]
+               	ldp	x22, x21, [sp, #0x20]
+               	ldp	x24, x23, [sp, #0x10]
+               	ldp	x29, x30, [sp], #0x40
+               	b	 <_ZN2DB10RowRefList6insertEmRNS_5ArenaE+0x318>
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	nop
+               	ret
+               	bl	 <_ZN2DB26throwRowRefPointerTooLargeEv>
+		...

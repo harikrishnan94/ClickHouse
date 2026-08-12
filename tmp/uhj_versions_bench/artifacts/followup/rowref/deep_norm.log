@@ -1,0 +1,56 @@
+=== baseline q64 ===
+ITERS_core=61
+
+ Performance counter stats for process id '3553416':
+
+      997307137126      cpu_cycles                                                            
+     1368540638201      inst_retired                                                          
+       51052638639      stall_frontend                                                        
+      679496709454      stall_backend                                                         
+      578116721649      stall_backend_mem                                                     
+        2282020689      br_mis_pred_retired                                                   
+
+      30.003924053 seconds time elapsed
+
+ITERS_mem=61
+
+ Performance counter stats for process id '3553416':
+
+      999001363331      cpu_cycles                                                            
+      417310782204      mem_access                                                            
+       15717630443      l1d_cache_refill                                                      
+        8583755769      l2d_cache_refill                                                      
+       13127799472      ll_cache_miss_rd                                                      
+        3978731025      dtlb_walk                                                             
+
+      30.004655844 seconds time elapsed
+
+NORM_DONE baseline
+=== uhj q64 ===
+ITERS_core=52
+
+ Performance counter stats for process id '3555789':
+
+     1064697561430      cpu_cycles                                                            
+     1219821910399      inst_retired                                                          
+       35909252778      stall_frontend                                                        
+      793404091264      stall_backend                                                         
+      676825469031      stall_backend_mem                                                     
+        1928762698      br_mis_pred_retired                                                   
+
+      30.004672723 seconds time elapsed
+
+ITERS_mem=52
+
+ Performance counter stats for process id '3555789':
+
+     1068529164776      cpu_cycles                                                            
+      376822225629      mem_access                                                            
+       12703052377      l1d_cache_refill                                                      
+        7018336858      l2d_cache_refill                                                      
+       11139980701      ll_cache_miss_rd                                                      
+        3286536079      dtlb_walk                                                             
+
+      30.004659281 seconds time elapsed
+
+NORM_DONE uhj

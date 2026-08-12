@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '3553416':
+
+      999001363331      cpu_cycles                                                            
+      417310782204      mem_access                                                            
+       15717630443      l1d_cache_refill                                                      
+        8583755769      l2d_cache_refill                                                      
+       13127799472      ll_cache_miss_rd                                                      
+        3978731025      dtlb_walk                                                             
+
+      30.004655844 seconds time elapsed
+

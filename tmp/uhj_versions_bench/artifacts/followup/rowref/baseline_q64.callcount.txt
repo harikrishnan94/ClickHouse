@@ -1,0 +1,7 @@
+
+ Performance counter stats for process id '3539111':
+
+          34494831      probe_clickhouse:rrl_baseline                                         
+
+       4.746511452 seconds time elapsed
+

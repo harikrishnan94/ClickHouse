@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '3555789':
+
+     1064697561430      cpu_cycles                                                            
+     1219821910399      inst_retired                                                          
+       35909252778      stall_frontend                                                        
+      793404091264      stall_backend                                                         
+      676825469031      stall_backend_mem                                                     
+        1928762698      br_mis_pred_retired                                                   
+
+      30.004672723 seconds time elapsed
+

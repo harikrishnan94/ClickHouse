@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '3547260':
+
+     1074336071302      cpu_cycles                                                            
+      379699529650      mem_access                                                            
+       12668764057      l1d_cache_refill                                                      
+        7011818908      l2d_cache_refill                                                      
+       11147231677      ll_cache_miss_rd                                                      
+        3287953132      dtlb_walk                                                             
+
+      30.004613948 seconds time elapsed
+

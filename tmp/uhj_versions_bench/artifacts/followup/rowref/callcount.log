@@ -1,0 +1,30 @@
+adding uprobe on _ZN2DB10RowRefList6insertEmRNS_5ArenaE in /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/bin/clickhouse-baseline
+
+	perf record -e probe_clickhouse:rrl_baseline -aR sleep 1
+
+probe = probe_clickhouse:rrl_baseline
+counting calls for ONE execution (uprobe traps make this slow)...
+=== baseline q64 RowRefList::insert call count ===
+
+ Performance counter stats for process id '3539111':
+
+          34494831      probe_clickhouse:rrl_baseline                                         
+
+       4.746511452 seconds time elapsed
+
+CALLCOUNT_DONE baseline
+adding uprobe on _ZN2DB10RowRefList6insertEmRNS_5ArenaE in /mnt/ch/ClickHouse/tmp/uhj_versions_bench/work/bin/clickhouse-uhj
+
+	perf record -e probe_clickhouse:rrl_uhj -aR sleep 1
+
+probe = probe_clickhouse:rrl_uhj
+counting calls for ONE execution (uprobe traps make this slow)...
+=== uhj q64 RowRefList::insert call count ===
+
+ Performance counter stats for process id '3541319':
+
+          34494831      probe_clickhouse:rrl_uhj                                              
+
+       4.635416267 seconds time elapsed
+
+CALLCOUNT_DONE uhj

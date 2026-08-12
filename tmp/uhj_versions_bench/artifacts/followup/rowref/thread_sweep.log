@@ -1,0 +1,12 @@
+baseline max_threads=1:  5.101 5.068 5.071
+baseline max_threads=2:  2.859 2.864 2.779
+baseline max_threads=4:  1.437 1.404 1.420
+baseline max_threads=8:  0.755 0.740 0.739
+baseline max_threads=16:  0.406 0.409 0.402
+SWEEP_DONE baseline
+uhj max_threads=1:  6.178 6.053 6.192
+uhj max_threads=2:  3.775 3.771 3.700
+uhj max_threads=4:  1.870 1.851 1.865
+uhj max_threads=8:  0.967 0.956 0.967
+uhj max_threads=16:  0.499 0.506 0.492
+SWEEP_DONE uhj
