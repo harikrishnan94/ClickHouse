@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Same counters as deep_metrics.sh, but the loop counts its own iterations so every
-# counter can be reported per query rather than per 30s window.
+# Is the build-phase software prefetch actually paying off on each arm?
+#
+# Both build loops call map.prefetch() through the same helper, but it only fires when
+# shouldUseJoinPrefetch() says the map is big enough. If uhj's per-slot maps fall under that
+# threshold, uhj issues the same loads with no prefetch - which is exactly "same misses, less
+# overlap". Toggling the setting separates the two cases:
+#   baseline slows to uhj's level with prefetch off AND uhj does not move  -> uhj is not prefetching
+#   both slow by the same factor                                          -> prefetch is not the cause
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="${HERE}/work"; OUT="${WORK}/deep"; WRAP="${HERE}/cgroup_wrap.sh"
+WORK="${HERE}/work"; WRAP="${HERE}/cgroup_wrap.sh"
 VB="${CLICKBENCH_VERSIONS:-/mnt/ch/ClickBench-master/versions}"
-PORT=19010; SAMPLE="${SAMPLE:-30}"; mkdir -p "${OUT}"
-ARM="${ARM:?}"; QIDX="${QIDX:-64}"
+PORT=19010; QIDX="${QIDX:-64}"
+ARM="${ARM:?}"
 EXTRA=(--collect_hash_table_stats_during_joins=0)
-[ -n "${PF:-}" ] && EXTRA+=(--enable_software_prefetch_in_join=${PF})
-TAG="${TAG:-}"
 case "${ARM}" in
     baseline) BIN="${WORK}/bin/clickhouse-baseline"; JOIN_XML="" ;;
     uhj)      BIN="${WORK}/bin/clickhouse-uhj";      JOIN_XML='<join_algorithm>unified_hash</join_algorithm>' ;;
@@ -47,33 +51,19 @@ start_server() {
     server_alive || { echo "server did not start"; exit 1; }
 }
 Q="$(sed -n "${QIDX}p" "${VB}/queries/job.sql")"; Q="${Q%;}"
-BASE="${OUT}/${ARM}${TAG}_q${QIDX}"
-
-run_pass() {  # run_pass <tag> <event-group>
-    local tag="$1" events="$2" cnt=0
-    local cf="${BASE}.${tag}.iters"
-    : > "${cf}"
-    ( n=0; end=$((SECONDS + SAMPLE + 8))
-      while [ ${SECONDS} -lt ${end} ]; do
-          client --database job --format=Null "${EXTRA[@]}" --query "${Q}" >/dev/null 2>&1 && n=$((n+1))
-          echo "${n}" > "${cf}"
-      done ) &
-    local loop=$!
-    sleep 2                      # let the loop reach steady state before counting
-    cnt=$(cat "${cf}" 2>/dev/null || echo 0)
-    sudo perf stat -p "$(pgrep -f "${BIN} server" | head -1)" -e "${events}" \
-        -- sleep "${SAMPLE}" 2> "${BASE}.${tag}.txt" || true
-    local cnt2; cnt2=$(cat "${cf}" 2>/dev/null || echo 0)
-    kill "${loop}" 2>/dev/null || true; wait "${loop}" 2>/dev/null || true
-    echo "ITERS_${tag}=$((cnt2 - cnt))"
-    echo "$((cnt2 - cnt))" > "${BASE}.${tag}.itercount"
-    cat "${BASE}.${tag}.txt"
-}
-
 start_server
-for i in 1 2 3; do client --database job --format=Null "${EXTRA[@]}" --query "${Q}" >/dev/null 2>&1 || true; done
-echo "=== ${ARM} q${QIDX} ==="
-run_pass core '{cpu_cycles,inst_retired,stall_frontend,stall_backend,stall_backend_mem,br_mis_pred_retired}'
-run_pass mem  '{cpu_cycles,mem_access,l1d_cache_refill,l2d_cache_refill,ll_cache_miss_rd,dtlb_walk}'
+for mt in 16 1; do
+  for pf in 1 0; do
+    client --database job --format=Null "${EXTRA[@]}" --max_threads=$mt \
+        --enable_software_prefetch_in_join=$pf --query "${Q}" >/dev/null 2>&1 || true
+    out=""
+    for i in 1 2 3; do
+        t=$(client --database job --time --format=Null "${EXTRA[@]}" --max_threads=$mt \
+              --enable_software_prefetch_in_join=$pf --query "${Q}" 2>&1 | tail -1)
+        out="${out} ${t}"
+    done
+    echo "${ARM} max_threads=${mt} prefetch=${pf}:${out}"
+  done
+done
 stop_server
-echo "NORM_DONE ${ARM}"
+echo "PFTEST_DONE ${ARM}"

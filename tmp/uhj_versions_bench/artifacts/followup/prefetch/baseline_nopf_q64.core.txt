@@ -1,0 +1,12 @@
+
+ Performance counter stats for process id '3627248':
+
+     1059449762012      cpu_cycles                                                            
+     1082180348176      inst_retired                                                          
+       40954967587      stall_frontend                                                        
+      804942928903      stall_backend                                                         
+      685368063321      stall_backend_mem                                                     
+        1785663119      br_mis_pred_retired                                                   
+
+      30.004527831 seconds time elapsed
+

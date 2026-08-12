@@ -1,0 +1,10 @@
+baseline max_threads=16 prefetch=1: 0.412 0.399 0.397
+baseline max_threads=16 prefetch=0: 0.539 0.536 0.537
+baseline max_threads=1 prefetch=1: 5.043 5.096 5.060
+baseline max_threads=1 prefetch=0: 7.340 7.325 7.345
+PFTEST_DONE baseline
+uhj max_threads=16 prefetch=1: 0.503 0.495 0.497
+uhj max_threads=16 prefetch=0: 0.550 0.559 0.547
+uhj max_threads=1 prefetch=1: 6.087 6.051 6.118
+uhj max_threads=1 prefetch=0: 6.499 6.629 6.530
+PFTEST_DONE uhj

@@ -1,5 +1,10 @@
 # Why `RowRefList::insert` costs more under uhj — JOB q64
 
+> **Answered in `UHJ_PREFETCH.md`.** The open question below ("why deref #1 misses
+> more") resolved to software prefetch: uhj captures only ~25% of the prefetch benefit
+> baseline gets, and with prefetch disabled uhj is 11% *faster*. The slot-layout guess
+> at the end of this document was wrong.
+
 Same code, same calls, same misses. uhj spends **+37% memory-stall cycles** servicing an
 **identical number of last-level misses**, because the misses move to a dependency position
 where they cannot overlap.

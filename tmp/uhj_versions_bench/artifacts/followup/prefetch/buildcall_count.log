@@ -1,0 +1,8 @@
+baseline symbol: _ZN2DB15HashJoinMethodsILNS_8JoinKindE0ELNS_14JoinStrictnessE3ENS_8Has...
+uhj symbol: _ZN2DB7Unified15HashJoinMethodsILNS_8JoinKindE0ELNS_14JoinStrictnessE3...
+=== baseline build-loop entries per query ===
+              9537      probe_clickhouse:bld_baseline                                         
+       0.510667296 seconds time elapsed
+=== uhj build-loop entries per query ===
+             11568      probe_clickhouse:bld_uhj                                              
+       0.593105909 seconds time elapsed

@@ -1,0 +1,28 @@
+=== baseline q64 ===
+ITERS_core=47
+
+ Performance counter stats for process id '3627248':
+
+     1059449762012      cpu_cycles                                                            
+     1082180348176      inst_retired                                                          
+       40954967587      stall_frontend                                                        
+      804942928903      stall_backend                                                         
+      685368063321      stall_backend_mem                                                     
+        1785663119      br_mis_pred_retired                                                   
+
+      30.004527831 seconds time elapsed
+
+ITERS_mem=48
+
+ Performance counter stats for process id '3627248':
+
+     1061183745914      cpu_cycles                                                            
+      338763941922      mem_access                                                            
+       13871271908      l1d_cache_refill                                                      
+        6596832371      l2d_cache_refill                                                      
+       10542797409      ll_cache_miss_rd                                                      
+        3099804904      dtlb_walk                                                             
+
+      30.004782895 seconds time elapsed
+
+NORM_DONE baseline
