@@ -3637,11 +3637,11 @@ Possible values:
 
  When using the `hash` algorithm, the right part of `JOIN` is uploaded into RAM.
 
- `hash` and `parallel_hash` are aliases of the same join class. The in-memory layout (1-bucket vs 256-bucket maps, and how many slots scatter work) is chosen from the join kind, `parallel_hash_join_threshold`, and `max_threads`.
+ `hash` and `parallel_hash` are aliases of the same join class. Listing one or the other does not control how parallel the join is. Parallelism is chosen automatically from the join kind, `parallel_hash_join_threshold`, and `max_threads`.
 
 - parallel_hash
 
- Same class and layout policy as `hash`.
+ Same as `hash`.
 
 - partial_merge
 
@@ -8174,8 +8174,8 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
 Throw an exception instead of logging a warning when Hive-style partitioning detection for an object storage table fails to list the storage. When disabled, the query runs without the Hive partition columns, which may change its result.
 )", 0) \
     DECLARE(UInt64, parallel_hash_join_threshold, 100'000, R"(
-When a hash-based join algorithm is applied, this threshold picks the in-memory layout (only if an estimate of the right table size is available).
-Below the threshold, the join uses 1-bucket maps; at or above it, 256-bucket maps and slot scatter (when `max_threads` > 1).
+When a hash join is used and an estimate of the right table size is available, this threshold decides whether the join may run in parallel.
+Below the threshold, the join runs with a simpler single-threaded execution; at or above it, it can use multiple threads (when `max_threads` > 1).
 )", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.

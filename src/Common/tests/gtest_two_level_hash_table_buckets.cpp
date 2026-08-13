@@ -265,7 +265,7 @@ TEST(TwoLevelHashTableBuckets, OffsetInternalIsUniquePerCell)
 TEST(TwoLevelHashTableBuckets, OffsetInternalUnsafeMatchesSafeAfterComputeBucketPrefix)
 {
     /// `computeBucketPrefix()` + `offsetInternalUnsafe()` is the hot-loop pattern
-    /// (`Unified::HashJoin::freezeMapsForProbing` then the probe): compute the prefix sums once when
+    /// (`HashJoin::freezeMapsForProbing` then the probe): compute the prefix sums once when
     /// the build ends, then look up offsets without paying the "already computed" check
     /// `offsetInternal()` makes on every call. The two must agree.
     RoutedMap map;
