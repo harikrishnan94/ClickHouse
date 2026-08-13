@@ -63,7 +63,7 @@ SpillingHashJoin::SpillingHashJoin(
 
 SpillingHashJoin::~SpillingHashJoin() = default;
 
-void SpillingHashJoin::tryConvertChunks()
+void SpillingHashJoin::tryConvertChunks(size_t worker_id)
 {
     chassert(in_memory_hash_join);
     chassert(grace_join);
@@ -82,7 +82,7 @@ void SpillingHashJoin::tryConvertChunks()
         auto blocks = in_memory_hash_join->releaseJoinedBlocksChunk(chunk);
         while (!blocks.empty())
         {
-            grace_join->addBlockToJoin(blocks.front(), /*check_limits=*/false);
+            grace_join->addBlockToJoin(blocks.front(), blocks.front().rows(), worker_id, /*check_limits=*/false);
             blocks.pop_front();
         }
     }
@@ -93,15 +93,15 @@ std::string SpillingHashJoin::getName() const
     return fmt::format("SpillingHashJoin({})", in_memory_hash_join->getName());
 }
 
-bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
+bool SpillingHashJoin::addBlockToJoin(const Block & block, size_t num_rows, size_t worker_id, bool check_limits)
 {
     /// Fast path: already switched to GraceHashJoin (no lock needed).
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
     {
         /// Help convert HashJoin worker chunks while in GRACE_HASH_JOIN state.
         if (in_memory_hash_join)
-            tryConvertChunks();
-        return chosen_join->addBlockToJoin(block, check_limits);
+            tryConvertChunks(worker_id);
+        return chosen_join->addBlockToJoin(block, num_rows, worker_id, check_limits);
     }
 
     /// The hash table buffer grows in power-of-two steps. Doubling from X to 2X allocates the new
@@ -112,23 +112,23 @@ bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
     /// the switch the live buffer (already at half) plus the conversion peak still fit under the
     /// configured cap.
     if (collectingJoin().getTotalByteCount() * 2 >= max_bytes_before_external_join)
-        switchToGraceHashJoin();
+        switchToGraceHashJoin(worker_id);
 
     /// Re-check: we may have just switched.
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
-        return chosen_join->addBlockToJoin(block, check_limits);
+        return chosen_join->addBlockToJoin(block, num_rows, worker_id, check_limits);
 
     /// Shared lock: several threads may be adding blocks concurrently, and it keeps them out of a
     /// join that switchToGraceHashJoin is draining.
     std::shared_lock lock(switch_mutex);
 
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
-        return chosen_join->addBlockToJoin(block, check_limits);
+        return chosen_join->addBlockToJoin(block, num_rows, worker_id, check_limits);
 
-    return collectingJoin().addBlockToJoin(block, check_limits);
+    return collectingJoin().addBlockToJoin(block, num_rows, worker_id, check_limits);
 }
 
-void SpillingHashJoin::switchToGraceHashJoin()
+void SpillingHashJoin::switchToGraceHashJoin(size_t worker_id)
 {
     {
         std::unique_lock lock(switch_mutex);
@@ -152,7 +152,8 @@ void SpillingHashJoin::switchToGraceHashJoin()
             std::make_shared<const Block>(right_sample_block),
             tmp_data,
             any_take_last_row,
-            max_bytes_before_external_join);
+            max_bytes_before_external_join,
+            max_threads);
 
         grace_join->initialize(*left_sample_block);
         chosen_join = grace_join;
@@ -160,7 +161,7 @@ void SpillingHashJoin::switchToGraceHashJoin()
         state.store(State::GRACE_HASH_JOIN, std::memory_order_release);
     }
 
-    tryConvertChunks();
+    tryConvertChunks(worker_id);
     in_memory_hash_join->releaseJoinSideStorage();
 }
 
@@ -175,7 +176,7 @@ void SpillingHashJoin::onBuildPhaseFinish()
         const size_t total_bytes = collectingJoin().getTotalByteCount();
         if (total_bytes >= max_bytes_before_external_join)
         {
-            switchToGraceHashJoin();
+            switchToGraceHashJoin(/* worker_id = */ 0);
         }
         else
         {

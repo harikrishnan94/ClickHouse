@@ -1099,7 +1099,13 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             return std::make_shared<GraceHashJoin>(
                 context->getSettingsRef()[Setting::grace_hash_join_initial_buckets],
                 context->getSettingsRef()[Setting::grace_hash_join_max_buckets],
-                analyzed_join, std::make_shared<const Block>(std::move(left_sample_block)), right_sample_block, context->getTempDataOnDisk());
+                analyzed_join,
+                std::make_shared<const Block>(std::move(left_sample_block)),
+                right_sample_block,
+                context->getTempDataOnDisk(),
+                /*any_take_last_row_=*/false,
+                /*external_join_threshold_=*/0,
+                context->getSettingsRef()[Setting::max_threads]);
     }
 
     if (algorithm == JoinAlgorithm::AUTO)

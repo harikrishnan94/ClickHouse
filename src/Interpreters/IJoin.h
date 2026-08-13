@@ -102,19 +102,21 @@ public:
         SharedHeader left_sample_block_,
         SharedHeader right_sample_block_) const { return clone(table_join_, left_sample_block_, right_sample_block_); }
 
-    /// Add block of data from right hand of JOIN.
-    /// @returns false, if some limit was exceeded and you should not insert more data.
-    virtual bool addBlockToJoin(const Block & block, bool check_limits = true) = 0; /// NOLINT
-
-    /// Overload that accepts the actual number of rows from the Chunk.
-    /// Needed because Block::rows() returns 0 when the block has no columns
-    /// (e.g., when PREWHERE consumed all columns from the right side of a cross join).
-    virtual bool addBlockToJoin(const Block & block, size_t num_rows, bool check_limits = true) /// NOLINT
-    {
-        /// Default implementation ignores num_rows; joins that need row-count-only blocks override it.
-        (void)num_rows;
-        return addBlockToJoin(block, check_limits);
-    }
+    /// Add a right-hand block to the join.
+    ///
+    /// `num_rows` is the Chunk row count: `Block::rows` is 0 when the block has no columns
+    /// (e.g. PREWHERE consumed all columns on the right side of a cross join). Joins that
+    /// do not need that distinction may ignore `num_rows`.
+    ///
+    /// `worker_id` has no default — every caller names it. Concurrent `addBlockToJoin` on one
+    /// instance must use distinct ids in `[0, getMaxBuildThreads())` (`HashJoin`: `workers.size()`).
+    /// `HashJoin` stored-block lists (`workers[i]`) are unsynchronized; two live callers with the
+    /// same id is a data race. Single-writer paths (`StorageJoin`, join-by-layers clones, Grace
+    /// delayed bucket load) pass `0`. Wrappers (`GraceHashJoin`, `SpillingHashJoin`, `JoinSwitcher`)
+    /// forward the id they received, including `tryConvertChunks` and in-memory rehash on the same fill.
+    ///
+    /// @returns false if a size limit was exceeded and you should not insert more data.
+    virtual bool addBlockToJoin(const Block & block, size_t num_rows, size_t worker_id, bool check_limits) = 0;
 
     /* Some initialization may be required before joinBlock() call.
      * It's better to done in in constructor, but left block exact structure is not known at that moment.
@@ -148,6 +150,9 @@ public:
 
     // That can run FillingRightJoinSideTransform parallelly
     virtual bool supportParallelJoin() const { return false; }
+
+    /// Cap on parallel `FillingRightJoinSideTransform` count. 0 means use pipeline `max_streams`.
+    virtual size_t getMaxBuildThreads() const { return 0; }
 
     /// Peek next stream of delayed joined blocks.
     virtual IBlocksStreamPtr getDelayedBlocks() { return nullptr; }

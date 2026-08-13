@@ -68,7 +68,8 @@ public:
         SharedHeader right_sample_block_,
         TemporaryDataOnDiskScopePtr tmp_data_,
         bool any_take_last_row_ = false,
-        size_t external_join_threshold_ = 0);
+        size_t external_join_threshold_ = 0,
+        size_t max_threads_ = 1);
 
     ~GraceHashJoin() override;
 
@@ -78,7 +79,7 @@ public:
 
     void initialize(const Block & sample_block) override;
 
-    bool addBlockToJoin(const Block & block, bool check_limits) override;
+    bool addBlockToJoin(const Block & block, size_t num_rows, size_t worker_id, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     JoinResultPtr joinBlock(Block block) override;
 
@@ -90,6 +91,7 @@ public:
     bool alwaysReturnsEmptySet() const override;
 
     bool supportParallelJoin() const override { return true; }
+    size_t getMaxBuildThreads() const override { return max_threads; }
 
     IBlocksStreamPtr
     getNonJoinedBlocks(const Block & left_sample_block_, const Block & result_sample_block_, UInt64 max_block_size) const override;
@@ -111,7 +113,8 @@ private:
     InMemoryJoinPtr makeInMemoryJoin(const String & bucket_id, size_t reserve_num = 0);
 
     /// Add right table block to the @join. Calls @rehash on overflow.
-    void addBlockToJoinImpl(Block block);
+    /// `worker_id` is forwarded to the inner `HashJoin` (delayed bucket load passes `0`).
+    void addBlockToJoinImpl(Block block, size_t worker_id);
 
     /// Check that join satisfies limits on rows/bytes in table_join.
     bool hasMemoryOverflow(size_t total_rows, size_t total_bytes) const;
@@ -147,6 +150,7 @@ private:
     const size_t initial_num_buckets;
     const size_t max_num_buckets;
     const size_t external_join_threshold;
+    const size_t max_threads;
 
     Names left_key_names;
     Names right_key_names;

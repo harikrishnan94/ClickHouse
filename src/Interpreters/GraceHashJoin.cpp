@@ -259,7 +259,8 @@ GraceHashJoin::GraceHashJoin(
     SharedHeader right_sample_block_,
     TemporaryDataOnDiskScopePtr tmp_data_,
     bool any_take_last_row_,
-    size_t external_join_threshold_)
+    size_t external_join_threshold_,
+    size_t max_threads_)
     : log{getLogger("GraceHashJoin")}
     , table_join{std::move(table_join_)}
     , left_sample_block{left_sample_block_}
@@ -268,6 +269,7 @@ GraceHashJoin::GraceHashJoin(
     , initial_num_buckets(initial_num_buckets_)
     , max_num_buckets(max_num_buckets_)
     , external_join_threshold(external_join_threshold_)
+    , max_threads(std::max<size_t>(1, max_threads_))
     , left_key_names(table_join->getOnlyClause().key_names_left)
     , right_key_names(table_join->getOnlyClause().key_names_right)
     , tmp_data(tmp_data_->childScope(
@@ -314,13 +316,13 @@ bool GraceHashJoin::isSupported(const std::shared_ptr<TableJoin> & table_join)
 
 GraceHashJoin::~GraceHashJoin() = default;
 
-bool GraceHashJoin::addBlockToJoin(const Block & block, bool /*check_limits*/)
+bool GraceHashJoin::addBlockToJoin(const Block & block, size_t /* num_rows */, size_t worker_id, bool /*check_limits*/)
 {
     if (current_bucket == nullptr)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "GraceHashJoin is not initialized");
 
     Block materialized = materializeBlock(block);
-    addBlockToJoinImpl(std::move(materialized));
+    addBlockToJoinImpl(std::move(materialized), worker_id);
     return true;
 }
 
@@ -720,7 +722,7 @@ IBlocksStreamPtr GraceHashJoin::getDelayedBlocks()
         for (Block block = right_reader.read(); !block.empty(); block = right_reader.read())
         {
             num_rows += block.rows();
-            addBlockToJoinImpl(std::move(block));
+            addBlockToJoinImpl(std::move(block), /* worker_id = */ 0);
         }
         hash_join->onBuildPhaseFinish();
 
@@ -740,6 +742,8 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
 {
     /// Inserts are serialized under `hash_join_mutex`. Prefer 256-bucket maps when the kind
     /// allows them; there is no RHS size estimate at this point.
+    /// `workers.size()` must cover every fill thread that can enter this mutex — not 1 just
+    /// because inserts are serialized. Each caller passes its fill-stream `worker_id`.
     const bool use_parallel_layout
         = preferParallelHashLayout(table_join->kind(), /*rhs_size_estimation=*/std::nullopt, /*parallel_hash_join_threshold=*/0);
     return createInMemoryHashJoin(
@@ -749,7 +753,7 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
         reserve_num,
         bucket_id,
         StatsCollectingParams{},
-        /*max_threads=*/1,
+        max_threads,
         use_parallel_layout);
 }
 
@@ -759,7 +763,7 @@ Block GraceHashJoin::prepareRightBlock(const Block & block)
     return HashJoin::prepareRightBlock(block, hash_join_sample_block);
 }
 
-void GraceHashJoin::addBlockToJoinImpl(Block block)
+void GraceHashJoin::addBlockToJoinImpl(Block block, size_t worker_id)
 {
     block = prepareRightBlock(block);
     Buckets buckets_snapshot = getCurrentBuckets();
@@ -814,7 +818,7 @@ void GraceHashJoin::addBlockToJoinImpl(Block block)
         bool block_added = false;
         if (!pre_threshold_overflow)
         {
-            hash_join->addBlockToJoin(current_block, /* check_limits = */ false);
+            hash_join->addBlockToJoin(current_block, current_block.rows(), worker_id, /* check_limits = */ false);
             block_added = true;
             size_t hash_join_total_keys = hash_join->getAndSetRightTableKeys();
             size_t hash_join_total_bytes = hash_join->getTotalByteCount();
@@ -861,7 +865,7 @@ void GraceHashJoin::addBlockToJoinImpl(Block block)
         hash_join = makeInMemoryJoin(fmt::format("grace{}", bucket_index), prev_keys_num / 2);
 
         if (current_block.rows() > 0)
-            hash_join->addBlockToJoin(current_block, /* check_limits = */ false);
+            hash_join->addBlockToJoin(current_block, current_block.rows(), worker_id, /* check_limits = */ false);
     }
 }
 

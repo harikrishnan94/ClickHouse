@@ -1263,7 +1263,9 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 left_table_expression_header,
                 right_table_expression_header,
                 table_join->getTempDataOnDisk(),
-                params.join_any_take_last_row);
+                params.join_any_take_last_row,
+                /*external_join_threshold_=*/0,
+                params.max_threads);
         }
     }
 

@@ -183,12 +183,7 @@ ConstantJoin::OutputPlan ConstantJoin::makeOutputPlan(JoinKind kind, JoinStrictn
     return plan;
 }
 
-bool ConstantJoin::addBlockToJoin(const Block & source_block, bool check_limits)
-{
-    return addBlockToJoin(source_block, source_block.rows(), check_limits);
-}
-
-bool ConstantJoin::addBlockToJoin(const Block & source_block, size_t num_rows, bool check_limits)
+bool ConstantJoin::addBlockToJoin(const Block & source_block, size_t num_rows, size_t /* worker_id */, bool check_limits)
 {
     const bool select_right_row_mode = plan.right_rows_to_join == OutputPlan::RightRowsToJoin::SelectedRowOnly;
 

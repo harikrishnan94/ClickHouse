@@ -228,10 +228,9 @@ public:
 
     /** Add block of data from right hand of JOIN to the map.
       * Returns false, if some limit was exceeded and you should not insert more data.
+      * `worker_id` indexes `data->workers`; see `IJoin::addBlockToJoin`.
       */
-    bool addBlockToJoin(const Block & source_block_, bool check_limits) override;
-
-    using IJoin::addBlockToJoin;
+    bool addBlockToJoin(const Block & source_block_, size_t num_rows, size_t worker_id, bool check_limits) override;
 
     void checkTypesOfKeys(const Block & block) const override;
 
@@ -250,8 +249,9 @@ public:
 
     bool isFilled() const override { return from_storage_join; }
 
-    /// One shared map uses bucket locks; no per-thread merge.
-    bool supportParallelJoin() const override { return true; }
+    /// Pipeline parallel-fills iff there is a worker slot per fill thread (`workers.size() == max_threads`).
+    bool supportParallelJoin() const override { return max_threads > 1; }
+    size_t getMaxBuildThreads() const override { return max_threads; }
 
     bool supportParallelNonJoinedBlocksProcessing() const override;
 
@@ -757,7 +757,7 @@ public:
 
     void debugKeys() const;
 
-    void shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_optimize = false);
+    void shrinkStoredBlocksToFit(size_t & total_bytes_in_join, size_t worker_id, bool force_optimize = false);
 
     void setMaxJoinedBlockRows(size_t value) { max_joined_block_rows = value; }
     void setMaxJoinedBlockBytes(size_t value) { max_joined_block_bytes = value; }
@@ -784,7 +784,7 @@ private:
     template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate> // NOLINT(readability-identifier-naming)
     friend class HashJoinMethods;
 
-    bool addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits);
+    bool addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, size_t worker_id, bool check_limits);
 
     std::shared_ptr<TableJoin> table_join;
     JoinKind kind;
@@ -806,9 +806,6 @@ private:
 
     /// Hash-slot locks for shared map inserts only. Stored-block lists are private per build worker.
     mutable std::vector<BucketLock> bucket_locks;
-
-    /// First `addBlockToJoin` on a thread claims an index in `[0, workers.size())`.
-    mutable std::atomic<size_t> next_worker = 0;
 
     /// Reserve is applied lazily per slot; `slot_space_reserved` is protected by that slot's lock.
     size_t map_size_hint = 0;
@@ -893,7 +890,6 @@ private:
     bool isUsedByAnotherAlgorithm() const;
     bool canRemoveColumnsFromLeftBlock() const;
 
-    size_t claimWorkerId() const;
     void shrinkWorkerStoredBlocks(WorkerStoredData & worker);
 
     void validateAdditionalFilterExpression(std::shared_ptr<ExpressionActions> additional_filter_expression);

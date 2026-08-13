@@ -831,13 +831,13 @@ Block HashJoin::prepareRightBlock(const Block & block) const
     return prepareRightBlock(block, data->sample_block);
 }
 
-bool HashJoin::addBlockToJoin(const Block & source_block, bool check_limits)
+bool HashJoin::addBlockToJoin(const Block & source_block, size_t /* num_rows */, size_t worker_id, bool check_limits)
 {
     auto materialized = materializeColumnsFromRightBlock(source_block);
-    return addBlockToJoin(materialized, ScatteredBlock::Selector(materialized.rows()), check_limits);
+    return addBlockToJoin(materialized, ScatteredBlock::Selector(materialized.rows()), worker_id, check_limits);
 }
 
-bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits)
+bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, size_t worker_id, bool check_limits)
 {
     ProfileEventTimeIncrement<Microseconds> build_watch(ProfileEvents::HashJoinBuildMicroseconds);
 
@@ -904,7 +904,9 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
         block_to_save = block_to_save.shrinkToFit();
 
     const bool prefer_use_maps_all = preferUseMapsAll();
-    const size_t worker_id = claimWorkerId();
+    if (worker_id >= data->workers.size())
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR, "Too many HashJoin build workers: claimed {}, capacity {}", worker_id + 1, data->workers.size());
     auto & worker = data->workers[worker_id];
 
     size_t total_rows = 0;
@@ -1121,11 +1123,11 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
             total_bytes = getTotalByteCountUnlocked();
         }
     }
-    shrinkStoredBlocksToFit(total_bytes);
+    shrinkStoredBlocksToFit(total_bytes, worker_id);
     return table_join->sizeLimits().check(total_rows, total_bytes, "JOIN", ErrorCodes::SET_SIZE_LIMIT_EXCEEDED);
 }
 
-void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_optimize)
+void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, size_t worker_id, bool force_optimize)
 {
     /// Double-checked locking on the flag only. Each build thread then rewrites its private list.
     const auto max_total_bytes_in_join = table_join->sizeLimits().max_bytes;
@@ -1157,7 +1159,7 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
         if (shrink_blocks.load(std::memory_order_relaxed))
         {
             /// Flag already claimed: shrink this thread's private list if it still has over-allocated blocks.
-            shrinkWorkerStoredBlocks(data->workers[claimWorkerId()]);
+            shrinkWorkerStoredBlocks(data->workers[worker_id]);
             total_bytes_in_join = getTotalByteCountUnlocked();
             return;
         }
@@ -1168,7 +1170,7 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
         bool expected = false;
         if (!shrink_blocks.compare_exchange_strong(expected, true, std::memory_order_relaxed))
         {
-            shrinkWorkerStoredBlocks(data->workers[claimWorkerId()]);
+            shrinkWorkerStoredBlocks(data->workers[worker_id]);
             total_bytes_in_join = getTotalByteCountUnlocked();
             return;
         }
@@ -1188,7 +1190,7 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
         ReadableSize(query_memory_usage_delta),
         max_total_bytes_for_query ? fmt::format("/ {}", ReadableSize(max_total_bytes_for_query)) : "");
 
-    /// Claiming thread shrinks its own list now; other build threads shrink theirs on their next call
+    /// This fill stream shrinks its own list now; other build threads shrink theirs on their next call
     /// (or when they see shrink_blocks above). force_optimize walks every worker.
     if (force_optimize)
     {
@@ -1197,7 +1199,7 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
     }
     else
     {
-        shrinkWorkerStoredBlocks(data->workers[claimWorkerId()]);
+        shrinkWorkerStoredBlocks(data->workers[worker_id]);
     }
 
     data->stored_columns_index->invalidateEmitTable();
@@ -1214,23 +1216,6 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_
         ReadableSize(new_current_memory_usage));
 
     total_bytes_in_join = new_total_bytes_in_join;
-}
-
-size_t HashJoin::claimWorkerId() const
-{
-    thread_local const HashJoin * bound_join = nullptr;
-    thread_local size_t bound_id = 0;
-
-    if (bound_join != this)
-    {
-        const size_t id = next_worker.fetch_add(1, std::memory_order_relaxed);
-        if (id >= data->workers.size())
-            throw Exception(
-                ErrorCodes::LOGICAL_ERROR, "Too many HashJoin build workers: claimed {}, capacity {}", id + 1, data->workers.size());
-        bound_id = id;
-        bound_join = this;
-    }
-    return bound_id;
 }
 
 void HashJoin::shrinkWorkerStoredBlocks(WorkerStoredData & worker)

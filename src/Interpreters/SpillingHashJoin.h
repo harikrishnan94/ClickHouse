@@ -59,7 +59,7 @@ public:
     const TableJoin & getTableJoin() const override { return *table_join; }
     bool anyTakeLastRow() const override { return any_take_last_row; }
 
-    bool addBlockToJoin(const Block & block, bool check_limits) override;
+    bool addBlockToJoin(const Block & block, size_t num_rows, size_t worker_id, bool check_limits) override;
     void checkTypesOfKeys(const Block & block) const override;
     void initialize(const Block & sample_block) override;
     JoinResultPtr joinBlock(Block block) override;
@@ -72,6 +72,7 @@ public:
     bool alwaysReturnsEmptySet() const override;
 
     bool supportParallelJoin() const override { return in_memory_hash_join->supportParallelJoin(); }
+    size_t getMaxBuildThreads() const override { return max_threads; }
     bool supportParallelNonJoinedBlocksProcessing() const override;
     bool isParallelNonJoinedProcessingEnabled() const override;
 
@@ -111,8 +112,8 @@ private:
         IN_MEMORY_JOIN // All blocks fit in memory, using HashJoin directly without switching.
     };
 
-    void switchToGraceHashJoin();
-    void tryConvertChunks();
+    void switchToGraceHashJoin(size_t worker_id);
+    void tryConvertChunks(size_t worker_id);
 
     LoggerPtr log;
     std::shared_ptr<TableJoin> table_join;
