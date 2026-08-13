@@ -153,7 +153,7 @@ public:
     virtual IBlocksStreamPtr getDelayedBlocks() { return nullptr; }
     virtual bool hasDelayedBlocks() const { return false; }
 
-    /// Whether the join emits left rows in the same order they arrive. HashJoin/DirectJoin/ConcurrentHashJoin
+    /// Whether the join emits left rows in the same order they arrive. HashJoin/DirectJoin
     /// stream the probe side, so they do. PartialMergeJoin re-sorts left blocks by the join key, so it does not;
     /// the read-in-order-through-join optimisation in optimizeReadInOrder.cpp must not propagate through such joins.
     virtual bool preservesLeftBlockOrder() const { return true; }

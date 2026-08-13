@@ -33,15 +33,12 @@
 
 #include <Dictionaries/IDictionary.h>
 #include <Interpreters/ArrayJoinAction.h>
-#include <Interpreters/ConcurrentHashJoin.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/ConstantJoin.h>
 #include <Interpreters/DirectJoin.h>
 #include <Interpreters/FullSortingMergeJoin.h>
 #include <Interpreters/GraceHashJoin.h>
 #include <Interpreters/HashJoin/HashJoin.h>
-#include <Interpreters/InMemoryHashJoin.h>
-#include <Interpreters/UnifiedHashJoin/HashJoin.h>
 #include <Interpreters/IKeyValueEntity.h>
 #include <Interpreters/JoinSwitcher.h>
 #include <Interpreters/MergeJoin.h>
@@ -1202,44 +1199,20 @@ static std::shared_ptr<IJoin> tryCreateJoin(
 
     if (algorithm == JoinAlgorithm::HASH ||
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
-        algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
-        algorithm == JoinAlgorithm::PARALLEL_HASH ||
-        algorithm == JoinAlgorithm::DEFAULT ||
-        algorithm == JoinAlgorithm::UNIFIED_HASH)
+        algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE || algorithm == JoinAlgorithm::PARALLEL_HASH
+        || algorithm == JoinAlgorithm::DEFAULT)
     {
-        const bool unified = algorithm == JoinAlgorithm::UNIFIED_HASH;
-        const auto in_memory_kind = unified ? InMemoryHashJoinKind::Unified : InMemoryHashJoinKind::Hash;
-
         StatsCollectingParams stats_collecting_params{
             params.hash_table_key_hash,
             params.collect_hash_table_stats_during_joins,
             params.max_entries_for_hash_table_stats,
             params.max_size_to_preallocate_for_joins};
 
+        const bool use_parallel_layout
+            = preferParallelHashLayout(table_join->kind(), params.rhs_size_estimation, params.parallel_hash_join_threshold);
+
         if (params.max_bytes_before_external_join > 0 && table_join->getTempDataOnDisk() && GraceHashJoin::isSupported(table_join))
         {
-            if (table_join->allowParallelHashJoin() && !unified)
-            {
-                const bool use_parallel_hash = !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH)
-                    || preferParallelHashBySize(params.rhs_size_estimation, params.parallel_hash_join_threshold);
-                if (use_parallel_hash)
-                {
-                    return std::make_shared<SpillingHashJoin>(
-                        table_join,
-                        left_table_expression_header,
-                        right_table_expression_header,
-                        table_join->getTempDataOnDisk(),
-                        params.grace_hash_join_initial_buckets,
-                        params.grace_hash_join_max_buckets,
-                        params.max_threads,
-                        stats_collecting_params,
-                        params.join_any_take_last_row,
-                        in_memory_kind);
-                }
-            }
-
-            const bool use_parallel_layout
-                = preferUnifiedParallelLayout(table_join->kind(), params.rhs_size_estimation, params.parallel_hash_join_threshold);
             return std::make_shared<SpillingHashJoin>(
                 table_join,
                 left_table_expression_header,
@@ -1249,44 +1222,19 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 params.grace_hash_join_max_buckets,
                 stats_collecting_params,
                 params.join_any_take_last_row,
-                in_memory_kind,
-                params.max_threads,
-                use_parallel_layout);
-        }
-
-        if (table_join->allowParallelHashJoin() && !unified)
-        {
-            const bool use_parallel_hash = !table_join->isEnabledAlgorithm(JoinAlgorithm::HASH)
-                || preferParallelHashBySize(params.rhs_size_estimation, params.parallel_hash_join_threshold);
-            if (use_parallel_hash)
-            {
-                return std::make_shared<ConcurrentHashJoin>(
-                    table_join,
-                    params.max_threads,
-                    right_table_expression_header,
-                    stats_collecting_params,
-                    params.join_any_take_last_row);
-            }
-        }
-
-        if (unified)
-        {
-            const bool use_parallel_layout
-                = preferUnifiedParallelLayout(table_join->kind(), params.rhs_size_estimation, params.parallel_hash_join_threshold);
-            return std::make_shared<UnifiedHashJoin>(
-                table_join,
-                right_table_expression_header,
-                params.join_any_take_last_row,
-                /*reserve_num_=*/0,
-                /*instance_id_=*/"",
-                stats_collecting_params,
                 params.max_threads,
                 use_parallel_layout);
         }
 
         return std::make_shared<HashJoin>(
-            table_join, right_table_expression_header, params.join_any_take_last_row, /*reserve_num_=*/0, /*instance_id_=*/"",
-            /*use_two_level_maps_=*/false, stats_collecting_params);
+            table_join,
+            right_table_expression_header,
+            params.join_any_take_last_row,
+            /*reserve_num_=*/0,
+            /*instance_id_=*/"",
+            stats_collecting_params,
+            params.max_threads,
+            use_parallel_layout);
     }
 
     /// `parallel_full_sorting_merge` uses the same `FullSortingMergeJoin`; the optimizer turns it into a
@@ -1327,22 +1275,11 @@ static std::shared_ptr<IJoin> tryCreateJoin(
             params.max_entries_for_hash_table_stats,
             params.max_size_to_preallocate_for_joins};
 
+        const bool use_parallel_layout
+            = preferParallelHashLayout(table_join->kind(), params.rhs_size_estimation, params.parallel_hash_join_threshold);
+
         if (params.max_bytes_before_external_join > 0 && table_join->getTempDataOnDisk() && GraceHashJoin::isSupported(table_join))
         {
-            if (table_join->allowParallelHashJoin())
-            {
-                return std::make_shared<SpillingHashJoin>(
-                    table_join,
-                    left_table_expression_header,
-                    right_table_expression_header,
-                    table_join->getTempDataOnDisk(),
-                    params.grace_hash_join_initial_buckets,
-                    params.grace_hash_join_max_buckets,
-                    params.max_threads,
-                    stats_collecting_params,
-                    params.join_any_take_last_row);
-            }
-
             return std::make_shared<SpillingHashJoin>(
                 table_join,
                 left_table_expression_header,
@@ -1351,15 +1288,23 @@ static std::shared_ptr<IJoin> tryCreateJoin(
                 params.grace_hash_join_initial_buckets,
                 params.grace_hash_join_max_buckets,
                 stats_collecting_params,
-                params.join_any_take_last_row);
+                params.join_any_take_last_row,
+                params.max_threads,
+                use_parallel_layout);
         }
 
         if (MergeJoin::isSupported(table_join))
             return std::make_shared<JoinSwitcher>(
                 table_join, right_table_expression_header, params.join_any_take_last_row, stats_collecting_params);
         return std::make_shared<HashJoin>(
-            table_join, right_table_expression_header, params.join_any_take_last_row, /*reserve_num_=*/0, /*instance_id_=*/"",
-            /*use_two_level_maps_=*/false, stats_collecting_params);
+            table_join,
+            right_table_expression_header,
+            params.join_any_take_last_row,
+            /*reserve_num_=*/0,
+            /*instance_id_=*/"",
+            stats_collecting_params,
+            params.max_threads,
+            use_parallel_layout);
     }
 
     return nullptr;
@@ -1464,7 +1409,8 @@ std::shared_ptr<IJoin> chooseJoinAlgorithm(
         return std::make_shared<ConstantJoin>(table_join, right_table_expression_header, params.join_any_take_last_row);
 
     if (!table_join->oneDisjunct() && !table_join->isHashFamilyEnabled() && !table_join->isEnabledAlgorithm(JoinAlgorithm::AUTO))
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Only `hash` and `unified_hash` joins support multiple ORs for keys in JOIN ON section");
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED, "Only `hash` and `parallel_hash` joins support multiple ORs for keys in JOIN ON section");
 
     for (auto algorithm : table_join->getEnabledJoinAlgorithms())
     {

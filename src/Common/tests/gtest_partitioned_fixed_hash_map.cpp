@@ -242,7 +242,7 @@ TEST(PartitionedFixedHashMap, SpreadsDenseAtZeroKeys)
 TEST(PartitionedFixedHashMap, SpreadsKeysWithLowBitStructure)
 {
     /// The case that rules out routing by the LOW bits of the key, which is what
-    /// `ConcurrentHashJoin::hashToSelector` falls back to for a fixed map. Aligned keys - every id a
+    /// `joinHashRouteSlot` falls back to for a fixed map. Aligned keys - every id a
     /// multiple of 256 - all have the same low bits, so `key & (num_buckets - 1)` would put every
     /// one of them in bucket 0.
     constexpr size_t size_bits = 16;

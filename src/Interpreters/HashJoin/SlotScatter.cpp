@@ -1,4 +1,4 @@
-#include <Interpreters/UnifiedHashJoin/SlotScatter.h>
+#include <Interpreters/HashJoin/SlotScatter.h>
 
 #include <Columns/IColumn.h>
 #include <Common/Arena.h>
@@ -11,8 +11,6 @@
 #include <vector>
 
 namespace DB
-{
-namespace Unified
 {
 namespace
 {
@@ -170,11 +168,10 @@ SlotScatter scatterBlockBySlot(
             } \
         }
 
-            UNIFIED_APPLY_FOR_JOIN_VARIANTS(M)
+            APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
     }
     UNREACHABLE();
 }
 
-}
 }

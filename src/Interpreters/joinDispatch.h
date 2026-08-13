@@ -79,7 +79,6 @@ static constexpr std::array<JoinKind, 4> KINDS = {
     JoinKind::Right
 };
 
-/// Init specified join map
 inline bool joinDispatchInit(JoinKind kind, JoinStrictness strictness, HashJoin::MapsVariant & maps, bool prefer_use_maps_all = false)
 {
     return static_for<0, KINDS.size() * STRICTNESSES.size()>([&](auto ij)
@@ -98,7 +97,6 @@ inline bool joinDispatchInit(JoinKind kind, JoinStrictness strictness, HashJoin:
     });
 }
 
-/// Call function on specified join map
 template <typename MapsVariant, typename Func>
 inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, MapsVariant & maps, bool prefer_use_maps_all, Func && func)
 {
@@ -126,7 +124,6 @@ inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, MapsVariant &
     });
 }
 
-/// Call function on specified join map
 template <typename MapsVariant, typename Func>
 inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, std::vector<const MapsVariant *> & mapsv, bool prefer_use_maps_all, Func && func)
 {
@@ -140,7 +137,7 @@ inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, std::vector<c
         {
             if (prefer_use_maps_all)
             {
-                using MapType = typename MapGetter<KINDS[i], STRICTNESSES[j], true>::Map;
+                using MapType = MapGetter<KINDS[i], STRICTNESSES[j], true>::Map;
                 std::vector<const MapType *> v;
                 v.reserve(mapsv.size());
                 for (const auto & el : mapsv)
@@ -152,7 +149,7 @@ inline bool joinDispatch(JoinKind kind, JoinStrictness strictness, std::vector<c
             }
             else
             {
-                using MapType = typename MapGetter<KINDS[i], STRICTNESSES[j], false>::Map;
+                using MapType = MapGetter<KINDS[i], STRICTNESSES[j], false>::Map;
                 std::vector<const MapType *> v;
                 v.reserve(mapsv.size());
                 for (const auto & el : mapsv)

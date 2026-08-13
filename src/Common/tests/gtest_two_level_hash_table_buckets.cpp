@@ -334,7 +334,7 @@ TEST(TwoLevelHashTableBuckets, ConcurrentBuildWithExternalBucketLocks)
 
 TEST(TwoLevelHashTableBuckets, BucketSelectionMatchesJoinHashRouteSlot)
 {
-    /// A build/probe contract: `ConcurrentHashJoin` computes a row's target partition with
+    /// A build/probe contract: HashJoin computes a row's target partition with
     /// `joinHashRouteSlot`, and the table must pick the same partition for the same hash, or probe
     /// rows visit buckets their keys were never inserted into. The two formulas are written
     /// differently - `(UInt32)h >> (32 - b)` against `(h >> (32 - b)) & (2^b - 1)` - so pin them

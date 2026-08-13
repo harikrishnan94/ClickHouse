@@ -1,45 +1,44 @@
-#include <Planner/PlannerJoinsLogical.h>
 #include <Planner/PlannerJoins.h>
+#include <Planner/PlannerJoinsLogical.h>
 
-#include <IO/WriteBuffer.h>
-#include <IO/WriteHelpers.h>
 #include <IO/Operators.h>
+#include <IO/WriteBuffer.h>
 #include <IO/WriteBufferFromString.h>
+#include <IO/WriteHelpers.h>
 
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 
 #include <Storages/IStorage.h>
-#include <Storages/StorageJoin.h>
 #include <Storages/StorageDictionary.h>
+#include <Storages/StorageJoin.h>
 
-#include <Functions/IFunction.h>
-#include <Functions/FunctionFactory.h>
 #include <Functions/ComparisonNames.h>
+#include <Functions/FunctionFactory.h>
 #include <Functions/FunctionsLogical.h>
+#include <Functions/IFunction.h>
 #include <Functions/isNotDistinctFrom.h>
 
-#include <Analyzer/Utils.h>
-#include <Analyzer/FunctionNode.h>
 #include <Analyzer/ColumnNode.h>
 #include <Analyzer/ConstantNode.h>
-#include <Analyzer/TableNode.h>
-#include <Analyzer/TableFunctionNode.h>
+#include <Analyzer/FunctionNode.h>
 #include <Analyzer/JoinNode.h>
+#include <Analyzer/TableFunctionNode.h>
+#include <Analyzer/TableNode.h>
+#include <Analyzer/Utils.h>
 
 #include <Dictionaries/IDictionary.h>
 #include <Interpreters/ArrayJoinAction.h>
-#include <Interpreters/ConcurrentHashJoin.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DirectJoin.h>
 #include <Interpreters/FullSortingMergeJoin.h>
 #include <Interpreters/GraceHashJoin.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/IKeyValueEntity.h>
+#include <Interpreters/JoinExpressionActions.h>
 #include <Interpreters/JoinSwitcher.h>
 #include <Interpreters/MergeJoin.h>
 #include <Interpreters/PasteJoin.h>
-#include <Interpreters/JoinExpressionActions.h>
 
 #include <Planner/PlannerActionsVisitor.h>
 #include <Planner/PlannerContext.h>
@@ -48,10 +47,10 @@
 
 #include <Processors/QueryPlan/JoinStepLogical.h>
 
-#include <Core/Settings.h>
 #include <Core/ServerSettings.h>
-#include <Interpreters/JoinOperator.h>
+#include <Core/Settings.h>
 #include <Interpreters/DirectJoinMergeTreeEntity.h>
+#include <Interpreters/JoinOperator.h>
 #include <Processors/QueryPlan/ReadFromTableStep.h>
 
 
@@ -64,17 +63,17 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
-    extern const int INVALID_JOIN_ON_EXPRESSION;
-    extern const int NOT_FOUND_COLUMN_IN_BLOCK;
+extern const int LOGICAL_ERROR;
+extern const int INVALID_JOIN_ON_EXPRESSION;
+extern const int NOT_FOUND_COLUMN_IN_BLOCK;
 }
 
 namespace Setting
 {
-    extern const SettingsBool join_use_nulls;
-    extern const SettingsBool allow_general_join_planning;
-    extern const SettingsBool query_plan_display_internal_aliases;
-    extern const SettingsJoinAlgorithm join_algorithm;
+extern const SettingsBool join_use_nulls;
+extern const SettingsBool allow_general_join_planning;
+extern const SettingsBool query_plan_display_internal_aliases;
+extern const SettingsJoinAlgorithm join_algorithm;
 }
 
 static const ActionsDAG::Node * appendExpression(
@@ -92,9 +91,11 @@ static const ActionsDAG::Node * appendExpression(
     correlated_subtrees.assertEmpty("in join expression");
 
     if (join_expression_dag_node_raw_pointers.size() != 1)
-        throw Exception(ErrorCodes::LOGICAL_ERROR,
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR,
             "Expression {} expected be a single node, got {}",
-            expression->formatASTForErrorMessage(), dag.dumpDAG());
+            expression->formatASTForErrorMessage(),
+            dag.dumpDAG());
 
     if (input_count != dag.getInputs().size())
     {
@@ -106,12 +107,14 @@ static const ActionsDAG::Node * appendExpression(
          * and we attempt to join it again, resulting in the `id` column not being found.
          * We may try replacing this to LOGICAL_ERROR after https://github.com/ClickHouse/ClickHouse/issues/63984 is resolved.
          */
-        auto unknown_inputs = dag.getInputs()
-            | std::views::transform([](const auto * input) { return input->result_name; })
+        auto unknown_inputs = dag.getInputs() | std::views::transform([](const auto * input) { return input->result_name; })
             | std::views::filter([&](const auto & name) { return !left_header->has(name) && !right_header->has(name); });
-        throw Exception(ErrorCodes::NOT_FOUND_COLUMN_IN_BLOCK,
+        throw Exception(
+            ErrorCodes::NOT_FOUND_COLUMN_IN_BLOCK,
             "Columns [{}] are not found in blocks [{}], [{}]",
-            fmt::join(unknown_inputs, ", "), left_header->dumpNames(), right_header->dumpNames());
+            fmt::join(unknown_inputs, ", "),
+            left_header->dumpNames(),
+            right_header->dumpNames());
     }
 
     return join_expression_dag_node_raw_pointers[0];
@@ -120,10 +123,7 @@ static const ActionsDAG::Node * appendExpression(
 struct JoinOperatorBuildContext
 {
     explicit JoinOperatorBuildContext(
-        const JoinNode & join_node_,
-        SharedHeader left_header_,
-        SharedHeader right_header_,
-        const PlannerContextPtr & planner_context_)
+        const JoinNode & join_node_, SharedHeader left_header_, SharedHeader right_header_, const PlannerContextPtr & planner_context_)
         : join_node(join_node_)
         , planner_context(planner_context_)
         , left_table_expression_set(extractTableExpressionsSet(join_node.getLeftTableExpressionNodeTyped()))
@@ -135,7 +135,13 @@ struct JoinOperatorBuildContext
     {
     }
 
-    enum class JoinSource : uint8_t { None, Left, Right, Both };
+    enum class JoinSource : uint8_t
+    {
+        None,
+        Left,
+        Right,
+        Both
+    };
 
     JoinSource getExpressionSource(const QueryTreeNodePtr & node)
     {
@@ -212,9 +218,11 @@ buildJoinUsingCondition(const QueryTreeNodePtr & node, JoinOperatorBuildContext 
         std::vector<JoinActionRef> args;
         const auto & inner_columns = inner_columns_list.getNodes();
         if (inner_columns.size() < 2)
-            throw Exception(ErrorCodes::LOGICAL_ERROR,
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
                 "Using column {} expected to have at least 2 inner columns, in query tree {}",
-                using_column_node.getColumnName(), node->dumpTree());
+                using_column_node.getColumnName(),
+                node->dumpTree());
 
         const auto & result_type = using_column_node.getResultType();
         auto cast_to_super = [&result_type, &changed_types, &builder_context](auto & dag, const auto & nodes)
@@ -262,9 +270,11 @@ static void buildJoinCondition(const QueryTreeNodePtr & node, JoinOperatorBuildC
         function_name = function_node->getFunctionName();
         if (!function_node->isOrdinaryFunction())
         {
-            throw Exception(ErrorCodes::INVALID_JOIN_ON_EXPRESSION,
+            throw Exception(
+                ErrorCodes::INVALID_JOIN_ON_EXPRESSION,
                 "Unexpected function '{}' in JOIN ON section, only ordinary functions are supported, in expression: {}",
-                function_name, function_node->formatASTForErrorMessage());
+                function_name,
+                function_node->formatASTForErrorMessage());
         }
     }
 
@@ -278,13 +288,13 @@ static void buildJoinCondition(const QueryTreeNodePtr & node, JoinOperatorBuildC
     join_condition.conjuncts.push_back(builder_context.addExpression(node).getNode());
 }
 
-static void buildDisjunctiveJoinConditions(const QueryTreeNodePtr & node, JoinOperatorBuildContext & builder_context, std::vector<JoinCondition> & join_conditions)
+static void buildDisjunctiveJoinConditions(
+    const QueryTreeNodePtr & node, JoinOperatorBuildContext & builder_context, std::vector<JoinCondition> & join_conditions)
 {
     auto * function_node = node->as<FunctionNode>();
     if (!function_node)
-        throw Exception(ErrorCodes::INVALID_JOIN_ON_EXPRESSION,
-            "JOIN {} join expression expected function",
-            node->formatASTForErrorMessage());
+        throw Exception(
+            ErrorCodes::INVALID_JOIN_ON_EXPRESSION, "JOIN {} join expression expected function", node->formatASTForErrorMessage());
 
     const auto & function_name = function_node->getFunctionName();
 
@@ -310,7 +320,8 @@ static void addConditionsToJoinOperator(JoinOperatorBuildContext & build_context
     auto func_builder_or = std::make_shared<FunctionToOverloadResolverAdaptor>(std::make_shared<FunctionOr>());
 
     auto actions_dag = build_context.expression_actions.getActionsDAG();
-    auto nodes = std::ranges::to<std::vector>(std::views::transform(join_conditions, [&](JoinCondition & condition) { return condition.concat(*actions_dag); }));
+    auto nodes = std::ranges::to<std::vector>(
+        std::views::transform(join_conditions, [&](JoinCondition & condition) { return condition.concat(*actions_dag); }));
     const auto * result_node = &actions_dag->addFunction(func_builder_or, nodes, {});
     build_context.join_operator.expression.push_back(JoinActionRef(result_node, build_context.expression_actions));
 }
@@ -328,8 +339,7 @@ static bool hasEquiConditions(const JoinCondition & condition)
     for (const auto & conjunct : condition.conjuncts)
     {
         String function_name = conjunct->function ? conjunct->function->getName() : String();
-        if (function_name == NameEquals::name ||
-            function_name == FunctionIsNotDistinctFrom::name)
+        if (function_name == NameEquals::name || function_name == FunctionIsNotDistinctFrom::name)
             return true;
     }
     return false;
@@ -391,7 +401,8 @@ static void buildDisjunctiveJoinConditionsGeneral(const QueryTreeNodePtr & join_
         auto expression_source = builder_context.getExpressionSource(node);
 
         // If the expression is a logical expression and it contains expressions from both sides, let's combine the clauses, otherwise let's just build one join clause
-        bool is_complex = (function_name == "and" || function_name == "or") && expression_source == JoinOperatorBuildContext::JoinSource::Both;
+        bool is_complex
+            = (function_name == "and" || function_name == "or") && expression_source == JoinOperatorBuildContext::JoinSource::Both;
         if (is_complex)
         {
             auto & arguments = function_node->getArguments().getNodes();
@@ -482,8 +493,8 @@ String getQueryDisplayLabel(const QueryTreeNodePtr & node, bool display_internal
 static bool shouldForbidReordering(const JoinOperatorBuildContext & build_context)
 {
     /// Swapping sides with totals can affect the result
-    return std::ranges::any_of(build_context.left_table_expression_set, queryTreeHasWithTotalsInAnySubqueryInJoinTree) ||
-           std::ranges::any_of(build_context.right_table_expression_set, queryTreeHasWithTotalsInAnySubqueryInJoinTree);
+    return std::ranges::any_of(build_context.left_table_expression_set, queryTreeHasWithTotalsInAnySubqueryInJoinTree)
+        || std::ranges::any_of(build_context.right_table_expression_set, queryTreeHasWithTotalsInAnySubqueryInJoinTree);
 }
 
 std::unique_ptr<JoinStepLogical> buildJoinStepLogical(
@@ -499,8 +510,11 @@ std::unique_ptr<JoinStepLogical> buildJoinStepLogical(
     auto join_expression_constant = tryExtractConstantFromConditionNode(join_on_expression);
     if (join_on_expression && join_on_expression->getNodeType() == QueryTreeNodeType::CONSTANT && !join_expression_constant.has_value())
     {
-        throw Exception(ErrorCodes::INVALID_JOIN_ON_EXPRESSION, "Wrong type {} of JOIN expression {}",
-            join_on_expression->getResultType()->getName(), join_on_expression->formatASTForErrorMessage());
+        throw Exception(
+            ErrorCodes::INVALID_JOIN_ON_EXPRESSION,
+            "Wrong type {} of JOIN expression {}",
+            join_on_expression->getResultType()->getName(),
+            join_on_expression->formatASTForErrorMessage());
     }
 
     auto join_expression_node = getJoinExpressionFromNode(join_node);
@@ -524,12 +538,12 @@ std::unique_ptr<JoinStepLogical> buildJoinStepLogical(
     else if (!join_expression_constant.has_value() || build_context.join_operator.strictness == JoinStrictness::Asof)
     {
         if (join_expression_node->getNodeType() != QueryTreeNodeType::FUNCTION)
-            throw Exception(ErrorCodes::INVALID_JOIN_ON_EXPRESSION,
-                "JOIN {} join expression expected function",
-                join_node.formatASTForErrorMessage());
+            throw Exception(
+                ErrorCodes::INVALID_JOIN_ON_EXPRESSION, "JOIN {} join expression expected function", join_node.formatASTForErrorMessage());
 
-        bool use_general_join_planning = (TableJoin::isHashFamilyEnabled(join_algorithms)
-            || TableJoin::isEnabledAlgorithm(join_algorithms, JoinAlgorithm::AUTO)) && query_settings[Setting::allow_general_join_planning];
+        bool use_general_join_planning
+            = (TableJoin::isHashFamilyEnabled(join_algorithms) || TableJoin::isEnabledAlgorithm(join_algorithms, JoinAlgorithm::AUTO))
+            && query_settings[Setting::allow_general_join_planning];
 
         if (use_general_join_planning)
             buildDisjunctiveJoinConditionsGeneral(join_expression_node, build_context);
@@ -544,7 +558,8 @@ std::unique_ptr<JoinStepLogical> buildJoinStepLogical(
             auto actions_dag = build_context.expression_actions.getActionsDAG();
             auto nothing_type = std::make_shared<DataTypeNullable>(std::make_shared<DataTypeNothing>());
             auto null_column = nothing_type->createColumnConstWithDefaultValue(0);
-            JoinActionRef null_action(&actions_dag->addColumn(std::move(null_column), nothing_type, "NULL"), build_context.expression_actions);
+            JoinActionRef null_action(
+                &actions_dag->addColumn(std::move(null_column), nothing_type, "NULL"), build_context.expression_actions);
             null_action.setSourceRelations(BitSet());
             build_context.join_operator.expression.push_back(null_action);
         }

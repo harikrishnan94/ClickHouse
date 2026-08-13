@@ -1,5 +1,6 @@
-#include <Interpreters/HashJoin/AddedColumns.h>
+#include <Columns/ColumnNullable.h>
 #include <DataTypes/NullableUtils.h>
+#include <Interpreters/HashJoin/AddedColumns.h>
 
 namespace DB
 {
@@ -86,7 +87,9 @@ size_t LazyOutput::buildOutput(
     size_t bytes_limit) const
 {
     if (!output_by_row_list)
+    {
         buildOutputFromBlocks<false>(size_to_reserve, columns, row_refs_begin, row_refs_end);
+    }
     else
     {
         if (rows_limit)
@@ -190,13 +193,11 @@ size_t LazyOutput::buildOutputFromBlocksLimitAndOffset(
 
                 if (bytes_limit)
                 {
-                    /// Check if we are still in the same left row or moved to next one
                     while (row_idx >= left_offsets[left_idx])
                         ++left_idx;
                     chassert(left_sizes.size() > left_idx);
                     total_byte_size += left_sizes[left_idx];
 
-                    /// Add size of right matched rows
                     for (const auto & col: block->columns)
                         total_byte_size += col->byteSizeAt(row_num);
                 }
@@ -340,5 +341,4 @@ void AddedColumns<true>::appendFromBlock(UInt64 ref_word, bool)
         lazy_output.addRef(ref_word);
     }
 }
-
 }

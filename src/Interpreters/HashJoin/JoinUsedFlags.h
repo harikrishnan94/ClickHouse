@@ -40,7 +40,7 @@ public:
     /// Update size for vector with flags.
     /// Calling this method invalidates existing flags.
     /// It can be called several times, but all of them should happen before using this structure.
-    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
     void reinit(size_t size)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)
@@ -57,7 +57,7 @@ public:
 
     /// Update size for vector with flags same as `reinit` but allows the updated size to be smaller.
     /// Must be called only before using this structure.
-    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
     void reinitAllowShrinking(size_t size)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)
@@ -67,7 +67,7 @@ public:
         }
     }
 
-    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all>
+    template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
     void reinit(UInt32 block_no, size_t rows, const ScatteredBlock::Selector & selector)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)
@@ -116,36 +116,36 @@ public:
     }
 
     template <bool use_flags, bool flag_per_row, typename FindResult>
-    void setUsed(const FindResult & f)
+    void setUsed(const FindResult & f [[maybe_unused]])
     {
-        if constexpr (!use_flags)
-            return;
-
-        /// Could be set simultaneously from different threads.
-        if constexpr (flag_per_row)
+        if constexpr (use_flags)
         {
-            auto & mapped = f.getMapped();
-            if constexpr (std::is_same_v<std::decay_t<decltype(mapped)>, RowRefList>)
+            /// Could be set simultaneously from different threads.
+            if constexpr (flag_per_row)
             {
-                for (const UInt64 ref_word : refsOf(mapped.word))
+                auto & mapped = f.getMapped();
+                if constexpr (std::is_same_v<std::decay_t<decltype(mapped)>, RowRefList>)
                 {
-                    auto & flag = per_row_flags[refWordBlockNo(ref_word)][refWordRowNo(ref_word)];
+                    for (const UInt64 ref_word : refsOf(mapped.word))
+                    {
+                        auto & flag = per_row_flags[refWordBlockNo(ref_word)][refWordRowNo(ref_word)];
+                        if (!flag.load(std::memory_order_relaxed))
+                            flag.store(true, std::memory_order_relaxed);
+                    }
+                }
+                else
+                {
+                    auto & flag = headRowFlag(mapped);
                     if (!flag.load(std::memory_order_relaxed))
                         flag.store(true, std::memory_order_relaxed);
                 }
             }
             else
             {
-                auto & flag = headRowFlag(mapped);
+                auto & flag = per_offset_flags[f.getOffset()];
                 if (!flag.load(std::memory_order_relaxed))
                     flag.store(true, std::memory_order_relaxed);
             }
-        }
-        else
-        {
-            auto & flag = per_offset_flags[f.getOffset()];
-            if (!flag.load(std::memory_order_relaxed))
-                flag.store(true, std::memory_order_relaxed);
         }
     }
 
@@ -183,50 +183,54 @@ public:
     }
 
     template <bool use_flags, bool flag_per_row, typename FindResult>
-    bool getUsed(const FindResult & f)
+    bool getUsed(const FindResult & f [[maybe_unused]])
     {
-        if constexpr (!use_flags)
-            return true;
-
-        if constexpr (flag_per_row)
+        /// Keep the no-flags instantiation from requiring `FindResult::getOffset`.
+        if constexpr (use_flags)
         {
-            return headRowFlag(f.getMapped()).load();
+            if constexpr (flag_per_row)
+                return headRowFlag(f.getMapped()).load();
+            else
+                return per_offset_flags[f.getOffset()].load();
         }
         else
         {
-            return per_offset_flags[f.getOffset()].load();
+            return true;
         }
     }
 
     template <bool use_flags, bool flag_per_row, typename FindResult>
-    bool setUsedOnce(const FindResult & f)
+    bool setUsedOnce(const FindResult & f [[maybe_unused]])
     {
-        if constexpr (!use_flags)
-            return true;
-
-        if constexpr (flag_per_row)
+        if constexpr (use_flags)
         {
-            auto & flag = headRowFlag(f.getMapped());
+            if constexpr (flag_per_row)
+            {
+                auto & flag = headRowFlag(f.getMapped());
 
-            /// fast check to prevent heavy CAS with seq_cst order
-            if (flag.load(std::memory_order_relaxed))
-                return false;
+                /// fast check to prevent heavy CAS with seq_cst order
+                if (flag.load(std::memory_order_relaxed))
+                    return false;
 
-            bool expected = false;
-            return flag.compare_exchange_strong(expected, true);
+                bool expected = false;
+                return flag.compare_exchange_strong(expected, true);
+            }
+            else
+            {
+                auto off = f.getOffset();
+
+                /// fast check to prevent heavy CAS with seq_cst order
+                if (per_offset_flags[off].load(std::memory_order_relaxed))
+                    return false;
+
+                bool expected = false;
+                return per_offset_flags[off].compare_exchange_strong(expected, true);
+            }
         }
         else
         {
-            auto off = f.getOffset();
-
-            /// fast check to prevent heavy CAS with seq_cst order
-            if (per_offset_flags[off].load(std::memory_order_relaxed))
-                return false;
-
-            bool expected = false;
-            return per_offset_flags[off].compare_exchange_strong(expected, true);
+            return true;
         }
-
     }
 
     template <bool use_flags, bool flag_per_row>
@@ -255,15 +259,6 @@ public:
             bool expected = false;
             return per_offset_flags[offset].compare_exchange_strong(expected, true);
         }
-    }
-
-    /// Are all offset flags set? (index 0 is skipped as it is a service index)
-    bool allOffsetFlagsSet() const noexcept
-    {
-        for (const auto & per_offset_flag : per_offset_flags)
-            if (!per_offset_flag.load(std::memory_order_relaxed))
-                return false;
-        return true;
     }
 };
 

@@ -89,7 +89,15 @@ StorageJoin::StorageJoin(
             throw Exception(ErrorCodes::NO_SUCH_COLUMN_IN_TABLE, "Key column ({}) does not exist in table declaration.", key);
 
     table_join = std::make_shared<TableJoin>(limits, use_nulls, kind, strictness, key_names);
-    join = std::make_shared<HashJoin>(table_join, std::make_shared<const Block>(getRightSampleBlock()), overwrite);
+    join = std::make_shared<HashJoin>(
+        table_join,
+        std::make_shared<const Block>(getRightSampleBlock()),
+        overwrite,
+        /*reserve_num_=*/0,
+        /*instance_id_=*/"",
+        StatsCollectingParams{},
+        /*max_threads_=*/1,
+        /*use_parallel_layout_=*/false);
     restore();
     optimizeUnlocked();
 }
@@ -171,7 +179,15 @@ void StorageJoin::truncate(const ASTPtr &, const StorageMetadataPtr &, ContextPt
     disk->createDirectories(fs::path(path) / "tmp/");
 
     increment = 0;
-    join = std::make_shared<HashJoin>(table_join, std::make_shared<const Block>(getRightSampleBlock()), overwrite);
+    join = std::make_shared<HashJoin>(
+        table_join,
+        std::make_shared<const Block>(getRightSampleBlock()),
+        overwrite,
+        /*reserve_num_=*/0,
+        /*instance_id_=*/"",
+        StatsCollectingParams{},
+        /*max_threads_=*/1,
+        /*use_parallel_layout_=*/false);
 }
 
 void StorageJoin::checkMutationIsPossible(const MutationCommands & commands, const Settings & /* settings */) const
@@ -195,7 +211,15 @@ void StorageJoin::mutate(const MutationCommands & commands, ContextPtr context)
     auto compressed_backup_buf = CompressedWriteBuffer(*backup_buf);
     auto backup_stream = NativeWriter(compressed_backup_buf, 0, std::make_shared<const Block>(metadata_snapshot->getSampleBlock()));
 
-    auto new_data = std::make_shared<HashJoin>(table_join, std::make_shared<const Block>(getRightSampleBlock()), overwrite);
+    auto new_data = std::make_shared<HashJoin>(
+        table_join,
+        std::make_shared<const Block>(getRightSampleBlock()),
+        overwrite,
+        /*reserve_num_=*/0,
+        /*instance_id_=*/"",
+        StatsCollectingParams{},
+        /*max_threads_=*/1,
+        /*use_parallel_layout_=*/false);
 
     // New scope controls lifetime of pipeline.
     {
@@ -313,7 +337,15 @@ HashJoinPtr StorageJoin::getJoinLocked(std::shared_ptr<TableJoin> analyzed_join,
     Block right_sample_block;
     for (const auto & name : required_columns_names)
         right_sample_block.insert(getRightSampleBlock().getByName(name));
-    HashJoinPtr join_clone = std::make_shared<HashJoin>(analyzed_join, std::make_shared<const Block>(std::move(right_sample_block)));
+    HashJoinPtr join_clone = std::make_shared<HashJoin>(
+        analyzed_join,
+        std::make_shared<const Block>(std::move(right_sample_block)),
+        /*any_take_last_row_=*/false,
+        /*reserve_num_=*/0,
+        /*instance_id_=*/"",
+        StatsCollectingParams{},
+        /*max_threads_=*/1,
+        /*use_parallel_layout_=*/false);
 
     RWLockImpl::LockHolder holder = tryLockTimed(rwlock, RWLockImpl::Read, query_id, Poco::Timespan(acquire_timeout.count() * 1000));
     join_clone->setLock(holder);
@@ -869,7 +901,7 @@ public:
 protected:
     Chunk generate() override
     {
-        if (join->data->columns.empty())
+        if (!join->data->hasStoredColumns())
             return {};
 
         Chunk chunk;

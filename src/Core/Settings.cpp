@@ -282,7 +282,7 @@ The `max_joined_block_size_bytes` combined with this setting is helpful to avoid
 )", 0) \
     DECLARE(Bool, parallel_non_joined_rows_processing, true, R"(
 Allow multiple threads to process non-joined rows from the right table in parallel during RIGHT and FULL JOINs.
-This can speed up the non-joined phase when using the `parallel_hash` join algorithm with large tables.
+This can speed up the non-joined phase of hash joins with large right tables.
 When disabled, non-joined rows are processed by a single thread.
 )", 0) \
     DECLARE(MaxThreads, max_insert_threads, 0, R"(
@@ -3637,15 +3637,11 @@ Possible values:
 
  When using the `hash` algorithm, the right part of `JOIN` is uploaded into RAM.
 
-- unified_hash
-
- Experimental hash join algorithm. Same semantics as `hash`, intended as a foundation for a unified hash join implementation.
+ `hash` and `parallel_hash` are aliases of the same join class. The in-memory layout (1-bucket vs 256-bucket maps, and how many slots scatter work) is chosen from the join kind, `parallel_hash_join_threshold`, and `max_threads`.
 
 - parallel_hash
 
- A variation of `hash` join that splits the data into buckets and builds several hashtables instead of one concurrently to speed up this process.
-
- When using the `parallel_hash` algorithm, the right part of `JOIN` is uploaded into RAM.
+ Same class and layout policy as `hash`.
 
 - partial_merge
 
@@ -8178,8 +8174,8 @@ When enabled, ClickHouse will detect Hive-style partitioning in path (`/name=val
 Throw an exception instead of logging a warning when Hive-style partitioning detection for an object storage table fails to list the storage. When disabled, the query runs without the Hive partition columns, which may change its result.
 )", 0) \
     DECLARE(UInt64, parallel_hash_join_threshold, 100'000, R"(
-When hash-based join algorithm is applied, this threshold helps to decide between using `hash` and `parallel_hash` (only if estimation of the right table size is available).
-The former is used when we know that the right table size is below the threshold.
+When a hash-based join algorithm is applied, this threshold picks the in-memory layout (only if an estimate of the right table size is available).
+Below the threshold, the join uses 1-bucket maps; at or above it, 256-bucket maps and slot scatter (when `max_threads` > 1).
 )", 0) \
     DECLARE(Bool, apply_settings_from_server, true, R"(
 Whether the client should accept settings from server.

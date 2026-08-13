@@ -64,15 +64,15 @@ struct LazyOutput
 
     /// Resolves RowRef::block_no at emit time; points into the join's StoredColumnsIndex,
     /// which is immutable once the build phase is finished. Used by the cold paths
-    /// (joinGet / ColumnsWithRowNumbers / ASOF). These keep the raw `StoredBlock *` rather than
+    /// (ColumnsWithRowNumbers / ASOF). These keep the raw `StoredBlock *` rather than
     /// the hot-path emit table below because they need the whole block, not just a resolved column:
-    /// per-row `byteSizeAt` accounting (`buildOutputFromBlocksLimitAndOffset`), nullable-column
-    /// dispatch (`buildJoinGetOutput`), and feeding `ColumnsWithRowNumbers` (`buildOutputFromBlocks`).
+    /// per-row `byteSizeAt` accounting (`buildOutputFromBlocksLimitAndOffset`) and feeding
+    /// `ColumnsWithRowNumbers` (`buildOutputFromBlocks`).
     const StoredBlock * const * stored_columns = nullptr;
 
     /// Per output column (parallel to `right_indexes`): the StoredColumnsIndex emit table base pointers,
     /// i.e. the resolved source `const IColumn *` per block and its `ColumnReplicated *` counterpart.
-    /// Filled in the AddedColumns ctor for the hot `fillFromRowRefs` path; empty for joinGet / ASOF.
+    /// Filled in the AddedColumns ctor for the hot `fillFromRowRefs` path; empty for ASOF.
     std::vector<const IColumn * const *> emit_block_columns;
     std::vector<const ColumnReplicated * const *> emit_block_replicated;
 
@@ -114,8 +114,6 @@ struct LazyOutput
         size_t rows_limit,
         size_t bytes_limit) const;
 
-    void buildJoinGetOutput(size_t size_to_reserve, MutableColumns & columns, const UInt64 * row_refs_begin, const UInt64 * row_refs_end) const;
-
     /** Build output from the blocks that extract from the encoded refs, to avoid block cache miss which may cause performance slow down.
      *  And This problem would happen it we directly build output from the encoded refs.
      */
@@ -129,6 +127,9 @@ struct LazyOutput
         const PaddedPODArray<UInt64> & left_sizes, const IColumn::Offsets & left_offsets,
         size_t rows_offset, size_t rows_limit, size_t bytes_limit) const;
 
+    void
+    buildJoinGetOutput(size_t size_to_reserve, MutableColumns & columns, const UInt64 * row_refs_begin, const UInt64 * row_refs_end) const;
+
 private:
 };
 
@@ -136,7 +137,6 @@ template <bool lazy>
 class AddedColumns
 {
 public:
-
     AddedColumns(
         const ScatteredBlock & left_block_,
         const Block & block_with_columns_to_add,
@@ -146,7 +146,7 @@ public:
         ExpressionActionsPtr additional_filter_expression_,
         const std::vector<std::pair<size_t, size_t>> & additional_filter_required_rhs_pos_,
         bool is_asof_join,
-        bool is_join_get_)
+        bool is_join_get_ = false)
         : left_block(left_block_.getSourceBlock())
         , join_on_keys(join_on_keys_)
         , additional_filter_expression(additional_filter_expression_)
@@ -348,5 +348,4 @@ private:
 };
 
 std::pair<const IColumn *, size_t> getBlockColumnAndRow(const StoredBlock * block, size_t row_num, size_t column_index);
-
 }

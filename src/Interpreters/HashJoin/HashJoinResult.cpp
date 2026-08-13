@@ -1,7 +1,15 @@
+#include <Columns/ColumnReplicated.h>
 #include <Interpreters/HashJoin/HashJoinResult.h>
 #include <Interpreters/castColumn.h>
-#include <Columns/ColumnReplicated.h>
+#include <Common/ElapsedTimeProfileEventIncrement.h>
+#include <Common/ProfileEvents.h>
 #include <Common/memcpySmall.h>
+
+namespace ProfileEvents
+{
+extern const Event HashJoinProbeMicroseconds;
+extern const Event HashJoinProbeGatherMicroseconds;
+}
 
 namespace DB
 {
@@ -42,7 +50,9 @@ static void correctNullabilityInplace(
         }
     }
     else
+    {
         JoinCommon::removeColumnNullability(column);
+    }
 }
 
 static ColumnWithTypeAndName copyLeftKeyColumnToRight(
@@ -260,7 +270,6 @@ Block HashJoinResult::generateBlock(
     MutableColumns columns;
     if (state->state_row_limit > 0)
     {
-        /// columns are empty when using lazy_output
         chassert(std::ranges::all_of(columns, [](const auto & col) { return col->empty(); }));
         columns = copyEmptyColumns(state->columns);
     }
@@ -269,18 +278,25 @@ Block HashJoinResult::generateBlock(
         columns = std::move(state->columns);
     }
 
-    if (properties.is_join_get)
     {
-        lazy_output.buildJoinGetOutput(
-            state->rows_to_reserve, columns,
-            off_data + state->row_ref_begin, off_data + state->row_ref_end);
-    }
-    else
-    {
-        rows_added = lazy_output.buildOutput(
-            state->rows_to_reserve, state->block, state->offsets, columns,
-            off_data + state->row_ref_begin, off_data + state->row_ref_end,
-            state->state_row_offset, state->state_row_limit, state->state_bytes_limit);
+        ProfileEventTimeIncrement<Microseconds> gather_watch(ProfileEvents::HashJoinProbeGatherMicroseconds);
+        if (properties.is_join_get)
+        {
+            lazy_output.buildJoinGetOutput(state->rows_to_reserve, columns, off_data + state->row_ref_begin, off_data + state->row_ref_end);
+        }
+        else
+        {
+            rows_added = lazy_output.buildOutput(
+                state->rows_to_reserve,
+                state->block,
+                state->offsets,
+                columns,
+                off_data + state->row_ref_begin,
+                off_data + state->row_ref_end,
+                state->state_row_offset,
+                state->state_row_limit,
+                state->state_bytes_limit);
+        }
     }
 
     IColumn::Offsets offsets;
@@ -401,6 +417,8 @@ void HashJoinResult::setNextBlock(ScatteredBlock && block)
 
 IJoinResult::JoinResultBlock HashJoinResult::next()
 {
+    ProfileEventTimeIncrement<Microseconds> probe_watch(ProfileEvents::HashJoinProbeMicroseconds);
+
     ScatteredBlock * next_block_ptr = next_scattered_block ? &next_scattered_block.value() : nullptr;
     if (current_row_state)
     {
@@ -414,17 +432,12 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
 
     size_t limit_rows_per_key = 0;
     size_t limit_bytes_per_key = 0;
-    /// We can split when using lazy_output with row_refs and offsets
     if (properties.joined_block_split_single_row
         && properties.max_joined_block_rows > 0
-        /// ignore join get, it has any join semantics
         && !properties.is_join_get
         && !offsets.empty()
-        /// check if using lazy_output with row_refs
         && lazy_output.output_by_row_list
-        /// sorted need different build output logic that supports ranges
         && !lazy_output.join_data_sorted
-        /// columns are empty when using lazy_output
         && std::ranges::all_of(columns, [](const auto & col) { return col->empty(); }))
     {
         limit_rows_per_key = properties.max_joined_block_rows;
@@ -594,5 +607,4 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
 
     return {std::move(block), next_block_ptr, is_last && !current_row_state.has_value()};
 }
-
 }

@@ -10,7 +10,6 @@
 #include <Interpreters/ActionsDAG.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/HashJoin/HashJoin.h>
-#include <Interpreters/UnifiedHashJoin/HashJoin.h>
 #include <Interpreters/HashTablesStatistics.h>
 #include <Interpreters/JoinExpressionActions.h>
 #include <Interpreters/MergeJoin.h>
@@ -568,7 +567,7 @@ bool optimizeJoinLegacy(QueryPlan::Node & node, QueryPlan::Nodes & /*nodes*/, co
     const auto & table_join = join->getTableJoin();
 
     /// Algorithms other than HashJoin may not support all JOIN kinds, so changing from LEFT to RIGHT is not always possible
-    bool allow_outer_join = typeid_cast<const HashJoin *>(join.get()) || typeid_cast<const UnifiedHashJoin *>(join.get());
+    bool allow_outer_join = typeid_cast<const HashJoin *>(join.get());
     if (table_join.kind() != JoinKind::Inner && !allow_outer_join)
         return true;
 

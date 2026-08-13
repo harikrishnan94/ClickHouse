@@ -2,7 +2,6 @@
 
 #include <algorithm>
 
-#include <Interpreters/ConcurrentHashJoin.h>
 #include <Interpreters/GraceHashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Common/ProfileEvents.h>
@@ -37,7 +36,6 @@ SpillingHashJoin::SpillingHashJoin(
     size_t max_num_buckets_,
     const StatsCollectingParams & stats_collecting_params_,
     bool any_take_last_row_,
-    InMemoryHashJoinKind in_memory_kind_,
     size_t max_threads_,
     bool use_parallel_layout_)
     : log(getLogger("SpillingHashJoin"))
@@ -49,11 +47,9 @@ SpillingHashJoin::SpillingHashJoin(
     , max_num_buckets(max_num_buckets_)
     , any_take_last_row(any_take_last_row_)
     , max_bytes_before_external_join(table_join->maxBytesBeforeExternalJoin())
-    , in_memory_kind(in_memory_kind_)
     , max_threads(std::max<size_t>(1, max_threads_))
 {
     in_memory_hash_join = createInMemoryHashJoin(
-        in_memory_kind,
         table_join,
         right_sample_block_,
         any_take_last_row,
@@ -65,65 +61,7 @@ SpillingHashJoin::SpillingHashJoin(
     supports_parallel_non_joined_blocks_processing = in_memory_hash_join->supportParallelNonJoinedBlocksProcessing();
 }
 
-SpillingHashJoin::SpillingHashJoin(
-    std::shared_ptr<TableJoin> table_join_,
-    SharedHeader left_sample_block_,
-    SharedHeader right_sample_block_,
-    TemporaryDataOnDiskScopePtr tmp_data_,
-    size_t initial_num_buckets_,
-    size_t max_num_buckets_,
-    size_t concurrent_slots_,
-    const StatsCollectingParams & stats_collecting_params_,
-    bool any_take_last_row_,
-    InMemoryHashJoinKind in_memory_kind_)
-    : log(getLogger("SpillingHashJoin"))
-    , table_join(std::move(table_join_))
-    , left_sample_block(std::move(left_sample_block_))
-    , right_sample_block(right_sample_block_->cloneEmpty())
-    , tmp_data(std::move(tmp_data_))
-    , initial_num_buckets(initial_num_buckets_)
-    , max_num_buckets(max_num_buckets_)
-    , any_take_last_row(any_take_last_row_)
-    , max_bytes_before_external_join(table_join->maxBytesBeforeExternalJoin())
-    , in_memory_kind(in_memory_kind_)
-{
-    concurrent_join = std::make_shared<ConcurrentHashJoin>(
-        table_join,
-        concurrent_slots_,
-        right_sample_block_,
-        stats_collecting_params_,
-        any_take_last_row,
-        max_bytes_before_external_join);
-    supports_parallel_non_joined_blocks_processing = concurrent_join->supportParallelNonJoinedBlocksProcessing();
-}
-
 SpillingHashJoin::~SpillingHashJoin() = default;
-
-void SpillingHashJoin::tryConvertSlots()
-{
-    chassert(concurrent_join);
-    chassert(grace_join);
-
-    const auto total_slots = concurrent_join->getNumSlots();
-
-    /// Fast path: all slots already converted.
-    if (next_slot_to_convert.load(std::memory_order_acquire) >= total_slots)
-        return;
-
-    while (true)
-    {
-        size_t slot = next_slot_to_convert.fetch_add(1);
-        if (slot >= total_slots)
-            break;
-
-        auto blocks = concurrent_join->releaseSlotBlocks(slot);
-        while (!blocks.empty())
-        {
-            grace_join->addBlockToJoin(blocks.front(), /*check_limits=*/false);
-            blocks.pop_front();
-        }
-    }
-}
 
 void SpillingHashJoin::tryConvertChunks()
 {
@@ -152,12 +90,7 @@ void SpillingHashJoin::tryConvertChunks()
 
 std::string SpillingHashJoin::getName() const
 {
-    static constexpr auto name_format = "SpillingHashJoin({})";
-
-    if (concurrent_join)
-        return fmt::format(name_format, concurrent_join->getName());
-
-    return fmt::format(name_format, in_memory_hash_join->getName());
+    return fmt::format("SpillingHashJoin({})", in_memory_hash_join->getName());
 }
 
 bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
@@ -165,10 +98,8 @@ bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
     /// Fast path: already switched to GraceHashJoin (no lock needed).
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
     {
-        /// Help convert ConcurrentHashJoin slots / UHJ worker chunks while in GRACE_HASH_JOIN state.
-        if (concurrent_join)
-            tryConvertSlots();
-        else if (in_memory_hash_join)
+        /// Help convert HashJoin worker chunks while in GRACE_HASH_JOIN state.
+        if (in_memory_hash_join)
             tryConvertChunks();
         return chosen_join->addBlockToJoin(block, check_limits);
     }
@@ -180,24 +111,12 @@ bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
     /// allocator exception. Threshold is half of `max_bytes_before_external_join` so that after
     /// the switch the live buffer (already at half) plus the conversion peak still fit under the
     /// configured cap.
-    if (concurrent_join)
-    {
-        if (concurrent_join->getTotalByteCount() * 2 >= max_bytes_before_external_join)
-            switchToGraceHashJoin();
-    }
-    else
-    {
-        if (collectingJoin().getTotalByteCount() * 2 >= max_bytes_before_external_join)
-            switchToGraceHashJoin();
-    }
+    if (collectingJoin().getTotalByteCount() * 2 >= max_bytes_before_external_join)
+        switchToGraceHashJoin();
 
     /// Re-check: we may have just switched.
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
-    {
-        if (concurrent_join)
-            tryConvertSlots();
         return chosen_join->addBlockToJoin(block, check_limits);
-    }
 
     /// Shared lock: several threads may be adding blocks concurrently, and it keeps them out of a
     /// join that switchToGraceHashJoin is draining.
@@ -206,72 +125,23 @@ bool SpillingHashJoin::addBlockToJoin(const Block & block, bool check_limits)
     if (state.load(std::memory_order_acquire) != State::COLLECTING)
         return chosen_join->addBlockToJoin(block, check_limits);
 
-    if (concurrent_join)
-        return concurrent_join->addBlockToJoin(block, check_limits);
-
     return collectingJoin().addBlockToJoin(block, check_limits);
 }
 
 void SpillingHashJoin::switchToGraceHashJoin()
 {
-    const auto print_threshold_reached_log = [this](const JoinPtr & join, std::string_view join_name)
-    {
-        LOG_DEBUG(
-            log,
-            "Memory spill threshold reached with {} ({} bytes, {} rows), switching to GraceHashJoin",
-            join_name,
-            join->getTotalByteCount(),
-            join->getTotalRowCount());
-    };
-    if (concurrent_join)
-    {
-        {
-            /// Exclusive lock: waits for all in-flight `addBlockToJoin` (shared lock holders)
-            /// to complete. After this, no thread is inside `ConcurrentHashJoin::addBlockToJoin`.
-            std::unique_lock lock(switch_mutex);
-
-            /// Re-check: another thread may have already switched.
-            if (state.load(std::memory_order_relaxed) != State::COLLECTING)
-                return;
-
-            ProfileEvents::increment(ProfileEvents::JoinSpillingHashJoinSwitchedToGraceJoin);
-
-            print_threshold_reached_log(concurrent_join, "ConcurrentHashJoin");
-
-            /// Create GraceHashJoin.
-            grace_join = std::make_shared<GraceHashJoin>(
-                initial_num_buckets,
-                max_num_buckets,
-                table_join,
-                left_sample_block,
-                std::make_shared<const Block>(right_sample_block),
-                tmp_data,
-                any_take_last_row,
-                max_bytes_before_external_join,
-                in_memory_kind);
-            grace_join->initialize(*left_sample_block);
-            chosen_join = grace_join;
-
-            /// Set state BEFORE releasing the lock so new `addBlockToJoin` calls
-            /// see GRACE_HASH_JOIN and go directly to `grace_join`.
-            state.store(State::GRACE_HASH_JOIN, std::memory_order_release);
-        }
-        /// Convert ConcurrentHashJoin slots into GraceHashJoin.
-        /// Other build-phase threads will also help via `addBlockToJoin`.
-        tryConvertSlots();
-        return;
-    }
-
-    /// Drain the in-memory join after shared `addBlockToJoin` holders leave — same shape as the
-    /// concurrent path: flip to GRACE under the exclusive lock, then convert outside so helpers
-    /// can run `tryConvertChunks` in parallel.
     {
         std::unique_lock lock(switch_mutex);
 
         if (state.load(std::memory_order_relaxed) != State::COLLECTING)
             return;
 
-        print_threshold_reached_log(in_memory_hash_join, in_memory_hash_join->getName());
+        LOG_DEBUG(
+            log,
+            "Memory spill threshold reached with {} ({} bytes, {} rows), switching to GraceHashJoin",
+            in_memory_hash_join->getName(),
+            in_memory_hash_join->getTotalByteCount(),
+            in_memory_hash_join->getTotalRowCount());
         ProfileEvents::increment(ProfileEvents::JoinSpillingHashJoinSwitchedToGraceJoin);
 
         grace_join = std::make_shared<GraceHashJoin>(
@@ -282,8 +152,7 @@ void SpillingHashJoin::switchToGraceHashJoin()
             std::make_shared<const Block>(right_sample_block),
             tmp_data,
             any_take_last_row,
-            max_bytes_before_external_join,
-            in_memory_kind);
+            max_bytes_before_external_join);
 
         grace_join->initialize(*left_sample_block);
         chosen_join = grace_join;
@@ -303,20 +172,10 @@ void SpillingHashJoin::onBuildPhaseFinish()
         /// fires only on subsequent calls. If the very last block pushed total bytes past
         /// `max_bytes_before_external_join` without a follow-up insert to trigger the switch,
         /// promote it to `GraceHashJoin` here so the configured cap is honored.
-        const size_t total_bytes = concurrent_join ? concurrent_join->getTotalByteCount() : collectingJoin().getTotalByteCount();
+        const size_t total_bytes = collectingJoin().getTotalByteCount();
         if (total_bytes >= max_bytes_before_external_join)
         {
             switchToGraceHashJoin();
-        }
-        else if (concurrent_join)
-        {
-            LOG_DEBUG(
-                log,
-                "All blocks fit in memory ({} bytes, {} rows), promoting ConcurrentHashJoin",
-                total_bytes,
-                concurrent_join->getTotalRowCount());
-            chosen_join = concurrent_join;
-            state.store(State::IN_MEMORY_JOIN, std::memory_order_release);
         }
         else
         {
@@ -351,35 +210,25 @@ void SpillingHashJoin::setEnableLazyColumnsIndexing(bool value)
 {
     if (in_memory_hash_join)
         in_memory_hash_join->setEnableLazyColumnsIndexing(value);
-    if (concurrent_join)
-        concurrent_join->setEnableLazyColumnsIndexing(value);
 }
 
 void SpillingHashJoin::checkTypesOfKeys(const Block & block) const
 {
-    if (concurrent_join)
-        concurrent_join->checkTypesOfKeys(block);
-    else
-        collectingJoin().checkTypesOfKeys(block);
+    collectingJoin().checkTypesOfKeys(block);
 }
 
 void SpillingHashJoin::initialize(const Block & sample_block)
 {
     left_sample_block = std::make_shared<const Block>(sample_block.cloneEmpty());
-    if (!concurrent_join)
-        collectingJoin().initialize(sample_block);
+    collectingJoin().initialize(sample_block);
 }
 
 JoinResultPtr SpillingHashJoin::joinBlock(Block block)
 {
     /// During header computation (transformHeader), `joinBlock` is called with an empty block
-    /// before any data is added. Delegate to the appropriate join in COLLECTING state.
+    /// before any data is added. Delegate to the in-memory join in COLLECTING state.
     if (state.load(std::memory_order_acquire) == State::COLLECTING)
-    {
-        if (concurrent_join)
-            return concurrent_join->joinBlock(std::move(block));
         return collectingJoin().joinBlock(std::move(block));
-    }
 
     return chosen_join->joinBlock(std::move(block));
 }
@@ -399,33 +248,21 @@ const Block & SpillingHashJoin::getTotals() const
 size_t SpillingHashJoin::getTotalRowCount() const
 {
     if (state.load(std::memory_order_acquire) == State::COLLECTING)
-    {
-        if (concurrent_join)
-            return concurrent_join->getTotalRowCount();
         return collectingJoin().getTotalRowCount();
-    }
     return chosen_join->getTotalRowCount();
 }
 
 size_t SpillingHashJoin::getTotalByteCount() const
 {
     if (state.load(std::memory_order_acquire) == State::COLLECTING)
-    {
-        if (concurrent_join)
-            return concurrent_join->getTotalByteCount();
         return collectingJoin().getTotalByteCount();
-    }
     return chosen_join->getTotalByteCount();
 }
 
 bool SpillingHashJoin::alwaysReturnsEmptySet() const
 {
     if (state.load(std::memory_order_acquire) == State::COLLECTING)
-    {
-        if (concurrent_join)
-            return concurrent_join->alwaysReturnsEmptySet();
         return collectingJoin().alwaysReturnsEmptySet();
-    }
     return chosen_join->alwaysReturnsEmptySet();
 }
 

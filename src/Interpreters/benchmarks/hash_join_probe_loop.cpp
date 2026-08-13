@@ -1,22 +1,22 @@
-/// Microbenchmark: UnifiedHashJoin probe (`lookupBatch` + consume) on serial / two-level maps.
+/// Microbenchmark: HashJoin probe (`lookupBatch` + consume) on serial / two-level maps.
 /// `probeSequentialTwoPhase` reproduces `HashJoinMethods::joinRightColumns`'s batch loop
 /// (class-template member this harness cannot call directly).
 ///
 /// Run with:
-///   ./unified_hash_join_probe_loop --verify
-///   ./unified_hash_join_probe_loop --quick --benchmark_min_time=0.1s
-///   ./unified_hash_join_probe_loop --benchmark_out=tmp/uhj_probe_loop.json --benchmark_out_format=json
+///   ./hash_join_probe_loop --verify
+///   ./hash_join_probe_loop --quick --benchmark_min_time=0.1s
+///   ./hash_join_probe_loop --benchmark_out=tmp/uhj_probe_loop.json --benchmark_out_format=json
 
 #include <Columns/ColumnsNumber.h>
 #include <Core/Defines.h>
 #include <Interpreters/RowRefs.h>
-#include <Interpreters/UnifiedHashJoin/HashJoin.h>
-#include <Interpreters/UnifiedHashJoin/HashJoinMethodsImpl.h>
-#include <Interpreters/UnifiedHashJoin/JoinFeatures.h>
-#include <Interpreters/UnifiedHashJoin/JoinUsedFlags.h>
-#include <Interpreters/UnifiedHashJoin/KeyGetter.h>
-#include <Interpreters/UnifiedHashJoin/KnownRowsHolder.h>
-#include <Interpreters/UnifiedHashJoin/ProbeLookup.h>
+#include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashJoin/HashJoinMethodsImpl.h>
+#include <Interpreters/HashJoin/JoinFeatures.h>
+#include <Interpreters/HashJoin/JoinUsedFlags.h>
+#include <Interpreters/HashJoin/KeyGetter.h>
+#include <Interpreters/HashJoin/KnownRowsHolder.h>
+#include <Interpreters/HashJoin/ProbeLookup.h>
 #include <base/defines.h>
 #include <base/types.h>
 #include <Common/Arena.h>
@@ -33,7 +33,6 @@
 #include <bit>
 #include <charconv>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -44,6 +43,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <fmt/format.h>
 
 #if defined(OS_LINUX)
 #include <pthread.h>
@@ -51,7 +51,6 @@
 #endif
 
 using namespace DB;
-using namespace DB::Unified;
 
 namespace
 {
@@ -104,7 +103,11 @@ struct Config
     bool quick = false;
 };
 
-Config g_config;
+Config & globalConfig()
+{
+    static Config cfg;
+    return cfg;
+}
 
 std::vector<size_t> parseSizeList(std::string_view s)
 {
@@ -173,86 +176,86 @@ void parseConfig(int & argc, char ** argv)
 {
     std::string value;
     if (consumeFlag(argc, argv, "--cards", value))
-        g_config.cards = parseSizeList(value);
+        globalConfig().cards = parseSizeList(value);
     if (consumeFlag(argc, argv, "--build-mult", value))
-        g_config.build_mults = parseSizeList(value);
+        globalConfig().build_mults = parseSizeList(value);
     if (consumeFlag(argc, argv, "--probe-mult", value))
-        g_config.probe_mults = parseSizeList(value);
+        globalConfig().probe_mults = parseSizeList(value);
     if (consumeFlag(argc, argv, "--threads", value))
-        g_config.threads = parseSizeList(value);
+        globalConfig().threads = parseSizeList(value);
     if (consumeFlag(argc, argv, "--block-size", value))
-        g_config.block_size = parseSizeList(value).at(0);
+        globalConfig().block_size = parseSizeList(value).at(0);
     if (consumeFlag(argc, argv, "--batch-size", value))
-        g_config.batch_size = parseSizeList(value).at(0);
+        globalConfig().batch_size = parseSizeList(value).at(0);
     if (consumeFlag(argc, argv, "--shapes", value))
     {
-        g_config.shapes.clear();
-        if (value.find("inner") != std::string::npos)
-            g_config.shapes.push_back(Shape::Inner);
-        if (value.find("left") != std::string::npos)
-            g_config.shapes.push_back(Shape::Left);
-        if (g_config.shapes.empty())
+        globalConfig().shapes.clear();
+        if (value.contains("inner"))
+            globalConfig().shapes.push_back(Shape::Inner);
+        if (value.contains("left"))
+            globalConfig().shapes.push_back(Shape::Left);
+        if (globalConfig().shapes.empty())
             throw std::runtime_error("--shapes must include inner and/or left");
     }
     if (consumeFlag(argc, argv, "--map", value))
     {
         if (value == "two-level")
-            g_config.map_mode = MapMode::TwoLevel;
+            globalConfig().map_mode = MapMode::TwoLevel;
         else if (value == "serial")
-            g_config.map_mode = MapMode::Serial;
+            globalConfig().map_mode = MapMode::Serial;
         else if (value == "auto")
-            g_config.map_mode = MapMode::Auto;
+            globalConfig().map_mode = MapMode::Auto;
         else
             throw std::runtime_error("--map must be two-level|serial|auto");
     }
     if (consumeFlag(argc, argv, "--prefetch", value))
     {
         if (value == "auto")
-            g_config.prefetch = PrefetchMode::Auto;
+            globalConfig().prefetch = PrefetchMode::Auto;
         else if (value == "on")
-            g_config.prefetch = PrefetchMode::On;
+            globalConfig().prefetch = PrefetchMode::On;
         else if (value == "off")
-            g_config.prefetch = PrefetchMode::Off;
+            globalConfig().prefetch = PrefetchMode::Off;
         else
             throw std::runtime_error("--prefetch must be auto|on|off");
     }
     if (consumeFlag(argc, argv, "--need-filter", value))
-        g_config.need_filter = (value != "0");
+        globalConfig().need_filter = (value != "0");
     if (consumeFlag(argc, argv, "--match-rate", value))
-        g_config.match_rate = std::stod(value);
+        globalConfig().match_rate = std::stod(value);
     if (consumeFlag(argc, argv, "--build-order", value))
     {
         if (value == "scattered")
-            g_config.build_order = BuildOrder::Scattered;
+            globalConfig().build_order = BuildOrder::Scattered;
         else if (value == "clustered")
-            g_config.build_order = BuildOrder::Clustered;
+            globalConfig().build_order = BuildOrder::Clustered;
         else
             throw std::runtime_error("--build-order must be scattered|clustered");
     }
     if (consumeFlag(argc, argv, "--reserve", value))
-        g_config.reserve_exact = (value != "none");
+        globalConfig().reserve_exact = (value != "none");
     if (consumeFlag(argc, argv, "--min-blocks-per-thread", value))
-        g_config.min_blocks_per_thread = parseSizeList(value).at(0);
+        globalConfig().min_blocks_per_thread = parseSizeList(value).at(0);
     if (consumeFlag(argc, argv, "--pin", value))
-        g_config.pin = (value != "0");
+        globalConfig().pin = (value != "0");
     if (consumeFlag(argc, argv, "--seed", value))
-        g_config.seed = parseSizeList(value).at(0);
+        globalConfig().seed = parseSizeList(value).at(0);
     if (consumeBoolFlag(argc, argv, "--verify"))
-        g_config.verify = true;
+        globalConfig().verify = true;
     if (consumeBoolFlag(argc, argv, "--quick"))
-        g_config.quick = true;
+        globalConfig().quick = true;
 
-    if (g_config.quick)
+    if (globalConfig().quick)
     {
-        g_config.cards = {10'000, 100'000};
-        g_config.build_mults = {1, 2};
-        g_config.probe_mults = {1, 2};
-        g_config.threads = {1, 8};
+        globalConfig().cards = {10'000, 100'000};
+        globalConfig().build_mults = {1, 2};
+        globalConfig().probe_mults = {1, 2};
+        globalConfig().threads = {1, 8};
     }
 
-    if (g_config.batch_size == 0)
+    if (globalConfig().batch_size == 0)
         throw std::runtime_error("--batch-size must be > 0");
-    if (g_config.block_size == 0)
+    if (globalConfig().block_size == 0)
         throw std::runtime_error("--block-size must be > 0");
 }
 
@@ -275,7 +278,7 @@ std::string formatCard(size_t c)
 
 bool useTwoLevelMap(size_t threads)
 {
-    switch (g_config.map_mode)
+    switch (globalConfig().map_mode)
     {
         case MapMode::TwoLevel: return true;
         case MapMode::Serial: return false;
@@ -419,7 +422,7 @@ ProbeColumnCache g_probe_cache;
 void pinThread(size_t t)
 {
 #if defined(OS_LINUX)
-    if (!g_config.pin)
+    if (!globalConfig().pin)
         return;
     const unsigned n = std::thread::hardware_concurrency();
     if (n == 0)
@@ -461,7 +464,7 @@ void fillRangeParallel(size_t threads, size_t n, const std::function<void(size_t
 const BuildColumnCache & ensureBuildColumn(size_t cardinality, size_t build_mult, size_t threads)
 {
     if (g_build_cache.column && g_build_cache.cardinality == cardinality && g_build_cache.build_mult == build_mult
-        && g_build_cache.order == g_config.build_order)
+        && g_build_cache.order == globalConfig().build_order)
         return g_build_cache;
 
     Stopwatch sw;
@@ -469,8 +472,8 @@ const BuildColumnCache & ensureBuildColumn(size_t cardinality, size_t build_mult
     auto col = ColumnUInt64::create(rows);
     auto & data = col->getData();
     const auto pp = makePermuteParams(rows);
-    const UInt64 seed = g_config.seed;
-    const BuildOrder order = g_config.build_order;
+    const UInt64 seed = globalConfig().seed;
+    const BuildOrder order = globalConfig().build_order;
 
     fillRangeParallel(
         threads,
@@ -495,7 +498,7 @@ const BuildColumnCache & ensureBuildColumn(size_t cardinality, size_t build_mult
 const ProbeColumnCache & ensureProbeColumn(size_t cardinality, size_t probe_mult, size_t threads)
 {
     if (g_probe_cache.column && g_probe_cache.cardinality == cardinality && g_probe_cache.probe_mult == probe_mult
-        && g_probe_cache.match_rate == g_config.match_rate)
+        && g_probe_cache.match_rate == globalConfig().match_rate)
         return g_probe_cache;
 
     Stopwatch sw;
@@ -503,8 +506,8 @@ const ProbeColumnCache & ensureProbeColumn(size_t cardinality, size_t probe_mult
     auto col = ColumnUInt64::create(rows);
     auto & data = col->getData();
     const auto pp = makePermuteParams(rows);
-    const UInt64 seed = g_config.seed;
-    const double match_rate = g_config.match_rate;
+    const UInt64 seed = globalConfig().seed;
+    const double match_rate = globalConfig().match_rate;
 
     fillRangeParallel(
         threads,
@@ -605,7 +608,7 @@ BuiltMap buildMapImpl(size_t cardinality, size_t build_mult, size_t threads)
     const auto & build = ensureBuildColumn(cardinality, build_mult, threads);
     const size_t rows = build.column->size();
     const size_t num_slots = slotCountForThreads(threads);
-    const size_t block_size = g_config.block_size;
+    const size_t block_size = globalConfig().block_size;
     const size_t num_blocks = (rows + block_size - 1) / block_size;
 
     BuiltMap out;
@@ -613,14 +616,14 @@ BuiltMap buildMapImpl(size_t cardinality, size_t build_mult, size_t threads)
     out.cardinality = cardinality;
     out.build_mult = build_mult;
     out.num_slots = num_slots;
-    out.reserve_exact = g_config.reserve_exact;
+    out.reserve_exact = globalConfig().reserve_exact;
     out.load_ms = build.load_ms;
     out.pools.resize(num_slots);
     for (size_t s = 0; s < num_slots; ++s)
         out.pools[s] = std::make_unique<Arena>();
 
     auto map = std::make_unique<Map>();
-    if (g_config.reserve_exact)
+    if (globalConfig().reserve_exact)
         map->reserve(cardinality);
 
     std::vector<BucketLock> locks(num_slots);
@@ -728,7 +731,7 @@ const BuiltMap & ensureBuiltMap(size_t cardinality, size_t build_mult, size_t th
     const size_t num_slots = slotCountForThreads(threads);
     const bool two_level = useTwoLevelMap(threads);
     if (g_built_map.cardinality == cardinality && g_built_map.build_mult == build_mult && g_built_map.num_slots == num_slots
-        && g_built_map.two_level == two_level && g_built_map.reserve_exact == g_config.reserve_exact
+        && g_built_map.two_level == two_level && g_built_map.reserve_exact == globalConfig().reserve_exact
         && (two_level ? g_built_map.two_level_map != nullptr : g_built_map.serial_map != nullptr))
         return g_built_map;
 
@@ -976,11 +979,11 @@ void configureSession(ProbeSession & session, const ProbeParams & p, const Built
     session.probe = &probe;
     session.threads = p.threads;
     session.probe_rows = probe.column->size();
-    session.block_size = g_config.block_size;
-    session.batch_size = g_config.batch_size;
+    session.block_size = globalConfig().block_size;
+    session.batch_size = globalConfig().batch_size;
     session.natural_blocks = std::max<size_t>(1, (session.probe_rows + session.block_size - 1) / session.block_size);
-    session.blocks_per_pass = std::max(session.natural_blocks, p.threads * g_config.min_blocks_per_thread);
-    session.use_prefetch = resolveUsePrefetch(g_config.prefetch, built.bytes());
+    session.blocks_per_pass = std::max(session.natural_blocks, p.threads * globalConfig().min_blocks_per_thread);
+    session.use_prefetch = resolveUsePrefetch(globalConfig().prefetch, built.bytes());
     session.need_filter = p.need_filter;
     session.shape = p.shape;
     session.two_level = built.two_level;
@@ -1037,10 +1040,10 @@ digestsProbe(const BuiltMap & built, const ProbeColumnCache & probe, bool includ
     }();
 
     const size_t probe_rows = probe.column->size();
-    const size_t block_size = g_config.block_size;
+    const size_t block_size = globalConfig().block_size;
     const size_t natural_blocks = (probe_rows + block_size - 1) / block_size;
-    const size_t batch_size = g_config.batch_size;
-    const bool use_prefetch = resolveUsePrefetch(g_config.prefetch, built.bytes());
+    const size_t batch_size = globalConfig().batch_size;
+    const bool use_prefetch = resolveUsePrefetch(globalConfig().prefetch, built.bytes());
 
     ColumnRawPtrs key_columns{probe.column.get()};
     const Sizes key_sizes{sizeof(UInt64)};
@@ -1101,7 +1104,7 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
 
     /// Analytic expectation.
     const size_t probe_rows = cardinality * probe_mult;
-    const UInt64 matched_keys = static_cast<UInt64>(std::llround(g_config.match_rate * static_cast<double>(cardinality)));
+    const UInt64 matched_keys = static_cast<UInt64>(std::llround(globalConfig().match_rate * static_cast<double>(cardinality)));
     const UInt64 matches = matched_keys * probe_mult;
     const UInt64 misses = probe_rows - matches;
     UInt64 expected = matches * build_mult;
@@ -1131,37 +1134,37 @@ void verifyShape(size_t cardinality, size_t build_mult, size_t probe_mult)
                 cardinality);
     }
 
-    std::fprintf(
+    fmt::print(
         stderr,
-        "verify OK: %s card=%zu build=%zux probe=%zux out_rows=%llu\n",
+        "verify OK: {} card={} build={}x probe={}x out_rows={}\n",
         KIND == JoinKind::Inner ? "AllInner" : "AllLeft",
         cardinality,
         build_mult,
         probe_mult,
-        static_cast<unsigned long long>(probed.second));
+        probed.second);
 }
 
 void runVerify()
 {
-    const std::vector<size_t> cards = g_config.quick ? std::vector<size_t>{10'000} : std::vector<size_t>{10'000, 100'000};
+    const std::vector<size_t> cards = globalConfig().quick ? std::vector<size_t>{10'000} : std::vector<size_t>{10'000, 100'000};
     for (size_t card : cards)
     {
         for (size_t bm : {size_t{1}, size_t{2}})
         {
             for (size_t pm : {size_t{1}, size_t{2}})
             {
-                for (Shape shape : g_config.shapes)
+                for (Shape shape : globalConfig().shapes)
                 {
                     if (shape == Shape::Inner)
                     {
-                        if (g_config.need_filter)
+                        if (globalConfig().need_filter)
                             verifyShape<JoinKind::Inner, true>(card, bm, pm);
                         else
                             verifyShape<JoinKind::Inner, false>(card, bm, pm);
                     }
                     else
                     {
-                        if (g_config.need_filter)
+                        if (globalConfig().need_filter)
                             verifyShape<JoinKind::Left, true>(card, bm, pm);
                         else
                             verifyShape<JoinKind::Left, false>(card, bm, pm);
@@ -1233,28 +1236,28 @@ void BM_Probe(benchmark::State & state, ProbeParams params)
     state.counters["threads"] = static_cast<double>(params.threads);
     state.counters["slots"] = static_cast<double>(built.num_slots);
     state.counters["blocks"] = static_cast<double>(session.blocks_per_pass);
-    state.counters["batch"] = static_cast<double>(g_config.batch_size);
+    state.counters["batch"] = static_cast<double>(globalConfig().batch_size);
     state.counters["build_ms"] = built.build_ms;
 }
 
 void registerBenchmarks()
 {
-    std::fprintf(
+    fmt::print(
         stderr,
-        "uhj_probe_loop: block_size=%zu batch_size=%zu seed=%llu map=%s prefetch=%s need_filter=%d match_rate=%.3f\n",
-        g_config.block_size,
-        g_config.batch_size,
-        static_cast<unsigned long long>(g_config.seed),
-        g_config.map_mode == MapMode::TwoLevel ? "two-level" : (g_config.map_mode == MapMode::Serial ? "serial" : "auto"),
-        g_config.prefetch == PrefetchMode::Auto ? "auto" : (g_config.prefetch == PrefetchMode::On ? "on" : "off"),
-        static_cast<int>(g_config.need_filter),
-        g_config.match_rate);
+        "uhj_probe_loop: block_size={} batch_size={} seed={} map={} prefetch={} need_filter={} match_rate={:.3f}\n",
+        globalConfig().block_size,
+        globalConfig().batch_size,
+        globalConfig().seed,
+        globalConfig().map_mode == MapMode::TwoLevel ? "two-level" : (globalConfig().map_mode == MapMode::Serial ? "serial" : "auto"),
+        globalConfig().prefetch == PrefetchMode::Auto ? "auto" : (globalConfig().prefetch == PrefetchMode::On ? "on" : "off"),
+        static_cast<int>(globalConfig().need_filter),
+        globalConfig().match_rate);
 
-    for (size_t card : g_config.cards)
+    for (size_t card : globalConfig().cards)
     {
-        for (size_t bm : g_config.build_mults)
+        for (size_t bm : globalConfig().build_mults)
         {
-            for (size_t thr : g_config.threads)
+            for (size_t thr : globalConfig().threads)
             {
                 const std::string build_name = "Build/card=" + formatCard(card) + "/build=" + std::to_string(bm)
                     + "x/thr=" + std::to_string(thr) + "/slots=" + std::to_string(slotCountForThreads(thr));
@@ -1262,9 +1265,9 @@ void registerBenchmarks()
                     ->UseRealTime()
                     ->Iterations(1);
 
-                for (Shape shape : g_config.shapes)
+                for (Shape shape : globalConfig().shapes)
                 {
-                    for (size_t pm : g_config.probe_mults)
+                    for (size_t pm : globalConfig().probe_mults)
                     {
                         ProbeParams params{
                             .cardinality = card,
@@ -1272,7 +1275,7 @@ void registerBenchmarks()
                             .probe_mult = pm,
                             .threads = thr,
                             .shape = shape,
-                            .need_filter = g_config.need_filter,
+                            .need_filter = globalConfig().need_filter,
                         };
                         const std::string name = std::string(shapeName(shape)) + "/card=" + formatCard(card)
                             + "/build=" + std::to_string(bm) + "x/probe=" + std::to_string(pm) + "x/thr="
@@ -1292,7 +1295,7 @@ int main(int argc, char ** argv)
     try
     {
         parseConfig(argc, argv);
-        if (g_config.verify)
+        if (globalConfig().verify)
         {
             runVerify();
             return 0;
@@ -1305,12 +1308,12 @@ int main(int argc, char ** argv)
     }
     catch (const DB::Exception & e)
     {
-        std::fprintf(stderr, "Exception: %s\n", e.displayText().c_str());
+        fmt::print(stderr, "Exception: {}\n", e.displayText());
         return 1;
     }
     catch (const std::exception & e)
     {
-        std::fprintf(stderr, "std::exception: %s\n", e.what());
+        fmt::print(stderr, "std::exception: {}\n", e.what());
         return 1;
     }
 }

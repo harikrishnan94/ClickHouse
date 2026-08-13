@@ -28,7 +28,7 @@ class TableJoin;
  * Each input block is split into multiple buckets based on the hash of the row join keys.
  * The first bucket is added to the in-memory HashJoin, and the remaining buckets are written to disk for further processing.
  * When the size of HashJoin exceeds the limits, we double the number of buckets.
- * There can be multiple threads calling addBlockToJoin, just like @ConcurrentHashJoin.
+ * There can be multiple threads calling addBlockToJoin, just like HashJoin.
  *
  * 2) At the second stage we process left table blocks via @joinBlock.
  * Again, each input block is split into multiple buckets by hash.
@@ -40,7 +40,7 @@ class TableJoin;
  * And then join them with left table blocks.
  *
  * After joining the left table blocks, we can load non-joined rows from the right table for RIGHT/FULL JOINs.
- * Note that non-joined rows are processed in multiple threads, unlike HashJoin/ConcurrentHashJoin/MergeJoin.
+ * Note that non-joined rows are processed in multiple threads, unlike MergeJoin.
  */
 class GraceHashJoin final : public IJoin
 {
@@ -64,11 +64,11 @@ public:
         size_t initial_num_buckets_,
         size_t max_num_buckets_,
         std::shared_ptr<TableJoin> table_join_,
-        SharedHeader left_sample_block_, SharedHeader right_sample_block_,
+        SharedHeader left_sample_block_,
+        SharedHeader right_sample_block_,
         TemporaryDataOnDiskScopePtr tmp_data_,
         bool any_take_last_row_ = false,
-        size_t external_join_threshold_ = 0,
-        InMemoryHashJoinKind in_memory_kind_ = InMemoryHashJoinKind::Hash);
+        size_t external_join_threshold_ = 0);
 
     ~GraceHashJoin() override;
 
@@ -147,7 +147,6 @@ private:
     const size_t initial_num_buckets;
     const size_t max_num_buckets;
     const size_t external_join_threshold;
-    const InMemoryHashJoinKind in_memory_kind;
 
     Names left_key_names;
     Names right_key_names;

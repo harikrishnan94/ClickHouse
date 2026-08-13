@@ -112,7 +112,9 @@ ON t1.k = t2.k
 SETTINGS log_comment = 'query_03915_10';
 
 -- ====================================================================
--- Concurrent path: SpillingHashJoin wrapping ConcurrentHashJoin.
+-- ====================================================================
+-- Same joins with `join_algorithm = 'parallel_hash'` (an alias of `hash`).
+-- ====================================================================
 -- ====================================================================
 SET max_bytes_before_external_join = 1000000000;
 SET join_algorithm = 'parallel_hash';

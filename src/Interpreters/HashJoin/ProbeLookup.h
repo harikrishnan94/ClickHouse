@@ -12,8 +12,6 @@
 
 namespace DB
 {
-namespace Unified
-{
 
 /** Record `findKey` outcomes for a later emit pass so later lookups can overlap earlier
   * cell misses. Whether that pays for scratch traffic is a call-site choice.
@@ -182,6 +180,5 @@ struct SequentialLookup
     }
 };
 
-}
 
 }

@@ -259,8 +259,7 @@ GraceHashJoin::GraceHashJoin(
     SharedHeader right_sample_block_,
     TemporaryDataOnDiskScopePtr tmp_data_,
     bool any_take_last_row_,
-    size_t external_join_threshold_,
-    InMemoryHashJoinKind in_memory_kind_)
+    size_t external_join_threshold_)
     : log{getLogger("GraceHashJoin")}
     , table_join{std::move(table_join_)}
     , left_sample_block{left_sample_block_}
@@ -269,15 +268,17 @@ GraceHashJoin::GraceHashJoin(
     , initial_num_buckets(initial_num_buckets_)
     , max_num_buckets(max_num_buckets_)
     , external_join_threshold(external_join_threshold_)
-    , in_memory_kind(in_memory_kind_)
     , left_key_names(table_join->getOnlyClause().key_names_left)
     , right_key_names(table_join->getOnlyClause().key_names_right)
-    , tmp_data(tmp_data_->childScope({
-            .current_metric = CurrentMetrics::TemporaryFilesForJoin,
-            .bytes_compressed = ProfileEvents::ExternalJoinCompressedBytes,
-            .bytes_uncompressed = ProfileEvents::ExternalJoinUncompressedBytes,
-            .num_files = ProfileEvents::ExternalJoinWritePart,
-        }, table_join->temporaryFilesBufferSize(), table_join->temporaryFilesCodec()))
+    , tmp_data(tmp_data_->childScope(
+          {
+              .current_metric = CurrentMetrics::TemporaryFilesForJoin,
+              .bytes_compressed = ProfileEvents::ExternalJoinCompressedBytes,
+              .bytes_uncompressed = ProfileEvents::ExternalJoinUncompressedBytes,
+              .num_files = ProfileEvents::ExternalJoinWritePart,
+          },
+          table_join->temporaryFilesBufferSize(),
+          table_join->temporaryFilesCodec()))
     , hash_join(makeInMemoryJoin("grace0"))
     , hash_join_sample_block(hash_join->savedBlockSample())
 {
@@ -740,9 +741,8 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
     /// Inserts are serialized under `hash_join_mutex`. Prefer 256-bucket maps when the kind
     /// allows them; there is no RHS size estimate at this point.
     const bool use_parallel_layout
-        = preferUnifiedParallelLayout(table_join->kind(), /*rhs_size_estimation=*/std::nullopt, /*parallel_hash_join_threshold=*/0);
+        = preferParallelHashLayout(table_join->kind(), /*rhs_size_estimation=*/std::nullopt, /*parallel_hash_join_threshold=*/0);
     return createInMemoryHashJoin(
-        in_memory_kind,
         table_join,
         right_sample_block,
         any_take_last_row,

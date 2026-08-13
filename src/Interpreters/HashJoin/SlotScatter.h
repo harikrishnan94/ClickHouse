@@ -1,13 +1,11 @@
 #pragma once
 
 #include <Interpreters/HashJoin/ScatteredBlock.h>
-#include <Interpreters/UnifiedHashJoin/HashJoin.h>
-#include <Interpreters/UnifiedHashJoin/KeyGetter.h>
+#include <Interpreters/HashJoin/HashJoin.h>
+#include <Interpreters/HashJoin/KeyGetter.h>
 #include <Columns/IColumn.h>
 
 namespace DB
-{
-namespace Unified
 {
 
 /// Which `MapsTemplate` instantiation backs a clause's map. Fixed-range maps route keys in
@@ -59,5 +57,4 @@ SlotScatter scatterBlockBySlot(
     size_t num_slots,
     bool is_asof);
 
-}
 }

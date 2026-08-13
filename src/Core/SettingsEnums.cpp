@@ -49,19 +49,20 @@ IMPLEMENT_SETTING_ENUM(JoinStrictness, ErrorCodes::UNKNOWN_JOIN,
      {"ANY", JoinStrictness::Any}})
 
 
-IMPLEMENT_SETTING_MULTI_ENUM(JoinAlgorithm, ErrorCodes::UNKNOWN_JOIN,
-    {{"default",              JoinAlgorithm::DEFAULT},
-     {"auto",                 JoinAlgorithm::AUTO},
-     {"hash",                 JoinAlgorithm::HASH},
-     {"partial_merge",        JoinAlgorithm::PARTIAL_MERGE},
+IMPLEMENT_SETTING_MULTI_ENUM(
+    JoinAlgorithm,
+    ErrorCodes::UNKNOWN_JOIN,
+    {{"default", JoinAlgorithm::DEFAULT},
+     {"auto", JoinAlgorithm::AUTO},
+     {"hash", JoinAlgorithm::HASH},
+     {"partial_merge", JoinAlgorithm::PARTIAL_MERGE},
      {"prefer_partial_merge", JoinAlgorithm::PREFER_PARTIAL_MERGE},
-     {"parallel_hash",        JoinAlgorithm::PARALLEL_HASH},
-     {"direct",               JoinAlgorithm::DIRECT},
-     {"full_sorting_merge",   JoinAlgorithm::FULL_SORTING_MERGE},
+     {"parallel_hash", JoinAlgorithm::PARALLEL_HASH},
+     {"direct", JoinAlgorithm::DIRECT},
+     {"full_sorting_merge", JoinAlgorithm::FULL_SORTING_MERGE},
      {"parallel_full_sorting_merge", JoinAlgorithm::PARALLEL_FULL_SORTING_MERGE},
-     {"grace_hash",           JoinAlgorithm::GRACE_HASH},
-     {"ie_join",              JoinAlgorithm::IE_JOIN},
-     {"unified_hash",         JoinAlgorithm::UNIFIED_HASH}})
+     {"grace_hash", JoinAlgorithm::GRACE_HASH},
+     {"ie_join", JoinAlgorithm::IE_JOIN}})
 
 
 IMPLEMENT_SETTING_MULTI_ENUM(JoinOrderAlgorithm, ErrorCodes::BAD_ARGUMENTS,

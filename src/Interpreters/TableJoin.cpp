@@ -1334,7 +1334,7 @@ bool preferParallelHashBySize(std::optional<UInt64> rhs_size_estimation, UInt64 
     return !rhs_size_estimation || *rhs_size_estimation >= parallel_hash_join_threshold;
 }
 
-bool preferUnifiedParallelLayout(JoinKind kind, std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold)
+bool preferParallelHashLayout(JoinKind kind, std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold)
 {
     return parallelHashLayoutKindSupported(kind) && preferParallelHashBySize(rhs_size_estimation, parallel_hash_join_threshold);
 }

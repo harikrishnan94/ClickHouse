@@ -18,8 +18,14 @@ JoinSwitcher::JoinSwitcher(
     , right_sample_block(right_sample_block_->cloneEmpty())
 {
     join = std::make_shared<HashJoin>(
-        table_join, right_sample_block_, any_take_last_row_, /*reserve_num_=*/0, /*instance_id_=*/"",
-        /*use_two_level_maps_=*/false, stats_collecting_params_);
+        table_join,
+        right_sample_block_,
+        any_take_last_row_,
+        /*reserve_num_=*/0,
+        /*instance_id_=*/"",
+        stats_collecting_params_,
+        /*max_threads_=*/1,
+        /*use_parallel_layout_=*/false);
 
     if (!limits.hasLimits())
         limits.max_bytes = table_join->defaultMaxBytes();
