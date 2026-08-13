@@ -1522,8 +1522,13 @@ private:
 
     std::any position;
     /// Walk workers[used_worker].columns then advance used_worker; same for nullmaps.
+    /// `std::optional` is empty both before the first call and after EOF. Without these
+    /// start flags, the next `fillColumns` would re-init from worker 0 and emit the same
+    /// unmatched rows forever (mixed-ON RIGHT/FULL and nullable-key RIGHT/FULL).
+    bool used_blocks_started = false;
     size_t used_worker = 0;
     std::optional<HashJoin::StoredBlocksList::const_iterator> used_position;
+    bool nulls_started = false;
     size_t nulls_worker = 0;
     std::optional<HashJoin::NullmapList::const_iterator> nulls_position;
 
@@ -1562,8 +1567,9 @@ private:
 
         if (flag_per_row)
         {
-            if (!used_position.has_value())
+            if (!used_blocks_started)
             {
+                used_blocks_started = true;
                 used_worker = 0;
                 while (used_worker < parent.data->workers.size() && parent.data->workers[used_worker].columns.empty())
                     ++used_worker;
@@ -1666,8 +1672,9 @@ private:
         if (bucket_idx != 0)
             return;
 
-        if (!nulls_position.has_value())
+        if (!nulls_started)
         {
+            nulls_started = true;
             nulls_worker = 0;
             while (nulls_worker < parent.data->workers.size() && parent.data->workers[nulls_worker].nullmaps.empty())
                 ++nulls_worker;

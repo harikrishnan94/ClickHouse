@@ -254,6 +254,12 @@ public:
     size_t getMaxBuildThreads() const override { return max_threads; }
 
     bool supportParallelNonJoinedBlocksProcessing() const override;
+    /// StorageJoin is probed via `FilledJoinStep`, which never adds `NonJoinedBlocksTransform`.
+    /// Unmatched RIGHT/FULL rows are emitted by the last `JoiningTransform` (FinishCounter).
+    bool isParallelNonJoinedProcessingEnabled() const override
+    {
+        return !from_storage_join && supportParallelNonJoinedBlocksProcessing();
+    }
 
     void setTotals(const Block & block) override;
     const Block & getTotals() const override;

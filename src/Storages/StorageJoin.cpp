@@ -4,6 +4,7 @@
 #include <Storages/TableLockHolder.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashJoin/KeyGetter.h>
+#include <Common/HashTable/HashTable.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Parsers/ASTCreateQuery.h>
@@ -1099,11 +1100,22 @@ private:
     template <typename Map>
     static void insertKey(MutableColumns & columns, const KeyLayout & layout, typename Map::const_iterator & it)
     {
+        /// TwoLevelHashTable::operator-> returns the raw cell. FixedHashMapCell stores no key
+        /// (`getKey` is VoidKey); the integer key is the cell index, exposed as `it.getHash`.
+        const auto key = [&]
+        {
+            using CellKey = std::remove_cvref_t<decltype(it->getKey())>;
+            if constexpr (std::is_same_v<CellKey, VoidKey>)
+                return static_cast<typename Map::key_type>(it.getHash());
+            else
+                return it->getKey();
+        }();
+
         if (layout.whole_key_pos)
-            columns[*layout.whole_key_pos]->insertData(rawData(it->getKey()), rawSize(it->getKey()));
+            columns[*layout.whole_key_pos]->insertData(rawData(key), rawSize(key));
         else
             for (const auto & slot : layout.packed)
-                columns[slot.output_pos]->insertData(rawData(it->getKey()) + slot.offset, slot.width);
+                columns[slot.output_pos]->insertData(rawData(key) + slot.offset, slot.width);
     }
 
     template <typename Map>

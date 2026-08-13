@@ -740,12 +740,12 @@ IBlocksStreamPtr GraceHashJoin::getDelayedBlocks()
 
 GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bucket_id, size_t reserve_num)
 {
-    /// Inserts are serialized under `hash_join_mutex`. Prefer 256-bucket maps when the kind
-    /// allows them; there is no RHS size estimate at this point.
-    /// `workers.size()` must cover every fill thread that can enter this mutex — not 1 just
-    /// because inserts are serialized. Each caller passes its fill-stream `worker_id`.
-    const bool use_parallel_layout
-        = preferParallelHashLayout(table_join->kind(), /*rhs_size_estimation=*/std::nullopt, /*parallel_hash_join_threshold=*/0);
+    /// Inserts are serialized under `hash_join_mutex`. `workers.size()` must still equal
+    /// `max_threads` because each fill stream passes its `worker_id`.
+    /// Parallel 256-bucket maps are not used here: their empty-buffer cost is charged to
+    /// `max_bytes_in_join` / `max_bytes_before_external_join` and does not shrink when Grace
+    /// splits file buckets, so a small in-memory remainder can rehash past
+    /// `grace_hash_join_max_buckets`. File-level buckets already partition the build.
     return createInMemoryHashJoin(
         table_join,
         right_sample_block,
@@ -754,7 +754,7 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
         bucket_id,
         StatsCollectingParams{},
         max_threads,
-        use_parallel_layout);
+        /*use_parallel_layout=*/false);
 }
 
 Block GraceHashJoin::prepareRightBlock(const Block & block)
