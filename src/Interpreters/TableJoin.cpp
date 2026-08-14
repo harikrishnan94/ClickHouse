@@ -1243,11 +1243,6 @@ void TableJoin::resetToCross()
     this->table_join.kind = JoinKind::Cross;
 }
 
-bool TableJoin::allowParallelHashJoin() const
-{
-    return ::DB::allowParallelHashJoin(join_algorithms, kind(), isSpecialStorage(), oneDisjunct());
-}
-
 ActionsDAG TableJoin::createJoinedBlockActions(ContextPtr context, PreparedSetsPtr prepared_sets) const
 {
     ASTPtr expression_list = rightKeysList();
@@ -1309,13 +1304,13 @@ TemporaryDataOnDiskScopePtr TableJoin::getTempDataOnDisk()
         .num_files = ProfileEvents::ExternalJoinWritePart}, temporary_files_buffer_size, temporary_files_codec);
 }
 
-bool allowParallelHashJoin(
+bool allowHashJoinCacheKeys(
     const std::vector<JoinAlgorithm> & join_algorithms,
     JoinKind kind,
     bool is_special_storage,
     bool one_disjunct)
 {
-    if (std::ranges::none_of(join_algorithms, [](auto algo) { return algo == JoinAlgorithm::PARALLEL_HASH; }))
+    if (!TableJoin::isHashFamilyEnabled(join_algorithms))
         return false;
     if (!parallelHashLayoutKindSupported(kind))
         return false;

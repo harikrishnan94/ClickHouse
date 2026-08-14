@@ -311,7 +311,6 @@ public:
         return isEnabledAlgorithm(join_algorithms, val);
     }
 
-    bool allowParallelHashJoin() const;
     void swapSides();
 
     bool joinUseNulls() const { return join_use_nulls; }
@@ -496,7 +495,12 @@ public:
     NamesAndTypesList correctedColumnsAddedByJoin() const;
 };
 
-bool allowParallelHashJoin(
+/// Whether a hash-table cache key should be computed and used for this join: the size histogram
+/// (`HashJoinEntry`), the `rhs_size_estimation` override, runtime-filter sizing from `ht_size`, and
+/// second-run join-reorder hints all key off this. Gated on the whole hash family (`HASH` or
+/// `PARALLEL_HASH`), not just `PARALLEL_HASH`, so `join_algorithm='hash'` gets the same stats as
+/// `parallel_hash` even though layout selection (`preferParallelHashLayout`) ignores the list entirely.
+bool allowHashJoinCacheKeys(
     const std::vector<JoinAlgorithm> & join_algorithms,
     JoinKind kind,
     bool is_special_storage,
@@ -509,6 +513,6 @@ bool parallelHashLayoutKindSupported(JoinKind kind);
 bool preferParallelHashBySize(std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold);
 
 /// 256-bucket layout: kind must allow parallel maps, and the size gate must prefer parallel.
-/// Unlike `allowParallelHashJoin`, this ignores algorithm list / special storage / multi-OR.
+/// Unlike `allowHashJoinCacheKeys`, this ignores algorithm list / special storage / multi-OR.
 bool preferParallelHashLayout(JoinKind kind, std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold);
 }

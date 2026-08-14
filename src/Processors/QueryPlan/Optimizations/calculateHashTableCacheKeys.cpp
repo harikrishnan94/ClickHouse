@@ -179,10 +179,11 @@ void calculateHashTableCacheKeys(
 
         if (auto * join_step = dynamic_cast<JoinStepLogical *>(node.step.get()))
         {
-            /// HashTablesStatistics keys for each subtree's hash table (still via allowParallelHashJoin).
+            /// HashTablesStatistics keys for each subtree's hash table, for any join in the hash family
+            /// (`hash` or `parallel_hash` are aliases from `preferParallelHashLayout`'s point of view).
             const auto & join_expression = join_step->getJoinOperator().expression;
             bool single_disjunct = join_expression.size() > 1 || (join_expression.size() == 1 && !join_expression.front().isFunction(JoinConditionOperator::Or));
-            const bool calculate = allowParallelHashJoin(
+            const bool calculate = allowHashJoinCacheKeys(
                 join_step->getJoinSettings().join_algorithms,
                 join_step->getJoinOperator().kind,
                 typeid_cast<JoinStepLogicalLookup *>(node.children.back()->step.get()),
