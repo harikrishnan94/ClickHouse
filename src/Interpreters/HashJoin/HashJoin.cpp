@@ -1203,8 +1203,6 @@ void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, size_t work
         shrinkWorkerStoredBlocks(data->workers[worker_id]);
     }
 
-    data->stored_columns_index->invalidateEmitTable();
-
     auto new_total_bytes_in_join = getTotalByteCountUnlocked();
     Int64 new_current_memory_usage = JoinCommon::getCurrentQueryMemoryUsage();
 
@@ -1225,7 +1223,15 @@ void HashJoin::shrinkWorkerStoredBlocks(WorkerStoredData & worker)
         return;
 
     /// Each cloneResized replaces a stored column object in place, so any emit table built by a
-    /// prior query is left with dangling `const IColumn *` — callers invalidate after shrinking.
+    /// prior query is left with dangling `const IColumn *`. Invalidate once we have actually
+    /// replaced at least one column — on the normal exit as well as on exception unwind, since a
+    /// throw partway through the loop below can still leave earlier columns already swapped.
+    bool any_column_replaced = false;
+    SCOPE_EXIT({
+        if (any_column_replaced)
+            data->stored_columns_index->invalidateEmitTable();
+    });
+
     for (auto & stored_columns : worker.columns)
     {
         size_t old_size = stored_columns.allocatedBytes();
@@ -1233,7 +1239,10 @@ void HashJoin::shrinkWorkerStoredBlocks(WorkerStoredData & worker)
         try
         {
             for (auto & column : stored_columns.columns)
+            {
                 column = column->cloneResized(column->size());
+                any_column_replaced = true;
+            }
 
             stored_columns.rebuildReplicatedColumns();
         }
