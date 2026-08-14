@@ -340,6 +340,7 @@ HashJoin::HashJoin(
     validateAdditionalFilterExpression(table_join->getMixedJoinExpression());
 
     used_flags = std::make_unique<JoinStuff::JoinUsedFlags>();
+    used_flags->setPendingFlagWorkers(data->workers.size());
 
     if (table_join->getClauses().empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin cannot execute JOIN without keys");
@@ -1081,7 +1082,7 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                     if (flag_per_row && !per_row_flags_initialized)
                     {
                         used_flags->reinit<kind_, strictness_, std::is_same_v<std::decay_t<decltype(map)>, MapsAll>>(
-                            stored_columns->block_no, stored_columns->columns.at(0)->size(), stored_columns->selector);
+                            worker_id, stored_columns->block_no, stored_columns->columns.at(0)->size(), stored_columns->selector);
                         per_row_flags_initialized = true;
                     }
                 });
@@ -2744,7 +2745,7 @@ void HashJoin::onBuildPhaseFinish()
     freezeMapsForProbing();
     reinitUsedFlags();
 
-    used_flags->finalizePerRowFlags(*used_flags, data->stored_columns_index->size());
+    used_flags->finalizePerRowFlags(data->stored_columns_index->size());
 
     if (all_values_unique && strictness == JoinStrictness::All && isInnerOrLeft(kind) && data->maps.size() == 1)
     {

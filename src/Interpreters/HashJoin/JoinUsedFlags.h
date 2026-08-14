@@ -3,6 +3,7 @@
 #include <utility>
 #include <vector>
 #include <Core/Joins.h>
+#include <Interpreters/HashJoin/ScatteredBlock.h>
 #include <Interpreters/joinDispatch.h>
 #include <Common/Exception.h>
 
@@ -25,7 +26,13 @@ public:
     using PendingPerRowFlags = std::vector<std::pair<UInt32, UsedFlagsForColumns>>;
 
     /// Per-row flags filled during the build phase: (block_no, flags) for each stored block.
-    PendingPerRowFlags pending_per_row_flags;
+    /// One list per build worker so concurrent build threads never share a mutated container;
+    /// `finalizePerRowFlags` merges them once the build phase is single-threaded again.
+    std::vector<PendingPerRowFlags> pending_per_worker;
+
+    /// Must be called once, before parallel build starts, so no resize can race with a build
+    /// thread's `emplace_back` into another worker's list.
+    void setPendingFlagWorkers(size_t num_workers) { pending_per_worker.resize(num_workers); }
 
     /// Dense flags indexed by block_no, that are built from `pending_per_row_flags` when the build phase finishes.
     /// The probe and non-joined phases read and write only this.
@@ -68,12 +75,13 @@ public:
     }
 
     template <JoinKind KIND, JoinStrictness STRICTNESS, bool prefer_use_maps_all> // NOLINT(readability-identifier-naming)
-    void reinit(UInt32 block_no, size_t rows, const ScatteredBlock::Selector & selector)
+    void reinit(size_t worker_id, UInt32 block_no, size_t rows, const ScatteredBlock::Selector & selector)
     {
         if constexpr (MapGetter<KIND, STRICTNESS, prefer_use_maps_all>::flagged)
         {
             need_flags = true;
-            auto & flags = pending_per_row_flags.emplace_back(block_no, UsedFlagsForColumns(rows)).second;
+            chassert(worker_id < pending_per_worker.size());
+            auto & flags = pending_per_worker[worker_id].emplace_back(block_no, UsedFlagsForColumns(rows)).second;
 
             /// Mark all rows outside of selector as used.
             /// We should not emit them in RIGHT/FULL JOIN result,
@@ -85,24 +93,30 @@ public:
         }
     }
 
-    /// Move the source pending per-block flags into the dense `per_row_flags` vector, which is
-    /// sized to cover every block_no of the `StoredColumnsIndex`.
-    void finalizePerRowFlags(JoinUsedFlags & source, size_t num_blocks)
+    /// Merge every build worker's pending per-block flags into the dense `per_row_flags` vector,
+    /// which is sized to cover every block_no of the `StoredColumnsIndex`. Only safe once the
+    /// build phase is over and no worker can still be appending to `pending_per_worker`.
+    void finalizePerRowFlags(size_t num_blocks)
     {
-        if (source.pending_per_row_flags.empty())
+        bool any_pending = false;
+        for (const auto & pending : pending_per_worker)
+            any_pending |= !pending.empty();
+        if (!any_pending)
             return;
-
-        auto source_pending_flags = std::exchange(source.pending_per_row_flags, PendingPerRowFlags{});
 
         need_flags = true;
         if (per_row_flags.size() < num_blocks)
             per_row_flags.resize(num_blocks);
 
-        for (auto & [block_no, flags] : source_pending_flags)
+        for (auto & pending : pending_per_worker)
         {
-            if (block_no >= per_row_flags.size() || !per_row_flags[block_no].empty())
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "JoinUsedFlags: unexpected per-row flags for block {}", block_no);
-            per_row_flags[block_no] = std::move(flags);
+            for (auto & [block_no, flags] : pending)
+            {
+                if (block_no >= per_row_flags.size() || !per_row_flags[block_no].empty())
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "JoinUsedFlags: unexpected per-row flags for block {}", block_no);
+                per_row_flags[block_no] = std::move(flags);
+            }
+            pending.clear();
         }
     }
 
