@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <type_traits>
 #include <Common/CacheLine.h>
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/HashTable/TwoLevelHashTable.h>
@@ -31,7 +32,7 @@ struct IsDirectAddressedTable<FixedHashMap<Key, Mapped, Cell, Size, Allocator, s
 {
 };
 
-template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8>
+template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8, Int32 bits_for_bucket = DEFAULT_BITS_FOR_BUCKET>
 using PartitionedFixedHashMap = TwoLevelHashTable<
     Key,
     FixedHashMapCell<Key, Mapped>,
@@ -45,5 +46,5 @@ using PartitionedFixedHashMap = TwoLevelHashTable<
         FixedHashTableStoredSize<FixedHashMapCell<Key, Mapped>>,
         HashTableAllocator,
         size_bits>,
-    DEFAULT_BITS_FOR_BUCKET,
-    FixedRangeBucketHash<fixedRangeBlockShift<FixedHashMapCell<Key, Mapped>>()>>;
+    bits_for_bucket,
+    std::conditional_t<bits_for_bucket == 0, void, FixedRangeBucketHash<fixedRangeBlockShift<FixedHashMapCell<Key, Mapped>>()>>>;

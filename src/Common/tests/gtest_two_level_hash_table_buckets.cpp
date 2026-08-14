@@ -487,10 +487,10 @@ TEST(TwoLevelHashTableBuckets, DirectAddressedBucketsRouteIntoOneBuffer)
     /// the one flat table and the bucket only names a lock. Memory, addressing and offsets must
     /// therefore be those of a plain `FixedHashMap`, while routing still spreads keys over buckets
     /// so that a bucket-parallel build gets disjointness.
-    using RangeMap = PartitionedFixedHashMap<UInt16, UInt64>;
+    using RangeMap = PartitionedFixedHashMap<UInt16, UInt64, /*size_bits=*/16, /*bits_for_bucket=*/8>;
 
     RangeMap map;
-    ASSERT_EQ(map.bucketCount(), 256u);
+    ASSERT_EQ(RangeMap::bucketCount(), 256u);
 
     constexpr UInt64 num_keys = 4096;
     for (UInt64 key = 1; key <= num_keys; ++key)
@@ -499,7 +499,7 @@ TEST(TwoLevelHashTableBuckets, DirectAddressedBucketsRouteIntoOneBuffer)
     ASSERT_EQ(map.size(), num_keys);
 
     /// One buffer: every bucket reports the same one, and the whole table is not counted per bucket.
-    for (UInt32 i = 1; i < map.bucketCount(); ++i)
+    for (UInt32 i = 1; i < RangeMap::bucketCount(); ++i)
         ASSERT_EQ(map.impls[i].getBufferSizeInBytes(), map.impls[0].getBufferSizeInBytes());
     ASSERT_EQ(map.getBufferSizeInBytes(), map.impls[0].getBufferSizeInBytes());
 

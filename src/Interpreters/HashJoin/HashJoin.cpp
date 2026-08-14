@@ -2300,7 +2300,16 @@ void HashJoin::freezeMapsForProbing()
     const bool prefer_use_maps_all = preferUseMapsAll();
     for (auto & map : data->maps)
     {
-        joinDispatch(kind, strictness, map, prefer_use_maps_all, [this](auto, auto, auto & map_) { map_.computeBucketPrefix(data->type); });
+        joinDispatch(
+            kind,
+            strictness,
+            map,
+            prefer_use_maps_all,
+            [this](auto, auto, auto & map_)
+            {
+                map_.computeBucketPrefix(data->type);
+                map_.restoreMinMaxOptimization(data->type);
+            });
     }
 }
 
@@ -2472,12 +2481,10 @@ void HashJoin::publishSharedRuntimeFilters()
     if (data->maps.size() != 1)
         return;
 
-    const bool is_fixed_hash_table =
-        data->type == Type::key8 || data->type == Type::key16 ||
-        data->type == Type::range8_key32 || data->type == Type::range16_key32 ||
-        data->type == Type::range17_key32 || data->type == Type::range18_key32 ||
-        data->type == Type::range8_key64 || data->type == Type::range16_key64 ||
-        data->type == Type::range17_key64 || data->type == Type::range18_key64;
+    const bool is_fixed_hash_table = data->type == Type::key8 || data->type == Type::key16 || data->type == Type::two_level_key8
+        || data->type == Type::two_level_key16 || data->type == Type::range8_key32 || data->type == Type::range16_key32
+        || data->type == Type::range17_key32 || data->type == Type::range18_key32 || data->type == Type::range8_key64
+        || data->type == Type::range16_key64 || data->type == Type::range17_key64 || data->type == Type::range18_key64;
     if (!is_fixed_hash_table)
         return;
 
@@ -2535,11 +2542,23 @@ void HashJoin::publishSharedRuntimeFilters()
                             else
                                 dispatch.template operator()<UInt8>(map.key8, static_cast<UInt8>(0), 1ULL << 8);
                             break;
+                        case Type::two_level_key8:
+                            if (build_signed)
+                                dispatch.template operator()<Int8>(map.two_level_key8, static_cast<UInt8>(0), 1ULL << 8);
+                            else
+                                dispatch.template operator()<UInt8>(map.two_level_key8, static_cast<UInt8>(0), 1ULL << 8);
+                            break;
                         case Type::key16:
                             if (build_signed)
                                 dispatch.template operator()<Int16>(map.key16, static_cast<UInt16>(0), 1ULL << 16);
                             else
                                 dispatch.template operator()<UInt16>(map.key16, static_cast<UInt16>(0), 1ULL << 16);
+                            break;
+                        case Type::two_level_key16:
+                            if (build_signed)
+                                dispatch.template operator()<Int16>(map.two_level_key16, static_cast<UInt16>(0), 1ULL << 16);
+                            else
+                                dispatch.template operator()<UInt16>(map.two_level_key16, static_cast<UInt16>(0), 1ULL << 16);
                             break;
                         case Type::range8_key32:
                             if (build_signed)
@@ -2724,11 +2743,10 @@ bool HashJoin::hasPostBuildPhase() const
 {
     /// key8/key16 are already FixedHashMap, so they don't go through tryConvertToFixedHashMap,
     /// but publishSharedRuntimeFilters still needs to run for them when the feature is on.
-    const bool needs_shared_filter_publish =
-        data && data->rows_to_join && data->maps.size() == 1
-        && (data->type == Type::key8 || data->type == Type::key16)
-        && table_join->joinRuntimeFilterFromFixedHashTable()
-        && !table_join->getSharedRuntimeFilterDescriptors().empty();
+    const bool needs_shared_filter_publish = data && data->rows_to_join && data->maps.size() == 1
+        && (data->type == Type::key8 || data->type == Type::key16 || data->type == Type::two_level_key8
+            || data->type == Type::two_level_key16)
+        && table_join->joinRuntimeFilterFromFixedHashTable() && !table_join->getSharedRuntimeFilterDescriptors().empty();
 
     return rightTableCanBeReranged() || canConvertToFixedHashMap() || needs_shared_filter_publish;
 }

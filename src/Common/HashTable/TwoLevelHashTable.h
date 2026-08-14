@@ -203,8 +203,10 @@ private:
         /// Direct-addressed storage keeps one flat buffer; buckets route locks instead of owning regions.
         FixedRangeStorage()
         {
-            /// Do not cache `min`/`max`: parallel inserts race on them.
-            flat.disableMinMaxOptimization();
+            /// Concurrent inserts under distinct slot locks race on `min`/`max`. A 1-bucket table
+            /// serializes on one lock, so the optimization is safe there.
+            if constexpr (bucketCount() > 1)
+                flat.disableMinMaxOptimization();
         }
 
         explicit FixedRangeStorage(size_t /*size_hint*/)
@@ -236,6 +238,8 @@ private:
 
         void reserve(size_t) { }
         void computeBucketPrefix() const { }
+        void restoreMinMaxOptimization() { flat.restoreMinMaxOptimization(); }
+        bool canUseMinMaxOptimization() const { return flat.canUseMinMaxOptimization(); }
 
         size_t offsetInternal(typename Impl::ConstLookupResult ptr) const { return flat.offsetInternal(ptr); }
         size_t offsetInternalUnsafe(typename Impl::ConstLookupResult ptr) const { return flat.offsetInternal(ptr); }
@@ -465,14 +469,21 @@ public:
     {
         const auto & key = keyHolderGetKey(key_holder);
         const auto key_hash = hash(key);
-        const auto buck = getBucketFromHash(bucketRoutingHash(key, key_hash));
-        impls[buck].prefetchByHash(key_hash);
+        if constexpr (isFixedRangeStorage())
+            impls[0].prefetchByHash(key_hash);
+        else
+        {
+            const auto buck = getBucketFromHash(bucketRoutingHash(key, key_hash));
+            impls[buck].prefetchByHash(key_hash);
+        }
         keyHolderDiscardKey(key_holder);
     }
 
     void ALWAYS_INLINE prefetchByHash(size_t key_hash) const
     {
-        if constexpr (!std::is_void_v<BucketHash>)
+        if constexpr (isFixedRangeStorage())
+            return;
+        else if constexpr (!std::is_void_v<BucketHash>)
             return;
         else
             impls[getBucketFromHash(key_hash)].prefetchByHash(key_hash);
@@ -480,7 +491,9 @@ public:
 
     bool ALWAYS_INLINE isEmptyCell(size_t key_hash) const
     {
-        if constexpr (!std::is_void_v<BucketHash>)
+        if constexpr (isFixedRangeStorage())
+            return false;
+        else if constexpr (!std::is_void_v<BucketHash>)
             return false;
         else
             return impls[getBucketFromHash(key_hash)].isEmptyCell(key_hash);
@@ -496,14 +509,24 @@ public:
     template <typename KeyHolder>
     void ALWAYS_INLINE emplace(KeyHolder && key_holder, LookupResult & it, bool & inserted, size_t hash_value)
     {
-        const size_t buck = getBucketFromHash(bucketRoutingHash(keyHolderGetKey(key_holder), hash_value));
-        impls[buck].emplace(key_holder, it, inserted, hash_value);
+        if constexpr (isFixedRangeStorage())
+            impls[0].emplace(key_holder, it, inserted, hash_value);
+        else
+        {
+            const size_t buck = getBucketFromHash(bucketRoutingHash(keyHolderGetKey(key_holder), hash_value));
+            impls[buck].emplace(key_holder, it, inserted, hash_value);
+        }
     }
 
     LookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
     {
-        const size_t buck = getBucketFromHash(bucketRoutingHash(x, hash_value));
-        return impls[buck].find(x, hash_value);
+        if constexpr (isFixedRangeStorage())
+            return impls[0].find(x, hash_value);
+        else
+        {
+            const size_t buck = getBucketFromHash(bucketRoutingHash(x, hash_value));
+            return impls[buck].find(x, hash_value);
+        }
     }
 
     ConstLookupResult ALWAYS_INLINE find(Key x, size_t hash_value) const
@@ -516,33 +539,56 @@ public:
 
     void write(DB::WriteBuffer & wb) const
     {
-        for (UInt32 i = 0; i < bucketCount(); ++i)
-            impls[i].write(wb);
+        if constexpr (isFixedRangeStorage())
+            impls[0].write(wb);
+        else
+        {
+            for (UInt32 i = 0; i < bucketCount(); ++i)
+                impls[i].write(wb);
+        }
     }
+
+    /// Direct-addressed tables keep one buffer; dumping it `bucketCount` times is D-58.
+    static constexpr UInt32 serializedPartitionCount() { return isFixedRangeStorage() ? 1 : bucketCount(); }
 
     void writeText(DB::WriteBuffer & wb) const
     {
-        for (UInt32 i = 0; i < bucketCount(); ++i)
+        if constexpr (isFixedRangeStorage())
+            impls[0].writeText(wb);
+        else
         {
-            if (i != 0)
-                DB::writeChar(',', wb);
-            impls[i].writeText(wb);
+            for (UInt32 i = 0; i < bucketCount(); ++i)
+            {
+                if (i != 0)
+                    DB::writeChar(',', wb);
+                impls[i].writeText(wb);
+            }
         }
     }
 
     void read(DB::ReadBuffer & rb)
     {
-        for (UInt32 i = 0; i < bucketCount(); ++i)
-            impls[i].read(rb);
+        if constexpr (isFixedRangeStorage())
+            impls[0].read(rb);
+        else
+        {
+            for (UInt32 i = 0; i < bucketCount(); ++i)
+                impls[i].read(rb);
+        }
     }
 
     void readText(DB::ReadBuffer & rb)
     {
-        for (UInt32 i = 0; i < bucketCount(); ++i)
+        if constexpr (isFixedRangeStorage())
+            impls[0].readText(rb);
+        else
         {
-            if (i != 0)
-                DB::assertChar(',', rb);
-            impls[i].readText(rb);
+            for (UInt32 i = 0; i < bucketCount(); ++i)
+            {
+                if (i != 0)
+                    DB::assertChar(',', rb);
+                impls[i].readText(rb);
+            }
         }
     }
 
@@ -559,11 +605,30 @@ public:
 
     bool ALWAYS_INLINE has(const Key & x) const
     {
-        const size_t buck = getBucketFromHash(bucketRoutingHash(x, hash(x)));
-        return impls[buck].has(x);
+        if constexpr (isFixedRangeStorage())
+            return impls[0].has(x);
+        else
+        {
+            const size_t buck = getBucketFromHash(bucketRoutingHash(x, hash(x)));
+            return impls[buck].has(x);
+        }
     }
 
     void computeBucketPrefix() const { impls.computeBucketPrefix(); }
+
+    void restoreMinMaxOptimization()
+    {
+        if constexpr (isFixedRangeStorage())
+            impls.restoreMinMaxOptimization();
+    }
+
+    bool canUseMinMaxOptimization() const
+    {
+        if constexpr (isFixedRangeStorage())
+            return impls.canUseMinMaxOptimization();
+        else
+            return false;
+    }
 
     /// Iteration already knows the bucket, so avoid re-hashing; prefix sums must be current.
     size_t offsetInternal(ConstLookupResult ptr) const

@@ -109,7 +109,10 @@ using TwoLevelJoinHashMapWithSavedHash = TwoLevelHashMapWithSavedHash<
     BITS_FOR_BUCKET_TWO_LEVEL>;
 
 template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8>
-using JoinFixedHashMap = PartitionedFixedHashMap<Key, Mapped, size_bits>;
+using JoinFixedHashMap = PartitionedFixedHashMap<Key, Mapped, size_bits, BITS_FOR_BUCKET_SERIAL>;
+
+template <typename Key, typename Mapped, size_t size_bits = sizeof(Key) * 8>
+using TwoLevelJoinFixedHashMap = PartitionedFixedHashMap<Key, Mapped, size_bits, BITS_FOR_BUCKET_TWO_LEVEL>;
 
 static_assert(BucketPartitionedMap<JoinHashMap<UInt64, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinHashMapWithSavedHash<std::string_view, RowRefList>>);
@@ -117,9 +120,13 @@ static_assert(BucketPartitionedMap<TwoLevelJoinHashMap<UInt64, RowRefList>>);
 static_assert(BucketPartitionedMap<TwoLevelJoinHashMapWithSavedHash<std::string_view, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt8, RowRefList>>);
 static_assert(BucketPartitionedMap<JoinFixedHashMap<UInt64, RowRefList, 18>>);
+static_assert(BucketPartitionedMap<TwoLevelJoinFixedHashMap<UInt8, RowRefList>>);
+static_assert(BucketPartitionedMap<TwoLevelJoinFixedHashMap<UInt64, RowRefList, 18>>);
 
 static_assert(JoinHashMap<UInt64, RowRefList>::bucketCount() == 1);
 static_assert(TwoLevelJoinHashMap<UInt64, RowRefList>::bucketCount() == NUM_HASH_TABLE_BUCKETS);
+static_assert(JoinFixedHashMap<UInt8, RowRefList>::bucketCount() == 1);
+static_assert(TwoLevelJoinFixedHashMap<UInt8, RowRefList>::bucketCount() == NUM_HASH_TABLE_BUCKETS);
 
 /** Data structure for implementation of hash JOIN.
   * It is a hash table: keys -> rows of joined ("right") table.
@@ -324,6 +331,8 @@ public:
     M(low_cardinality_key_fixed_string)
 
 #define APPLY_FOR_TWO_LEVEL_JOIN_VARIANTS(M) \
+    M(two_level_key8) \
+    M(two_level_key16) \
     M(two_level_key32) \
     M(two_level_key64) \
     M(two_level_key_string) \
@@ -426,6 +435,8 @@ public:
     case Type::NAME: return Type::two_level_##NAME;
             APPLY_FOR_SINGLE_LEVEL_JOIN_VARIANTS(M)
 #undef M
+            case Type::key8: return Type::two_level_key8;
+            case Type::key16: return Type::two_level_key16;
             default: return type;
         }
     }
@@ -439,6 +450,8 @@ public:
         using MappedType = Mapped;
         std::shared_ptr<JoinFixedHashMap<UInt8, Mapped>> key8;
         std::shared_ptr<JoinFixedHashMap<UInt16, Mapped>> key16;
+        std::shared_ptr<TwoLevelJoinFixedHashMap<UInt8, Mapped>> two_level_key8;
+        std::shared_ptr<TwoLevelJoinFixedHashMap<UInt16, Mapped>> two_level_key16;
         std::shared_ptr<JoinHashMap<UInt32, Mapped, HashCRC32<UInt32>>> key32;
         std::shared_ptr<JoinHashMap<UInt64, Mapped, HashCRC32<UInt64>>> key64;
         std::shared_ptr<JoinHashMapWithSavedHash<std::string_view, Mapped>> key_string;
@@ -580,7 +593,13 @@ public:
             switch (which)
             {
 #define M(NAME) \
-    case Type::NAME: return NAME ? NAME->impls[bucket].getBufferSizeInBytes() : 0;
+    case Type::NAME: { \
+        using Table = typename decltype(NAME)::element_type; \
+        if constexpr (Table::isFixedRangeStorage()) \
+            return (NAME && bucket == 0) ? NAME->getBufferSizeInBytes() : 0; \
+        else \
+            return NAME ? NAME->impls[bucket].getBufferSizeInBytes() : 0; \
+    }
                 APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
             }
@@ -594,6 +613,20 @@ public:
     case Type::NAME: \
         if (NAME) \
             NAME->computeBucketPrefix(); \
+        break;
+                APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+            }
+        }
+
+        void restoreMinMaxOptimization(Type which)
+        {
+            switch (which)
+            {
+#define M(NAME) \
+    case Type::NAME: \
+        if (NAME) \
+            NAME->restoreMinMaxOptimization(); \
         break;
                 APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
