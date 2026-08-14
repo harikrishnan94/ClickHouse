@@ -17,6 +17,8 @@
 #include <Columns/ColumnSparse.h>
 #include <Columns/ColumnString.h>
 #include <Common/CurrentThread.h>
+#include <Common/ThreadGroupSwitcher.h>
+#include <Common/ThreadPool.h>
 #include <Common/ThreadStatus.h>
 #include <Common/HashTable/FixedHashMap.h>
 #include <Common/StackTrace.h>
@@ -59,6 +61,13 @@ extern const Event HashJoinBuildMicroseconds;
 extern const Event HashJoinBuildScatterMicroseconds;
 extern const Event HashJoinBuildInsertMicroseconds;
 extern const Event HashJoinBuildLockWaitMicroseconds;
+}
+
+namespace CurrentMetrics
+{
+extern const Metric HashJoinDestroyThreads;
+extern const Metric HashJoinDestroyThreadsActive;
+extern const Metric HashJoinDestroyThreadsScheduled;
 }
 
 namespace DB
@@ -1443,6 +1452,65 @@ HashJoin::~HashJoin()
         instance_log_id,
         getTotalByteCountUnlocked(),
         getTotalRowCountUnlocked());
+
+    /// Below this, freeing `data` single-threaded (the ordinary path, once this destructor
+    /// returns) is fast enough that a thread pool would not pay for itself.
+    static constexpr size_t PARALLEL_DESTROY_THRESHOLD_BYTES = 100 * 1024 * 1024;
+
+    /// `data` can be shared with other `HashJoin` instances reading the same table (see
+    /// `reuseJoinedData`, used by `StorageJoin`); only the last owner may reach into it.
+    if (max_threads > 1 && data.use_count() == 1 && getTotalByteCountUnlocked() >= PARALLEL_DESTROY_THRESHOLD_BYTES)
+    {
+        try
+        {
+            parallelDestroyRightTableData();
+        }
+        catch (...)
+        {
+            tryLogCurrentException(__PRETTY_FUNCTION__);
+        }
+    }
+}
+
+void HashJoin::parallelDestroyRightTableData()
+{
+    /// The hash-table buckets hold trivially-destructible 8-byte `RowRef`/`RowRefList` cells, so
+    /// freeing them (whether 1 bucket or 256) is a handful of allocator calls independent of row
+    /// count; that is left to the ordinary single-threaded path once this function returns and
+    /// `data` itself is destroyed. What is actually expensive to free at this scale is the stored
+    /// right-side columns, held per build worker, and their arenas — both already partitioned.
+    std::vector<WorkerStoredData> workers_to_destroy = std::move(data->workers);
+    std::vector<std::unique_ptr<Arena>> pools_to_destroy = std::move(data->pools);
+
+    const size_t num_tasks = std::min({max_threads, workers_to_destroy.size() + pools_to_destroy.size(), NUM_HASH_TABLE_BUCKETS});
+    if (num_tasks <= 1)
+        return;
+
+    auto destroy_slice = [](auto & items, size_t task_idx, size_t num_tasks_)
+    {
+        const size_t begin = items.size() * task_idx / num_tasks_;
+        const size_t end = items.size() * (task_idx + 1) / num_tasks_;
+        for (size_t i = begin; i < end; ++i)
+            items[i] = {};
+    };
+
+    ThreadPool pool(
+        CurrentMetrics::HashJoinDestroyThreads,
+        CurrentMetrics::HashJoinDestroyThreadsActive,
+        CurrentMetrics::HashJoinDestroyThreadsScheduled,
+        num_tasks);
+
+    for (size_t task_idx = 0; task_idx < num_tasks; ++task_idx)
+    {
+        pool.scheduleOrThrowOnError(
+            [&, task_idx, thread_group = CurrentThread::getGroup()]()
+            {
+                ThreadGroupSwitcher switcher(thread_group, ThreadName::HASH_JOIN_DESTRUCTION);
+                destroy_slice(workers_to_destroy, task_idx, num_tasks);
+                destroy_slice(pools_to_destroy, task_idx, num_tasks);
+            });
+    }
+    pool.wait();
 }
 
 template <typename Mapped>

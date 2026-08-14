@@ -936,6 +936,11 @@ private:
 
     void shrinkWorkerStoredBlocks(WorkerStoredData & worker);
 
+    /// Frees `data->workers` (the stored right-side columns) and `data->pools` (their arenas)
+    /// across a thread pool. Only called from the destructor, and only once nothing else can
+    /// possibly reference `data` (see the call site).
+    void parallelDestroyRightTableData();
+
     void validateAdditionalFilterExpression(std::shared_ptr<ExpressionActions> additional_filter_expression);
     bool needUsedFlagsForPerRightTableRow(std::shared_ptr<TableJoin> table_join_) const;
 
