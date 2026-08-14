@@ -169,9 +169,7 @@ private:
     mutable std::mutex hash_join_mutex;
     std::atomic<bool> force_spill = false;
 
-    /// Set once `runPostBuildPhase` has actually run on `hash_join` (a single-bucket join needs it
-    /// exactly once). Lets `joinBlock` skip `hash_join_mutex` on every subsequent probe block
-    /// instead of re-acquiring an exclusive lock per block for a check that can only fire once.
+    /// Single-bucket joins need `runPostBuildPhase` once; after that skip `hash_join_mutex`.
     std::atomic<bool> post_build_phase_ran = false;
 
     mutable std::mutex totals_mutex;

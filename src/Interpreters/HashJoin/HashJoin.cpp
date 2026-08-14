@@ -1231,10 +1231,8 @@ void HashJoin::shrinkWorkerStoredBlocks(WorkerStoredData & worker)
     if (worker.shrink_done)
         return;
 
-    /// Each cloneResized replaces a stored column object in place, so any emit table built by a
-    /// prior query is left with dangling `const IColumn *`. Invalidate once we have actually
-    /// replaced at least one column — on the normal exit as well as on exception unwind, since a
-    /// throw partway through the loop below can still leave earlier columns already swapped.
+    /// `cloneResized` swaps column objects in place; a throw mid-loop still leaves earlier swaps
+    /// dangling in any emit table. Invalidate on every exit once something was replaced.
     bool any_column_replaced = false;
     SCOPE_EXIT({
         if (any_column_replaced)
@@ -1453,12 +1451,9 @@ HashJoin::~HashJoin()
         getTotalByteCountUnlocked(),
         getTotalRowCountUnlocked());
 
-    /// Below this, freeing `data` single-threaded (the ordinary path, once this destructor
-    /// returns) is fast enough that a thread pool would not pay for itself.
     static constexpr size_t PARALLEL_DESTROY_THRESHOLD_BYTES = 100 * 1024 * 1024;
 
-    /// `data` can be shared with other `HashJoin` instances reading the same table (see
-    /// `reuseJoinedData`, used by `StorageJoin`); only the last owner may reach into it.
+    /// StorageJoin shares `data` via `reuseJoinedData`; only the last owner may destroy it.
     if (max_threads > 1 && data.use_count() == 1 && getTotalByteCountUnlocked() >= PARALLEL_DESTROY_THRESHOLD_BYTES)
     {
         try
@@ -1474,15 +1469,11 @@ HashJoin::~HashJoin()
 
 void HashJoin::parallelDestroyRightTableData()
 {
-    /// The hash-table buckets hold trivially-destructible 8-byte `RowRef`/`RowRefList` cells, so
-    /// freeing them (whether 1 bucket or 256) is a handful of allocator calls independent of row
-    /// count; that is left to the ordinary single-threaded path once this function returns and
-    /// `data` itself is destroyed. What is actually expensive to free at this scale is the stored
-    /// right-side columns, held per build worker, and their arenas — both already partitioned.
+    /// Maps are trivially-destructible `RowRef` cells; the cost is the stored columns and arenas.
     std::vector<WorkerStoredData> workers_to_destroy = std::move(data->workers);
     std::vector<std::unique_ptr<Arena>> pools_to_destroy = std::move(data->pools);
 
-    const size_t num_tasks = std::min({max_threads, workers_to_destroy.size() + pools_to_destroy.size(), NUM_HASH_TABLE_BUCKETS});
+    const size_t num_tasks = std::min(max_threads, std::max(workers_to_destroy.size(), pools_to_destroy.size()));
     if (num_tasks <= 1)
         return;
 
@@ -2044,9 +2035,6 @@ void HashJoin::releaseJoinMaps()
     if (!data)
         return;
 
-    /// Drop the shared_ptr to each type's hash table: nothing else holds a reference to a
-    /// spill-side in-memory join's maps, so this frees the (often large) buffers immediately,
-    /// well before `releaseJoinedBlocksChunk` finishes draining every worker's stored blocks.
     data->maps.clear();
     data->pools.clear();
     data->bucket_bytes.store(0, std::memory_order_relaxed);

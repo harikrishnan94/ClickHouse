@@ -25,11 +25,8 @@ public:
     /// Drop remaining map/arena storage after a chunked convert has drained all worker lists.
     virtual void releaseJoinSideStorage() { }
 
-    /// Drop just the hash-table maps and their per-slot arenas, before the stored right-side
-    /// blocks have been drained. Safe to call as soon as the caller can guarantee no further
-    /// insert or probe will touch this join's maps (e.g. right after switching to a different
-    /// join implementation under an exclusive lock) — it lets the (often large) maps be freed
-    /// without waiting for every worker's stored-block chunk to be converted first.
+    /// Free maps and per-slot arenas while stored blocks may still be draining. Caller must
+    /// guarantee no further insert or probe on this join.
     virtual void releaseJoinMaps() { }
 
     virtual const Block & savedBlockSample() const = 0;

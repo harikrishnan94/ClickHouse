@@ -7,8 +7,7 @@ using namespace DB;
 
 namespace
 {
-/// Any (KIND, STRICTNESS, prefer_use_maps_all) with MapGetter::flagged == true works: the
-/// per-row-flags path does not depend on which one is chosen.
+/// Any flagged (KIND, STRICTNESS, prefer_use_maps_all); the per-row path does not depend on which.
 constexpr auto KIND = JoinKind::Full;
 constexpr auto STRICTNESS = JoinStrictness::All;
 constexpr bool PREFER_MAPS_ALL = true;
@@ -47,16 +46,13 @@ TEST(JoinUsedFlags, AllOffsetFlagsSetEmptyCount)
     EXPECT_TRUE(flags.allOffsetFlagsSet());
 }
 
-/// Regression test for D-39: each build worker must keep its own pending per-row-flags list, so
-/// concurrent `reinit` calls from different workers never mutate a shared container.
+/// Concurrent `reinit` from different workers must not share a mutated container.
 TEST(JoinUsedFlags, PendingPerRowFlagsMergeAcrossWorkers)
 {
     JoinStuff::JoinUsedFlags flags;
     flags.setPendingFlagWorkers(/*num_workers=*/2);
 
-    /// Worker 0 registers block 0 (3 rows, fully in its own shard's selector).
     flags.reinit<KIND, STRICTNESS, PREFER_MAPS_ALL>(/*worker_id=*/0, /*block_no=*/0, /*rows=*/3, ScatteredBlock::Selector(3));
-    /// Worker 1 registers block 1 (2 rows, fully in its own shard's selector).
     flags.reinit<KIND, STRICTNESS, PREFER_MAPS_ALL>(/*worker_id=*/1, /*block_no=*/1, /*rows=*/2, ScatteredBlock::Selector(2));
 
     flags.finalizePerRowFlags(/*num_blocks=*/2);
@@ -77,8 +73,7 @@ TEST(JoinUsedFlags, PendingPerRowFlagsMarksRowsOutsideSelectorAsUsed)
     JoinStuff::JoinUsedFlags flags;
     flags.setPendingFlagWorkers(/*num_workers=*/1);
 
-    /// Rows 1 and 3 belong to this shard's selector; rows 0 and 2 belong to another shard and
-    /// must come out pre-marked used so they are not emitted twice by RIGHT/FULL non-joined scan.
+    /// Rows outside this shard's selector must come out pre-marked used so RIGHT/FULL does not emit them twice.
     auto indexes = ScatteredBlock::Selector::Indexes::create();
     indexes->insertValue(1);
     indexes->insertValue(3);
@@ -98,8 +93,7 @@ TEST(JoinUsedFlags, PendingPerRowFlagsDuplicateBlockNoAcrossWorkersThrows)
     JoinStuff::JoinUsedFlags flags;
     flags.setPendingFlagWorkers(/*num_workers=*/2);
 
-    /// Two workers claiming the same block_no is a logic bug (block_no must be assigned once,
-    /// by `StoredColumnsIndex::add`); finalize must detect it instead of silently overwriting.
+    /// `block_no` is assigned once by `StoredColumnsIndex::add`; a duplicate must not silently overwrite.
     flags.reinit<KIND, STRICTNESS, PREFER_MAPS_ALL>(/*worker_id=*/0, /*block_no=*/5, /*rows=*/1, ScatteredBlock::Selector(1));
     flags.reinit<KIND, STRICTNESS, PREFER_MAPS_ALL>(/*worker_id=*/1, /*block_no=*/5, /*rows=*/1, ScatteredBlock::Selector(1));
 

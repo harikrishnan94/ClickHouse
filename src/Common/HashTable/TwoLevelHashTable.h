@@ -548,7 +548,7 @@ public:
         }
     }
 
-    /// Direct-addressed tables keep one buffer; dumping it `bucketCount` times is D-58.
+    /// One buffer; writing once per virtual bucket would duplicate it.
     static constexpr UInt32 serializedPartitionCount() { return isFixedRangeStorage() ? 1 : bucketCount(); }
 
     void writeText(DB::WriteBuffer & wb) const

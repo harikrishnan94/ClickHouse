@@ -457,9 +457,6 @@ void GraceHashJoin::initialize(const Block & sample_block)
 
 JoinResultPtr GraceHashJoin::joinBlock(Block block)
 {
-    /// Check if hash join post build optimizations could be performed. This can only ever fire
-    /// once (buckets only grow), so once it has run, skip `hash_join_mutex` entirely instead of
-    /// taking an exclusive lock on every probe block for the rest of the probe phase.
     if (!post_build_phase_ran.load(std::memory_order_acquire) && getNumBuckets() <= 1)
     {
         std::lock_guard lock(hash_join_mutex);

@@ -495,11 +495,8 @@ public:
     NamesAndTypesList correctedColumnsAddedByJoin() const;
 };
 
-/// Whether a hash-table cache key should be computed and used for this join: the size histogram
-/// (`HashJoinEntry`), the `rhs_size_estimation` override, runtime-filter sizing from `ht_size`, and
-/// second-run join-reorder hints all key off this. Gated on the whole hash family (`HASH` or
-/// `PARALLEL_HASH`), not just `PARALLEL_HASH`, so `join_algorithm='hash'` gets the same stats as
-/// `parallel_hash` even though layout selection (`preferParallelHashLayout`) ignores the list entirely.
+/// Cache keys for HASH and PARALLEL_HASH. Layout selection ignores the algorithm list, so
+/// `join_algorithm='hash'` must still populate the size histogram.
 bool allowHashJoinCacheKeys(
     const std::vector<JoinAlgorithm> & join_algorithms,
     JoinKind kind,

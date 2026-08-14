@@ -863,7 +863,7 @@ private:
     mutable std::shared_ptr<JoinStuff::JoinUsedFlags> used_flags;
     RightTableDataPtr data;
 
-    /// Cached after the first `getNonJoinedBlocks` (post-probe). Parallel non-joined streams share it.
+    /// Cached so parallel non-joined streams do not rescan.
     mutable std::atomic<bool> has_non_joined_rows_checked = false;
     mutable std::atomic<bool> has_non_joined_rows = false;
 
@@ -936,9 +936,6 @@ private:
 
     void shrinkWorkerStoredBlocks(WorkerStoredData & worker);
 
-    /// Frees `data->workers` (the stored right-side columns) and `data->pools` (their arenas)
-    /// across a thread pool. Only called from the destructor, and only once nothing else can
-    /// possibly reference `data` (see the call site).
     void parallelDestroyRightTableData();
 
     void validateAdditionalFilterExpression(std::shared_ptr<ExpressionActions> additional_filter_expression);
@@ -965,7 +962,6 @@ private:
 
     void reinitUsedFlags();
 
-    /// True when unmatched RIGHT/FULL rows still need a non-joined scan. Computed after probe.
     bool hasNonJoinedRows() const;
 
     void doDebugAsserts() const;

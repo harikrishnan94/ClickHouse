@@ -1,15 +1,7 @@
--- Regression test for D-39 on uhj-parity: build workers used to append to one shared
--- `pending_per_row_flags` vector with no synchronization whenever a join needed per-row used
--- flags (multiple disjuncts, or RIGHT/FULL with mixed inequality) and ran a parallel build. A
--- lost or duplicated (block_no, flags) entry silently drops or double-counts unmatched right
--- rows. This exercises a multi-disjunct FULL JOIN with several concurrent build threads and
--- asserts exact, hand-computed row-count and checksum invariants that such a race would break.
---
--- Right table has 200000 rows. Rows [0, 100) match the left table via the first disjunct, rows
--- [100000, 100100) match via the second disjunct; every other right row is unmatched. All 100
--- left rows are matched (each by exactly two right rows), so the FULL JOIN has no unmatched-left
--- rows, which keeps the expected counts simple:
---   matched pairs = 200, unmatched right rows = 200000 - 200 = 199800, total = 200000.
+-- Multi-disjunct FULL JOIN with a parallel build: unmatched-right counts must be exact
+-- (a lost or duplicated per-row flag silently drops or double-counts rows).
+-- Right: 200000 rows. [0, 100) match via the first disjunct, [100000, 100100) via the second.
+-- matched pairs = 200, unmatched right = 199800, total = 200000.
 
 SET max_threads = 8;
 SET join_algorithm = 'parallel_hash';

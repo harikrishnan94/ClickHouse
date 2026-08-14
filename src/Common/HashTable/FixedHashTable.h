@@ -401,8 +401,7 @@ public:
     /// For example, when aggregator merges single level aggregation state in parallel.
     void ALWAYS_INLINE disableMinMaxOptimization() { disable_min_max_optimization = true; }
 
-    /// Rebuild `min`/`max` from the buffer after concurrent inserts. Call once the table is no
-    /// longer written concurrently; empty tables stay in the `max < min` state.
+    /// Call once writers have stopped. Empty tables stay in the `max < min` state.
     void restoreMinMaxOptimization()
     {
         if (!disable_min_max_optimization)

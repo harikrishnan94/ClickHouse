@@ -25,17 +25,13 @@ public:
 
     using PendingPerRowFlags = std::vector<std::pair<UInt32, UsedFlagsForColumns>>;
 
-    /// Per-row flags filled during the build phase: (block_no, flags) for each stored block.
-    /// One list per build worker so concurrent build threads never share a mutated container;
-    /// `finalizePerRowFlags` merges them once the build phase is single-threaded again.
+    /// One list per build worker: concurrent `emplace_back` into a shared vector raced.
     std::vector<PendingPerRowFlags> pending_per_worker;
 
-    /// Must be called once, before parallel build starts, so no resize can race with a build
-    /// thread's `emplace_back` into another worker's list.
+    /// Size before any build thread runs; a resize would race with `emplace_back`.
     void setPendingFlagWorkers(size_t num_workers) { pending_per_worker.resize(num_workers); }
 
-    /// Dense flags indexed by block_no, that are built from `pending_per_row_flags` when the build phase finishes.
-    /// The probe and non-joined phases read and write only this.
+    /// Dense flags indexed by block_no. Probe and non-joined phases use only this.
     std::vector<UsedFlagsForColumns> per_row_flags;
 
     /// For single disjunct we store all flags in a dedicated container to avoid calculating hash(nullptr) on each access.
@@ -93,9 +89,7 @@ public:
         }
     }
 
-    /// Merge every build worker's pending per-block flags into the dense `per_row_flags` vector,
-    /// which is sized to cover every block_no of the `StoredColumnsIndex`. Only safe once the
-    /// build phase is over and no worker can still be appending to `pending_per_worker`.
+    /// Safe only after the build: no worker is still appending.
     void finalizePerRowFlags(size_t num_blocks)
     {
         bool any_pending = false;
@@ -259,10 +253,9 @@ public:
         }
     }
 
-    /// Occupied-key count that have not yet been marked used. Empty hash-table slots are not counted.
+    /// Occupied keys, not hash-table slots (empty cells are not counted).
     void setUnsetOffsetCount(size_t count) { unset_offset_flags.store(count, std::memory_order_relaxed); }
 
-    /// True when every occupied right key has been marked used.
     bool allOffsetFlagsSet() const noexcept { return unset_offset_flags.load(std::memory_order_relaxed) == 0; }
 
 private:
