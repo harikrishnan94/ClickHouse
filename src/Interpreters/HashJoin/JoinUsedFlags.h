@@ -142,9 +142,7 @@ public:
             }
             else
             {
-                auto & flag = per_offset_flags[f.getOffset()];
-                if (!flag.load(std::memory_order_relaxed))
-                    flag.store(true, std::memory_order_relaxed);
+                markPerOffsetUsed(f.getOffset());
             }
         }
     }
@@ -164,9 +162,7 @@ public:
         }
         else
         {
-            auto & flag = per_offset_flags[offset];
-            if (!flag.load(std::memory_order_relaxed))
-                flag.store(true, std::memory_order_relaxed);
+            markPerOffsetUsed(offset);
         }
     }
 
@@ -217,14 +213,7 @@ public:
             }
             else
             {
-                auto off = f.getOffset();
-
-                /// fast check to prevent heavy CAS with seq_cst order
-                if (per_offset_flags[off].load(std::memory_order_relaxed))
-                    return false;
-
-                bool expected = false;
-                return per_offset_flags[off].compare_exchange_strong(expected, true);
+                return markPerOffsetUsedOnce(f.getOffset());
             }
         }
         else
@@ -252,14 +241,41 @@ public:
         }
         else
         {
-            /// fast check to prevent heavy CAS with seq_cst order
-            if (per_offset_flags[offset].load(std::memory_order_relaxed))
-                return false;
-
-            bool expected = false;
-            return per_offset_flags[offset].compare_exchange_strong(expected, true);
+            return markPerOffsetUsedOnce(offset);
         }
     }
+
+    /// Occupied-key count that have not yet been marked used. Empty hash-table slots are not counted.
+    void setUnsetOffsetCount(size_t count) { unset_offset_flags.store(count, std::memory_order_relaxed); }
+
+    /// True when every occupied right key has been marked used.
+    bool allOffsetFlagsSet() const noexcept { return unset_offset_flags.load(std::memory_order_relaxed) == 0; }
+
+private:
+    void markPerOffsetUsed(size_t offset)
+    {
+        auto & flag = per_offset_flags[offset];
+        if (!flag.exchange(true, std::memory_order_relaxed))
+            unset_offset_flags.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    bool markPerOffsetUsedOnce(size_t offset)
+    {
+        auto & flag = per_offset_flags[offset];
+
+        /// fast check to prevent heavy CAS with seq_cst order
+        if (flag.load(std::memory_order_relaxed))
+            return false;
+
+        bool expected = false;
+        if (!flag.compare_exchange_strong(expected, true))
+            return false;
+
+        unset_offset_flags.fetch_sub(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    std::atomic<size_t> unset_offset_flags{0};
 };
 
 }

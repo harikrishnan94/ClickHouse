@@ -1758,10 +1758,33 @@ bool HashJoin::supportParallelNonJoinedBlocksProcessing() const
         && anyClauseHasRightKeys(*table_join);
 }
 
+bool HashJoin::hasNonJoinedRows() const
+{
+    if (has_non_joined_rows_checked.load(std::memory_order_acquire))
+        return has_non_joined_rows.load(std::memory_order_relaxed);
+
+    bool found_non_joined = false;
+    if (isRightOrFull(kind) && data && data->rows_to_join.load(std::memory_order_relaxed) != 0)
+    {
+        const bool has_nullmaps
+            = std::ranges::any_of(data->workers, [](const WorkerStoredData & worker) { return !worker.nullmaps.empty(); });
+        if (has_nullmaps)
+            found_non_joined = true;
+        else if (needUsedFlagsForPerRightTableRow(table_join))
+            found_non_joined = true;
+        else if (used_flags)
+            found_non_joined = !used_flags->allOffsetFlagsSet();
+    }
+
+    has_non_joined_rows.store(found_non_joined, std::memory_order_relaxed);
+    has_non_joined_rows_checked.store(true, std::memory_order_release);
+    return found_non_joined;
+}
+
 IBlocksStreamPtr HashJoin::getNonJoinedBlocks(
     const Block & left_sample_block, const Block & result_sample_block, UInt64 max_block_size, size_t stream_idx, size_t num_streams) const
 {
-    if (!JoinCommon::hasNonJoinedBlocks(*table_join))
+    if (!JoinCommon::hasNonJoinedBlocks(*table_join) || !hasNonJoinedRows())
         return {};
 
     /// With no keys, no row is in a map; only stream 0 emits the stored rows.
@@ -1828,6 +1851,7 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
             });
     }
 
+    used_flags->setUnsetOffsetCount(data->keys_to_join.load(std::memory_order_relaxed));
     freezeMapsForProbing();
 }
 
@@ -2332,6 +2356,8 @@ void HashJoin::reinitUsedFlags()
                     map_.getBufferSizeInCells(data->type) + 1);
             });
     }
+
+    used_flags->setUnsetOffsetCount(data->keys_to_join.load(std::memory_order_relaxed));
 }
 
 namespace

@@ -862,6 +862,10 @@ private:
     mutable std::shared_ptr<JoinStuff::JoinUsedFlags> used_flags;
     RightTableDataPtr data;
 
+    /// Cached after the first `getNonJoinedBlocks` (post-probe). Parallel non-joined streams share it.
+    mutable std::atomic<bool> has_non_joined_rows_checked = false;
+    mutable std::atomic<bool> has_non_joined_rows = false;
+
     std::vector<Sizes> key_sizes;
 
     /// Block with columns from the right-side table.
@@ -954,6 +958,9 @@ private:
     void freezeMapsForProbing();
 
     void reinitUsedFlags();
+
+    /// True when unmatched RIGHT/FULL rows still need a non-joined scan. Computed after probe.
+    bool hasNonJoinedRows() const;
 
     void doDebugAsserts() const;
 };
