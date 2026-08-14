@@ -784,6 +784,7 @@ public:
     size_t getNumReleaseChunks() const override;
     BlocksList releaseJoinedBlocksChunk(size_t chunk_idx) override;
     void releaseJoinSideStorage() override;
+    void releaseJoinMaps() override;
 
     /// Modify right block (update structure according to sample block) to save it in block list
     static Block prepareRightBlock(const Block & block, const Block & saved_block_sample_);

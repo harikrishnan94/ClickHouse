@@ -85,6 +85,14 @@ void SpillingHashJoin::tryConvertChunks(size_t worker_id)
             grace_join->addBlockToJoin(blocks.front(), blocks.front().rows(), worker_id, /*check_limits=*/false);
             blocks.pop_front();
         }
+
+        /// Several threads can reach this loop concurrently (this function is also called from
+        /// `addBlockToJoin`'s post-switch fast path), each draining a different chunk. Only the
+        /// thread whose increment lands on `total_chunks` has just seen every other chunk's
+        /// increment happen-before it, so it alone is guaranteed no other thread is still
+        /// mid-extract — freeing from any other thread would race with those in-flight extracts.
+        if (chunks_converted.fetch_add(1, std::memory_order_acq_rel) + 1 == total_chunks)
+            in_memory_hash_join->releaseJoinSideStorage();
     }
 }
 
@@ -161,8 +169,20 @@ void SpillingHashJoin::switchToGraceHashJoin(size_t worker_id)
         state.store(State::GRACE_HASH_JOIN, std::memory_order_release);
     }
 
-    tryConvertChunks(worker_id);
-    in_memory_hash_join->releaseJoinSideStorage();
+    /// Free the maps and their per-slot arenas now, without waiting for every worker's stored
+    /// blocks to be drained below: the state transition above is already visible to every future
+    /// `addBlockToJoin` caller (they check `state` before touching `in_memory_hash_join`), so
+    /// nothing can still be inserting into these maps. This is the bulk of a large in-memory
+    /// join's footprint, so freeing it here — rather than after the chunk drain below, or (as
+    /// before) only once the whole drain finishes — sets convert-time peak memory to storage
+    /// blocks plus grace's own buckets, not maps-plus-blocks-plus-grace-buckets all at once.
+    const size_t total_chunks = in_memory_hash_join->getNumReleaseChunks();
+    in_memory_hash_join->releaseJoinMaps();
+
+    if (total_chunks == 0)
+        in_memory_hash_join->releaseJoinSideStorage();
+    else
+        tryConvertChunks(worker_id);
 }
 
 void SpillingHashJoin::onBuildPhaseFinish()

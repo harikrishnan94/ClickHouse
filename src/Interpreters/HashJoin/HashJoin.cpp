@@ -1971,6 +1971,19 @@ void HashJoin::releaseJoinSideStorage()
         data.reset();
 }
 
+void HashJoin::releaseJoinMaps()
+{
+    if (!data)
+        return;
+
+    /// Drop the shared_ptr to each type's hash table: nothing else holds a reference to a
+    /// spill-side in-memory join's maps, so this frees the (often large) buffers immediately,
+    /// well before `releaseJoinedBlocksChunk` finishes draining every worker's stored blocks.
+    data->maps.clear();
+    data->pools.clear();
+    data->bucket_bytes.store(0, std::memory_order_relaxed);
+}
+
 const ColumnWithTypeAndName & HashJoin::rightAsofKeyColumn() const
 {
     /// It should be nullable when right side is nullable

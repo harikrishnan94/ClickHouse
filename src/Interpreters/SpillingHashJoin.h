@@ -131,6 +131,12 @@ private:
 
     SharedMutex switch_mutex;
     std::atomic<size_t> next_slot_to_convert{0};
+    /// Counts fully-drained chunks; the thread that drains the last one frees the remaining
+    /// storage (`in_memory_hash_join->releaseJoinSideStorage()`). Several threads can be draining
+    /// different chunks concurrently (see `tryConvertChunks`), so only the increment result tells
+    /// a thread whether it was the last one — releasing from whichever thread merely finishes its
+    /// own `switchToGraceHashJoin` call first would race with the others' still-in-flight extracts.
+    std::atomic<size_t> chunks_converted{0};
     mutable std::mutex totals_mutex;
     bool supports_parallel_non_joined_blocks_processing{false};
 
