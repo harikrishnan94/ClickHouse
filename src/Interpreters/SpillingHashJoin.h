@@ -6,8 +6,6 @@
 #include <Core/Block.h>
 #include <Core/Block_fwd.h>
 #include <Interpreters/HashTablesStatistics.h>
-#include <Interpreters/IInMemoryHashJoin.h>
-#include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
@@ -77,7 +75,7 @@ public:
 
     StepAnalysisReport getAnalysisReport() const override;
 
-    bool supportParallelJoin() const override { return in_memory_hash_join->supportParallelJoin(); }
+    bool supportParallelJoin() const override;
     size_t getMaxBuildThreads() const override { return max_threads; }
     bool supportParallelNonJoinedBlocksProcessing() const override;
     bool isParallelNonJoinedProcessingEnabled() const override;
@@ -143,8 +141,8 @@ private:
     size_t max_bytes_before_external_join;
     size_t max_threads = 1;
 
-    IInMemoryHashJoin & collectingJoin();
-    const IInMemoryHashJoin & collectingJoin() const;
+    HashJoin & collectingJoin();
+    const HashJoin & collectingJoin() const;
 
     SharedMutex switch_mutex;
     std::atomic<size_t> next_slot_to_convert{0};
@@ -165,7 +163,7 @@ private:
     /// threshold check runs on every build thread.
     std::atomic<bool> logged_spill_suppressed{false};
 
-    InMemoryHashJoinPtr in_memory_hash_join;
+    std::shared_ptr<HashJoin> in_memory_hash_join;
 
     /// GraceHashJoin created during overflow. Also assigned to chosen_join.
     std::shared_ptr<GraceHashJoin> grace_join;

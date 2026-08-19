@@ -9,7 +9,7 @@
 #include <vector>
 
 #include <Interpreters/HashTablesStatistics.h>
-#include <Interpreters/IInMemoryHashJoin.h>
+#include <Interpreters/IJoin.h>
 #include <Interpreters/RowRefs.h>
 
 #include <Core/Block_fwd.h>
@@ -196,9 +196,10 @@ static_assert(TwoLevelJoinFixedHashMap<UInt8, RowRefList>::bucketCount() == NUM_
   * If it is true, we always generate Nullable column and substitute NULLs for non-joined rows,
   *  as in standard SQL.
   */
-class HashJoin : public IInMemoryHashJoin
+class HashJoin : public IJoin
 {
 public:
+    /// `max_threads` controls slot parallelism; `use_parallel_layout` selects 256-bucket vs 1-bucket maps.
     HashJoin(
         std::shared_ptr<TableJoin> table_join_,
         SharedHeader right_sample_block,
@@ -309,12 +310,12 @@ public:
     /// Sum size in bytes of all buffers, used for JOIN maps and for all memory pools.
     size_t getTotalByteCount() const final;
     /// Number of right-side rows ingested into the build.
-    size_t getRightTableRowCount() const override { return getJoinedData()->rows_to_join; }
+    size_t getRightTableRowCount() const { return getJoinedData()->rows_to_join; }
     /// Peak bytes the build occupied
-    size_t getPeakBuildBytes() const override { return peak_build_bytes; }
+    size_t getPeakBuildBytes() const { return peak_build_bytes; }
 
     StepAnalysisReport getAnalysisReport() const override;
-    const MatchedRowsStats * getMatchStats() const override { return matched_rows_stats.get(); }
+    const MatchedRowsStats * getMatchStats() const { return matched_rows_stats.get(); }
 
     bool alwaysReturnsEmptySet() const final;
 
@@ -790,17 +791,17 @@ public:
     void reuseJoinedData(const HashJoin & join);
 
     RightTableDataPtr getJoinedData() const { return data; }
-    BlocksList releaseJoinedBlocks(bool restructure) override;
-    size_t getNumReleaseChunks() const override;
-    BlocksList releaseJoinedBlocksChunk(size_t chunk_idx) override;
-    void releaseJoinSideStorage() override;
-    void releaseJoinMaps() override;
+    BlocksList releaseJoinedBlocks(bool restructure);
+    size_t getNumReleaseChunks() const;
+    BlocksList releaseJoinedBlocksChunk(size_t chunk_idx);
+    void releaseJoinSideStorage();
+    void releaseJoinMaps();
 
     /// Modify right block (update structure according to sample block) to save it in block list
     static Block prepareRightBlock(const Block & block, const Block & saved_block_sample_);
-    Block prepareRightBlock(const Block & block) const override;
+    Block prepareRightBlock(const Block & block) const;
 
-    const Block & savedBlockSample() const override { return data->sample_block; }
+    const Block & savedBlockSample() const { return data->sample_block; }
 
     bool isUsed(size_t off) const;
     bool isUsed(UInt32 block_no, size_t row_idx) const;
@@ -815,7 +816,7 @@ public:
     void materializeColumnsFromLeftBlock(Block & block) const;
     Block materializeColumnsFromRightBlock(Block block) const;
 
-    size_t getAndSetRightTableKeys() const override;
+    size_t getAndSetRightTableKeys() const;
 
     const std::vector<Sizes> & getKeySizes() const { return key_sizes; }
 

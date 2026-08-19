@@ -4,6 +4,7 @@
 #include <utility>
 
 #include <Interpreters/GraceHashJoin.h>
+#include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Common/ProfileEvents.h>
 #include <Common/logger_useful.h>
@@ -16,13 +17,13 @@ extern const Event JoinSpillingHashJoinSwitchedToGraceJoin;
 namespace DB
 {
 
-IInMemoryHashJoin & SpillingHashJoin::collectingJoin()
+HashJoin & SpillingHashJoin::collectingJoin()
 {
     chassert(in_memory_hash_join);
     return *in_memory_hash_join;
 }
 
-const IInMemoryHashJoin & SpillingHashJoin::collectingJoin() const
+const HashJoin & SpillingHashJoin::collectingJoin() const
 {
     chassert(in_memory_hash_join);
     return *in_memory_hash_join;
@@ -50,7 +51,7 @@ SpillingHashJoin::SpillingHashJoin(
     , max_bytes_before_external_join(table_join->maxBytesBeforeExternalJoin())
     , max_threads(std::max<size_t>(1, max_threads_))
 {
-    in_memory_hash_join = createInMemoryHashJoin(
+    in_memory_hash_join = std::make_shared<HashJoin>(
         table_join,
         right_sample_block_,
         any_take_last_row,
@@ -96,6 +97,11 @@ void SpillingHashJoin::tryConvertChunks(size_t worker_id)
 std::string SpillingHashJoin::getName() const
 {
     return fmt::format("SpillingHashJoin({})", in_memory_hash_join->getName());
+}
+
+bool SpillingHashJoin::supportParallelJoin() const
+{
+    return in_memory_hash_join->supportParallelJoin();
 }
 
 bool SpillingHashJoin::addBlockToJoin(const Block & block, size_t num_rows, size_t worker_id, bool check_limits)

@@ -1,8 +1,6 @@
 #pragma once
 
 #include <Interpreters/Context_fwd.h>
-#include <Interpreters/IInMemoryHashJoin.h>
-#include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
 #include <Processors/QueryPlan/StepAnalyzeInfo.h>
@@ -18,6 +16,7 @@
 namespace DB
 {
 class TableJoin;
+class HashJoin;
 
 /**
  * Efficient and highly parallel implementation of external memory JOIN based on HashJoin.
@@ -48,7 +47,7 @@ class GraceHashJoin final : public IJoin
     class FileBucket;
     class DelayedBlocks;
 
-    using InMemoryJoinPtr = InMemoryHashJoinPtr;
+    using InMemoryJoinPtr = std::shared_ptr<HashJoin>;
 
     struct GraceHashJoinStats
     {
@@ -64,7 +63,7 @@ class GraceHashJoin final : public IJoin
         MatchedRowsAccumulator matched_left;
         MatchedRowsAccumulator matched_right;
 
-        void foldIn(const IInMemoryHashJoin & in_memory_join);
+        void foldIn(const HashJoin & in_memory_join);
     };
 
 public:

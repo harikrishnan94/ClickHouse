@@ -6,7 +6,6 @@
 #include <Interpreters/GraceHashJoin.h>
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Interpreters/HashJoin/MatchedRowsStats.h>
-#include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/TableJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
 #include <base/FnTraits.h>
@@ -550,7 +549,7 @@ size_t GraceHashJoin::getTotalByteCount() const
     return hash_join->getTotalByteCount();
 }
 
-void GraceHashJoin::GraceHashJoinStats::foldIn(const IInMemoryHashJoin & in_memory_join)
+void GraceHashJoin::GraceHashJoinStats::foldIn(const HashJoin & in_memory_join)
 {
     UInt64 right_table_rows = in_memory_join.getRightTableRowCount();
     right_rows += right_table_rows;
@@ -848,7 +847,7 @@ GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bu
     /// `max_bytes_in_join` / `max_bytes_before_external_join` and does not shrink when Grace
     /// splits file buckets, so a small in-memory remainder can rehash past
     /// `grace_hash_join_max_buckets`. File-level buckets already partition the build.
-    return createInMemoryHashJoin(
+    return std::make_shared<HashJoin>(
         table_join,
         right_sample_block,
         any_take_last_row,
