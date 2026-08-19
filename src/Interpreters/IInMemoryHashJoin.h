@@ -5,11 +5,20 @@
 namespace DB
 {
 
+class MatchedRowsStats;
+
 /// Common interface for in-memory hash joins used by SpillingHashJoin and GraceHashJoin.
 class IInMemoryHashJoin : public IJoin
 {
 public:
     ~IInMemoryHashJoin() override = default;
+
+    /// Number of right-side rows ingested into the build.
+    virtual size_t getRightTableRowCount() const = 0;
+    /// Peak bytes the build occupied.
+    virtual size_t getPeakBuildBytes() const = 0;
+    /// Null when the query does not track matched rows.
+    virtual const MatchedRowsStats * getMatchStats() const = 0;
 
     virtual BlocksList releaseJoinedBlocks(bool restructure = false) = 0;
 

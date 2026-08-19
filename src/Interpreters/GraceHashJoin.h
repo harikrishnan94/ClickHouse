@@ -5,6 +5,7 @@
 #include <Interpreters/InMemoryHashJoin.h>
 #include <Interpreters/IJoin.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
+#include <Processors/QueryPlan/StepAnalyzeInfo.h>
 
 #include <Core/Block.h>
 #include <Core/Block_fwd.h>
@@ -49,6 +50,23 @@ class GraceHashJoin final : public IJoin
 
     using InMemoryJoinPtr = InMemoryHashJoinPtr;
 
+    struct GraceHashJoinStats
+    {
+        size_t right_rows = 0;
+        size_t unique_keys = 0;
+        size_t peak_in_memory_bytes = 0;
+        size_t num_rehashes = 0;
+        size_t num_buckets = 0;
+        size_t left_spilled_compressed_bytes = 0;
+        size_t right_spilled_compressed_bytes = 0;
+
+        UInt64 left_rows_total = 0;
+        MatchedRowsAccumulator matched_left;
+        MatchedRowsAccumulator matched_right;
+
+        void foldIn(const IInMemoryHashJoin & in_memory_join);
+    };
+
 public:
     using BucketPtr = std::shared_ptr<FileBucket>;
     using Buckets = std::vector<BucketPtr>;
@@ -88,6 +106,7 @@ public:
 
     size_t getTotalRowCount() const override;
     size_t getTotalByteCount() const override;
+    StepAnalysisReport getAnalysisReport() const override;
     bool alwaysReturnsEmptySet() const override;
 
     bool supportParallelJoin() const override { return true; }
@@ -138,6 +157,8 @@ private:
     size_t getNumBuckets() const;
     Buckets getCurrentBuckets() const;
 
+    GraceHashJoinStats collectStats() const;
+
     /// Structure block to store in the HashJoin according to sample_block.
     Block prepareRightBlock(const Block & block);
 
@@ -171,6 +192,8 @@ private:
 
     /// Single-bucket joins need `runPostBuildPhase` once; after that skip `hash_join_mutex`.
     std::atomic<bool> post_build_phase_ran = false;
+
+    GraceHashJoinStats stats;
 
     mutable std::mutex totals_mutex;
 };

@@ -1,5 +1,6 @@
 #include <Planner/PlannerJoins.h>
 #include <Planner/PlannerJoinsLogical.h>
+#include <Processors/QueryPlan/Optimizations/Cascades/CascadesParams.h>
 
 #include <IO/Operators.h>
 #include <IO/WriteBuffer.h>
@@ -575,7 +576,7 @@ std::unique_ptr<JoinStepLogical> buildJoinStepLogical(
         outer_scope_columns,
         changed_types,
         settings[Setting::join_use_nulls],
-        JoinSettings(settings),
+        JoinSettings(settings, query_context->getJoinAnalyzeMode()),
         SortingStep::Settings(settings));
 
     bool display_internal_aliases = settings[Setting::query_plan_display_internal_aliases];
@@ -585,8 +586,8 @@ std::unique_ptr<JoinStepLogical> buildJoinStepLogical(
 
     {
         const auto & query_params = query_context->getQueryParameters();
-        if (auto it = query_params.find("_internal_join_table_stat_hints"); it != query_params.end())
-            join_step->setDummyStats(it->second);
+        if (auto it = query_params.find(CascadesParams::STAT_HINTS); it != query_params.end())
+            join_step->setTableStatsHint(it->second);
     }
 
     if (shouldForbidReordering(build_context))
