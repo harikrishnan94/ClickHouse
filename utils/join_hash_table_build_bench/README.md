@@ -65,7 +65,7 @@ Needs C++20, pthread, and hardware CRC32C (x86-64 SSE4.2 or aarch64 +crc). `-mar
 ## Sample run (96-core Neoverse-V2, 2026-08-29)
 
 Default sweep: 32e6 rows, 8e6 distinct keys, 5 timed reps after 1 warmup. Full log:
-`sample-run-graviton-neoverse-v2-96c.log`.
+`sample-run-graviton-neoverse-v2-96c.txt`.
 
 s=0 speedup vs 1 thread (Figure 12 shape check; unchained flattens earlier, chained keeps taking threads):
 
