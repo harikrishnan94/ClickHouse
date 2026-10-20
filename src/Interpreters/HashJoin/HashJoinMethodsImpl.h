@@ -18,6 +18,7 @@
 namespace ProfileEvents
 {
 extern const Event HashJoinPreallocatedElementsInHashTables;
+extern const Event HashJoinDeferredPreallocatedElementsInHashTables;
 }
 
 namespace DB
@@ -343,7 +344,10 @@ BuildResult HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl
         SCOPE_EXIT({ table.addBytes(table.bucket_bytes, slots.slotBytes(map, slot) - bytes_before); });
 
         if (const size_t reserved = slots.reserveOnFirstInsert(map, map_idx, slot))
-            ProfileEvents::increment(ProfileEvents::HashJoinPreallocatedElementsInHashTables, reserved);
+            ProfileEvents::increment(
+                slots.hasBucketReserves() ? ProfileEvents::HashJoinDeferredPreallocatedElementsInHashTables
+                                          : ProfileEvents::HashJoinPreallocatedElementsInHashTables,
+                reserved);
 
         auto insert_rows = [&](const auto & rows)
         { return insertSlotRows(join, map, key_getter, key_columns, stored_block_no, rows, null_map, join_mask, slots.arena(slot)); };
