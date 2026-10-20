@@ -1130,7 +1130,72 @@ bool HashJoin::addBlockToJoin(const Block & source_block, size_t /* num_rows */,
         }
     }
 
+    if (context.getNumStreams() > data->workers.size())
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR, "Too many HashJoin build streams: {}, capacity {}", context.getNumStreams(), data->workers.size());
+    auto & worker = data->workers[context.getStream()];
+
+    if (storage_join_lock)
+        throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "addBlockToJoin called when HashJoin locked to prevent updates");
+
+    const auto stored = storeBlock(worker, block, std::move(selector));
+
+    size_t total_rows = 0;
+    size_t total_bytes = 0;
+    insertStoredBlock(worker, stored, block, context, total_rows, total_bytes);
+
+    if (!context.joinChecksLimits())
+        return true;
+    shrinkStoredBlocksToFit(total_bytes, /*force_optimize=*/false, context.getStream());
+    return table_join->sizeLimits().check(total_rows, total_bytes, "JOIN", ErrorCodes::SET_SIZE_LIMIT_EXCEEDED);
+}
+
+HashJoin::StoredBlocksList::iterator HashJoin::storeBlock(WorkerStoredData & worker, const Block & block, ScatteredBlock::Selector selector)
+{
+    Block block_to_save = filterColumnsPresentInSampleBlock(block, savedBlockSample());
+    /// A parallel build stores copies of narrow rows, made here on a build stream (`shrinkToFit` copies every column).
+    /// The producer then reuses its memory instead of faulting in fresh memory for every block.
+    if ((data->slots.size() > 1 && !useZeroCopyApproach(block)) || shrink_blocks.load(std::memory_order_relaxed))
+        block_to_save = block_to_save.shrinkToFit();
+
+    assertBlocksHaveEqualStructureAllowReplicated(data->sample_block, block_to_save, "joined block");
+
+    Columns columns;
+    RowDataStorePtr row_store;
+    if (data->row_store_state == RowStoreState::Initialized)
+    {
+        auto [row_store_columns, remaining_columns] = extractRowStoreColumns(block_to_save, data->column_access_indexes);
+        columns = std::move(remaining_columns);
+        row_store = RowDataStore::create(data->row_store_layout, row_store_columns);
+    }
+    else
+        columns = block_to_save.getColumns();
+
+    doDebugAsserts();
+    /// Register the block and account for it while a local list still owns it: `splice` cannot throw,
+    /// so the worker's list, `data->allocated_size` and `data->rows_to_join` always describe the same set
+    /// of stored blocks. Same ordering as `tryRerangeRightTableDataImpl`; a list node keeps its address.
+    StoredBlocksList new_block;
     const size_t rows = selector.size();
+    new_block.emplace_back(std::move(columns), std::move(selector), std::move(row_store));
+    auto & stored_columns = new_block.back();
+    stored_columns.block_no = data->stored_columns_index->add(&stored_columns);
+    data->addBytes(data->allocated_size, stored_columns.allocatedBytes());
+    data->rows_to_join.fetch_add(rows, std::memory_order_relaxed);
+    const auto stored = new_block.begin();
+    worker.columns.splice(worker.columns.end(), new_block);
+    doDebugAsserts();
+    return stored;
+}
+
+void HashJoin::insertStoredBlock(
+    WorkerStoredData & worker,
+    StoredBlocksList::iterator stored,
+    const Block & block,
+    JoinBuildContext context,
+    size_t & total_rows,
+    size_t & total_bytes)
+{
     const auto & right_key_names = table_join->getAllNames(JoinTableSide::Right);
     ColumnPtrMap all_key_columns(right_key_names.size());
     for (const auto & column_name : right_key_names)
@@ -1143,208 +1208,162 @@ bool HashJoin::addBlockToJoin(const Block & source_block, size_t /* num_rows */,
         all_key_columns[column_name] = prepared_key_column;
     }
 
-    Block block_to_save = filterColumnsPresentInSampleBlock(block, savedBlockSample());
-    /// A parallel build stores copies of narrow rows, made here on a build stream (`shrinkToFit` copies every column).
-    /// The producer then reuses its memory instead of faulting in fresh memory for every block.
-    if ((data->slots.size() > 1 && !useZeroCopyApproach(block)) || shrink_blocks.load(std::memory_order_relaxed))
-        block_to_save = block_to_save.shrinkToFit();
-
     const auto maps_kind = getMapsKind();
-    if (context.getNumStreams() > data->workers.size())
-        throw Exception(
-            ErrorCodes::LOGICAL_ERROR, "Too many HashJoin build streams: {}, capacity {}", context.getNumStreams(), data->workers.size());
-    auto & worker = data->workers[context.getStream()];
+    auto * stored_columns = &*stored;
+    const size_t rows = stored_columns->selector.size();
 
-    size_t total_rows = 0;
-    size_t total_bytes = 0;
+    bool flag_per_row = needUsedFlagsForPerRightTableRow(table_join);
+    const auto & onexprs = table_join->getClauses();
+
+    /// NullMapHolder stores a raw pointer to stored_columns. If any clause stores a nullmap
+    /// referencing this block we must not remove the block later
+    bool nullmap_stored_for_block = false;
+
+    /// The per-row used flags of the stored block are initialized on the first clause only:
+    /// their content does not depend on the inserts, and JoinUsedFlags expects one entry per block.
+    bool per_row_flags_initialized = false;
+
+    for (size_t onexpr_idx = 0; onexpr_idx < onexprs.size(); ++onexpr_idx)
     {
-        if (storage_join_lock)
-            throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "addBlockToJoin called when HashJoin locked to prevent updates");
+        ColumnRawPtrs key_columns;
+        for (const auto & name : onexprs[onexpr_idx].key_names_right)
+            key_columns.push_back(all_key_columns[name].get());
 
-        assertBlocksHaveEqualStructureAllowReplicated(data->sample_block, block_to_save, "joined block");
+        /// We will insert to the map only keys, where all components are not NULL.
+        ConstNullMapPtr null_map{};
+        ColumnPtr null_map_holder = extractNestedColumnsAndNullMap(key_columns, null_map);
 
-        Columns columns;
-        RowDataStorePtr row_store;
-        if (data->row_store_state == RowStoreState::Initialized)
+        /// If RIGHT or FULL save blocks with nulls for NotJoinedBlocks
+        UInt8 save_nullmap = 0;
+        if (isRightOrFull(kind) && null_map)
         {
-            auto [row_store_columns, remaining_columns] = extractRowStoreColumns(block_to_save, data->column_access_indexes);
-            columns = std::move(remaining_columns);
-            row_store = RowDataStore::create(data->row_store_layout, row_store_columns);
-        }
-        else
-            columns = block_to_save.getColumns();
-
-        doDebugAsserts();
-        /// Register the block and account for it while a local list still owns it: `splice` cannot throw,
-        /// so the worker's list, `data->allocated_size` and `data->rows_to_join` always describe the same set
-        /// of stored blocks. Same ordering as `tryRerangeRightTableDataImpl`; a list node keeps its address.
-        StoredBlocksList new_block;
-        new_block.emplace_back(std::move(columns), std::move(selector), std::move(row_store));
-        auto * stored_columns = &new_block.back();
-        size_t data_allocated_bytes = stored_columns->allocatedBytes();
-        stored_columns->block_no = data->stored_columns_index->add(stored_columns);
-        data->addBytes(data->allocated_size, data_allocated_bytes);
-        data->rows_to_join.fetch_add(rows, std::memory_order_relaxed);
-        worker.columns.splice(worker.columns.end(), new_block);
-        doDebugAsserts();
-
-        bool flag_per_row = needUsedFlagsForPerRightTableRow(table_join);
-        const auto & onexprs = table_join->getClauses();
-
-        /// NullMapHolder stores a raw pointer to stored_columns. If any clause stores a nullmap
-        /// referencing this block we must not pop the block later
-        bool nullmap_stored_for_block = false;
-
-        /// The per-row used flags of the stored block are initialized on the first clause only:
-        /// their content does not depend on the inserts, and JoinUsedFlags expects one entry per block.
-        bool per_row_flags_initialized = false;
-
-        for (size_t onexpr_idx = 0; onexpr_idx < onexprs.size(); ++onexpr_idx)
-        {
-            ColumnRawPtrs key_columns;
-            for (const auto & name : onexprs[onexpr_idx].key_names_right)
-                key_columns.push_back(all_key_columns[name].get());
-
-            /// We will insert to the map only keys, where all components are not NULL.
-            ConstNullMapPtr null_map{};
-            ColumnPtr null_map_holder = extractNestedColumnsAndNullMap(key_columns, null_map);
-
-            /// If RIGHT or FULL save blocks with nulls for NotJoinedBlocks
-            UInt8 save_nullmap = 0;
-            if (isRightOrFull(kind) && null_map)
+            /// Only check rows belonging to this partition's selector
+            for (size_t r : stored_columns->selector)
             {
-                /// Only check rows belonging to this partition's selector
-                for (size_t r : stored_columns->selector)
+                if ((*null_map)[r])
                 {
-                    if ((*null_map)[r])
-                    {
-                        save_nullmap = 1;
-                        break;
-                    }
+                    save_nullmap = 1;
+                    break;
                 }
             }
+        }
 
-            auto join_mask_col = JoinCommon::getColumnAsMask(block, onexprs[onexpr_idx].condColumnNames().second);
-            /// Save blocks that do not hold conditions in ON section
-            ColumnUInt8::MutablePtr not_joined_map = nullptr;
-            bool has_right_not_joined = false;
-            if (!flag_per_row && isRightOrFull(kind) && join_mask_col.getKind() != JoinCommon::JoinMask::Kind::AllTrue)
+        auto join_mask_col = JoinCommon::getColumnAsMask(block, onexprs[onexpr_idx].condColumnNames().second);
+        /// Save blocks that do not hold conditions in ON section
+        ColumnUInt8::MutablePtr not_joined_map = nullptr;
+        bool has_right_not_joined = false;
+        if (!flag_per_row && isRightOrFull(kind) && join_mask_col.getKind() != JoinCommon::JoinMask::Kind::AllTrue)
+        {
+            ///  - build mask in the source block row space
+            ///  - set bits only for rows that belong to THIS slot (by selector)
+            not_joined_map = ColumnUInt8::create(block.rows(), static_cast<UInt8>(0));
+            const auto & sel = stored_columns->selector;
+
+            auto mark_if_needed = [&](size_t row)
             {
-                ///  - build mask in the source block row space
-                ///  - set bits only for rows that belong to THIS slot (by selector)
-                not_joined_map = ColumnUInt8::create(block.rows(), static_cast<UInt8>(0));
-                const auto & sel = stored_columns->selector;
+                if (!join_mask_col.isRowFiltered(row))
+                    return; // ON condition passed -> not "non-joined"
+                if (save_nullmap && (*null_map)[row])
+                    return; // already covered by null-keys map
+                not_joined_map->getData()[row] = 1;
+                has_right_not_joined = true;
+            };
 
-                auto mark_if_needed = [&](size_t row)
+            for (size_t r : sel)
+                mark_if_needed(r);
+        }
+
+        bool is_inserted = false;
+
+        joinDispatch(
+            kind,
+            strictness,
+            data->maps[onexpr_idx],
+            maps_kind,
+            [&](auto kind_, auto strictness_, auto & map)
+            {
+                std::vector<ScatteredBlock::Selector> scattered;
+                std::span<const ScatteredBlock::Selector> per_slot(&stored_columns->selector, 1);
+                if (data->slots.size() > 1)
                 {
-                    if (!join_mask_col.isRowFiltered(row))
-                        return; // ON condition passed -> not "non-joined"
-                    if (save_nullmap && (*null_map)[row])
-                        return; // already covered by null-keys map
-                    not_joined_map->getData()[row] = 1;
-                    has_right_not_joined = true;
-                };
+                    scattered = scatterBlockBySlot(
+                        data->type, map, key_columns, key_sizes[onexpr_idx], stored_columns->selector, data->slots.size());
+                    per_slot = scattered;
+                }
 
-                for (size_t r : sel)
-                    mark_if_needed(r);
-            }
+                const BuildResult result = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>::insertFromBlockImpl(
+                    *this,
+                    data->type,
+                    map,
+                    onexpr_idx,
+                    per_slot,
+                    key_columns,
+                    key_sizes[onexpr_idx],
+                    stored_columns->block_no,
+                    null_map,
+                    join_mask_col);
+                is_inserted = result.is_inserted;
+                if (!result.all_values_unique)
+                    all_values_unique.store(false, std::memory_order_relaxed);
 
-            bool is_inserted = false;
-
-            joinDispatch(
-                kind,
-                strictness,
-                data->maps[onexpr_idx],
-                maps_kind,
-                [&](auto kind_, auto strictness_, auto & map)
+                if (flag_per_row && !per_row_flags_initialized)
                 {
-                    std::vector<ScatteredBlock::Selector> scattered;
-                    std::span<const ScatteredBlock::Selector> per_slot(&stored_columns->selector, 1);
-                    if (data->slots.size() > 1)
-                    {
-                        scattered = scatterBlockBySlot(
-                            data->type, map, key_columns, key_sizes[onexpr_idx], stored_columns->selector, data->slots.size());
-                        per_slot = scattered;
-                    }
+                    used_flags->reinit<kind_, strictness_, mapsKindOf<decltype(map)>()>(
+                        context.getStream(), stored_columns->block_no, stored_columns->blockRows());
+                    per_row_flags_initialized = true;
+                }
+            });
 
-                    const BuildResult result = HashJoinMethods<kind_, strictness_, std::decay_t<decltype(map)>>::insertFromBlockImpl(
-                        *this,
-                        data->type,
-                        map,
-                        onexpr_idx,
-                        per_slot,
-                        key_columns,
-                        key_sizes[onexpr_idx],
-                        stored_columns->block_no,
-                        null_map,
-                        join_mask_col);
-                    is_inserted = result.is_inserted;
-                    if (!result.all_values_unique)
-                        all_values_unique.store(false, std::memory_order_relaxed);
+        if (!flag_per_row && save_nullmap && is_inserted)
+        {
+            auto & h = worker.nullmaps.emplace_back(stored_columns, null_map_holder);
+            data->addBytes(data->nullmaps_allocated_size, h.allocatedBytes());
+            nullmap_stored_for_block = true;
+        }
 
-                    if (flag_per_row && !per_row_flags_initialized)
-                    {
-                        used_flags->reinit<kind_, strictness_, mapsKindOf<decltype(map)>()>(
-                            context.getStream(), stored_columns->block_no, stored_columns->blockRows());
-                        per_row_flags_initialized = true;
-                    }
-                });
+        if (!flag_per_row && not_joined_map && has_right_not_joined)
+        {
+            auto & h = worker.nullmaps.emplace_back(stored_columns, std::move(not_joined_map));
+            data->addBytes(data->nullmaps_allocated_size, h.allocatedBytes());
+            nullmap_stored_for_block = true;
+        }
 
-            if (!flag_per_row && save_nullmap && is_inserted)
-            {
-                auto & h = worker.nullmaps.emplace_back(stored_columns, null_map_holder);
-                data->addBytes(data->nullmaps_allocated_size, h.allocatedBytes());
-                nullmap_stored_for_block = true;
-            }
+        /// Whether anything that outlives the build phase still points into the block. Per-row used
+        /// flags are keyed by the stored block, so they keep it alive - except on a set map, which is
+        /// never `flagged` (see `MapGetter`), so there are no such flags to begin with.
+        const bool block_is_referenced
+            = is_inserted || nullmap_stored_for_block || (flag_per_row && maps_kind != JoinMapsKind::Set);
+        /// Every clause reads its keys out of the block before it goes. Only a set map gets here with
+        /// more than one clause: several clauses always mean `flag_per_row`.
+        const bool last_clause = onexpr_idx + 1 == onexprs.size();
 
-            if (!flag_per_row && not_joined_map && has_right_not_joined)
-            {
-                auto & h = worker.nullmaps.emplace_back(stored_columns, std::move(not_joined_map));
-                data->addBytes(data->nullmaps_allocated_size, h.allocatedBytes());
-                nullmap_stored_for_block = true;
-            }
+        if (!block_is_referenced && last_clause)
+        {
+            doDebugAsserts();
+            LOG_TRACE(log, "Skipping inserting block with {} rows", rows);
+            data->subBytes(data->allocated_size, stored_columns->allocatedBytes());
+            /// A set map references no block at all, so every block is dropped here even though its
+            /// rows did take part in the join and must stay counted.
+            if (maps_kind != JoinMapsKind::Set)
+                data->rows_to_join.fetch_sub(rows, std::memory_order_relaxed);
+            /// Nothing was inserted, so no refs to this block exist; null the index entry so
+            /// that a stale ref trips the chassert in `StoredColumnsIndex::at` in debug builds
+            /// (and dereferences nullptr deterministically in release builds) instead of
+            /// silently reading freed memory.
+            data->stored_columns_index->clearEntry(stored_columns->block_no);
+            worker.columns.erase(stored);
+            doDebugAsserts();
+        }
 
-            /// Whether anything that outlives the build phase still points into the block. Per-row used
-            /// flags are keyed by the stored block, so they keep it alive - except on a set map, which is
-            /// never `flagged` (see `MapGetter`), so there are no such flags to begin with.
-            const bool block_is_referenced
-                = is_inserted || nullmap_stored_for_block || (flag_per_row && maps_kind != JoinMapsKind::Set);
-            /// Every clause reads its keys out of the block before it goes. Only a set map gets here with
-            /// more than one clause: several clauses always mean `flag_per_row`.
-            const bool last_clause = onexpr_idx + 1 == onexprs.size();
-
-            if (!block_is_referenced && last_clause)
-            {
-                doDebugAsserts();
-                LOG_TRACE(log, "Skipping inserting block with {} rows", rows);
-                data->subBytes(data->allocated_size, data_allocated_bytes);
-                /// A set map references no block at all, so every block is dropped here even though its
-                /// rows did take part in the join and must stay counted.
-                if (maps_kind != JoinMapsKind::Set)
-                    data->rows_to_join.fetch_sub(rows, std::memory_order_relaxed);
-                /// Nothing was inserted, so no refs to this block exist; null the index entry so
-                /// that a stale ref trips the chassert in `StoredColumnsIndex::at` in debug builds
-                /// (and dereferences nullptr deterministically in release builds) instead of
-                /// silently reading freed memory.
-                data->stored_columns_index->clearEntry(stored_columns->block_no);
-                worker.columns.pop_back();
-                doDebugAsserts();
-            }
-
-            if (context.joinChecksLimits())
-            {
-                total_rows = getTotalRowCount();
-                total_bytes = getTotalByteCount();
-                /// total_bytes here is the pre-shrink size (shrink happens below), so this captures the
-                /// build high-water mark for free on the path where a shrink can lower it.
-                updatePeakBuildBytes(total_bytes);
-            }
+        if (context.joinChecksLimits())
+        {
+            total_rows = getTotalRowCount();
+            total_bytes = getTotalByteCount();
+            /// total_bytes here is the pre-shrink size (shrink happens below), so this captures the
+            /// build high-water mark for free on the path where a shrink can lower it.
+            updatePeakBuildBytes(total_bytes);
         }
     }
-    if (!context.joinChecksLimits())
-        return true;
-    shrinkStoredBlocksToFit(total_bytes, /*force_optimize=*/false, context.getStream());
-    return table_join->sizeLimits().check(total_rows, total_bytes, "JOIN", ErrorCodes::SET_SIZE_LIMIT_EXCEEDED);
 }
 
 void HashJoin::shrinkStoredBlocksToFit(size_t & total_bytes_in_join, bool force_optimize, size_t worker_id)

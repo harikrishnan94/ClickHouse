@@ -887,6 +887,20 @@ private:
     bool right_blocks_may_be_taken = false;
     bool canRemoveColumnsFromLeftBlock() const;
 
+    /// Appends the right columns of `block` to the list of `worker` and accounts for them.
+    StoredBlocksList::iterator storeBlock(WorkerStoredData & worker, const Block & block, ScatteredBlock::Selector selector);
+
+    /// Inserts the keys of the stored block `stored` into the maps. `block` has the key and ON condition columns of the
+    /// rows the block was stored from. Removes the stored block when nothing refers to it. When the join checks the
+    /// limits, sets the totals for that check.
+    void insertStoredBlock(
+        WorkerStoredData & worker,
+        StoredBlocksList::iterator stored,
+        const Block & block,
+        JoinBuildContext context,
+        size_t & total_rows,
+        size_t & total_bytes);
+
     void shrinkWorkerStoredBlocks(WorkerStoredData & worker);
 
     void validateAdditionalFilterExpression(std::shared_ptr<ExpressionActions> additional_filter_expression);
