@@ -47,7 +47,8 @@ public:
         size_t max_num_buckets_,
         HashJoinBuildLayout build_layout_,
         const HashJoinStatsCollectingParams & stats_collecting_params_ = {},
-        bool any_take_last_row_ = false);
+        bool any_take_last_row_ = false,
+        bool allow_deferred_build_ = false);
 
     ~SpillingHashJoin() override;
 
@@ -140,6 +141,10 @@ private:
     bool supports_parallel_non_joined_blocks_processing{false};
 
     std::atomic<State> state{State::COLLECTING};
+
+    /// Set by `onBuildPhaseFinish` for a deferred build, which `runPostBuildPhase` then finishes: it switches to
+    /// `GraceHashJoin` when the projected size reaches the spill threshold, and promotes `HashJoin` otherwise.
+    bool finish_deferred_build = false;
 
     std::shared_ptr<HashJoin> hash_join;
 
