@@ -1,8 +1,14 @@
 #pragma once
 #include <Interpreters/HashJoin/HashJoin.h>
 #include <Common/ColumnsHashing.h>
+#include <Common/SipHash.h>
 #include <Columns/ColumnLowCardinality.h>
+#include <Columns/ColumnString.h>
 #include <Columns/ColumnsNumber.h>
+#include <base/PackedStringRef.h>
+
+#include <bit>
+#include <span>
 
 
 namespace DB
@@ -194,6 +200,154 @@ struct LowCardinalityKeyGetterForJoin
     }
 };
 
+/// The 16-byte key of a single `String` join key in the `key_packed_string` and `two_level_key_packed_string` maps.
+///
+/// - Up to 15 bytes: the `UnhashedPackedStringRef` of the string. It is exact: byte 15 holds the length, and the bytes
+///   past the end are zero. The empty string is the zero key.
+/// - 16 bytes or more: the unkeyed `sipHash128Padded` of the string with bit 7 of byte 15 set. No short key has that
+///   bit set, so a hashed key never equals a short one. Two long keys with the same 127 remaining bits are equal.
+///
+/// `build` reads up to 7 bytes past the end of the string and `buildRange` up to 16; the chars of a `ColumnString` have
+/// that padding.
+struct PackedStringJoinKey
+{
+    static constexpr size_t max_inline_size = UnhashedPackedStringRef::MAX_SMALL_LEN;
+
+    /// Bit 7 of byte 15, which is in `items[1]` on both byte orders.
+    static constexpr UInt64 hashed_flag = UInt64(UnhashedPackedStringRef::LARGE_TAG_BYTE)
+        << (std::endian::native == std::endian::little ? 56 : 0);
+
+    static ALWAYS_INLINE UInt128 build(const char * data, size_t size)
+    {
+        if (size <= max_inline_size)
+            return std::bit_cast<UInt128>(UnhashedPackedStringRef::build(data, size));
+
+        UInt128 key = sipHash128Padded(data, size);
+        key.items[1] |= hashed_flag;
+        return key;
+    }
+
+    /// `keys[i - begin]` = the key of row `i` of a `ColumnString`, for the rows [begin, end). On aarch64 and on x86 with
+    /// AVX2 it hashes long strings 8 at a time, 4 of them in NEON lanes or all 8 in AVX2 lanes.
+    static void buildRange(const char * chars, const IColumn::Offset * offsets, size_t begin, size_t end, UInt128 * __restrict keys);
+};
+
+/// Key getter of `key_packed_string` and `two_level_key_packed_string`. It builds the `PackedStringJoinKey` of a row,
+/// or reads keys built ahead:
+/// - after `usePrebuiltKeys`, the keys of the whole block, which the dispatch of `ConcurrentHashJoin` built;
+/// - after `prepareRows`, the keys of a continuous range of rows, built 256 rows at a time when a read passes the built
+///   ones. A prefetching join loop calls it, so that each key is built once for both the prefetch and the lookup. A loop
+///   that stops early, at `max_joined_block_rows`, pays only for the chunks it reached.
+template <typename Value, typename Mapped>
+struct HashMethodPackedStringJoinKey : public ColumnsHashing::columns_hashing_impl::HashMethodBase<
+                                           HashMethodPackedStringJoinKey<Value, Mapped>,
+                                           Value,
+                                           Mapped,
+                                           /*consecutive_keys_optimization=*/false,
+                                           use_offset>
+{
+    static constexpr bool has_cheap_key_calculation = true;
+
+    const IColumn::Offset * offsets;
+    const UInt8 * chars;
+
+    /// Keys built ahead of the lookups, those of the rows [ready_begin, ready_begin + ready_keys.size()). While it is
+    /// empty, each key is built where it is read.
+    size_t ready_begin = 0;
+    std::span<const UInt128> ready_keys;
+    /// After `prepareRows`: the memory of `ready_keys`, and the end of the rows to prepare.
+    PaddedPODArray<UInt128> prepared_keys;
+    size_t prepare_end = 0;
+
+    HashMethodPackedStringJoinKey(const ColumnRawPtrs & key_columns, const Sizes &, const ColumnsHashing::HashMethodContextPtr &)
+    {
+        const auto & column = assert_cast<const ColumnString &>(*key_columns[0]);
+        offsets = column.getOffsets().data();
+        chars = column.getChars().data();
+    }
+
+    ALWAYS_INLINE UInt128 buildKey(size_t row) const
+    {
+        return PackedStringJoinKey::build(
+            reinterpret_cast<const char *>(chars) + offsets[ssize_t(row) - 1], offsets[row] - offsets[ssize_t(row) - 1]);
+    }
+
+    /// `keys` holds the key of every row of the block. The key of `check_row` is built again, to check that they are the
+    /// keys of this column.
+    void usePrebuiltKeys(std::span<const UInt128> keys, size_t check_row)
+    {
+        if (check_row >= keys.size() || keys[check_row] != buildKey(check_row))
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "The join key built for row {} is not the key of that row", check_row);
+        ready_begin = 0;
+        ready_keys = keys;
+    }
+
+    /// Prepares the keys of the rows of `selector` if they are a continuous range; otherwise each key is built where it is
+    /// read. The first chunk is built here, so that the look-ahead calibration of a prefetcher created after this call
+    /// times the lookups.
+    template <typename Selector>
+    void prepareRows(const Selector & selector)
+    {
+        if constexpr (std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Selector>)
+        {
+            if (selector.isContinuousRange())
+                prepareRange(selector.getRange());
+        }
+        else if constexpr (std::is_same_v<std::decay_t<Selector>, ScatteredBlock::Selector::Range>)
+            prepareRange(selector);
+    }
+
+    void prepareRange(ScatteredBlock::Selector::Range range)
+    {
+        ready_begin = range.first;
+        prepare_end = range.second;
+        if (range.first < range.second)
+            buildNextKeys(range.first);
+    }
+
+    /// Builds the next chunk of the prepared keys, which ends after `row`.
+    NO_INLINE void buildNextKeys(size_t row)
+    {
+        static constexpr size_t chunk_rows = 256;
+        const size_t begin = ready_begin + prepared_keys.size();
+        if (row < begin || row >= prepare_end)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "The join key of row {} was not prepared", row);
+
+        /// The reads of a join loop trail its prefetch reads by at most the look-ahead (up to 32 rows). So the buffer keeps
+        /// only the last `chunk_rows` keys built before and does not grow with the block.
+        if (prepared_keys.size() > chunk_rows)
+        {
+            const size_t dropped = prepared_keys.size() - chunk_rows;
+            memmove(prepared_keys.data(), prepared_keys.data() + dropped, chunk_rows * sizeof(UInt128));
+            prepared_keys.resize(chunk_rows);
+            ready_begin += dropped;
+        }
+
+        const size_t end = std::min(prepare_end, std::max(row + 1, begin + chunk_rows));
+        const size_t old_size = prepared_keys.size();
+        prepared_keys.resize(old_size + (end - begin));
+        PackedStringJoinKey::buildRange(reinterpret_cast<const char *>(chars), offsets, begin, end, prepared_keys.data() + old_size);
+        ready_keys = {prepared_keys.data(), prepared_keys.size()};
+    }
+
+    ALWAYS_INLINE UInt128 getKeyHolder(size_t row, Arena &)
+    {
+        if (ready_keys.empty())
+            return buildKey(row);
+
+        if (row - ready_begin >= ready_keys.size()) [[unlikely]]
+            buildNextKeys(row);
+        return ready_keys[row - ready_begin];
+    }
+
+    /// The dispatch of `ConcurrentHashJoin` takes the slot of a row from the key it builds, see `selectDispatchBlock`.
+    template <typename Data>
+    size_t getHash(const Data &, size_t, Arena &)
+    {
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Rows with packed String join keys are dispatched by their keys, not by getHash");
+    }
+};
+
 template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key8, Value, Mapped>
 {
     using Type = ColumnsHashing::HashMethodOneNumber<Value, Mapped, UInt8, false, use_offset>;
@@ -283,6 +437,14 @@ template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin:
 template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_hashed, Value, Mapped>
 {
     using Type = ColumnsHashing::HashMethodHashed<Value, Mapped, false, use_offset>;
+};
+template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::two_level_key_packed_string, Value, Mapped>
+{
+    using Type = HashMethodPackedStringJoinKey<Value, Mapped>;
+};
+template <typename Value, typename Mapped> struct KeyGetterForTypeImpl<HashJoin::Type::key_packed_string, Value, Mapped>
+{
+    using Type = HashMethodPackedStringJoinKey<Value, Mapped>;
 };
 #define KEYGETTER_RANGE_IMPL(TYPE, FIELD_TYPE) \
     template <typename Value, typename Mapped> \

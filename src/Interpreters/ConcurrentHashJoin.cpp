@@ -329,7 +329,10 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, size_t /* nu
     if (use_zero_copy_right)
         block_row_store = hash_joins[0]->data->createRowStoreForBlock(right_block);
 
-    auto dispatched_blocks = dispatchBlock(table_join->getOnlyClause().key_names_right, std::move(right_block), use_zero_copy_right);
+    /// The keys of `two_level_key_packed_string`, built once by the dispatch for the inserts of all slots.
+    PaddedPODArray<UInt128> packed_string_keys;
+    auto dispatched_blocks
+        = dispatchBlock(table_join->getOnlyClause().key_names_right, std::move(right_block), use_zero_copy_right, &packed_string_keys);
     size_t blocks_left = 0;
     for (const auto & block : dispatched_blocks)
     {
@@ -368,7 +371,12 @@ bool ConcurrentHashJoin::addBlockToJoin(const Block & right_block_, size_t /* nu
                 }
 
                 auto [block, selector] = std::move(dispatched_block).detachData();
-                bool limit_exceeded = !hash_join->data->addBlockToJoin(block, std::move(selector), context.joinChecksLimits(), block_row_store);
+                bool limit_exceeded = !hash_join->data->addBlockToJoin(
+                    block,
+                    std::move(selector),
+                    context.joinChecksLimits(),
+                    block_row_store,
+                    packed_string_keys.empty() ? nullptr : &packed_string_keys);
 
                 std::tie(post_join_total_rows, post_join_total_bytes) = updateTotalRowsAndBytesUnlocked(hash_join);
 
@@ -683,6 +691,26 @@ BlockHashes calculateHashes(const HashTable & hash_table, const ColumnRawPtrs & 
     return hash;
 }
 
+/// The selector of `two_level_key_packed_string`. It builds the key of every row once, for itself and for the inserts of
+/// the slots. A row goes to the slot that owns the bucket of its key in `hash_table`; every slot hashes keys the same way.
+template <typename HashTable>
+static IColumn::Selector buildPackedStringKeysAndSelector(
+    const HashTable & hash_table, const IColumn & key_column, size_t num_shards, PaddedPODArray<UInt128> & keys)
+{
+    chassert(isPowerOf2(num_shards));
+    const auto & column = assert_cast<const ColumnString &>(key_column);
+    const IColumn::Offset * offsets = column.getOffsets().data();
+    const char * chars = reinterpret_cast<const char *>(column.getChars().data());
+    const size_t num_rows = column.size();
+
+    keys.resize(num_rows);
+    PackedStringJoinKey::buildRange(chars, offsets, 0, num_rows, keys.data());
+    IColumn::Selector selector(num_rows);
+    for (size_t i = 0; i < num_rows; ++i)
+        selector[i] = hash_table.getBucketFromHash(hash_table.hash(keys[i])) & (num_shards - 1);
+    return selector;
+}
+
 /// Shape of the equality-key prefix used when computing the per-partition
 /// scatter selector in `selectDispatchBlock`. For non-ASOF joins this is
 /// identity over the full key list. For ASOF, the trailing key in
@@ -720,7 +748,12 @@ static DispatchKeyShape getDispatchKeyShape(const HashJoin & join, size_t total_
     return shape;
 }
 
-static IColumn::Selector selectDispatchBlock(const HashJoin & join, size_t num_shards, const Strings & key_columns_names, const Block & from_block)
+static IColumn::Selector selectDispatchBlock(
+    const HashJoin & join,
+    size_t num_shards,
+    const Strings & key_columns_names,
+    const Block & from_block,
+    PaddedPODArray<UInt128> * packed_string_keys)
 {
     const auto shape = getDispatchKeyShape(join, key_columns_names.size());
 
@@ -739,6 +772,13 @@ static IColumn::Selector selectDispatchBlock(const HashJoin & join, size_t num_s
 
     auto calculate_selector = [&](auto & maps)
     {
+        if (join.getJoinedData()->type == HashJoin::Type::two_level_key_packed_string)
+        {
+            if (!packed_string_keys)
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Packed String join keys are built only for the right side");
+            return buildPackedStringKeysAndSelector(*maps.two_level_key_packed_string, *key_columns.at(0), num_shards, *packed_string_keys);
+        }
+
         BlockHashes hash;
 
         switch (join.getJoinedData()->type)
@@ -819,7 +859,8 @@ bool ConcurrentHashJoin::useZeroCopyApproach(const Block & from_block)
         > threshold;
 }
 
-ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_names, Block && from_block, bool use_zero_copy)
+ScatteredBlocks ConcurrentHashJoin::dispatchBlock(
+    const Strings & key_columns_names, Block && from_block, bool use_zero_copy, PaddedPODArray<UInt128> * packed_string_keys)
 {
     const size_t num_shards = hash_joins.size();
     if (num_shards == 1)
@@ -829,7 +870,10 @@ ScatteredBlocks ConcurrentHashJoin::dispatchBlock(const Strings & key_columns_na
         return res;
     }
 
-    IColumn::Selector selector = selectDispatchBlock(*hash_joins[0]->data, num_shards, key_columns_names, from_block);
+    IColumn::Selector selector = selectDispatchBlock(*hash_joins[0]->data, num_shards, key_columns_names, from_block, packed_string_keys);
+    /// The slots read the prebuilt keys by the row numbers of the whole block.
+    if (packed_string_keys && !packed_string_keys->empty() && !use_zero_copy)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Packed String join keys were built for a block that is scattered by copying");
     return use_zero_copy ? scatterBlocksWithSelector(num_shards, selector, from_block)
                                   : scatterBlocksByCopying(num_shards, selector, from_block);
 }
@@ -884,6 +928,23 @@ void ConcurrentHashJoin::onBuildPhaseFinish()
     /// Capture the build peak now, while each slot still holds only its own disjoint data
     for (const auto & hash_join : hash_joins)
         peak_build_bytes += hash_join->data->getPeakBuildBytes();
+
+    /// A row in a bucket of another slot would be lost by the merge below.
+    if (getData(hash_joins[0])->type == HashJoin::Type::two_level_key_packed_string)
+    {
+        for (size_t i = 0; i < slots; ++i)
+        {
+            std::visit(
+                [&](const auto & maps)
+                {
+                    const auto & map = *maps.two_level_key_packed_string;
+                    for (size_t j = 0; j < map.NUM_BUCKETS; ++j)
+                        if (j % slots != i && !map.impls[j].empty())
+                            throw Exception(ErrorCodes::LOGICAL_ERROR, "Slot {} of the join holds rows of bucket {}", i, j);
+                },
+                getData(hash_joins[i])->maps.at(0));
+        }
+    }
 
     if (hash_joins[0]->data->twoLevelMapIsUsed())
     {

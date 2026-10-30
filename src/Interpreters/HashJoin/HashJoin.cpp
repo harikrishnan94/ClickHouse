@@ -340,6 +340,11 @@ HashJoin::HashJoin(
         throw Exception(ErrorCodes::LOGICAL_ERROR, "HashJoin cannot choose JOIN method without keys");
 
     data->type = *selected_join_method;
+    if (table_join->enablePackedStringKeysInHashJoin() && (data->type == Type::key_string || data->type == Type::two_level_key_string))
+    {
+        data->type = data->type == Type::key_string ? Type::key_packed_string : Type::two_level_key_packed_string;
+        LOG_TRACE(log, "{}Using packed keys for the single String join key", instance_log_id);
+    }
 
     LOG_TEST(
         log,
@@ -948,10 +953,21 @@ bool HashJoin::addBlockToJoin(const Block & source_block, size_t /* num_rows */,
     return addBlockToJoin(materialized, ScatteredBlock::Selector(materialized.rows()), context.joinChecksLimits());
 }
 
-bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector selector, bool check_limits, RowDataStorePtr row_store)
+bool HashJoin::addBlockToJoin(
+    const Block & block,
+    ScatteredBlock::Selector selector,
+    bool check_limits,
+    RowDataStorePtr row_store,
+    const PaddedPODArray<UInt128> * prebuilt_keys)
 {
     if (!data)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Join data was released");
+
+    if (prebuilt_keys && data->type != Type::two_level_key_packed_string)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Join keys were built ahead for the map type {}", data->type);
+    if (prebuilt_keys && prebuilt_keys->size() != block.rows())
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR, "{} join keys were built ahead for a block of {} rows", prebuilt_keys->size(), block.rows());
 
     /// RowRef::row_no is UInt32 (not size_t) for hash table Cell memory efficiency.
     /// It's possible to split bigger blocks and insert them by parts here. But it would be a dead code.
@@ -1139,7 +1155,8 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
                         join_mask_col,
                         data->pool,
                         is_inserted,
-                        all_values_unique);
+                        all_values_unique,
+                        prebuilt_keys);
 
                     if (flag_per_row && !per_row_flags_initialized)
                     {

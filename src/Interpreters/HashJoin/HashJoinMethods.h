@@ -97,7 +97,8 @@ public:
         const JoinCommon::JoinMask & join_mask,
         Arena & pool,
         bool & is_inserted,
-        bool & all_values_unique);
+        bool & all_values_unique,
+        const PaddedPODArray<UInt128> * prebuilt_keys = nullptr);
 
     using MapsTemplateVector = std::vector<const MapsTemplate *>;
 

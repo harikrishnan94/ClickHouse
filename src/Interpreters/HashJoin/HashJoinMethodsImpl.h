@@ -11,6 +11,7 @@
 #include <Interpreters/JoinUtils.h>
 
 #include <algorithm>
+#include <span>
 #include <type_traits>
 
 namespace DB
@@ -126,7 +127,8 @@ void insertFromBlockImplTypeCase(
     const JoinCommon::JoinMask & join_mask,
     Arena & pool,
     bool & is_inserted,
-    bool & all_values_unique)
+    bool & all_values_unique,
+    [[maybe_unused]] const PaddedPODArray<UInt128> * prebuilt_keys)
 {
     [[maybe_unused]] constexpr bool mapped_one = std::is_same_v<typename MapsTemplate::MappedType, RowRef>;
     constexpr bool is_set = SetJoinMaps<MapsTemplate>;
@@ -162,6 +164,15 @@ void insertFromBlockImplTypeCase(
     bool use_prefetch = false;
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(join.enableSoftwarePrefetch(), &map);
+
+    if constexpr (requires { key_getter.usePrebuiltKeys(std::span<const UInt128>{}, size_t{}); })
+    {
+        if (prebuilt_keys && rows)
+            key_getter.usePrebuiltKeys(*prebuilt_keys, selectorIndexAt(selector, 0));
+        /// Before the prefetcher is created, see `prepareRows`.
+        else if (use_prefetch)
+            key_getter.prepareRows(selector);
+    }
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -215,7 +226,8 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
     const JoinCommon::JoinMask & join_mask,
     Arena & pool,
     bool & is_inserted,
-    bool & all_values_unique)
+    bool & all_values_unique,
+    const PaddedPODArray<UInt128> * prebuilt_keys)
 {
     static_assert((STRICTNESS == JoinStrictness::Asof) == std::is_same_v<MapsTemplate, HashJoin::MapsAsof>);
     switch (type)
@@ -225,11 +237,11 @@ void HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::insertFromBlockImpl(
         if (selector.isContinuousRange()) \
             insertFromBlockImplTypeCase<MapsTemplate, \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, is_inserted, all_values_unique); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getRange(), null_map, join_mask, pool, is_inserted, all_values_unique, prebuilt_keys); \
         else \
             insertFromBlockImplTypeCase<MapsTemplate, \
                 typename KeyGetterForType<HashJoin::Type::TYPE, std::remove_reference_t<decltype(*maps.TYPE)>>::Type>( \
-                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, is_inserted, all_values_unique); \
+                join, *maps.TYPE, key_columns, key_sizes, stored_block_no, selector.getIndexes(), null_map, join_mask, pool, is_inserted, all_values_unique, prebuilt_keys); \
         break;
 
             APPLY_FOR_JOIN_VARIANTS(M)
@@ -674,6 +686,13 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, map);
 
+    if constexpr (requires { key_getter.prepareRows(selector); })
+    {
+        /// Before the prefetcher is created, see `prepareRows`.
+        if (use_prefetch)
+            key_getter.prepareRows(selector);
+    }
+
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
         {
@@ -787,6 +806,13 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumns(
     bool use_prefetch = false;
     if constexpr (can_prefetch)
         use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
+
+    if constexpr (requires { key_getter_vector[0].prepareRows(selector); })
+    {
+        /// Before the prefetcher is created, see `prepareRows`. Only the first key getter is prefetched.
+        if (use_prefetch)
+            key_getter_vector[0].prepareRows(selector);
+    }
 
     auto prefetcher = makeJoinPrefetcher(use_prefetch, rows,
         [&](size_t k) __attribute__((always_inline))
@@ -1022,6 +1048,13 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
         bool use_prefetch = false;
         if constexpr (can_prefetch)
             use_prefetch = shouldUseJoinPrefetch(added_columns.enable_prefetch, mapv[0]);
+
+        if constexpr (requires { key_getter_vector[0].prepareRows(selector); })
+        {
+            /// Before the prefetcher is created, see `prepareRows`. Only the first key getter is prefetched.
+            if (use_prefetch)
+                key_getter_vector[0].prepareRows(selector);
+        }
 
         const size_t selector_size = selector.size();
         auto prefetcher = makeJoinPrefetcher(use_prefetch, selector_size,

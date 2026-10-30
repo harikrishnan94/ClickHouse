@@ -185,7 +185,9 @@ private:
     JoinAnalysisCounters collectMatchedRowsCounters() const;
 
     static bool useZeroCopyApproach(const Block & from_block);
-    ScatteredBlocks dispatchBlock(const Strings & key_columns_names, Block && from_block, bool use_zero_copy);
+    /// For `two_level_key_packed_string`, it also builds the key of every row into `packed_string_keys`.
+    ScatteredBlocks dispatchBlock(
+        const Strings & key_columns_names, Block && from_block, bool use_zero_copy, PaddedPODArray<UInt128> * packed_string_keys = nullptr);
 
     std::pair<size_t, size_t> updateTotalRowsAndBytesUnlocked(std::shared_ptr<InternalHashJoin> & hash_join);
     void resetTotalRowsAndBytesUnlocked(std::shared_ptr<InternalHashJoin> & hash_join);
