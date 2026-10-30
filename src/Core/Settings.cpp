@@ -10586,6 +10586,16 @@ Enable converting the hash table to a flat array for joins when the key is a sin
 Use hash tables that store the join keys alone, without a reference to a right row, for joins whose result can never contain a value taken from a right row: `LEFT ANTI`, and `LEFT SEMI` when no right column is selected. Such a table has a smaller cell and lets the right blocks be dropped instead of stored.
 )", 0, \
         {"26.9", false, true, "New setting to store the join keys alone, without a reference to a right row, in the hash tables of joins whose result can never contain a value taken from a right row (`LEFT ANTI`, and `LEFT SEMI` when no right column is selected)."}) \
+    DECLARE(Bool, enable_packed_string_keys_in_hash_join, true, R"(
+In `hash`, `parallel_hash` and `grace_hash` joins on a single `String` key, store each key in the hash table as 16 bytes, without copying it into the memory of the hash table. This includes a join with `OR` whose every condition has a single `String` key, and the `grace_hash` join that a spilling join switches to. A key of up to 15 bytes is stored inline and compared exactly. A key of 16 bytes or more is stored as its 128-bit `SipHash`. One bit of the hash marks the key as hashed, so such keys are matched by the other 127 bits.
+
+Two different keys of 16 bytes or more that have the same hash are matched as equal. For N distinct keys the probability of that is about N^2/2^128. Disable the setting to compare the keys exactly.
+
+The hash tables are smaller, so a join reaches `max_bytes_in_join` and `max_bytes_before_external_join` later.
+
+The setting does not apply to `FixedString` keys or to `LowCardinality(Nullable(String))` keys. A `hash` or `grace_hash` join with one condition, other than `ASOF`, can use a hash table of the dictionary of a non-nullable `LowCardinality(String)` key instead. Tables with the `Join` engine, `joinGet` and the joins of a serialized query plan keep exact keys.
+)", 0, \
+        {"26.11", false, true, "New setting to store the single `String` key of `hash`, `parallel_hash` and `grace_hash` joins in 16 bytes: inline up to 15 bytes, as a 127-bit `SipHash` for longer keys."}) \
     DECLARE(UInt64, query_plan_max_limit_for_join_lazy_indexing, 1000, R"(Control maximum limit value that allows to use query plan for lazy indexing optimization in JOIN. If zero, there is no limit.
 )", 0, \
         {"26.6", 1000, 1000, "Added new setting to control maximum limit value that allows to use query plan for lazy join indexing optimization. If zero, there is no limit"}) \

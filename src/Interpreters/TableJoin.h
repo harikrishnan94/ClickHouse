@@ -173,6 +173,7 @@ private:
     const bool enable_join_fixed_hash_table_conversion = false;
     const bool enable_join_key_only_hash_tables = false;
     const bool join_runtime_filter_from_fixed_hash_table = false;
+    const bool enable_packed_string_keys_in_hash_join = false;
 
     /// Value if setting max_memory_usage for query, can be used when max_bytes_in_join is not specified.
     size_t max_memory_usage = 0;
@@ -353,6 +354,7 @@ public:
     bool enableJoinFixedHashTableConversion() const { return enable_join_fixed_hash_table_conversion; }
     bool enableJoinKeyOnlyHashTables() const { return enable_join_key_only_hash_tables; }
     bool joinRuntimeFilterFromFixedHashTable() const { return join_runtime_filter_from_fixed_hash_table; }
+    bool enablePackedStringKeysInHashJoin() const { return enable_packed_string_keys_in_hash_join; }
     void setRowStoreEnabled(bool value) { enable_row_store = value; }
     bool isRowStoreEnabled() const { return enable_row_store; }
 
