@@ -3,6 +3,7 @@
 #include <Columns/ColumnsCommon.h>
 #include <Columns/IColumn.h>
 #include <Common/HashTable/Prefetching.h>
+#include <Common/ProfileEvents.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/HashJoin/AddedColumns.h>
 #include <Interpreters/HashJoin/HashJoinMethods.h>
@@ -13,6 +14,12 @@
 #include <algorithm>
 #include <span>
 #include <type_traits>
+
+namespace ProfileEvents
+{
+extern const Event JoinPackedStringKeysInline;
+extern const Event JoinPackedStringKeysHashed;
+}
 
 namespace DB
 {
@@ -210,6 +217,12 @@ void insertFromBlockImplTypeCase(
             is_inserted |= Inserter<HashMap, KeyGetter>::insertOne(any_take_last_row, map, key_getter, stored_block_no, ind, pool);
         else
             all_values_unique &= Inserter<HashMap, KeyGetter>::insertAll(join, map, key_getter, stored_block_no, ind, pool);
+    }
+
+    if constexpr (requires { key_getter.hashed_keys; })
+    {
+        ProfileEvents::increment(ProfileEvents::JoinPackedStringKeysInline, key_getter.emplaced_keys - key_getter.hashed_keys);
+        ProfileEvents::increment(ProfileEvents::JoinPackedStringKeysHashed, key_getter.hashed_keys);
     }
 }
 

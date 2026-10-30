@@ -246,6 +246,9 @@ struct HashMethodPackedStringJoinKey : public ColumnsHashing::columns_hashing_im
                                            /*consecutive_keys_optimization=*/false,
                                            use_offset>
 {
+    using Base = ColumnsHashing::columns_hashing_impl::
+        HashMethodBase<HashMethodPackedStringJoinKey<Value, Mapped>, Value, Mapped, false, use_offset>;
+
     static constexpr bool has_cheap_key_calculation = true;
 
     const IColumn::Offset * offsets;
@@ -258,6 +261,10 @@ struct HashMethodPackedStringJoinKey : public ColumnsHashing::columns_hashing_im
     /// After `prepareRows`: the memory of `ready_keys`, and the end of the rows to prepare.
     PaddedPODArray<UInt128> prepared_keys;
     size_t prepare_end = 0;
+
+    /// The keys put into the map, and how many of them are hashed.
+    size_t emplaced_keys = 0;
+    size_t hashed_keys = 0;
 
     HashMethodPackedStringJoinKey(const ColumnRawPtrs & key_columns, const Sizes &, const ColumnsHashing::HashMethodContextPtr &)
     {
@@ -338,6 +345,15 @@ struct HashMethodPackedStringJoinKey : public ColumnsHashing::columns_hashing_im
         if (row - ready_begin >= ready_keys.size()) [[unlikely]]
             buildNextKeys(row);
         return ready_keys[row - ready_begin];
+    }
+
+    template <typename Data>
+    ALWAYS_INLINE typename Base::EmplaceResult emplaceKey(Data & data, size_t row, Arena & pool)
+    {
+        auto result = Base::emplaceKey(data, row, pool);
+        ++emplaced_keys;
+        hashed_keys += (result.getKey().items[1] & PackedStringJoinKey::hashed_flag) != 0;
+        return result;
     }
 
     /// The dispatch of `ConcurrentHashJoin` takes the slot of a row from the key it builds, see `selectDispatchBlock`.
