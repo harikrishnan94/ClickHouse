@@ -1,0 +1,107 @@
+-- A hash join with several disjuncts keeps one hash table per disjunct. In each pair below, the two disjuncts have
+-- keys of different column types. The data makes a right row match through the first disjunct only, the second only,
+-- both, or neither. The `classes` line counts the right rows of each kind, and each count is above 0. So a disjunct
+-- that probes or fills the table of another one changes a result. Each case runs in both layouts, and again with the
+-- disjuncts swapped, which must give the same result. INNER is also checked against a cross join.
+
+SET join_algorithm = 'hash';
+SET query_plan_join_swap_table = 0;
+SET enable_parallel_replicas = 0;
+SET max_bytes_before_external_join = 0, max_bytes_ratio_before_external_join = 0;
+SET collect_hash_table_stats_during_joins = 0;
+SET join_use_nulls = 0;
+SET max_threads = 4;
+
+DROP TABLE IF EXISTS l;
+DROP TABLE IF EXISTS r;
+
+CREATE TABLE l (v UInt64, k UInt64, nk Nullable(UInt64), s String, fs FixedString(4), lc LowCardinality(String),
+    a UInt16, b UInt16, c UInt32, d UInt32, small UInt8) ENGINE = MergeTree ORDER BY ();
+CREATE TABLE r (w UInt64, k UInt64, nk Nullable(UInt64), s String, fs FixedString(4), lc LowCardinality(String),
+    a UInt16, b UInt16, c UInt32, d UInt32, small UInt8) ENGINE = MergeTree ORDER BY ();
+
+-- Left keys and right keys overlap on part of their ranges, differently for each column.
+INSERT INTO l SELECT number + 1, number % 400, if(number % 5 = 0, NULL, number % 350 + 50), toString(number % 250 + 10000),
+    toFixedString(toString(number % 300 + 1000), 4), toString(number % 120), number % 30, number % 17, number % 500,
+    number % 7, number % 200
+FROM numbers(1000);
+INSERT INTO r SELECT number + 1, number * 3 % 400 + 300, if(number % 4 = 0, NULL, number * 7 % 400 + 200),
+    toString(number % 200 + 10150), toFixedString(toString(number % 300 + 1200), 4), toString(number % 90 + 60),
+    number % 40, number % 13, number % 300 + 400, number % 5, number % 150 + 100
+FROM numbers(600);
+
+{#- name, first disjunct, second disjunct, right row matched through the first, through the second. -#}
+{% set pairs = [
+    ('u64_string', 'l.k = r.k', 'l.s = r.s', 'k IN (SELECT k FROM l)', 's IN (SELECT s FROM l)'),
+    ('keys32_keys64', '(l.a = r.a AND l.b = r.b)', '(l.c = r.c AND l.d = r.d)', '(a, b) IN (SELECT a, b FROM l)', '(c, d) IN (SELECT c, d FROM l)'),
+    ('u8_u64', 'l.small = r.small', 'l.k = r.k', 'small IN (SELECT small FROM l)', 'k IN (SELECT k FROM l)'),
+    ('nullable_u64', 'l.nk = r.nk', 'l.k = r.k', 'nk IN (SELECT nk FROM l)', 'k IN (SELECT k FROM l)'),
+    ('lc_u32', 'l.lc = r.lc', 'l.c = r.c', 'lc IN (SELECT lc FROM l)', 'c IN (SELECT c FROM l)'),
+    ('fixed_string_u64', 'l.fs = r.fs', 'l.k = r.k', 'fs IN (SELECT fs FROM l)', 'k IN (SELECT k FROM l)'),
+    ('hashed_u32', '(l.a = r.a AND l.s = r.s)', 'l.c = r.c', '(a, s) IN (SELECT a, s FROM l)', 'c IN (SELECT c FROM l)'),
+] -%}
+
+{#- ANY picks one of several matches, and the pick may depend on the disjunct order. So only the side that is not
+    picked is summed, together with the number of matched rows. -#}
+{% set kinds = [
+    ('ALL INNER', 'count(), sum(cityHash64(l.v, r.w))'),
+    ('ALL LEFT', 'count(), sum(cityHash64(l.v, r.w))'),
+    ('ALL RIGHT', 'count(), sum(cityHash64(l.v, r.w))'),
+    ('ALL FULL', 'count(), sum(cityHash64(l.v, r.w))'),
+    ('ANY LEFT', 'count(), countIf(r.w != 0), sum(cityHash64(l.v))'),
+    ('ANY RIGHT', 'count(), countIf(l.v != 0), sum(cityHash64(r.w))'),
+    ('LEFT SEMI', 'count(), sum(cityHash64(l.v))'),
+    ('LEFT ANTI', 'count(), sum(cityHash64(l.v))'),
+    ('RIGHT SEMI', 'count(), sum(cityHash64(r.w))'),
+    ('RIGHT ANTI', 'count(), sum(cityHash64(r.w))'),
+] -%}
+
+{% for name, x, y, in_x, in_y in pairs -%}
+SELECT '{{ name }} classes', countIf(mx AND NOT my), countIf(my AND NOT mx), countIf(mx AND my), countIf(NOT mx AND NOT my)
+FROM (SELECT {{ in_x }} AS mx, {{ in_y }} AS my FROM r);
+
+SELECT '{{ name }} oracle',
+    (SELECT (count(), sum(cityHash64(l.v, r.w))) FROM l ALL INNER JOIN r ON {{ x }} OR {{ y }})
+    = (SELECT (count(), sum(cityHash64(l.v, r.w))) FROM l, r WHERE {{ x }} OR {{ y }} SETTINGS cross_to_inner_join_rewrite = 0);
+
+{% for kind, agg in kinds -%}
+{% for layout in ['serial', 'parallel'] -%}
+SELECT '{{ name }}', '{{ kind }}', '{{ layout }}',
+    (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON {{ x }} OR {{ y }} SETTINGS hash_join_layout = '{{ layout }}') AS res,
+    res = (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON {{ y }} OR {{ x }} SETTINGS hash_join_layout = '{{ layout }}') AS swapped;
+{% endfor -%}
+{% endfor -%}
+{% endfor -%}
+
+-- Three disjuncts in two rotations.
+{% for kind, agg in kinds -%}
+{% for layout in ['serial', 'parallel'] -%}
+SELECT 'three', '{{ kind }}', '{{ layout }}',
+    (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON l.small = r.small OR l.s = r.s OR (l.a = r.a AND l.b = r.b)
+        SETTINGS hash_join_layout = '{{ layout }}') AS res,
+    res = (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON (l.a = r.a AND l.b = r.b) OR l.small = r.small OR l.s = r.s
+        SETTINGS hash_join_layout = '{{ layout }}') AS rotated;
+{% endfor -%}
+{% endfor -%}
+
+-- The first disjunct has a condition beyond the keys, `l.x < r.y`. Left row 1 matches right row 100 through `a` only,
+-- which fails `x < y`, and right row 300 through `b`. Left row 2 matches right row 200 through `b` only. Left row 3
+-- matches right row 400 through `a`, which passes, and nothing through `b`.
+DROP TABLE l;
+DROP TABLE r;
+CREATE TABLE l (v UInt64, a UInt64, b UInt64, x UInt64) ENGINE = MergeTree ORDER BY ();
+CREATE TABLE r (w UInt64, a UInt64, b UInt64, y UInt64) ENGINE = MergeTree ORDER BY ();
+INSERT INTO l VALUES (1, 1, 10, 5), (2, 2, 20, 5), (3, 3, 30, 5);
+INSERT INTO r VALUES (100, 1, 99, 1), (200, 7, 20, 1), (300, 8, 10, 1), (400, 3, 98, 9);
+
+{% for layout in ['serial', 'parallel'] -%}
+SELECT 'residual LEFT ANY', '{{ layout }}', l.v, r.w FROM l LEFT ANY JOIN r ON (l.a = r.a AND l.x < r.y) OR l.b = r.b
+ORDER BY ALL SETTINGS hash_join_layout = '{{ layout }}';
+SELECT 'residual INNER ANY', '{{ layout }}', l.v, r.w FROM l INNER ANY JOIN r ON (l.a = r.a AND l.x < r.y) OR l.b = r.b
+ORDER BY ALL SETTINGS hash_join_layout = '{{ layout }}';
+SELECT 'residual LEFT SEMI', '{{ layout }}', l.v FROM l LEFT SEMI JOIN r ON (l.a = r.a AND l.x < r.y) OR l.b = r.b
+ORDER BY ALL SETTINGS hash_join_layout = '{{ layout }}';
+{% endfor -%}
+
+DROP TABLE l;
+DROP TABLE r;
