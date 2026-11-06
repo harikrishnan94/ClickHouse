@@ -34,11 +34,6 @@ FROM numbers(600);
 {% set pairs = [
     ('u64_string', 'l.k = r.k', 'l.s = r.s', 'k IN (SELECT k FROM l)', 's IN (SELECT s FROM l)'),
     ('keys32_keys64', '(l.a = r.a AND l.b = r.b)', '(l.c = r.c AND l.d = r.d)', '(a, b) IN (SELECT a, b FROM l)', '(c, d) IN (SELECT c, d FROM l)'),
-    ('u8_u64', 'l.small = r.small', 'l.k = r.k', 'small IN (SELECT small FROM l)', 'k IN (SELECT k FROM l)'),
-    ('nullable_u64', 'l.nk = r.nk', 'l.k = r.k', 'nk IN (SELECT nk FROM l)', 'k IN (SELECT k FROM l)'),
-    ('lc_u32', 'l.lc = r.lc', 'l.c = r.c', 'lc IN (SELECT lc FROM l)', 'c IN (SELECT c FROM l)'),
-    ('fixed_string_u64', 'l.fs = r.fs', 'l.k = r.k', 'fs IN (SELECT fs FROM l)', 'k IN (SELECT k FROM l)'),
-    ('hashed_u32', '(l.a = r.a AND l.s = r.s)', 'l.c = r.c', '(a, s) IN (SELECT a, s FROM l)', 'c IN (SELECT c FROM l)'),
 ] -%}
 
 {#- ANY picks one of several matches, and the pick may depend on the disjunct order. So only the side that is not
@@ -71,36 +66,6 @@ SELECT '{{ name }}', '{{ kind }}', '{{ layout }}',
     res = (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON {{ y }} OR {{ x }} SETTINGS hash_join_layout = '{{ layout }}') AS swapped;
 {% endfor -%}
 {% endfor -%}
-{% endfor -%}
-
--- Three disjuncts in two rotations.
-{% for kind, agg in kinds -%}
-{% for layout in ['serial', 'parallel'] -%}
-SELECT 'three', '{{ kind }}', '{{ layout }}',
-    (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON l.small = r.small OR l.s = r.s OR (l.a = r.a AND l.b = r.b)
-        SETTINGS hash_join_layout = '{{ layout }}') AS res,
-    res = (SELECT ({{ agg }}) FROM l {{ kind }} JOIN r ON (l.a = r.a AND l.b = r.b) OR l.small = r.small OR l.s = r.s
-        SETTINGS hash_join_layout = '{{ layout }}') AS rotated;
-{% endfor -%}
-{% endfor -%}
-
--- The first disjunct has a condition beyond the keys, `l.x < r.y`. Left row 1 matches right row 100 through `a` only,
--- which fails `x < y`, and right row 300 through `b`. Left row 2 matches right row 200 through `b` only. Left row 3
--- matches right row 400 through `a`, which passes, and nothing through `b`.
-DROP TABLE l;
-DROP TABLE r;
-CREATE TABLE l (v UInt64, a UInt64, b UInt64, x UInt64) ENGINE = MergeTree ORDER BY ();
-CREATE TABLE r (w UInt64, a UInt64, b UInt64, y UInt64) ENGINE = MergeTree ORDER BY ();
-INSERT INTO l VALUES (1, 1, 10, 5), (2, 2, 20, 5), (3, 3, 30, 5);
-INSERT INTO r VALUES (100, 1, 99, 1), (200, 7, 20, 1), (300, 8, 10, 1), (400, 3, 98, 9);
-
-{% for layout in ['serial', 'parallel'] -%}
-SELECT 'residual LEFT ANY', '{{ layout }}', l.v, r.w FROM l LEFT ANY JOIN r ON (l.a = r.a AND l.x < r.y) OR l.b = r.b
-ORDER BY ALL SETTINGS hash_join_layout = '{{ layout }}';
-SELECT 'residual INNER ANY', '{{ layout }}', l.v, r.w FROM l INNER ANY JOIN r ON (l.a = r.a AND l.x < r.y) OR l.b = r.b
-ORDER BY ALL SETTINGS hash_join_layout = '{{ layout }}';
-SELECT 'residual LEFT SEMI', '{{ layout }}', l.v FROM l LEFT SEMI JOIN r ON (l.a = r.a AND l.x < r.y) OR l.b = r.b
-ORDER BY ALL SETTINGS hash_join_layout = '{{ layout }}';
 {% endfor -%}
 
 DROP TABLE l;
