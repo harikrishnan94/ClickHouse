@@ -1,0 +1,32 @@
+-- With the parallel layout, several build threads fill the tables of a join with several disjuncts at the same time,
+-- and each table has its own slot locks: one thread can insert into slot 3 of table 0 while another inserts into slot
+-- 3 of table 1. Both tables here allocate String keys and the row lists of duplicate keys from an arena, so the two
+-- threads must not share an arena. The result must be that of the serial build, for INNER, LEFT, RIGHT and FULL.
+
+SET join_algorithm = 'hash';
+SET query_plan_join_swap_table = 0;
+SET enable_parallel_replicas = 0;
+SET max_bytes_before_external_join = 0, max_bytes_ratio_before_external_join = 0;
+SET collect_hash_table_stats_during_joins = 0;
+SET join_use_nulls = 0;
+
+DROP TABLE IF EXISTS l;
+DROP TABLE IF EXISTS r;
+
+CREATE TABLE l (v UInt64, s1 String, s2 String) ENGINE = MergeTree ORDER BY ();
+CREATE TABLE r (w UInt64, s1 String, s2 String) ENGINE = MergeTree ORDER BY ();
+INSERT INTO l SELECT number + 1, concat('a', toString(number * 3 % 60000)), concat('b', toString(number * 7 % 90001)) FROM numbers(30000);
+-- One part of about 37 granules: with `max_threads = 16` and `max_block_size = 1000` every build thread gets blocks.
+INSERT INTO r SELECT number + 1, concat('a', toString(number % 50000)), concat('b', toString(number % 70001))
+FROM numbers(300000);
+
+{% for kind in ['ALL INNER', 'ALL LEFT', 'ALL RIGHT', 'ALL FULL'] -%}
+SELECT '{{ kind }}',
+    (SELECT (count(), sum(cityHash64(l.v, r.w))) FROM l {{ kind }} JOIN r ON l.s1 = r.s1 OR l.s2 = r.s2
+        SETTINGS hash_join_layout = 'parallel', max_threads = 16, max_block_size = 1000)
+    = (SELECT (count(), sum(cityHash64(l.v, r.w))) FROM l {{ kind }} JOIN r ON l.s1 = r.s1 OR l.s2 = r.s2
+        SETTINGS hash_join_layout = 'serial', max_threads = 1);
+{% endfor -%}
+
+DROP TABLE l;
+DROP TABLE r;

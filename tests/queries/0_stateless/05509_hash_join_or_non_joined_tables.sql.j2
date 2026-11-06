@@ -1,0 +1,55 @@
+-- The non-joined rows of a hash join, read from its tables. With several disjuncts a right row is joined when any
+-- disjunct matches it, and the ON condition `r.f = 1` masks the first disjunct only:
+--   100: joined through `a`;
+--   200: its `a` matches, but the mask hides it, so it is non-joined;
+--   300: joined through `b` only, though its `f` is 0;
+--   400 and 600: no match;
+--   500: the mask hides its `a` match, but its `b` matches, so it is joined through `b`.
+-- With one disjunct the non-joined rows come from the cells of the map, or from the stored blocks with a condition
+-- beyond the keys. Every layout, thread count and way of reading the non-joined rows gives the same rows.
+
+SET join_algorithm = 'hash';
+SET query_plan_join_swap_table = 0;
+SET enable_parallel_replicas = 0;
+SET max_bytes_before_external_join = 0, max_bytes_ratio_before_external_join = 0;
+SET collect_hash_table_stats_during_joins = 0;
+SET join_use_nulls = 0;
+
+DROP TABLE IF EXISTS l;
+DROP TABLE IF EXISTS r;
+
+CREATE TABLE l (v UInt64, a UInt64, b UInt64, k UInt64, x UInt64) ENGINE = MergeTree ORDER BY ();
+CREATE TABLE r (w UInt64, a UInt64, b UInt64, f UInt8, k UInt64, y UInt64) ENGINE = MergeTree ORDER BY ();
+INSERT INTO l VALUES (1, 1, 10, 1, 5), (2, 2, 20, 2, 5), (3, 3, 30, 3, 5);
+INSERT INTO r VALUES (100, 1, 0, 1, 1, 9), (200, 1, 0, 0, 1, 1), (300, 9, 20, 0, 2, 1), (400, 9, 99, 1, 3, 9),
+    (500, 2, 10, 0, 2, 9), (600, 9, 98, 1, 7, 9);
+
+{% set cases = [
+    ('or', 'ALL RIGHT', '(l.a = r.a AND r.f = 1) OR l.b = r.b'),
+    ('or', 'ALL FULL', '(l.a = r.a AND r.f = 1) OR l.b = r.b'),
+    ('or', 'ANY RIGHT', '(l.a = r.a AND r.f = 1) OR l.b = r.b'),
+    ('or', 'RIGHT SEMI', '(l.a = r.a AND r.f = 1) OR l.b = r.b'),
+    ('or', 'RIGHT ANTI', '(l.a = r.a AND r.f = 1) OR l.b = r.b'),
+    ('one', 'ALL RIGHT', 'l.k = r.k'),
+    ('one', 'ALL FULL', 'l.k = r.k AND r.f = 1'),
+    ('one', 'ANY RIGHT', 'l.k = r.k AND r.f = 1'),
+    ('one', 'RIGHT ANTI', 'l.k = r.k'),
+    ('residual', 'ALL RIGHT', 'l.k = r.k AND l.x < r.y'),
+    ('residual', 'ALL FULL', 'l.k = r.k AND l.x < r.y'),
+] -%}
+
+{% for layout in ['serial', 'parallel'] -%}
+{% for threads in [1, 4] -%}
+{% for parallel_scan in [0, 1] -%}
+{% for name, kind, on in cases -%}
+SELECT '{{ name }}', '{{ kind }}', '{{ layout }}', {{ threads }}, {{ parallel_scan }},
+    arraySort(groupArray((l.v, r.w)))
+FROM l {{ kind }} JOIN r ON {{ on }}
+SETTINGS hash_join_layout = '{{ layout }}', max_threads = {{ threads }}, parallel_non_joined_rows_processing = {{ parallel_scan }};
+{% endfor -%}
+{% endfor -%}
+{% endfor -%}
+{% endfor -%}
+
+DROP TABLE l;
+DROP TABLE r;
