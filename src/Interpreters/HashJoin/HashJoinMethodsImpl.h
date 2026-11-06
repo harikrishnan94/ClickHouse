@@ -713,7 +713,8 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsWithAddi
             /*fast_path=*/false,
             /*stops_at_first_match=*/false,
             /*prefetch_later_maps=*/false,
-            KnownRows>(
+            KnownRows,
+            /*lazy_row_filter=*/true>(
             tables,
             added_columns.join_on_keys,
             key_range,

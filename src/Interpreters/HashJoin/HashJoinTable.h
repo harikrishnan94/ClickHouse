@@ -296,7 +296,10 @@ public:
     /// at its first match with `stops_at_first_match`. Stops before a row once `offset` reaches `max_offset`; returns the
     /// rows processed. Prefetches the first table, and with `prefetch_later_maps` also the two-level tables that follow it
     /// until the first one that fits in the cache: when rows stop at their first match, only as many as
-    /// `MultiMapLookupSampler` allows.
+    /// `MultiMapLookupSampler` allows. With `lazy_row_filter`, the loop checks the NULL key and the mask of each row it
+    /// visits, and does not prepare them for all of `selector`. That is cheaper when a call visits few rows, as a call of
+    /// the join with a residual condition does, and costs two checks per row otherwise. `fast_path` has nothing to check,
+    /// and the sampler of `stops_at_first_match` reads the prepared bytes, so neither can be combined with it.
     template <
         Type TYPE,
         typename Maps,
@@ -304,6 +307,7 @@ public:
         bool stops_at_first_match,
         bool prefetch_later_maps,
         typename RowState,
+        bool lazy_row_filter = false,
         typename OnMatch,
         typename OnRowEnd>
     static ALWAYS_INLINE size_t probeAll(
@@ -400,6 +404,7 @@ private:
         bool stops_at_first_match,
         bool prefetch_later_maps,
         typename RowState,
+        bool lazy_row_filter,
         typename OnMatch,
         typename OnRowEnd>
     static NO_INLINE size_t probeAllRows(
@@ -715,6 +720,7 @@ template <
     bool stops_at_first_match,
     bool prefetch_later_maps,
     typename RowState,
+    bool lazy_row_filter,
     typename OnMatch,
     typename OnRowEnd>
 ALWAYS_INLINE size_t HashJoinTable::probeAll(
@@ -734,7 +740,7 @@ ALWAYS_INLINE size_t HashJoinTable::probeAll(
     std::vector<const Map *> mapv;
     std::vector<KeyGetter> key_getter_vector;
     prepareProbeAll<TYPE, Maps>(tables, keys, key_range, mapv, key_getter_vector);
-    return probeAllRows<KeyGetter, Map, fast_path, stops_at_first_match, prefetch_later_maps, RowState>(
+    return probeAllRows<KeyGetter, Map, fast_path, stops_at_first_match, prefetch_later_maps, RowState, lazy_row_filter>(
         std::move(key_getter_vector), mapv, keys, selector, enable_prefetch, max_offset, offset, std::move(on_match), std::move(on_row_end));
 }
 
@@ -764,6 +770,7 @@ template <
     bool stops_at_first_match,
     bool prefetch_later_maps,
     typename RowState,
+    bool lazy_row_filter,
     typename OnMatch,
     typename OnRowEnd>
 NO_INLINE size_t HashJoinTable::probeAllRows(
@@ -777,13 +784,16 @@ NO_INLINE size_t HashJoinTable::probeAllRows(
     OnMatch on_match,
     OnRowEnd on_row_end)
 {
+    static_assert(
+        !lazy_row_filter || (!fast_path && !stops_at_first_match), "`lazy_row_filter` excludes `fast_path` and `stops_at_first_match`");
+
     size_t rows = ScatteredBlock::Selector::size(selector);
     const size_t num_clauses = keys.size();
 
     /// Per-clause skip bytes, prepared once per call (see `JoinOnKeyColumns::buildRowSkipData`).
     std::vector<const UInt8 *> skip_datas;
     std::vector<IColumn::Filter> skip_buffers;
-    if constexpr (!fast_path)
+    if constexpr (!fast_path && !lazy_row_filter)
     {
         skip_datas.resize(num_clauses);
         skip_buffers.resize(num_clauses);
@@ -850,7 +860,9 @@ NO_INLINE size_t HashJoinTable::probeAllRows(
         for (; onexpr_idx < num_clauses; ++onexpr_idx)
         {
             bool skip_row = false;
-            if constexpr (!fast_path)
+            if constexpr (lazy_row_filter)
+                skip_row = (keys[onexpr_idx].null_map && (*keys[onexpr_idx].null_map)[ind]) || keys[onexpr_idx].isRowFiltered(ind);
+            else if constexpr (!fast_path)
                 skip_row = skip_data[onexpr_idx] && skip_data[onexpr_idx][ind];
 
             if (!skip_row)
