@@ -1,0 +1,37 @@
+-- LEFT SEMI and LEFT ANTI with several disjuncts may keep only the keys in their tables. Each table must hold the keys
+-- of its own disjunct, and a right block may be dropped only after every table has read its keys from it. Left rows
+-- 1 and 2 match through `a` only, 3 and 4 through `b` only, 5 through both, and 6 to 8 not at all. The right table
+-- comes in several blocks, so a block dropped too early loses keys of the later disjunct.
+
+SET join_algorithm = 'hash';
+SET query_plan_join_swap_table = 0;
+SET enable_parallel_replicas = 0;
+SET max_bytes_before_external_join = 0, max_bytes_ratio_before_external_join = 0;
+SET collect_hash_table_stats_during_joins = 0;
+SET max_threads = 4;
+
+DROP TABLE IF EXISTS l;
+DROP TABLE IF EXISTS r;
+
+CREATE TABLE l (v UInt64, a UInt64, b String) ENGINE = MergeTree ORDER BY ();
+CREATE TABLE r (a UInt64, b String) ENGINE = MergeTree ORDER BY ();
+INSERT INTO l VALUES (1, 10, 'x1'), (2, 20, 'x2'), (3, 30, 'b3'), (4, 40, 'b4'), (5, 50, 'b5'), (6, 60, 'x6'), (7, 70, 'x7'), (8, 80, 'x8');
+INSERT INTO r VALUES (10, 'y1');
+INSERT INTO r VALUES (20, 'y2'), (31, 'b3');
+INSERT INTO r VALUES (41, 'b4');
+INSERT INTO r VALUES (50, 'b5'), (61, 'y6');
+
+{% for strictness in ['SEMI', 'ANTI'] -%}
+{% for key_only in [0, 1] -%}
+{% for layout in ['serial', 'parallel'] -%}
+{% for on in ['l.a = r.a OR l.b = r.b', 'l.b = r.b OR l.a = r.a'] -%}
+SELECT 'LEFT {{ strictness }}', {{ key_only }}, '{{ layout }}', '{{ on }}', arraySort(groupArray(l.v))
+FROM l LEFT {{ strictness }} JOIN r ON {{ on }}
+SETTINGS enable_join_key_only_hash_tables = {{ key_only }}, hash_join_layout = '{{ layout }}', max_block_size = 1;
+{% endfor -%}
+{% endfor -%}
+{% endfor -%}
+{% endfor -%}
+
+DROP TABLE l;
+DROP TABLE r;
