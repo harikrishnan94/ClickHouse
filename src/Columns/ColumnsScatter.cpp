@@ -18,8 +18,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <cstring>
 #include <limits>
+#include <numeric>
 #include <string_view>
 #include <type_traits>
 #include <typeinfo>
@@ -176,7 +179,8 @@ struct Node
 
     /// One per piece. String: the number of bytes of chars. Array: the number of elements.
     PaddedPODArray<size_t> sizes;
-    PaddedPODArray<char *> cursors;
+    /// Fixed: the cursors, and the staging lines when the column is written with `StoreMode::Combined`.
+    ScatterScratch scratch;
     PaddedPODArray<StringCursor> string_cursors;
     PaddedPODArray<ArrayCursor> array_cursors;
 };
@@ -215,8 +219,9 @@ void forEachChild(Kind kind, Column & column, F && f)
     }
 }
 
-/// The nodes of `column` and of its nested columns, with the cursors of `num_pieces` pieces.
-Node buildNode(const IColumn & column, size_t num_pieces)
+/// The nodes of `column` and of its nested columns, with the cursors of `num_pieces` pieces. `rows` is the number of rows
+/// scattered from all sources, or 0 when the rows of `column` are scattered by ranges, as the elements of an `Array` are.
+Node buildNode(const IColumn & column, size_t num_pieces, size_t rows)
 {
     Node node;
     node.kind = kernelKind(column);
@@ -224,7 +229,7 @@ Node buildNode(const IColumn & column, size_t num_pieces)
     {
         case Kind::Fixed:
             node.width = column.sizeOfValueIfFixed();
-            node.cursors.resize_fill(num_pieces, nullptr);
+            node.scratch.init(num_pieces, chooseStoreMode(node.width, num_pieces, rows));
             break;
         case Kind::String:
             node.needs_sizes = true;
@@ -247,7 +252,7 @@ Node buildNode(const IColumn & column, size_t num_pieces)
         column,
         [&](size_t, const IColumn & part)
         {
-            node.children.push_back(buildNode(part, num_pieces));
+            node.children.push_back(buildNode(part, num_pieces, node.kind == Kind::Array ? 0 : rows));
             node.needs_sizes = node.needs_sizes || node.children.back().needs_sizes;
         });
     return node;
@@ -372,8 +377,13 @@ void preparePiece(Node & node, IColumn & column, size_t piece, size_t rows)
     switch (node.kind)
     {
         case Kind::Fixed:
-            node.cursors[piece] = growUninitialized(column, rows).data();
+        {
+            char * cursor = growUninitialized(column, rows).data();
+            /// The staging lines of `StoreMode::Combined` fill to 64 bytes only from a cursor that is a multiple of the width.
+            chassert(node.scratch.mode != StoreMode::Combined || reinterpret_cast<uintptr_t>(cursor) % node.width == 0);
+            node.scratch.seed(piece, cursor);
             break;
+        }
         case Kind::String:
         {
             auto & string = assert_cast<ColumnString &>(column);
@@ -487,6 +497,65 @@ NO_INLINE void scatterFixedRows(size_t width, const Id * ids, const char * data,
     }
 }
 
+bool combiningSupportsWidth(size_t width)
+{
+    return width == 1 || width == 2 || width == 4 || width == 8 || width == 16;
+}
+
+using Line = char __attribute__((vector_size(LINE_BYTES)));
+
+/// Stages row i in the line of piece `ids[i]`, and stores the line when it is full. Writes no byte outside the rows of a piece.
+template <size_t width, typename Id>
+void scatterFixedRowsCombinedOfWidth(const Id * ids, const char * data, size_t n, ScatterScratch & scratch)
+{
+    /// Hoisted by hand: the non-temporal store through `char *` defeats type-based alias analysis, so the compiler would
+    /// otherwise reload these on every row.
+    char * const staging = scratch.staging;
+    char ** const cursors = scratch.cursors.data();
+    UInt32 * const fill = scratch.fill.data();
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const size_t piece = ids[i];
+        char * line = staging + piece * LINE_BYTES;
+        UInt32 filled = fill[piece];
+        __builtin_memcpy_inline(line + filled, data + i * width, width);
+        filled += width;
+        if (filled == LINE_BYTES)
+        {
+            char * cursor = cursors[piece];
+            const UInt32 misalignment = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cursor) & (LINE_BYTES - 1));
+            if (misalignment) /// The first line of a piece starts at its cursor, so it takes regular stores.
+            {
+                __builtin_memcpy(cursor, line + misalignment, LINE_BYTES - misalignment);
+                cursors[piece] = cursor + (LINE_BYTES - misalignment);
+            }
+            else
+            {
+                __builtin_nontemporal_store(*reinterpret_cast<const Line *>(line), reinterpret_cast<Line *>(cursor));
+                cursors[piece] = cursor + LINE_BYTES;
+            }
+            filled = 0;
+        }
+        fill[piece] = filled;
+    }
+}
+
+/// Precondition: `combiningSupportsWidth(width)`, and every cursor is a multiple of `width`.
+template <typename Id>
+void scatterFixedRowsCombined(size_t width, const Id * ids, const char * data, size_t n, ScatterScratch & scratch)
+{
+    switch (width)
+    {
+        case 1: scatterFixedRowsCombinedOfWidth<1>(ids, data, n, scratch); return;
+        case 2: scatterFixedRowsCombinedOfWidth<2>(ids, data, n, scratch); return;
+        case 4: scatterFixedRowsCombinedOfWidth<4>(ids, data, n, scratch); return;
+        case 8: scatterFixedRowsCombinedOfWidth<8>(ids, data, n, scratch); return;
+        case 16: scatterFixedRowsCombinedOfWidth<16>(ids, data, n, scratch); return;
+        default: throw Exception(ErrorCodes::LOGICAL_ERROR, "Write combining does not support rows of {} bytes", width);
+    }
+}
+
 /// Copies the chars of each row to its piece and appends its offset, rebased on the piece. Reads and writes up to 15
 /// bytes past a row. The source and the chars of every piece are padded, and the next row of a piece overwrites the
 /// bytes written past the previous one.
@@ -549,7 +618,7 @@ void copyRange(Node & node, size_t begin, size_t end, size_t piece)
     switch (node.kind)
     {
         case Kind::Fixed:
-            copyFixedRange(node.data, node.width, node.cursors.data(), begin, end, piece);
+            copyFixedRange(node.data, node.width, node.scratch.cursors.data(), begin, end, piece);
             return;
         case Kind::String:
             copyStringRange(node.data, node.offsets, node.string_cursors.data(), begin, end, piece);
@@ -604,7 +673,7 @@ void scatterArrayRows(Node & node, const Id * ids, size_t n)
                 node.offsets,
                 n,
                 cursors,
-                [data = elements.data, width = elements.width, element_cursors = elements.cursors.data()](
+                [data = elements.data, width = elements.width, element_cursors = elements.scratch.cursors.data()](
                     size_t begin, size_t end, size_t piece) { copyFixedRange(data, width, element_cursors, begin, end, piece); });
             return;
         case Kind::String:
@@ -630,6 +699,15 @@ void scatterArrayRows(Node & node, const Id * ids, size_t n)
     }
 }
 
+/// Stores the rows that are still staged in the lines of the fixed-width columns of `node`.
+void drainNode(Node & node)
+{
+    if (node.scratch.mode == StoreMode::Combined)
+        node.scratch.drain();
+    for (Node & child : node.children)
+        drainNode(child);
+}
+
 /// Scatters the rows of the source to the cursors of their pieces.
 template <typename Id>
 void scatterRows(Node & node, const Id * ids, size_t n)
@@ -637,7 +715,10 @@ void scatterRows(Node & node, const Id * ids, size_t n)
     switch (node.kind)
     {
         case Kind::Fixed:
-            scatterFixedRows(node.width, ids, node.data, n, node.cursors.data());
+            if (node.scratch.mode == StoreMode::Combined)
+                scatterFixedRowsCombined(node.width, ids, node.data, n, node.scratch);
+            else
+                scatterFixedRows(node.width, ids, node.data, n, node.scratch.cursors.data());
             return;
         case Kind::String:
             scatterStringRows(ids, node.data, node.offsets, n, node.string_cursors.data());
@@ -663,7 +744,7 @@ VectorWithMemoryTracking<MutableColumnPtr> scatterWithKernels(
 {
     const IColumn & sample = *sources[0];
     const size_t num_pieces = counts.size();
-    Node root = buildNode(sample, num_pieces);
+    Node root = buildNode(sample, num_pieces, std::accumulate(counts.begin(), counts.end(), size_t{0}));
 
     /// The pieces are clones of source 0, so another class, width, tuple size or `Decimal` scale would misread rows.
     for (size_t b = 1; b < sources.size(); ++b)
@@ -696,6 +777,7 @@ VectorWithMemoryTracking<MutableColumnPtr> scatterWithKernels(
         bindSource(root, *sources[b]);
         scatterRows(root, ids[b].data(), ids[b].size());
     }
+    drainNode(root);
     return pieces;
 }
 
@@ -1012,9 +1094,101 @@ VectorWithMemoryTracking<size_t> computePassBits(size_t fanout, size_t max_fanou
     return result;
 }
 
-void scatterPidChunk(size_t width, const UInt16 * pids, const char * data, size_t n, ScatterScratch & scratch)
+namespace
 {
-    scatterFixedRows(width, pids, data, n, scratch.cursors.data());
+
+const char * storeModeName(StoreMode mode)
+{
+    return mode == StoreMode::Combined ? "combined" : "direct";
+}
+
+}
+
+StoreMode chooseStoreMode(size_t width, size_t pieces, size_t rows)
+{
+    if (!combiningSupportsWidth(width) || pieces < COMBINING_MIN_PIECES || pieces > COMBINING_MAX_PIECES)
+        return StoreMode::Direct;
+    return rows >= pieces * COMBINING_MIN_LINES_PER_PIECE * (LINE_BYTES / width) ? StoreMode::Combined : StoreMode::Direct;
+}
+
+void ScatterScratch::init(size_t fanout, StoreMode mode_)
+{
+    cursors.clear();
+    cursors.resize_fill(fanout, nullptr);
+    staging = nullptr;
+    fill.clear();
+    if (mode_ == StoreMode::Combined)
+    {
+        /// One more line, to align the first one.
+        staging_memory.resize_exact(fanout * LINE_BYTES + LINE_BYTES);
+        staging = reinterpret_cast<char *>(
+            (reinterpret_cast<uintptr_t>(staging_memory.data()) + LINE_BYTES - 1) & ~static_cast<uintptr_t>(LINE_BYTES - 1));
+        fill.resize_fill(fanout, 0);
+    }
+    mode = mode_;
+}
+
+void ScatterScratch::setStoreMode(StoreMode mode_)
+{
+    if (mode_ == StoreMode::Combined && !staging)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot combine writes: the scratch was initialized without staging lines");
+    /// `drain` has stored the staged rows of the last column.
+    chassert(std::ranges::all_of(fill, [](UInt32 filled) { return filled == 0; }));
+    mode = mode_;
+}
+
+void ScatterScratch::seed(size_t piece, char * cursor)
+{
+    cursors[piece] = cursor;
+    if (mode == StoreMode::Combined)
+        fill[piece] = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cursor) & (LINE_BYTES - 1));
+}
+
+void ScatterScratch::drain()
+{
+    if (mode == StoreMode::Combined)
+    {
+        for (size_t piece = 0; piece < cursors.size(); ++piece)
+        {
+            const UInt32 filled = fill[piece];
+            if (!filled)
+                continue;
+            char * cursor = cursors[piece];
+            const UInt32 start = static_cast<UInt32>(reinterpret_cast<uintptr_t>(cursor) & (LINE_BYTES - 1));
+            if (filled > start)
+                memcpy(cursor, staging + piece * LINE_BYTES + start, filled - start);
+            fill[piece] = 0;
+        }
+        /// Non-temporal stores are weakly ordered.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
+    /// The cursors of this column must not reach the next one: a stale cursor of a piece that gets no rows there could
+    /// fail the alignment check of `scatterPidChunk`.
+    std::fill(cursors.begin(), cursors.end(), nullptr);
+}
+
+void scatterPidChunk(size_t width, const UInt16 * pids, const char * data, size_t n, StoreMode mode, ScatterScratch & scratch)
+{
+    if (mode != scratch.mode)
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "Cannot scatter a chunk in the {} store mode: the scratch is in the {} store mode",
+            storeModeName(mode),
+            storeModeName(scratch.mode));
+
+    if (mode == StoreMode::Direct)
+    {
+        scatterFixedRows(width, pids, data, n, scratch.cursors.data());
+        return;
+    }
+
+    if (!combiningSupportsWidth(width))
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Write combining does not support rows of {} bytes", width);
+    /// A line of staged rows must fill to exactly 64 bytes, so every cursor must be a multiple of the row width.
+    for (const char * cursor : scratch.cursors)
+        if ((reinterpret_cast<uintptr_t>(cursor) & (width - 1)) != 0)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "A piece cursor is not a multiple of the row width {}", width);
+    scatterFixedRowsCombined(width, pids, data, n, scratch);
 }
 
 void histogramPidChunk(const UInt16 * pids, size_t n, UInt64 * hist, UInt64 * lanes, size_t fanout)
