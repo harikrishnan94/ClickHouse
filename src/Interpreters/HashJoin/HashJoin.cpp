@@ -1907,7 +1907,7 @@ void HashJoin::reuseJoinedData(const HashJoin & join)
         strictness,
         getMapsKind(),
         [this]<JoinKind kind_, JoinStrictness strictness_, typename Maps>()
-        { used_flags->reinit<kind_, strictness_, mapsKindOf<Maps>()>(data->tables.front()->bufferSizeInCells() + 1); });
+        { used_flags->reinit<kind_, strictness_, mapsKindOf<Maps>()>(data->tables.front()->keyFlagsSize()); });
 
     if (matched_rows_stats)
         matched_rows_stats->prepareRightFlagsIfNeeded(data->build_streams.front().columns);
@@ -2063,7 +2063,7 @@ void HashJoin::validateAdditionalFilterExpression(ExpressionActionsPtr additiona
     }
 
     /// `arrayJoin` changes the number of rows, but `buildAdditionalFilter` evaluates this expression
-    /// per probe batch and `joinRightColumnsWithAdditionalFilter` indexes the result by row position,
+    /// per probe batch and `JoinProbe::addMatchesWithAdditionalFilter` indexes the result by row position,
     /// so the expression must preserve the number of rows.
     if (additional_filter_expression->hasArrayJoin())
     {
@@ -2260,7 +2260,7 @@ void HashJoin::reinitUsedFlags()
         strictness,
         getMapsKind(),
         [this]<JoinKind kind_, JoinStrictness strictness_, typename Maps>()
-        { used_flags->reinitAllowShrinking<kind_, strictness_, mapsKindOf<Maps>()>(data->tables.front()->bufferSizeInCells() + 1); });
+        { used_flags->reinitAllowShrinking<kind_, strictness_, mapsKindOf<Maps>()>(data->tables.front()->keyFlagsSize()); });
 }
 
 void HashJoin::publishSharedRuntimeFilters()
