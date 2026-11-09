@@ -1,0 +1,229 @@
+#pragma once
+
+#include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/HashJoinTable.h>
+#include <Interpreters/HashJoin/LookupMethod.h>
+
+/// The key search of the hash join probe: the lookup method in use, and `findKeys`, which writes what any lookup method finds.
+namespace DB::JoinProbe
+{
+
+/// Not inlined: it runs once per call and disjunct, so one copy serves every key search of the key getter type.
+template <typename KeyGetter, bool is_asof_join>
+NO_INLINE std::shared_ptr<void> makeKeyGetter(const FindKeysArgs & args)
+{
+    return std::make_shared<KeyGetter>(
+        createJoinKeyGetter<KeyGetter, is_asof_join>(args.keys.key_columns, args.keys.key_sizes, args.table.keyRange()));
+}
+
+/// Building a `HashMethodKeysFixed` getter can pack the keys of all the rows of the block, so with `keep_key_getter` it is
+/// built at the first search of a call and kept in `JoinOnKeyColumns::kept_key_getter`. A getter that is not kept is returned
+/// by value, because the stores in the search loop could make the loop reload a getter behind a reference.
+template <typename KeyGetter, bool is_asof_join, bool keep_key_getter>
+ALWAYS_INLINE decltype(auto) keyGetterOf(const FindKeysArgs & args)
+{
+    if constexpr (!keep_key_getter || !detail::PacksKeysIntoBlob<KeyGetter>)
+        return createJoinKeyGetter<KeyGetter, is_asof_join>(args.keys.key_columns, args.keys.key_sizes, args.table.keyRange());
+    else
+    {
+        if (!args.keys.kept_key_getter)
+            args.keys.kept_key_getter = makeKeyGetter<KeyGetter, is_asof_join>(args);
+        return *static_cast<KeyGetter *>(args.keys.kept_key_getter.get());
+    }
+}
+
+/// Looks the keys up in row order, with the adaptive software prefetch of the probe.
+struct PrefetchingLookup
+{
+    static constexpr bool retires_rows_in_order = true;
+
+    template <HashJoin::Type TYPE, typename Maps, bool fast_path, bool row_list, bool keep_key_getter = false, typename OnRow>
+    ALWAYS_INLINE static size_t run(const FindKeysArgs & args, OnRow && on_row)
+    {
+        using Map = const JoinMapOf<TYPE, Maps>;
+        using KeyGetter = typename KeyGetterForType<TYPE, Map>::Type;
+        using FindResult = typename KeyGetter::FindResult;
+        constexpr bool is_asof_join = std::is_same_v<Maps, HashJoin::MapsAsof>;
+
+        chassert(row_list == (args.rows.rows != nullptr));
+        const Map & map = args.table.mapOf<TYPE, Maps>();
+        const JoinOnKeyColumns & keys = args.keys;
+        decltype(auto) key_getter = keyGetterOf<KeyGetter, is_asof_join, keep_key_getter>(args);
+
+        /// Locals, so that the stores in `on_row` do not make the loop reload them.
+        const size_t size = args.rows.size;
+        const size_t first [[maybe_unused]] = args.rows.first;
+        const UInt32 * const list [[maybe_unused]] = args.rows.rows;
+        const auto row_of = [&](size_t i) __attribute__((always_inline)) -> size_t
+        {
+            if constexpr (row_list)
+                return list[i];
+            else
+                return first + i;
+        };
+
+        /// The skip pointer is a local so that it can stay in a register across the calls in
+        /// the loop body (see `JoinOnKeyColumns::buildRowSkipData`).
+        const UInt8 * skip_data = nullptr;
+        IColumn::Filter skip_buffer;
+        if constexpr (!fast_path)
+        {
+            if (size)
+                skip_data = keys.buildRowSkipData(skip_buffer, row_of(0), row_of(size - 1) + 1 - row_of(0));
+        }
+
+        Arena pool;
+
+        /// Software prefetch during the probe phase.
+        constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
+
+        bool use_prefetch = false;
+        if constexpr (can_prefetch)
+            use_prefetch = shouldUseJoinPrefetch(args.enable_prefetch, &map);
+
+        auto prefetcher = makeJoinPrefetcher(
+            use_prefetch,
+            size,
+            [&](size_t k) __attribute__((always_inline))
+            {
+                if constexpr (can_prefetch)
+                    map.prefetch(key_getter.getKeyHolder(row_of(k), pool));
+            });
+
+        for (size_t i = 0; i < size; ++i)
+        {
+            if constexpr (can_prefetch)
+                prefetcher.prefetchAt(i);
+
+            const size_t ind = row_of(i);
+
+            bool skip_row = false;
+            if constexpr (!fast_path)
+                skip_row = skip_data && skip_data[ind];
+
+            const FindResult result = skip_row ? FindResult() : key_getter.findKey(map, ind, pool);
+            if constexpr (std::is_same_v<decltype(on_row(i, ind, result)), bool>)
+            {
+                if (!on_row(i, ind, result))
+                    return i + 1;
+            }
+            else
+                on_row(i, ind, result);
+        }
+        return size;
+    }
+};
+
+template <typename Maps, typename FindResult>
+ALWAYS_INLINE MatchWord matchWordOf(const FindResult & result)
+{
+    if (!result.isFound())
+        return 0;
+    if constexpr (std::is_same_v<Maps, HashJoin::MapsAsof>)
+        return reinterpret_cast<UInt64>(result.getMapped().get());
+    else if constexpr (SetJoinMaps<Maps>)
+        return 1;
+    else if constexpr (std::is_same_v<Maps, HashJoin::MapsAll>)
+        return result.getMapped().word;
+    else
+        return result.getMapped().encode();
+}
+
+/// Writes only the slots of the row it visits, so any lookup method can drive it.
+template <HashJoin::Type TYPE, typename Maps, bool fast_path, FindKeysMode mode, LookupMethod Lookup>
+NO_INLINE size_t findKeys(const FindKeysArgs & args)
+{
+    constexpr bool row_list = mode == FindKeysMode::WordsOfRowList;
+    constexpr bool records_key_offsets
+        = mode == FindKeysMode::WordsAndKeyOffsets || mode == FindKeysMode::WordsAndKeyOffsetsUpToRowLimit;
+    constexpr bool up_to_row_limit = mode == FindKeysMode::WordsUpToRowLimit || mode == FindKeysMode::WordsAndKeyOffsetsUpToRowLimit;
+    static_assert(!up_to_row_limit || std::is_same_v<Maps, HashJoin::MapsAll>, "Only a `RowRefList` word holds several rows");
+    static_assert(!up_to_row_limit || Lookup::retires_rows_in_order, "The row limit counts the output in row order");
+
+    /// Locals, so that the stores through them do not make the loop reload them.
+    MatchWord * const words = args.words;
+    size_t * const key_offsets [[maybe_unused]] = args.key_offsets;
+    const size_t base [[maybe_unused]] = args.base;
+    [[maybe_unused]] const size_t missing_key_offset = records_key_offsets ? args.table.missingKeyOffset() : 0;
+    [[maybe_unused]] size_t output_rows_left = args.max_output_rows;
+
+    return Lookup::template run<TYPE, Maps, fast_path, row_list, /*keep_key_getter=*/true>(
+        args,
+        [&](size_t i, size_t ind [[maybe_unused]], const auto & result) __attribute__((always_inline))
+        {
+            /// A range starts at `base`, so its position is its slot.
+            const size_t slot = row_list ? ind - base : i;
+            const MatchWord word = matchWordOf<Maps>(result);
+            words[slot] = word;
+            if constexpr (records_key_offsets)
+                key_offsets[slot] = result.isFound() ? result.getOffset() : missing_key_offset;
+            if constexpr (up_to_row_limit)
+            {
+                /// A saturated count is too low, so the search may look up more rows than it needs; the match step still stops at
+                /// the limit.
+                const size_t found_rows = refWordIsInline(word) ? 1 : (word >> RowRefList::COUNT_SHIFT) & RowRefList::COUNT_SAT;
+                if (found_rows >= output_rows_left)
+                    return false;
+                output_rows_left -= found_rows;
+                return true;
+            }
+        });
+}
+
+/// The `findKeys` of `key_type`. Only `MapsOne` and `MapsAll` record key offsets, only `MapsAll` stops at the row limit, and
+/// only a join with several disjuncts, which never has an ASOF map, visits a row list.
+template <typename Maps>
+FindKeysFn selectFindKeys(HashJoin::Type key_type, FindKeysMode mode, bool fast_path)
+{
+    constexpr bool mapped = std::is_same_v<Maps, HashJoin::MapsOne> || std::is_same_v<Maps, HashJoin::MapsAll>;
+    constexpr bool maps_all = std::is_same_v<Maps, HashJoin::MapsAll>;
+    constexpr bool asof = std::is_same_v<Maps, HashJoin::MapsAsof>;
+
+    const auto of_type = [&]<HashJoin::Type TYPE>() -> FindKeysFn
+    {
+        const auto with = [&]<FindKeysMode m>() -> FindKeysFn
+        {
+            return fast_path ? &findKeys<TYPE, Maps, true, m, PrefetchingLookup> : &findKeys<TYPE, Maps, false, m, PrefetchingLookup>;
+        };
+        switch (mode)
+        {
+            case FindKeysMode::Words:
+                return with.template operator()<FindKeysMode::Words>();
+            case FindKeysMode::WordsAndKeyOffsets:
+                if constexpr (mapped)
+                    return with.template operator()<FindKeysMode::WordsAndKeyOffsets>();
+                break;
+            case FindKeysMode::WordsUpToRowLimit:
+                if constexpr (maps_all)
+                    return with.template operator()<FindKeysMode::WordsUpToRowLimit>();
+                break;
+            case FindKeysMode::WordsAndKeyOffsetsUpToRowLimit:
+                if constexpr (maps_all)
+                    return with.template operator()<FindKeysMode::WordsAndKeyOffsetsUpToRowLimit>();
+                break;
+            case FindKeysMode::WordsOfRowList:
+                if constexpr (!asof)
+                    return with.template operator()<FindKeysMode::WordsOfRowList>();
+                break;
+        }
+        UNREACHABLE();
+    };
+
+    switch (key_type)
+    {
+#define M(TYPE) \
+    case HashJoin::Type::TYPE: \
+        return of_type.template operator()<HashJoin::Type::TYPE>();
+        APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+    }
+    UNREACHABLE();
+}
+
+/// Instantiated in `FindKeysMaps*.cpp`, one file per map.
+extern template FindKeysFn selectFindKeys<HashJoin::MapsOne>(HashJoin::Type, FindKeysMode, bool);
+extern template FindKeysFn selectFindKeys<HashJoin::MapsAll>(HashJoin::Type, FindKeysMode, bool);
+extern template FindKeysFn selectFindKeys<HashJoin::MapsAsof>(HashJoin::Type, FindKeysMode, bool);
+extern template FindKeysFn selectFindKeys<HashJoin::MapsSet>(HashJoin::Type, FindKeysMode, bool);
+
+}
