@@ -187,6 +187,128 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsSwitchNu
     return joinRightColumnsSwitchMultipleDisjuncts<TYPE, true>(tables, added_columns, selector, used_flags);
 }
 
+/** Whether a join uses the batched probe: a lookup that records one word per row, then a pass over those words.
+  * Other joins keep the fused loop, which is faster for them:
+  *  - INNER ANY, where the first left row that finds a key claims it;
+  *  - the ANTI joins and the set maps, which record no row for a match;
+  *  - the RIGHT and FULL joins other than ALL.
+  * A strictness other than ALL on `MapsAll` also stays fused. Only a join with a mixed ON expression picks that map, and
+  * such a join takes another path.
+  */
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+constexpr bool usesBatchedProbe()
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    return join_features.is_all_join
+        || !(SetJoinMaps<MapsTemplate> || join_features.is_anti_join || join_features.right || join_features.full
+             || (join_features.is_any_join && join_features.inner) || join_features.is_maps_all);
+}
+
+/** The join-kind half of a batched probe: a pass over the words that `probeWords` recorded. `words[i]` is the word of
+  * the key of row `i`, or 0 if there is none. The pass moves the words of the rows that add a row to the result to the front,
+  * in order. It returns how many there are. A LEFT join adds a row for every probe row, so its words stay in place. The
+  * default row of a missing key is the word 0.
+  * The pass depends on the join kind and not on the key type, so there is one copy per kind.
+  */
+template <JoinKind KIND, JoinStrictness STRICTNESS, bool need_filter, typename MapsTemplate, typename AddedColumns>
+NO_INLINE size_t processWords(AddedColumns & added_columns, UInt64 * words, size_t rows)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    static_assert(usesBatchedProbe<KIND, STRICTNESS, MapsTemplate>());
+
+    UInt64 * matched = nullptr;
+    UInt8 * filter = nullptr;
+    if constexpr (need_filter)
+    {
+        added_columns.filter.resize(rows);
+        added_columns.matched_rows.resize(rows);
+        matched = added_columns.matched_rows.data();
+        filter = added_columns.filter.data();
+    }
+    if constexpr (join_features.need_replication)
+        added_columns.offsets_to_replicate.resize(rows);
+    if constexpr (join_features.emits_whole_key_per_word)
+        added_columns.lazy_output.output_by_row_list = true;
+
+    size_t matched_count = 0;
+    size_t kept = 0;
+    size_t row_count = 0;
+    size_t matches = 0;
+    IColumn::Offset offset = 0;
+    /// Nothing here branches on whether the row matched. When about half of the probe rows match, such a branch is
+    /// unpredictable.
+    for (size_t i = 0; i < rows; ++i)
+    {
+        const UInt64 word = words[i];
+        const size_t hit = word != 0;
+        size_t hit_rows = hit;
+        if constexpr (join_features.is_all_join)
+        {
+            /// This is `refWordRows` with a select between an inline word and a list word. On unique keys, a branch there would
+            /// be a branch on whether the row matched. A saturated count takes the slow call, and so does an inline word with
+            /// the same bits set.
+            const size_t count = (word >> RowRefList::COUNT_SHIFT) & RowRefList::COUNT_SAT;
+            hit_rows = refWordIsInline(word) ? 1 : count;
+            if (count == RowRefList::COUNT_SAT) [[unlikely]]
+                hit_rows = refWordRows(word);
+        }
+        const size_t out_rows = join_features.add_missing ? hit_rows + 1 - hit : hit_rows;
+        if constexpr (need_filter)
+        {
+            filter[i] = static_cast<UInt8>(hit);
+            matched[matched_count] = i;
+            matched_count += hit;
+        }
+        if constexpr (join_features.need_replication)
+        {
+            offset += out_rows;
+            added_columns.offsets_to_replicate[i] = offset;
+        }
+        if constexpr (!join_features.add_missing)
+        {
+            words[kept] = word;
+            kept += hit;
+        }
+        row_count += out_rows;
+        matches += hit_rows;
+    }
+    if constexpr (need_filter)
+        added_columns.matched_rows.resize(matched_count);
+
+    added_columns.lazy_output.row_count += row_count;
+    added_columns.lazy_output.hash_table_matches += matches;
+    return join_features.add_missing ? rows : kept;
+}
+
+/// The batched probe of a join with one table. The lookup writes one word per row at the end of `row_refs`. The pass keeps the
+/// words that the output needs. The function returns 0, as `joinRightColumns` does without `flag_per_row`.
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
+template <HashJoin::Type TYPE, bool need_filter, bool fast_path, typename AddedColumns>
+size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsBatched(
+    const HashJoinTable & table,
+    AddedColumns & added_columns,
+    JoinStuff::JoinUsedFlags & used_flags,
+    const ScatteredBlock::Selector::Range & selector)
+{
+    constexpr JoinFeatures<KIND, STRICTNESS, MapsTemplate> join_features;
+    const size_t rows = ScatteredBlock::Selector::size(selector);
+
+    auto & row_refs = added_columns.lazy_output.row_refs;
+    const size_t base = row_refs.size();
+    row_refs.resize(base + rows);
+    UInt64 * words = row_refs.data() + base;
+
+    const IColumn * asof_key = nullptr;
+    if constexpr (join_features.is_asof_join)
+        asof_key = &added_columns.leftAsofKey();
+    table.template probeWords<TYPE, MapsTemplate, fast_path, join_features.need_flags>(
+        added_columns.join_on_keys.at(0), selector, added_columns.enable_prefetch, words, used_flags, asof_key);
+
+    const size_t kept = processWords<KIND, STRICTNESS, need_filter, MapsTemplate>(added_columns, words, rows);
+    row_refs.resize_assume_reserved(base + kept);
+    return 0;
+}
+
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename MapsTemplate>
 template <HashJoin::Type TYPE, bool need_filter, typename AddedColumns>
 size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsSwitchMultipleDisjuncts(
@@ -240,6 +362,19 @@ size_t HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinRightColumnsSwitchMu
     chassert(tables.size() == 1);
     if (selector.isContinuousRange())
     {
+        /// Without row refs to record, the fused loop is faster than a second pass.
+        if constexpr (usesBatchedProbe<KIND, STRICTNESS, MapsTemplate>())
+        {
+            if (added_columns.record_row_refs)
+            {
+                if (fast_path)
+                    return joinRightColumnsBatched<TYPE, need_filter, /*fast_path=*/true>(
+                        *tables[0], added_columns, used_flags, selector.getRange());
+                else
+                    return joinRightColumnsBatched<TYPE, need_filter, /*fast_path=*/false>(
+                        *tables[0], added_columns, used_flags, selector.getRange());
+            }
+        }
         if (fast_path)
             return joinRightColumns<TYPE, need_filter, /*fast_path=*/true, /*flag_per_row=*/false>(
                 *tables[0], added_columns, used_flags, selector.getRange());

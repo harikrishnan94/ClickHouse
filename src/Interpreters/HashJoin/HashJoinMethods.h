@@ -72,6 +72,16 @@ private:
         JoinStuff::JoinUsedFlags & used_flags,
         const ScatteredBlock::Selector::Range & selector);
 
+    /// The batched version of `joinRightColumns`, for the joins that `usesBatchedProbe` selects when the probe records row refs.
+    /// It is a separate function on purpose. Inside `joinRightColumns`, this code changes the register allocation of the loop
+    /// for String keys, and that loop gets about 5% slower on ARM.
+    template <HashJoin::Type TYPE, bool need_filter, bool fast_path, typename AddedColumns>
+    static size_t joinRightColumnsBatched(
+        const HashJoinTable & table,
+        AddedColumns & added_columns,
+        JoinStuff::JoinUsedFlags & used_flags,
+        const ScatteredBlock::Selector::Range & selector);
+
     /// First to collect all matched rows refs by join keys, then filter out rows which are not true in additional filter expression.
     template <HashJoin::Type TYPE, typename AddedColumns>
     static size_t joinRightColumnsWithAdditionalFilter(

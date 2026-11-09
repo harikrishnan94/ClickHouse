@@ -141,6 +141,16 @@ ALWAYS_INLINE size_t selectorIndexAt(const Selector & selector, size_t k)
         return selector.first + k;
 }
 
+/// The word a probe records for a matched key: a `RowRefList` cell's list word, or the encoded `RowRef`.
+template <typename Mapped>
+ALWAYS_INLINE UInt64 cellWord(const Mapped & mapped)
+{
+    if constexpr (std::is_same_v<std::decay_t<Mapped>, RowRefList>)
+        return mapped.word;
+    else
+        return mapped.encode();
+}
+
 /// Drives the adaptive software prefetch logic in the hash join probe loop.
 template <typename PrefetchAction>
 struct JoinPrefetcher
@@ -645,6 +655,48 @@ public:
 
             body(i, ind, skip_row ? FindResult() : key_getter.findKey(map, ind, pool), offset);
         }
+    }
+
+    /// The lookup half of a batched probe. It writes `words[i]` for every row `i` of `selector`. The word is the cell word of
+    /// the key, or 0 if the key is not found, NULL or masked. The join kind matters only through `set_flags`, so one copy serves
+    /// many kinds. For a found key:
+    ///  - An ASOF join records the row that `findAsof` picks for the left row, or 0 if there is none. `asof_key` is the left
+    ///    ASOF column.
+    ///  - Otherwise the word is the cell word.
+    ///  - `set_flags` marks the key used, as the right side of a RIGHT or FULL join needs.
+    template <Type TYPE, typename Maps, bool fast_path, bool set_flags>
+    NO_INLINE void probeWords(
+        const JoinOnKeyColumns & keys,
+        const ScatteredBlock::Selector::Range & selector,
+        bool enable_prefetch,
+        UInt64 * words,
+        JoinStuff::JoinUsedFlags & used_flags [[maybe_unused]],
+        const IColumn * asof_key [[maybe_unused]]) const
+    {
+        IColumn::Offset unused_offset = 0;
+        probe<TYPE, Maps, fast_path>(
+            keys,
+            selector,
+            enable_prefetch,
+            unused_offset,
+            [&](size_t i, size_t ind [[maybe_unused]], const auto & find_result, IColumn::Offset &) __attribute__((always_inline))
+            {
+                UInt64 word = 0;
+                if (find_result.isFound())
+                {
+                    if constexpr (std::is_same_v<Maps, HashJoin::MapsAsof>)
+                    {
+                        const RowRef * row_ref = find_result.getMapped()->findAsof(*asof_key, ind);
+                        word = row_ref ? row_ref->encode() : 0;
+                    }
+                    else
+                        word = cellWord(find_result.getMapped());
+
+                    if constexpr (set_flags)
+                        used_flags.template setUsed<true, false>(find_result);
+                }
+                words[i] = word;
+            });
     }
 
     /// Looks up the key of every row of `selector` in `tables`, in order. For each table that has the key, calls
