@@ -49,6 +49,9 @@ constexpr size_t max_disjunct_batch_rows = 8192;
 /// 100 thousand to 30 million keys, by at most 6 %.
 constexpr size_t two_steps_min_match_percent = 100;
 
+/// How many rows ahead the used flag of a key is prefetched when the matches of a search batch of the ring are added.
+constexpr size_t amac_flag_prefetch_rows = 16;
+
 /// Adds the matches of the current batch to the result and returns how many rows of the batch it finished. A fused function has
 /// this type too, and finds the keys itself.
 using AddMatchesFn = size_t (*)(JoinRightColumns &);
@@ -73,7 +76,7 @@ public:
         /// (`two_steps_min_match_percent`).
         bool picks_by_match_rate = false;
         /// [need_filter]. With `words_in_row_refs`: what runs in a block that the ring takes, in place of `add_matches`, and
-        /// in place of `fused` for a fused join.
+        /// in place of `fused` for a fused join. In a join with a used flag per key, it prefetches the flags.
         AddMatchesFn ring_batches[2]{};
         /// The most rows of a batch, or 0 for a single batch of the whole block. With a value other than 0, the row limit
         /// applies: the first batch of a call has at most as many rows as the limit, and each later batch twice as many as the

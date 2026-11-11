@@ -60,7 +60,8 @@ JoinRightColumns::JoinRightColumns(
         if (!functions.picks_by_match_rate || two_steps)
             search_batch_find_keys_fn = functions.find_keys[0][fast_path];
         add_matches_fn = search_batch_find_keys_fn ? functions.add_matches[need_filter] : functions.fused[need_filter][fast_path];
-        if (ringTakes(0, rows))
+        const bool ring_searches = ringTakes(0, rows);
+        if (ring_searches)
         {
             search_batch_find_keys_fn = ringFn(0);
             add_matches_fn = functions.ring_batches[need_filter];
@@ -73,7 +74,13 @@ JoinRightColumns::JoinRightColumns(
             const size_t num_search_batches = (rows + max_search_batch_rows - 1) / max_search_batch_rows;
             search_batch_rows = num_search_batches ? (rows + num_search_batches - 1) / num_search_batches : 0;
             if (functions.records_key_offsets)
-                key_offsets.resize(search_batch_rows);
+            {
+                /// The prefetches of the last rows of a search batch read the key offsets past it.
+                if (ring_searches)
+                    key_offsets.resize_fill(search_batch_rows + amac_flag_prefetch_rows, 0);
+                else
+                    key_offsets.resize(search_batch_rows);
+            }
         }
     }
     else
