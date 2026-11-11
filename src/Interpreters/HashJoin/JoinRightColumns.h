@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/AmacRing.h>
 #include <Interpreters/HashJoin/HashJoinTable.h>
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/LookupMethod.h>
@@ -25,6 +26,7 @@ namespace DB::JoinProbe
   *    rest of the block.
   * The key search is in `FindKeys.h`, and what a lookup method implements is in `LookupMethod.h`. The pass, the match steps
   * and `selectFunctions` are in `JoinRightColumnsImpl.h`.
+  * The AMAC ring of `AmacLookup.h` does the key search of a disjunct that passes `ringTakes`.
   */
 
 class JoinRightColumns;
@@ -54,6 +56,9 @@ public:
     {
         /// Several disjuncts or an additional filter: the key search, [later disjunct][fast_path].
         FindKeysFn find_keys[2][2]{};
+        /// The same searches by the AMAC ring (`AmacLookup.h`), [buckets in the Robin Hood mode][later disjunct][fast_path].
+        /// Null where the ring has none.
+        FindKeysFn find_keys_ring[2][2][2]{};
         /// Several disjuncts or an additional filter: the match step, [need_filter].
         AddMatchesFn add_matches[2]{};
         /// One disjunct and no additional filter: the pass that finds the keys and adds the matches, [fast_path].
@@ -140,12 +145,23 @@ private:
     /// The rows of the batch, or for a join that stops at the first match, the rows that no disjunct before `k` matched.
     [[nodiscard]] ProbeRows rowsToProbe(size_t k) const;
 
+    /// The key search of disjunct `k` by the AMAC ring, for the mode of the buckets of its table. Null where the ring has none.
+    [[nodiscard]] FindKeysFn ringFn(size_t k) const { return find_keys_ring_fns[tables[k]->bucketsAreRobinHood()][k != 0]; }
+
+    /// Whether the ring searches `probe_rows` rows of disjunct `k`.
+    [[nodiscard]] bool ringTakes(size_t k, size_t probe_rows) const
+    {
+        return probe_rows >= amac_min_rows && added_columns.enable_prefetch && tables[k]->takesAmacLookup() && ringFn(k);
+    }
+
     size_t findKeys(size_t k)
     {
-        return find_keys_fns[k != 0](
+        const ProbeRows probe_rows = rowsToProbe(k);
+        const FindKeysFn find_keys = ringTakes(k, probe_rows.size) ? ringFn(k) : find_keys_fns[k != 0];
+        return find_keys(
             {*tables[k],
              added_columns.join_on_keys[k],
-             rowsToProbe(k),
+             probe_rows,
              added_columns.enable_prefetch,
              batch_first_row,
              matchWordsOf(k),
@@ -160,6 +176,7 @@ private:
 
     /// What `run` calls: [later disjunct]. Empty with `words_in_row_refs`, where `add_matches_fn` finds the keys itself.
     FindKeysFn find_keys_fns[2]{};
+    FindKeysFn find_keys_ring_fns[2][2]{}; /// [buckets in the Robin Hood mode][later disjunct]
     AddMatchesFn add_matches_fn = nullptr;
 
     PaddedPODArray<MatchWord> disjunct_match_words;

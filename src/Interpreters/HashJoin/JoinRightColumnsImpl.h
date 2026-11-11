@@ -4,6 +4,7 @@
 #include <Columns/IColumn.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/AmacLookup.h>
 #include <Interpreters/HashJoin/FindKeys.h>
 #include <Interpreters/HashJoin/JoinFeatures.h>
 #include <Interpreters/HashJoin/JoinRightColumns.h>
@@ -891,8 +892,13 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
     /// `later` is true for the disjuncts after the first.
     const auto select_find_keys = [&](bool later, FindKeysMode mode)
     {
-        functions.find_keys[later][0] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, /*fast_path=*/false);
-        functions.find_keys[later][1] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, /*fast_path=*/true);
+        for (const bool fast_path : {false, true})
+        {
+            functions.find_keys[later][fast_path] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, fast_path);
+            /// The ring has no search that stops at the row limit. It has one copy for buckets in the Robin Hood mode.
+            functions.find_keys_ring[0][later][fast_path] = selectFindKeys<Maps, AmacLookup<false>>(key_type, mode, fast_path);
+            functions.find_keys_ring[1][later][fast_path] = selectFindKeys<Maps, AmacLookup<true>>(key_type, mode, fast_path);
+        }
     };
 
     /// A join kind with `JoinFeatures::need_filter` always sets `AddedColumns::need_filter`, so it needs no copy of a function
