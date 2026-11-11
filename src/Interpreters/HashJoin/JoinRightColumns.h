@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/AmacRing.h>
 #include <Interpreters/HashJoin/HashJoinTable.h>
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/LookupMethod.h>
@@ -24,6 +25,7 @@ namespace DB::JoinProbe
   * of `run` may stop at the row limit (`max_joined_block_size_rows`, counted by `added_rows`); the next call goes on with
   * the rest of the block. The key search is in `FindKeys.h`, and what a lookup method implements is in `LookupMethod.h`.
   * The match step and `selectFunctions` are in `JoinRightColumnsImpl.h`.
+  * The AMAC ring of `AmacLookup.h` finds the keys of a batch that passes `ringTakes`. Such a batch always runs in two steps.
   */
 
 class JoinRightColumns;
@@ -31,7 +33,8 @@ class JoinRightColumns;
 /// With one disjunct and no additional filter, a batch of `JoinRightColumns::run` is the whole block. The block is split
 /// into search batches: consecutive ranges of at most this many rows. For each search batch in turn, the probe searches the
 /// keys of its rows and then adds their matches. The limit keeps the match words and key offsets of a search batch in the
-/// L2 cache until its matches are added.
+/// L2 cache until its matches are added. They stay there even while the walk of the AMAC ring pulls the lines of the table
+/// through that cache.
 constexpr size_t max_search_batch_rows = 4096;
 
 /// With several disjuncts, the maximum number of rows in a batch of `JoinRightColumns::run` (see `Functions::max_batch_rows`).
@@ -59,6 +62,9 @@ public:
     struct Functions
     {
         FindKeysFn find_keys[2][2]{}; /// [later disjunct][fast_path]; empty for a join that is always fused
+        /// The same searches by the AMAC ring (`AmacLookup.h`): [buckets in the Robin Hood mode][later disjunct][fast_path].
+        /// Null where the ring has none.
+        FindKeysFn find_keys_ring[2][2][2]{};
         /// [need_filter]. With one disjunct and no additional filter (`words_in_row_refs`), the function also runs the key
         /// search, on search batches.
         AddMatchesFn add_matches[2]{};
@@ -66,6 +72,9 @@ public:
         /// Set when both `fused` and the two steps are set. The match rate of the join then picks one of them for each block
         /// (`two_steps_min_match_percent`).
         bool picks_by_match_rate = false;
+        /// [need_filter]. With `words_in_row_refs`: what runs in a block that the ring takes, in place of `add_matches`, and
+        /// in place of `fused` for a fused join.
+        AddMatchesFn ring_batches[2]{};
         /// The most rows of a batch, or 0 for a single batch of the whole block. With a value other than 0, the row limit
         /// applies: the first batch of a call has at most as many rows as the limit, and each later batch twice as many as the
         /// one before, up to this value. So a call that stops early at the limit wastes few lookups.
@@ -73,7 +82,7 @@ public:
         /// One disjunct without an additional filter keeps its match words at the end of the row refs.
         bool words_in_row_refs = false;
         /// For a join with one disjunct and a used flag per key: the flag is indexed by the key's cell offset, which a match
-        /// word does not carry.
+        /// word does not carry. Also set for a fused join, which records the offsets only in a block that the ring takes.
         bool records_key_offsets = false;
         bool stops_at_first_match = false;
     };
@@ -164,12 +173,23 @@ public:
 private:
     void startBatch(size_t done);
 
+    /// The key search of disjunct `k` by the AMAC ring, for the mode of the buckets of its table. Null where the ring has none.
+    [[nodiscard]] FindKeysFn ringFn(size_t k) const { return find_keys_ring_fns[tables[k]->bucketsAreRobinHood()][k != 0]; }
+
+    /// Whether the ring searches a batch of `probe_rows` rows in disjunct `k`.
+    [[nodiscard]] bool ringTakes(size_t k, size_t probe_rows) const
+    {
+        return probe_rows >= amac_min_rows && added_columns.enable_prefetch && tables[k]->takesAmacLookup() && ringFn(k);
+    }
+
     size_t findKeys(size_t k)
     {
-        return find_keys_fns[k != 0](
+        const ProbeRows probe_rows = rowsToProbe(k);
+        const FindKeysFn find_keys = ringTakes(k, probe_rows.size) ? ringFn(k) : find_keys_fns[k != 0];
+        return find_keys(
             {*tables[k],
              added_columns.join_on_keys[k],
-             rowsToProbe(k),
+             probe_rows,
              added_columns.enable_prefetch,
              batch_first_row,
              matchWordsOf(k),
@@ -184,7 +204,8 @@ private:
 
     /// What `run` calls: [later disjunct]. Empty with `words_in_row_refs`, where `add_matches_fn` runs the key search itself.
     FindKeysFn find_keys_fns[2]{};
-    /// What `findKeysOfSearchBatch` calls. Null in a block that takes the fused loop.
+    FindKeysFn find_keys_ring_fns[2][2]{}; /// [buckets in the Robin Hood mode][later disjunct]
+    /// What `findKeysOfSearchBatch` calls. Null in a block that takes the fused loop and that the ring does not take.
     FindKeysFn search_batch_find_keys_fn = nullptr;
     AddMatchesFn add_matches_fn = nullptr;
 

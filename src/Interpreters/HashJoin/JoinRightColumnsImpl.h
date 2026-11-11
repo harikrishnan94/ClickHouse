@@ -4,6 +4,7 @@
 #include <Columns/IColumn.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/AmacLookup.h>
 #include <Interpreters/HashJoin/FindKeys.h>
 #include <Interpreters/HashJoin/JoinFeatures.h>
 #include <Interpreters/HashJoin/JoinRightColumns.h>
@@ -291,9 +292,9 @@ struct MatchRules
 /// writes the filter, the replication offset and the row ref. The rows must come in row order. The row refs are kept in
 /// order at the front of `JoinRightColumns::match_words`.
 /// With `branch_free`, `add` serves the match step after the key search and writes every row. A missing key must then have
-/// the offset `HashJoinTable::missingKeyOffset`, whose flag nothing reads. Only the joins that are not always fused
-/// (`MatchRules::fused_with_one_disjunct`) take this step. Without `branch_free`, `addFound` and `addMiss` serve a fused loop
-/// and write only the rows with output.
+/// the offset `HashJoinTable::missingKeyOffset`, whose flag nothing reads. A join that is always fused
+/// (`MatchRules::fused_with_one_disjunct`) takes this step only in a block that the AMAC ring takes. Without `branch_free`,
+/// `addFound` and `addMiss` serve a fused loop and write only the rows with output.
 template <typename Rules, bool need_filter, bool branch_free>
 class MatchAdder
 {
@@ -331,9 +332,9 @@ public:
     ALWAYS_INLINE void add(size_t i, MatchWord word, size_t key_offset [[maybe_unused]])
     {
         static_assert(branch_free);
-        static_assert(Rules::used_flag_action != UsedFlagAction::SetUsedOnce, "A join that claims its keys is always fused");
-        static_assert(Rules::adds_row_ref, "A join that adds no row ref, such as ANTI, is always fused");
-        if constexpr (Rules::used_flag_action == UsedFlagAction::SetUsed)
+        if constexpr (Rules::used_flag_action == UsedFlagAction::SetUsedOnce)
+            word = JoinStuff::JoinUsedFlags::setUsedOnceAt(offset_flags, key_offset) ? word : 0;
+        else if constexpr (Rules::used_flag_action == UsedFlagAction::SetUsed)
             JoinStuff::JoinUsedFlags::setUsedAt(offset_flags, key_offset);
         addEveryRow(i, asofRow(i, word));
     }
@@ -431,7 +432,7 @@ private:
     ALWAYS_INLINE void addEveryRow(size_t i, MatchWord word)
     {
         const size_t hit = word != 0;
-        size_t hit_rows = hit;
+        size_t hit_rows = Rules::adds_row_ref ? hit : 0;
         MatchWord kept_word = word;
         if constexpr (Rules::on_match == OnMatch::AllRowsOfKey)
         {
@@ -454,19 +455,29 @@ private:
         const size_t out_rows = default_row ? hit_rows + 1 - hit : hit_rows;
         if constexpr (need_filter)
         {
-            filter[i] = static_cast<UInt8>(hit);
+            size_t pass = 0;
+            if constexpr (Rules::sets_filter_on_match)
+                pass = hit;
+            else if constexpr (Rules::keeps_rows_without_match)
+                pass = 1 - hit;
+            filter[i] = static_cast<UInt8>(pass);
             matched[matched_count] = i;
-            matched_count += hit;
+            matched_count += pass;
         }
         if constexpr (Features::need_replication)
         {
             offset += out_rows;
             offsets[i] = offset;
         }
-        if constexpr (!keeps_words_in_place)
+        if constexpr (Rules::adds_row_ref && !keeps_words_in_place)
         {
             kept_words[kept] = kept_word;
             kept += default_row ? 1 : hit;
+        }
+        else if constexpr (default_row && !keeps_words_in_place)
+        {
+            kept_words[kept] = 0;
+            kept += 1 - hit;
         }
         row_count += out_rows;
         matches += hit_rows;
@@ -956,10 +967,24 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
 
     JoinRightColumns::Functions functions;
     /// In the lambdas below, `later` is true for the disjuncts after the first.
-    const auto select_find_keys = [&](bool later, FindKeysMode mode)
+    /// The key search by the AMAC ring, in two copies: for a table whose buckets are not in the Robin Hood mode, and for one
+    /// whose buckets are.
+    const auto select_find_keys_ring = [&](bool later, FindKeysMode mode)
+    {
+        functions.find_keys_ring[0][later][0] = selectFindKeys<Maps, AmacLookup<false>>(key_type, mode, /*fast_path=*/false);
+        functions.find_keys_ring[0][later][1] = selectFindKeys<Maps, AmacLookup<false>>(key_type, mode, /*fast_path=*/true);
+        functions.find_keys_ring[1][later][0] = selectFindKeys<Maps, AmacLookup<true>>(key_type, mode, /*fast_path=*/false);
+        functions.find_keys_ring[1][later][1] = selectFindKeys<Maps, AmacLookup<true>>(key_type, mode, /*fast_path=*/true);
+    };
+    const auto select_find_keys_in_row_order = [&](bool later, FindKeysMode mode)
     {
         functions.find_keys[later][0] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, /*fast_path=*/false);
         functions.find_keys[later][1] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, /*fast_path=*/true);
+    };
+    const auto select_find_keys = [&](bool later, FindKeysMode mode)
+    {
+        select_find_keys_in_row_order(later, mode);
+        select_find_keys_ring(later, mode);
     };
 
     /// A join kind with `JoinFeatures::need_filter` always sets `AddedColumns::need_filter`, so it needs no copy of a function
@@ -1005,6 +1030,14 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
     }
 
     functions.words_in_row_refs = true;
+    functions.records_key_offsets = Rules::used_flag_action != UsedFlagAction::None;
+    const FindKeysMode mode = functions.records_key_offsets ? FindKeysMode::WordsAndKeyOffsets : FindKeysMode::Words;
+    /// A block that the ring takes runs in two steps, also for a fused join: the ring retires rows out of order.
+    select_find_keys_ring(false, mode);
+    if constexpr (!Features::need_filter)
+        functions.ring_batches[0] = &findKeysInBatchesAndAddMatches<Rules, false>;
+    functions.ring_batches[1] = &findKeysInBatchesAndAddMatches<Rules, true>;
+
     if constexpr (!Features::is_asof_join)
     {
         if constexpr (!Features::need_filter)
@@ -1019,16 +1052,15 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
             return functions;
     }
 
-    /// Only the joins that are not always fused compile the two steps. The match rate then picks the fused loop or the two
-    /// steps for each block. ASOF has no fused loop and always takes the two steps.
+    /// Only the joins that are not always fused take the two steps in a block that the ring does not take. The match rate
+    /// then picks the fused loop or the two steps for each block. ASOF has no fused loop and always takes the two steps.
     if constexpr (!Rules::fused_with_one_disjunct)
     {
         functions.picks_by_match_rate = !Features::is_asof_join;
-        functions.records_key_offsets = Rules::used_flag_action != UsedFlagAction::None;
-        select_find_keys(false, functions.records_key_offsets ? FindKeysMode::WordsAndKeyOffsets : FindKeysMode::Words);
         if constexpr (!Features::need_filter)
             functions.add_matches[0] = &findKeysInBatchesAndAddMatches<Rules, false>;
         functions.add_matches[1] = &findKeysInBatchesAndAddMatches<Rules, true>;
+        select_find_keys_in_row_order(false, mode);
     }
     return functions;
 }
