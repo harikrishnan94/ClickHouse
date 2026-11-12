@@ -11,6 +11,7 @@
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/KnownRowsHolder.h>
 #include <Interpreters/HashJoin/MatchedRowsStats.h>
+#include <Interpreters/HashJoin/PrepareKeys.h>
 
 #include <type_traits>
 
@@ -898,6 +899,8 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
             /// The ring has no search that stops at the row limit. It has one copy for buckets in the Robin Hood mode.
             functions.find_keys_ring[0][later][fast_path] = selectFindKeys<Maps, AmacLookup<false>>(key_type, mode, fast_path);
             functions.find_keys_ring[1][later][fast_path] = selectFindKeys<Maps, AmacLookup<true>>(key_type, mode, fast_path);
+            functions.prepare_keys[later][fast_path]
+                = selectPrepareKeys<Maps>(key_type, mode == FindKeysMode::WordsOfRowList, fast_path);
         }
     };
 
