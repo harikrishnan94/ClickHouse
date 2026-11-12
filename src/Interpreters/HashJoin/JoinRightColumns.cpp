@@ -60,9 +60,12 @@ JoinRightColumns::JoinRightColumns(
     {
         find_keys_fns[0] = functions.find_keys[0][fast_path];
         find_keys_fns[1] = functions.find_keys[1][fast_path];
-        for (const size_t robin_hood : {0, 1})
-            for (const size_t later : {0, 1})
+        for (const size_t later : {0, 1})
+        {
+            for (const size_t robin_hood : {0, 1})
                 find_keys_ring_fns[robin_hood][later] = functions.find_keys_ring[robin_hood][later][fast_path];
+            prepare_keys_fns[later] = functions.prepare_keys[later][fast_path];
+        }
         add_matches_fn = functions.add_matches[need_filter];
         if (functions.records_key_offsets)
             key_offsets.resize(max_batch_rows);
