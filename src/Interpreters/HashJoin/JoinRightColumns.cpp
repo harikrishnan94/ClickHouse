@@ -48,11 +48,18 @@ JoinRightColumns::JoinRightColumns(
         added_columns.join_on_keys,
         [](const auto & keys) { return !keys.null_map && keys.join_mask_column.getKind() == JoinCommon::JoinMask::Kind::AllTrue; });
     const bool need_filter = added_columns.need_filter;
+    for (const size_t later : {0, 1})
+        prepare_keys_fns[later] = functions.prepare_keys[later][fast_path];
 
     if (functions.words_in_row_refs)
     {
         /// The batch is the whole block, and `add_matches_fn` finds the keys itself, on search batches of about equal size.
         add_matches_fn = functions.find_keys_and_add_matches[fast_path];
+        if (ringTakes(0, rows))
+        {
+            if (const AddMatchesFn ring = functions.find_keys_and_add_matches_ring[tables[0]->bucketsAreRobinHood()][fast_path])
+                add_matches_fn = ring;
+        }
         const size_t num_search_batches = (rows + max_search_batch_rows - 1) / max_search_batch_rows;
         search_batch_rows = num_search_batches ? (rows + num_search_batches - 1) / num_search_batches : 0;
     }
@@ -60,12 +67,9 @@ JoinRightColumns::JoinRightColumns(
     {
         find_keys_fns[0] = functions.find_keys[0][fast_path];
         find_keys_fns[1] = functions.find_keys[1][fast_path];
-        for (const size_t later : {0, 1})
-        {
-            for (const size_t robin_hood : {0, 1})
+        for (const size_t robin_hood : {0, 1})
+            for (const size_t later : {0, 1})
                 find_keys_ring_fns[robin_hood][later] = functions.find_keys_ring[robin_hood][later][fast_path];
-            prepare_keys_fns[later] = functions.prepare_keys[later][fast_path];
-        }
         add_matches_fn = functions.add_matches[need_filter];
         if (functions.records_key_offsets)
             key_offsets.resize(max_batch_rows);
