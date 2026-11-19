@@ -821,6 +821,11 @@ private:
     /// Rows emitted from hash-table matches across all probe threads (excludes default/miss rows).
     std::optional<size_t> hash_table_matches;
 
+    /// For the probes that pick the fused loop or the two steps for each block (`JoinProbe::two_steps_min_match_percent`):
+    /// the left rows of their blocks so far, and the right rows that matched them.
+    mutable std::atomic<size_t> match_rate_probed_rows = 0;
+    mutable std::atomic<size_t> match_rate_matched_rows = 0;
+
     /// Whether the maps store keys alone, see `JoinMapsKind::Set`. Decided once, before they are created.
     bool use_set_maps = false;
 
