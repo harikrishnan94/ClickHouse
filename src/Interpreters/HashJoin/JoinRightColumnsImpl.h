@@ -846,16 +846,21 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
     {
         const size_t size = std::min(join.search_batch_rows, join.batch_rows - begin);
         const size_t first = join.batch_first_row + begin;
+        const FindKeysArgs args{
+            *join.tables[0],
+            join.added_columns.join_on_keys[0],
+            {.first = first, .rows = nullptr, .size = size},
+            join.added_columns.enable_prefetch,
+            first,
+            nullptr,
+            nullptr,
+            size};
+        /// The ring does not build keys. For a key type that builds them, the prepare step builds the keys of the search batch.
+        if constexpr (!std::is_same_v<Lookup, PrefetchingLookup>)
+            join.prepareKeysOfFirstDisjunct(args);
         /// The key getter is kept: the block is searched in several calls.
         Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(
-            {*join.tables[0],
-             join.added_columns.join_on_keys[0],
-             {.first = first, .rows = nullptr, .size = size},
-             join.added_columns.enable_prefetch,
-             first,
-             nullptr,
-             nullptr,
-             size},
+            args,
             [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
             {
                 if (!result.isFound())
@@ -869,14 +874,22 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
     return adder.finish();
 }
 
-template <typename Handling, bool fast_path>
+/// Null where `Lookup` has no search for the key type.
+template <typename Handling, bool fast_path, typename Lookup>
 AddMatchesFn selectFindKeysAndAddMatches(HashJoin::Type key_type)
 {
+    const auto of_type = [&]<HashJoin::Type TYPE>() -> AddMatchesFn
+    {
+        if constexpr (Lookup::template supports<TYPE, typename Handling::Maps>)
+            return &findKeysAndAddMatches<TYPE, fast_path, Handling, Lookup>;
+        else
+            return nullptr;
+    };
     switch (key_type)
     {
 #define M(TYPE) \
     case HashJoin::Type::TYPE: \
-        return &findKeysAndAddMatches<HashJoin::Type::TYPE, fast_path, Handling, PrefetchingLookup>;
+        return of_type.template operator()<HashJoin::Type::TYPE>();
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
     }
@@ -948,8 +961,22 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
 
     /// The pass reads `AddedColumns::need_filter` itself.
     functions.words_in_row_refs = true;
-    functions.find_keys_and_add_matches[0] = selectFindKeysAndAddMatches<typename Rules::Handling, false>(key_type);
-    functions.find_keys_and_add_matches[1] = selectFindKeysAndAddMatches<typename Rules::Handling, true>(key_type);
+    using Handling = typename Rules::Handling;
+    functions.find_keys_and_add_matches[0] = selectFindKeysAndAddMatches<Handling, false, PrefetchingLookup>(key_type);
+    functions.find_keys_and_add_matches[1] = selectFindKeysAndAddMatches<Handling, true, PrefetchingLookup>(key_type);
+    /// The pass with the AMAC ring, which retires the rows in row order, for a block that the ring takes. Not for a handling
+    /// with a used flag per key: the ring in row order keeps no key offsets.
+    if constexpr (Handling::used_flag_action == UsedFlagAction::None)
+    {
+        using Ring = AmacLookup<false, AmacRetire::InOrder>;
+        using RobinHoodRing = AmacLookup<true, AmacRetire::InOrder>;
+        functions.find_keys_and_add_matches_ring[0][0] = selectFindKeysAndAddMatches<Handling, false, Ring>(key_type);
+        functions.find_keys_and_add_matches_ring[0][1] = selectFindKeysAndAddMatches<Handling, true, Ring>(key_type);
+        functions.find_keys_and_add_matches_ring[1][0] = selectFindKeysAndAddMatches<Handling, false, RobinHoodRing>(key_type);
+        functions.find_keys_and_add_matches_ring[1][1] = selectFindKeysAndAddMatches<Handling, true, RobinHoodRing>(key_type);
+    }
+    for (const bool fast_path : {false, true})
+        functions.prepare_keys[0][fast_path] = selectPrepareKeys<Maps>(key_type, /*row_list=*/false, fast_path);
     return functions;
 }
 }
