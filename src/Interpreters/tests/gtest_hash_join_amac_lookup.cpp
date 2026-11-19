@@ -33,7 +33,7 @@ using namespace DB::JoinProbe;
 
 /// The key search of the AMAC ring (`AmacLookup.h`) must write the words that `PrefetchingLookup` writes for the same
 /// `FindKeysArgs`, and report the same key offsets for the found keys. The ring in row order must report the same words, in
-/// row order. The tests call the two `findKeys` on one frozen table,
+/// row order, and with flags the same key offsets. The tests call the two `findKeys` on one frozen table,
 /// because a query reaches the ring only with a table larger than the L2 cache. For a key type that builds its keys, the
 /// prepare step (`PrepareKeys.h`) runs before each search by the ring, as in the probe.
 namespace
@@ -323,9 +323,16 @@ void prepareKeysForRing(const HashJoinTable & table, const JoinOnKeyColumns & ke
 }
 
 /// Runs `Lookup` on `rows` of the table and gives each row to `on_row`, as a search of the probe does. Before the ring, the
-/// prepare step runs.
+/// prepare step runs. A ring that prefetches the used flags gets `flags`.
 template <typename Maps, typename Lookup, typename OnRow>
-void runLookup(const HashJoinTable & table, const JoinOnKeyColumns & keys, ProbeRows rows, size_t base, bool fast_path, OnRow && on_row)
+void runLookup(
+    const HashJoinTable & table,
+    const JoinOnKeyColumns & keys,
+    ProbeRows rows,
+    size_t base,
+    bool fast_path,
+    OnRow && on_row,
+    const UInt8 * flags = nullptr)
 {
     if constexpr (!std::is_same_v<Lookup, PrefetchingLookup>)
         prepareKeysForRing<Maps>(table, keys, rows, base, fast_path);
@@ -335,7 +342,12 @@ void runLookup(const HashJoinTable & table, const JoinOnKeyColumns & keys, Probe
         if constexpr (Lookup::template supports<TYPE, Maps>)
         {
             const auto with = [&]<bool fast, bool row_list>()
-            { Lookup::template run<TYPE, Maps, fast, row_list, /*keep_key_getter=*/true>(args, on_row); };
+            {
+                if constexpr (std::is_same_v<Lookup, PrefetchingLookup>)
+                    Lookup::template run<TYPE, Maps, fast, row_list, /*keep_key_getter=*/true>(args, on_row);
+                else
+                    Lookup::template run<TYPE, Maps, fast, row_list, /*keep_key_getter=*/true>(args, on_row, flags);
+            };
             if constexpr (!is_asof<Maps>)
             {
                 if (rows.rows)
@@ -378,16 +390,26 @@ std::vector<size_t> foundKeyOffsets(const HashJoinTable & table, const JoinOnKey
     return key_offsets;
 }
 
-/// Runs the ring in row order (`AmacRetire::InOrder`) on `rows`, and expects that `on_row` sees every row once, in increasing
-/// position, with the words `words_in_row_order`.
-template <typename Maps, bool robin_hood>
+/// Runs the ring in row order on `rows`, and expects that `on_row` sees every row once, in increasing position, with the
+/// words `words_in_row_order`. The ring with flags must also report the key offsets `key_offsets_in_row_order` of the found
+/// keys; it gets flags to prefetch, one byte per cell.
+template <typename Maps, bool robin_hood, AmacRetire retire>
 void expectRingInOrderRetiresRowsInOrder(
-    const HashJoinTable & table, const JoinOnKeyColumns & keys, ProbeRows rows, size_t base, bool fast_path, const std::vector<MatchWord> & words_in_row_order)
+    const HashJoinTable & table,
+    const JoinOnKeyColumns & keys,
+    ProbeRows rows,
+    size_t base,
+    bool fast_path,
+    const std::vector<MatchWord> & words_in_row_order,
+    const std::vector<size_t> & key_offsets_in_row_order)
 {
+    constexpr bool with_flags = retire == AmacRetire::InOrderWithFlags;
+    const std::vector<UInt8> flags(with_flags ? table.bufferSizeInCells() + 2 : 0);
     std::vector<MatchWord> words(words_in_row_order.size(), not_visited);
+    std::vector<size_t> key_offsets(key_offsets_in_row_order.size(), not_visited);
     size_t next_position = 0;
     size_t out_of_order = 0;
-    runLookup<Maps, AmacLookup<robin_hood, AmacRetire::InOrder>>(
+    runLookup<Maps, AmacLookup<robin_hood, retire>>(
         table,
         keys,
         rows,
@@ -398,11 +420,20 @@ void expectRingInOrderRetiresRowsInOrder(
             out_of_order += i != next_position;
             ++next_position;
             words[ind - base] = matchWordOf<Maps>(result);
-        });
+            if (result.isFound())
+                key_offsets[ind - base] = result.getOffset();
+        },
+        with_flags ? flags.data() : nullptr);
     ASSERT_EQ(out_of_order, 0u) << "rows that the ring in row order retired out of order";
     ASSERT_EQ(next_position, rows.size);
-    ASSERT_EQ(static_cast<size_t>(std::ranges::mismatch(words, words_in_row_order).in1 - words.begin()), words.size())
-        << "the first slot whose words differ in row order";
+    const auto first_difference = [](const auto & left, const auto & right) -> size_t
+    {
+        return static_cast<size_t>(std::ranges::mismatch(left, right).in1 - left.begin());
+    };
+    ASSERT_EQ(first_difference(words, words_in_row_order), words.size()) << "the first slot whose words differ in row order";
+    if constexpr (with_flags)
+        ASSERT_EQ(first_difference(key_offsets, key_offsets_in_row_order), key_offsets.size())
+            << "the first slot whose key offsets differ in row order";
 }
 
 /// Searches the keys of `rows` with `PrefetchingLookup` and with the ring, and expects the same words, and the same key
@@ -443,10 +474,21 @@ void expectRingFindsWhatPrefetchingLookupFinds(
     const std::vector<size_t> key_offsets_ring = robin_hood
         ? foundKeyOffsets<Maps, AmacLookup<true>>(table, keys, rows, base, slots, fast_path)
         : foundKeyOffsets<Maps, AmacLookup<false>>(table, keys, rows, base, slots, fast_path);
+    const auto in_order = [&]<bool rh, AmacRetire retire>()
+    {
+        expectRingInOrderRetiresRowsInOrder<Maps, rh, retire>(
+            table, keys, rows, base, fast_path, words_in_row_order, key_offsets_in_row_order);
+    };
     if (robin_hood)
-        ASSERT_NO_FATAL_FAILURE((expectRingInOrderRetiresRowsInOrder<Maps, true>(table, keys, rows, base, fast_path, words_in_row_order)));
+    {
+        ASSERT_NO_FATAL_FAILURE((in_order.template operator()<true, AmacRetire::InOrder>()));
+        ASSERT_NO_FATAL_FAILURE((in_order.template operator()<true, AmacRetire::InOrderWithFlags>()));
+    }
     else
-        ASSERT_NO_FATAL_FAILURE((expectRingInOrderRetiresRowsInOrder<Maps, false>(table, keys, rows, base, fast_path, words_in_row_order)));
+    {
+        ASSERT_NO_FATAL_FAILURE((in_order.template operator()<false, AmacRetire::InOrder>()));
+        ASSERT_NO_FATAL_FAILURE((in_order.template operator()<false, AmacRetire::InOrderWithFlags>()));
+    }
 
     const auto first_difference = [](const auto & left, const auto & right) -> size_t
     {

@@ -54,7 +54,15 @@ enum class AmacRetire : UInt8
     /// In row order. A finished lookup waits in a reorder window until every earlier row has retired (`amac_reorder_window`).
     /// The window keeps no key offset: `getOffset` of a found key gives 0.
     InOrder,
+    /// In row order, for a join with a used flag per key. The window keeps the key offsets. The flag of a found key is
+    /// prefetched when the key is found, and the row retires only after `amac_flag_lag_lookups` more lookups have finished,
+    /// so that the flag is in the cache by then.
+    InOrderWithFlags,
 };
+
+/// With `AmacRetire::InOrderWithFlags`: how many lookups finish after a found key before its row retires. The oldest row of
+/// the window usually retires as soon as it finishes, so without the wait its flag would have no time to arrive.
+constexpr UInt32 amac_flag_lag_lookups = 16;
 
 /** The policy that `amacRun` drives to find keys in a `TwoLevelHashTable` map of the join. The lookups finish out of order.
   * A visit learns the result of its row when it reads its key's cell or learns that the key is missing, so nothing reads the
@@ -69,6 +77,7 @@ template <typename KeyGetter, typename Map, bool robin_hood, bool fast_path, boo
 struct AmacFindPolicy
 {
     static constexpr bool in_order = retire != AmacRetire::OutOfOrder;
+    static constexpr bool with_flags = retire == AmacRetire::InOrderWithFlags;
     using Cell = typename Map::cell_type;
     using Bucket = typename Map::BucketCells;
     static constexpr bool one_bucket = Map::NUM_BUCKETS == 1;
@@ -134,9 +143,16 @@ struct AmacFindPolicy
         std::array<uintptr_t, amac_reorder_window> done{};
         size_t retired = 0; /// the oldest chunk row that `on_row` has not seen
     };
+    /// With flags: also the key offset of each row, and how many lookups had finished when the row finished.
+    struct WindowWithFlags : public Window
+    {
+        std::array<size_t, amac_reorder_window> offset{};
+        std::array<UInt32, amac_reorder_window> finished_at{};
+        UInt32 finished = 0;
+    };
     struct RingWithWindow : public SlotRing
     {
-        Window window;
+        std::conditional_t<with_flags, WindowWithFlags, Window> window;
     };
     using Ring = std::conditional_t<in_order, RingWithWindow, SlotRing>;
     static_assert(!in_order || alignof(Cell) >= 2, "Bit 0 of a cell address marks a found key");
@@ -160,6 +176,7 @@ struct AmacFindPolicy
     const StoredKey * ready_keys = nullptr; /// with `reads_ready_keys`: `[i]` is the key of the chunk's row `i`
     Arena & pool;
     OnRow on_row;
+    const UInt8 * found_flags = nullptr; /// with `with_flags`: the used flags of the join, indexed by the key offset
 
     [[nodiscard]] ALWAYS_INLINE const Bucket & bucketAt(size_t bucket [[maybe_unused]]) const
     {
@@ -206,7 +223,7 @@ struct AmacFindPolicy
     {
         const size_t i = ring.row[s];
         if constexpr (in_order)
-            finish(ring, i, 1);
+            finish(ring, i, 1, 0);
         else
             on_row(position_base + i, indexAt(i), AmacNotFound<Cell>{});
     }
@@ -215,37 +232,54 @@ struct AmacFindPolicy
     ALWAYS_INLINE void hit(Ring & ring, size_t s, const Cell * cell)
     {
         const size_t i = ring.row[s];
-        if constexpr (in_order)
+        if constexpr (retire == AmacRetire::InOrder)
         {
-            finish(ring, i, reinterpret_cast<uintptr_t>(cell) | 1);
+            finish(ring, i, reinterpret_cast<uintptr_t>(cell) | 1, 0);
             return;
         }
         const Bucket & bucket = bucketOf(ring, s);
         size_t offset = static_cast<size_t>(cell - bucket.cells) + 1;
         if constexpr (!one_bucket)
             offset += bucket.prefix;
-        on_row(position_base + i, indexAt(i), AmacFound<Cell>{cell, offset});
+        if constexpr (with_flags)
+        {
+            /// For reading: the join reads a flag first, and writes it only if no other row has claimed the key.
+            __builtin_prefetch(found_flags + offset, /*read*/ 0, /*locality*/ 3);
+            finish(ring, i, reinterpret_cast<uintptr_t>(cell) | 1, offset);
+        }
+        else
+            on_row(position_base + i, indexAt(i), AmacFound<Cell>{cell, offset});
     }
 
-    /// In order: puts the result of row `i` into the window, and retires the rows that are ready if `i` is the oldest.
-    ALWAYS_INLINE void finish(Ring & ring, size_t i, uintptr_t done)
+    /// In order: puts the result of row `i` into the window, and retires the rows that are ready if `i` is the oldest. With
+    /// flags, any finished lookup may let the oldest row retire, because it counts towards the wait of that row.
+    ALWAYS_INLINE void finish(Ring & ring, size_t i, uintptr_t done, size_t offset)
     {
-        storeFinished(ring, i, done);
-        if (i == ring.window.retired)
+        if constexpr (with_flags)
+            ++ring.window.finished;
+        storeFinished(ring, i, done, offset);
+        if (with_flags || i == ring.window.retired)
             retireReady(ring);
     }
 
     /// In order: a row that `start` answers at once only goes into the window. `mayStart`, a later `finish` or `finishRun`
     /// retires it.
-    ALWAYS_INLINE static void storeFinished(Ring & ring, size_t i, uintptr_t done)
+    ALWAYS_INLINE static void storeFinished(Ring & ring, size_t i, uintptr_t done, size_t offset [[maybe_unused]])
     {
-        ring.window.done[i % amac_reorder_window] = done;
+        const size_t w = i % amac_reorder_window;
+        ring.window.done[w] = done;
+        if constexpr (with_flags)
+        {
+            ring.window.offset[w] = offset;
+            ring.window.finished_at[w] = ring.window.finished;
+        }
     }
 
-    /// In order: calls `on_row` for the oldest rows that have finished, in row order, up to the first that has not.
-    ALWAYS_INLINE void retireReady(Ring & ring)
+    /// In order: calls `on_row` for the oldest rows that have finished, in row order, up to the first that has not. With
+    /// flags, also up to the first found key that waits for its flag, unless `all` is set.
+    ALWAYS_INLINE void retireReady(Ring & ring, bool all = false)
     {
-        Window & window = ring.window;
+        auto & window = ring.window;
         size_t r = window.retired;
         while (true)
         {
@@ -253,30 +287,38 @@ struct AmacFindPolicy
             const uintptr_t done = window.done[w];
             if (!done)
                 break;
+            size_t offset = 0;
+            if constexpr (with_flags)
+            {
+                if (!all && done != 1 && window.finished - window.finished_at[w] < amac_flag_lag_lookups)
+                    break;
+                offset = window.offset[w];
+            }
             window.done[w] = 0;
             if (done == 1)
                 on_row(position_base + r, indexAt(r), AmacNotFound<Cell>{});
             else
-                on_row(position_base + r, indexAt(r), AmacFound<Cell>{reinterpret_cast<const Cell *>(done - 1), 0});
+                on_row(position_base + r, indexAt(r), AmacFound<Cell>{reinterpret_cast<const Cell *>(done - 1), offset});
             ++r;
         }
         window.retired = r;
     }
 
     /// In order, for `amacRun`: whether row `row` may start. If the window is full, the rows that are ready retire first,
-    /// which includes the rows that `start` answered at once.
+    /// which includes the rows that `start` answered at once and the found keys that wait for their flags.
     ALWAYS_INLINE bool mayStart(Ring & ring, size_t row)
     {
         if (row - ring.window.retired < amac_reorder_window)
             return true;
-        retireReady(ring);
+        retireReady(ring, /*all=*/true);
         return row - ring.window.retired < amac_reorder_window;
     }
 
-    /// In order, for `amacRun` after the last lookup finished: the rows that `start` answered at once may still wait.
+    /// In order, for `amacRun` after the last lookup finished: the rows that `start` answered at once and the found keys
+    /// that wait for their flags may still be in the window.
     ALWAYS_INLINE void finishRun(Ring & ring, size_t rows [[maybe_unused]])
     {
-        retireReady(ring);
+        retireReady(ring, /*all=*/true);
         chassert(ring.window.retired == rows);
     }
 
@@ -288,7 +330,7 @@ struct AmacFindPolicy
             if (skip_data && skip_data[ind])
             {
                 if constexpr (in_order)
-                    storeFinished(ring, i, 1);
+                    storeFinished(ring, i, 1, 0);
                 else
                     on_row(position_base + i, ind, AmacNotFound<Cell>{});
                 return false;
@@ -301,7 +343,7 @@ struct AmacFindPolicy
             /// A lookup of the zero key reads only the zero-value cell, so it has no walk to overlap with other lookups.
             const Cell * cell = map.find(key);
             if constexpr (in_order)
-                storeFinished(ring, i, cell ? reinterpret_cast<uintptr_t>(cell) | 1 : 1);
+                storeFinished(ring, i, cell ? reinterpret_cast<uintptr_t>(cell) | 1 : 1, cell ? map.offsetInternal(cell) : 0);
             else if (cell)
                 on_row(position_base + i, ind, AmacFound<Cell>{cell, map.offsetInternal(cell)});
             else
@@ -426,7 +468,8 @@ struct AmacLookup
     }
 
     template <HashJoin::Type TYPE, typename Maps, bool fast_path, bool row_list, bool keep_key_getter = false, typename OnRow>
-    ALWAYS_INLINE static size_t run(const FindKeysArgs & args, OnRow && on_row)
+    /// With `AmacRetire::InOrderWithFlags`, `found_flags` are the used flags of the join, which the ring prefetches.
+    ALWAYS_INLINE static size_t run(const FindKeysArgs & args, OnRow && on_row, const UInt8 * found_flags = nullptr)
     {
         using Map = JoinMapOf<TYPE, Maps>;
         using Cell = typename Map::cell_type;
@@ -436,6 +479,7 @@ struct AmacLookup
         static_assert(std::is_void_v<decltype(on_row(0uz, 0uz, AmacNotFound<Cell>{}))>, "The ring cannot stop at a row");
 
         chassert(row_list == (args.rows.rows != nullptr));
+        chassert((retire == AmacRetire::InOrderWithFlags) == (found_flags != nullptr));
         const Map & map = args.table.mapOf<TYPE, Maps>();
         chassert(map.bucket_cells.size() == Map::NUM_BUCKETS, "The table was not frozen");
         chassert(map.robin_hood_buckets == (robin_hood ? Map::RobinHoodBuckets::All : Map::RobinHoodBuckets::None));
@@ -469,7 +513,8 @@ struct AmacLookup
                 .skip_data = skip_data,
                 .ready_keys = Policy::reads_ready_keys ? ready_keys + chunk_begin : nullptr,
                 .pool = pool,
-                .on_row = on_row};
+                .on_row = on_row,
+                .found_flags = found_flags};
             /// Inlined, so that what `on_row` captured by reference stays in registers, like the fields of the frame-local policy.
             [[clang::always_inline]] amacRun(policy, chunk_rows);
         }

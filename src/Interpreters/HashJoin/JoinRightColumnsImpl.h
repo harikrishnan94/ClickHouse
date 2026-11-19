@@ -841,7 +841,11 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
 {
     using Maps = typename Handling::Maps;
     static_assert(Lookup::retires_rows_in_order, "`MatchAdder` adds rows in row order");
+    constexpr bool ring = !std::is_same_v<Lookup, PrefetchingLookup>;
+    constexpr bool sets_flags = Handling::used_flag_action != UsedFlagAction::None;
     MatchAdder<Handling> adder(join);
+    /// The ring in row order prefetches the flags of a join with a used flag per key.
+    [[maybe_unused]] const UInt8 * flags = ring && sets_flags ? join.used_flags.offsetFlags() : nullptr;
     for (size_t begin = 0; begin < join.batch_rows; begin += join.search_batch_rows)
     {
         const size_t size = std::min(join.search_batch_rows, join.batch_rows - begin);
@@ -855,21 +859,24 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
             nullptr,
             nullptr,
             size};
-        /// The ring does not build keys. For a key type that builds them, the prepare step builds the keys of the search batch.
-        if constexpr (!std::is_same_v<Lookup, PrefetchingLookup>)
-            join.prepareKeysOfFirstDisjunct(args);
+        const auto on_row = [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
+        {
+            if (!result.isFound())
+                return adder.addMiss(begin + i);
+            size_t key_offset = 0;
+            if constexpr (sets_flags)
+                key_offset = result.getOffset();
+            adder.addFound(begin + i, key_offset, [&] __attribute__((always_inline)) { return matchWordOf<Maps>(result); });
+        };
         /// The key getter is kept: the block is searched in several calls.
-        Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(
-            args,
-            [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
-            {
-                if (!result.isFound())
-                    return adder.addMiss(begin + i);
-                size_t key_offset = 0;
-                if constexpr (Handling::used_flag_action != UsedFlagAction::None)
-                    key_offset = result.getOffset();
-                adder.addFound(begin + i, key_offset, [&] __attribute__((always_inline)) { return matchWordOf<Maps>(result); });
-            });
+        if constexpr (ring)
+        {
+            /// The ring does not build keys. For a key type that builds them, the prepare step builds the keys of the batch.
+            join.prepareKeysOfFirstDisjunct(args);
+            Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(args, on_row, flags);
+        }
+        else
+            Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(args, on_row);
     }
     return adder.finish();
 }
@@ -888,16 +895,18 @@ AddMatchesFn selectFindKeysAndAddMatches(HashJoin::Type key_type)
     UNREACHABLE();
 }
 
-/// The pass with the AMAC ring, which retires the rows in row order, for a block that the ring takes. Null where the ring has
-/// none, and for a handling with a used flag per key: the ring in row order keeps no key offsets.
+/// The pass with the AMAC ring, which retires the rows in row order, for a block that the ring takes. A handling with a used
+/// flag per key takes the ring that keeps the key offsets and prefetches the flags. Null where the ring has none.
 template <typename Handling, bool fast_path, bool robin_hood>
 AddMatchesFn selectFindKeysAndAddMatchesRing(HashJoin::Type key_type)
 {
     using Maps = typename Handling::Maps;
-    using Lookup = AmacLookup<robin_hood, AmacRetire::InOrder>;
+    constexpr AmacRetire retire
+        = Handling::used_flag_action == UsedFlagAction::None ? AmacRetire::InOrder : AmacRetire::InOrderWithFlags;
+    using Lookup = AmacLookup<robin_hood, retire>;
     const auto of_type = [&]<HashJoin::Type TYPE>() -> AddMatchesFn
     {
-        if constexpr (Lookup::template supports<TYPE, Maps> && Handling::used_flag_action == UsedFlagAction::None)
+        if constexpr (Lookup::template supports<TYPE, Maps>)
             return &findKeysAndAddMatches<TYPE, fast_path, Handling, Lookup>;
         else
             return nullptr;
