@@ -841,7 +841,11 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
 {
     using Maps = typename Handling::Maps;
     static_assert(Lookup::retires_rows_in_order, "`MatchAdder` adds rows in row order");
+    constexpr bool ring = !std::is_same_v<Lookup, PrefetchingLookup>;
+    constexpr bool sets_flags = Handling::used_flag_action != UsedFlagAction::None;
     MatchAdder<Handling> adder(join);
+    /// The ring in row order prefetches the flags of a join with a used flag per key.
+    [[maybe_unused]] const UInt8 * flags = ring && sets_flags ? join.used_flags.offsetFlags() : nullptr;
     for (size_t begin = 0; begin < join.batch_rows; begin += join.search_batch_rows)
     {
         const size_t size = std::min(join.search_batch_rows, join.batch_rows - begin);
@@ -855,21 +859,24 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
             nullptr,
             nullptr,
             size};
-        /// The ring does not build keys. For a key type that builds them, the prepare step builds the keys of the search batch.
-        if constexpr (!std::is_same_v<Lookup, PrefetchingLookup>)
-            join.prepareKeysOfFirstDisjunct(args);
+        const auto on_row = [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
+        {
+            if (!result.isFound())
+                return adder.addMiss(begin + i);
+            size_t key_offset = 0;
+            if constexpr (sets_flags)
+                key_offset = result.getOffset();
+            adder.addFound(begin + i, key_offset, [&] __attribute__((always_inline)) { return matchWordOf<Maps>(result); });
+        };
         /// The key getter is kept: the block is searched in several calls.
-        Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(
-            args,
-            [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
-            {
-                if (!result.isFound())
-                    return adder.addMiss(begin + i);
-                size_t key_offset = 0;
-                if constexpr (Handling::used_flag_action != UsedFlagAction::None)
-                    key_offset = result.getOffset();
-                adder.addFound(begin + i, key_offset, [&] __attribute__((always_inline)) { return matchWordOf<Maps>(result); });
-            });
+        if constexpr (ring)
+        {
+            /// The ring does not build keys. For a key type that builds them, the prepare step builds the keys of the batch.
+            join.prepareKeysOfFirstDisjunct(args);
+            Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(args, on_row, flags);
+        }
+        else
+            Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(args, on_row);
     }
     return adder.finish();
 }
@@ -964,17 +971,16 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
     using Handling = typename Rules::Handling;
     functions.find_keys_and_add_matches[0] = selectFindKeysAndAddMatches<Handling, false, PrefetchingLookup>(key_type);
     functions.find_keys_and_add_matches[1] = selectFindKeysAndAddMatches<Handling, true, PrefetchingLookup>(key_type);
-    /// The pass with the AMAC ring, which retires the rows in row order, for a block that the ring takes. Not for a handling
-    /// with a used flag per key: the ring in row order keeps no key offsets.
-    if constexpr (Handling::used_flag_action == UsedFlagAction::None)
-    {
-        using Ring = AmacLookup<false, AmacRetire::InOrder>;
-        using RobinHoodRing = AmacLookup<true, AmacRetire::InOrder>;
-        functions.find_keys_and_add_matches_ring[0][0] = selectFindKeysAndAddMatches<Handling, false, Ring>(key_type);
-        functions.find_keys_and_add_matches_ring[0][1] = selectFindKeysAndAddMatches<Handling, true, Ring>(key_type);
-        functions.find_keys_and_add_matches_ring[1][0] = selectFindKeysAndAddMatches<Handling, false, RobinHoodRing>(key_type);
-        functions.find_keys_and_add_matches_ring[1][1] = selectFindKeysAndAddMatches<Handling, true, RobinHoodRing>(key_type);
-    }
+    /// The pass with the AMAC ring, which retires the rows in row order, for a block that the ring takes. A handling with a
+    /// used flag per key takes the ring that keeps the key offsets and prefetches the flags.
+    constexpr AmacRetire retire
+        = Handling::used_flag_action == UsedFlagAction::None ? AmacRetire::InOrder : AmacRetire::InOrderWithFlags;
+    using Ring = AmacLookup<false, retire>;
+    using RobinHoodRing = AmacLookup<true, retire>;
+    functions.find_keys_and_add_matches_ring[0][0] = selectFindKeysAndAddMatches<Handling, false, Ring>(key_type);
+    functions.find_keys_and_add_matches_ring[0][1] = selectFindKeysAndAddMatches<Handling, true, Ring>(key_type);
+    functions.find_keys_and_add_matches_ring[1][0] = selectFindKeysAndAddMatches<Handling, false, RobinHoodRing>(key_type);
+    functions.find_keys_and_add_matches_ring[1][1] = selectFindKeysAndAddMatches<Handling, true, RobinHoodRing>(key_type);
     for (const bool fast_path : {false, true})
         functions.prepare_keys[0][fast_path] = selectPrepareKeys<Maps>(key_type, /*row_list=*/false, fast_path);
     return functions;
