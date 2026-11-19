@@ -198,14 +198,12 @@ struct LowCardinalityKeyGetterForJoin
 /// `getKeyHolder` builds the key of a row, or reads keys built ahead:
 /// - after `buildAllKeys` or `usePrebuiltKeys`, the keys of the rows that the slot scatter of a parallel build routed.
 ///   The scatter calls `buildAllKeys`, and the slot inserts pass the keys it built to `usePrebuiltKeys`;
-/// - after `prepareRows`, the keys of a continuous range of rows, built 256 rows at a time when a read goes past the
-///   built ones. A range that starts after the first row is the rest of a block that an earlier call left because of
-///   `max_joined_block_rows`. The call for the rest can stop early too, so its chunks start at 8 rows and double up to
-///   256. Each join loop calls it for its first map. A prefetching loop also calls it for every other map that it
-///   prefetches for each row: then each key is built once for both the prefetch and the lookup. A loop that stops early
-///   at `max_joined_block_rows` pays only for the chunks it reached.
-///   The loop of an `OR` join with a condition in `ON` calls it for every map. For a list of rows in ascending order, it
-///   builds the keys of the listed rows at once.
+/// - after `prepareRows` or `prepareRange`, the keys of a continuous range of rows, built 256 rows at a time when a read
+///   goes past the built ones. The build insert prepares its rows with `prepareRows`. Each key search of the probe
+///   prepares its range with `prepareRange` before it creates its prefetcher, so each key is built once for both the
+///   prefetch and the lookup. A search that is likely to stop early at `max_joined_block_rows` starts with chunks of
+///   8 rows that double up to 256, so that it pays only for the chunks it reached. For a list of rows in ascending order,
+///   it builds the keys of the listed rows at once.
 template <typename Derived>
 struct PreparedJoinKeys
 {
@@ -319,11 +317,14 @@ struct PreparedJoinKeys
     }
 
     /// Drops the keys prepared before. With an empty range, each key is built where it is read again.
-    void prepareRange(ScatteredBlock::Selector::Range range, const UInt8 * skip)
+    /// `small_first_chunks`: for a search that is likely to stop before the end of the range, at `max_joined_block_rows`.
+    /// The default is for a search that visits every row of the range.
+    void prepareRange(ScatteredBlock::Selector::Range range, const UInt8 * skip, bool small_first_chunks = false)
     {
         ready_begin = range.first;
         prepare_end = range.second;
-        next_chunk_rows = range.first == 0 ? max_chunk_rows : min_chunk_rows;
+        /// So that a search that stops early builds few keys it does not read.
+        next_chunk_rows = small_first_chunks ? min_chunk_rows : max_chunk_rows;
         skip_rows = skip;
         prepared_keys.clear();
         ready_keys = {};
