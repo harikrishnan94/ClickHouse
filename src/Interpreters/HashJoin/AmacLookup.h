@@ -46,16 +46,29 @@ struct AmacNotFound
     static constexpr size_t getOffset() { return 0; }
 };
 
+/// The order in which the ring calls `on_row`.
+enum class AmacRetire : UInt8
+{
+    /// As each lookup finishes.
+    OutOfOrder,
+    /// In row order. A finished lookup waits in a reorder window until every earlier row has retired (`amac_reorder_window`).
+    /// The window keeps no key offset: `getOffset` of a found key gives 0.
+    InOrder,
+};
+
 /** The policy that `amacRun` drives to find keys in a `TwoLevelHashTable` map of the join. The lookups finish out of order.
-  * A visit calls `on_row` when it reads its key's cell or learns that the key is missing, so nothing reads the cell again.
+  * A visit learns the result of its row when it reads its key's cell or learns that the key is missing, so nothing reads the
+  * cell again. Out of order, the visit calls `on_row` then. In order, it puts the result into the window, and `on_row` sees
+  * the rows when they retire, in row order.
   *
   * With one bucket, a visit wraps at the bounds that the policy holds in its frame. With several buckets, a slot also has the
   * index of its bucket, and a visit reads the bounds from `buckets`. With `robin_hood`, a slot also has the distance that it
   * has walked. `row_list` is a template parameter, so `indexAt` has no branch.
   */
-template <typename KeyGetter, typename Map, bool robin_hood, bool fast_path, bool row_list, typename OnRow>
+template <typename KeyGetter, typename Map, bool robin_hood, bool fast_path, bool row_list, AmacRetire retire, typename OnRow>
 struct AmacFindPolicy
 {
+    static constexpr bool in_order = retire != AmacRetire::OutOfOrder;
     using Cell = typename Map::cell_type;
     using Bucket = typename Map::BucketCells;
     static constexpr bool one_bucket = Map::NUM_BUCKETS == 1;
@@ -109,10 +122,24 @@ struct AmacFindPolicy
         std::array<UInt32, amac_ring_size> distance{};
     };
 
-    using Ring = std::conditional_t<
+    using SlotRing = std::conditional_t<
         one_bucket,
         TableRing,
         std::conditional_t<robin_hood, RobinHoodRing, BucketRing>>;
+
+    /// In order: the finished rows that wait for an earlier row. Entry `i % amac_reorder_window` belongs to row `i`: 0 until
+    /// the row finishes, then 1 for a missing key, or the address of the key's cell with bit 0 set.
+    struct Window
+    {
+        std::array<uintptr_t, amac_reorder_window> done{};
+        size_t retired = 0; /// the oldest chunk row that `on_row` has not seen
+    };
+    struct RingWithWindow : public SlotRing
+    {
+        Window window;
+    };
+    using Ring = std::conditional_t<in_order, RingWithWindow, SlotRing>;
+    static_assert(!in_order || alignof(Cell) >= 2, "Bit 0 of a cell address marks a found key");
 
     /// By value where possible. The key-column pointer is then a field of the frame-local policy. Behind a reference,
     /// reading it would take two dependent loads.
@@ -175,21 +202,82 @@ struct AmacFindPolicy
             return key_getter.getKeyHolder(ind, pool);
     }
 
-    ALWAYS_INLINE void miss(const Ring & ring, size_t s)
+    ALWAYS_INLINE void miss(Ring & ring, size_t s)
     {
         const size_t i = ring.row[s];
-        on_row(position_base + i, indexAt(i), AmacNotFound<Cell>{});
+        if constexpr (in_order)
+            finish(ring, i, 1);
+        else
+            on_row(position_base + i, indexAt(i), AmacNotFound<Cell>{});
     }
 
     /// The cell is not the zero cell, so its offset is its position over all buckets plus one, as `offsetInternal` gives.
-    ALWAYS_INLINE void hit(const Ring & ring, size_t s, const Cell * cell)
+    ALWAYS_INLINE void hit(Ring & ring, size_t s, const Cell * cell)
     {
         const size_t i = ring.row[s];
+        if constexpr (in_order)
+        {
+            finish(ring, i, reinterpret_cast<uintptr_t>(cell) | 1);
+            return;
+        }
         const Bucket & bucket = bucketOf(ring, s);
         size_t offset = static_cast<size_t>(cell - bucket.cells) + 1;
         if constexpr (!one_bucket)
             offset += bucket.prefix;
         on_row(position_base + i, indexAt(i), AmacFound<Cell>{cell, offset});
+    }
+
+    /// In order: puts the result of row `i` into the window, and retires the rows that are ready if `i` is the oldest.
+    ALWAYS_INLINE void finish(Ring & ring, size_t i, uintptr_t done)
+    {
+        storeFinished(ring, i, done);
+        if (i == ring.window.retired)
+            retireReady(ring);
+    }
+
+    /// In order: a row that `start` answers at once only goes into the window. `mayStart`, a later `finish` or `finishRun`
+    /// retires it.
+    ALWAYS_INLINE static void storeFinished(Ring & ring, size_t i, uintptr_t done)
+    {
+        ring.window.done[i % amac_reorder_window] = done;
+    }
+
+    /// In order: calls `on_row` for the oldest rows that have finished, in row order, up to the first that has not.
+    ALWAYS_INLINE void retireReady(Ring & ring)
+    {
+        Window & window = ring.window;
+        size_t r = window.retired;
+        while (true)
+        {
+            const size_t w = r % amac_reorder_window;
+            const uintptr_t done = window.done[w];
+            if (!done)
+                break;
+            window.done[w] = 0;
+            if (done == 1)
+                on_row(position_base + r, indexAt(r), AmacNotFound<Cell>{});
+            else
+                on_row(position_base + r, indexAt(r), AmacFound<Cell>{reinterpret_cast<const Cell *>(done - 1), 0});
+            ++r;
+        }
+        window.retired = r;
+    }
+
+    /// In order, for `amacRun`: whether row `row` may start. If the window is full, the rows that are ready retire first,
+    /// which includes the rows that `start` answered at once.
+    ALWAYS_INLINE bool mayStart(Ring & ring, size_t row)
+    {
+        if (row - ring.window.retired < amac_reorder_window)
+            return true;
+        retireReady(ring);
+        return row - ring.window.retired < amac_reorder_window;
+    }
+
+    /// In order, for `amacRun` after the last lookup finished: the rows that `start` answered at once may still wait.
+    ALWAYS_INLINE void finishRun(Ring & ring, size_t rows [[maybe_unused]])
+    {
+        retireReady(ring);
+        chassert(ring.window.retired == rows);
     }
 
     ALWAYS_INLINE bool start(Ring & ring, size_t s, size_t i)
@@ -199,7 +287,10 @@ struct AmacFindPolicy
         {
             if (skip_data && skip_data[ind])
             {
-                on_row(position_base + i, ind, AmacNotFound<Cell>{});
+                if constexpr (in_order)
+                    storeFinished(ring, i, 1);
+                else
+                    on_row(position_base + i, ind, AmacNotFound<Cell>{});
                 return false;
             }
         }
@@ -208,7 +299,10 @@ struct AmacFindPolicy
         if (unlikely(Cell::isZero(key, no_state)))
         {
             /// A lookup of the zero key reads only the zero-value cell, so it has no walk to overlap with other lookups.
-            if (const Cell * cell = map.find(key))
+            const Cell * cell = map.find(key);
+            if constexpr (in_order)
+                storeFinished(ring, i, cell ? reinterpret_cast<uintptr_t>(cell) | 1 : 1);
+            else if (cell)
                 on_row(position_base + i, ind, AmacFound<Cell>{cell, map.offsetInternal(cell)});
             else
                 on_row(position_base + i, ind, AmacNotFound<Cell>{});
@@ -307,13 +401,14 @@ template <typename KeyGetter, typename Map, bool robin_hood>
 constexpr bool amac_probe_supported = AmacWalkableMap<Map> && (!robin_hood || amac_buckets_switch_to_robin_hood<Map>)
     && !is_low_cardinality_join_key_getter<KeyGetter>;
 
-/// Looks the keys up with the AMAC ring. Rows retire out of order. Only for a table with `HashJoinTable::takesAmacLookup`.
+/// Looks the keys up with the AMAC ring. Rows retire in the order that `retire` gives. Only for a table with
+/// `HashJoinTable::takesAmacLookup`.
 /// `robin_hood` must equal `bucketsAreRobinHood` of the table. For a key type that builds its keys (`BuildsKeys`), the
 /// caller must run the prepare step of the rows first (`PrepareKeysFn`).
-template <bool robin_hood>
+template <bool robin_hood, AmacRetire retire = AmacRetire::OutOfOrder>
 struct AmacLookup
 {
-    static constexpr bool retires_rows_in_order = false;
+    static constexpr bool retires_rows_in_order = retire != AmacRetire::OutOfOrder;
 
     template <HashJoin::Type TYPE, typename Maps>
     static constexpr bool supports = amac_probe_supported<
@@ -336,7 +431,7 @@ struct AmacLookup
         using Map = JoinMapOf<TYPE, Maps>;
         using Cell = typename Map::cell_type;
         using KeyGetter = typename KeyGetterForType<TYPE, const Map>::Type;
-        using Policy = AmacFindPolicy<KeyGetter, Map, robin_hood, fast_path, row_list, std::decay_t<OnRow>>;
+        using Policy = AmacFindPolicy<KeyGetter, Map, robin_hood, fast_path, row_list, retire, std::decay_t<OnRow>>;
         constexpr bool is_asof_join = std::is_same_v<Maps, HashJoin::MapsAsof>;
         static_assert(std::is_void_v<decltype(on_row(0uz, 0uz, AmacNotFound<Cell>{}))>, "The ring cannot stop at a row");
 

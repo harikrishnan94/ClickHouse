@@ -24,6 +24,20 @@ constexpr size_t amac_ring_size = 32;
 /// With fewer rows than this, filling and draining the ring cost more than the overlap of the misses saves.
 constexpr size_t amac_min_rows = 256;
 
+/// For a ring that retires rows in order: how many rows may have started and not yet retired. A row that finishes waits in a
+/// window of this many entries until every earlier row has finished.
+constexpr size_t amac_reorder_window = 128;
+
+/// Whether the policy calls its per-row functor in row order (`Policy::in_order`). It then has `mayStart(ring, row)`.
+template <typename Policy>
+constexpr bool amac_retires_in_order = []
+{
+    if constexpr (requires { Policy::in_order; })
+        return Policy::in_order;
+    else
+        return false;
+}();
+
 enum class AmacStepResult : UInt8
 {
     Advance, /// the row is not done: the step prefetched what the next visit of the row reads, such as the next cell
@@ -61,6 +75,12 @@ void amacRun(Policy & policy_arg, size_t rows)
     {
         while (next < rows)
         {
+            /// A ring that retires rows in order starts no row while its reorder window is full.
+            if constexpr (amac_retires_in_order<Policy>)
+            {
+                if (!policy.mayStart(ring, next))
+                    return;
+            }
             const size_t row = next;
             ++next;
             if (policy.start(ring, s, row))
@@ -75,9 +95,49 @@ void amacRun(Policy & policy_arg, size_t rows)
         active += ring.isActive(s);
     }
 
+    if constexpr (amac_retires_in_order<Policy>)
+    {
+        /// A refill also fails while the window is full. Then the free slots stay free until the oldest row retires, and the
+        /// ring runs on fewer slots for a while. The oldest row is always in flight, so `active` never drops to 0 here.
+        while (next < rows)
+        {
+            if (active == amac_ring_size)
+            {
+                bool full = true;
+                while (full && next < rows)
+                {
+                    for (size_t s = 0; s < amac_ring_size; ++s)
+                    {
+                        if (policy.step(ring, s) == AmacStepResult::Advance)
+                            continue;
+                        ring.deactivate(s);
+                        refill(s);
+                        if (!ring.isActive(s))
+                        {
+                            --active;
+                            full = false;
+                        }
+                    }
+                }
+                continue;
+            }
+            for (size_t s = 0; s < amac_ring_size; ++s)
+            {
+                if (ring.isActive(s))
+                {
+                    if (policy.step(ring, s) == AmacStepResult::Advance)
+                        continue;
+                    ring.deactivate(s);
+                    --active;
+                }
+                refill(s);
+                active += ring.isActive(s);
+            }
+        }
+    }
     /// While rows remain and every refill has succeeded, every slot is active, so the steady loop has no
     /// active check. The first failed refill drops into the drain loop, which checks.
-    if (active == amac_ring_size)
+    else if (active == amac_ring_size)
     {
         bool full = true;
         while (full && next < rows)
@@ -110,6 +170,10 @@ void amacRun(Policy & policy_arg, size_t rows)
             --active;
         }
     }
+
+    /// Rows that `start` finished at once may still wait in the window.
+    if constexpr (amac_retires_in_order<Policy>)
+        policy.finishRun(ring, rows);
 }
 
 }
