@@ -36,6 +36,12 @@ struct JoinOnKeyColumns
     /// Only rows where mask == true can be joined
     JoinCommon::JoinMask join_mask_column;
 
+    /// For a key type that builds its keys: `ready_keys` points to the keys that the last prepare step
+    /// (`JoinProbe::PrepareKeysFn`) made for the key search that follows it. They are in `ready_keys_buffer`, or in the kept
+    /// key getter when it packed the keys of the whole block. The buffer only grows.
+    mutable const void * ready_keys = nullptr;
+    mutable std::vector<UInt64> ready_keys_buffer;
+
     JoinOnKeyColumns(
         const ScatteredBlock & block, const Names & key_names_, const String & cond_column_name, bool keep_lowcardinality = false);
 
