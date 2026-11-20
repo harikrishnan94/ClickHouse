@@ -4,12 +4,14 @@
 #include <Columns/IColumn.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/HashJoin/AddedColumns.h>
+#include <Interpreters/HashJoin/AmacLookup.h>
 #include <Interpreters/HashJoin/FindKeys.h>
 #include <Interpreters/HashJoin/JoinFeatures.h>
 #include <Interpreters/HashJoin/JoinRightColumns.h>
 #include <Interpreters/HashJoin/JoinUsedFlags.h>
 #include <Interpreters/HashJoin/KnownRowsHolder.h>
 #include <Interpreters/HashJoin/MatchedRowsStats.h>
+#include <Interpreters/HashJoin/PrepareKeys.h>
 
 #include <type_traits>
 
@@ -839,42 +841,62 @@ NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
 {
     using Maps = typename Handling::Maps;
     static_assert(Lookup::retires_rows_in_order, "`MatchAdder` adds rows in row order");
+    constexpr bool ring = !std::is_same_v<Lookup, PrefetchingLookup>;
+    constexpr bool sets_flags = Handling::used_flag_action != UsedFlagAction::None;
     MatchAdder<Handling> adder(join);
+    /// The ring in row order prefetches the flags of a join with a used flag per key.
+    [[maybe_unused]] const UInt8 * flags = ring && sets_flags ? join.used_flags.offsetFlags() : nullptr;
     for (size_t begin = 0; begin < join.batch_rows; begin += join.search_batch_rows)
     {
         const size_t size = std::min(join.search_batch_rows, join.batch_rows - begin);
         const size_t first = join.batch_first_row + begin;
+        const FindKeysArgs args{
+            *join.tables[0],
+            join.added_columns.join_on_keys[0],
+            {.first = first, .rows = nullptr, .size = size},
+            join.added_columns.enable_prefetch,
+            first,
+            nullptr,
+            nullptr,
+            size};
+        const auto on_row = [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
+        {
+            if (!result.isFound())
+                return adder.addMiss(begin + i);
+            size_t key_offset = 0;
+            if constexpr (sets_flags)
+                key_offset = result.getOffset();
+            adder.addFound(begin + i, key_offset, [&] __attribute__((always_inline)) { return matchWordOf<Maps>(result); });
+        };
         /// The key getter is kept: the block is searched in several calls.
-        Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(
-            {*join.tables[0],
-             join.added_columns.join_on_keys[0],
-             {.first = first, .rows = nullptr, .size = size},
-             join.added_columns.enable_prefetch,
-             first,
-             nullptr,
-             nullptr,
-             size},
-            [&](size_t i, size_t, const auto & result) __attribute__((always_inline))
-            {
-                if (!result.isFound())
-                    return adder.addMiss(begin + i);
-                size_t key_offset = 0;
-                if constexpr (Handling::used_flag_action != UsedFlagAction::None)
-                    key_offset = result.getOffset();
-                adder.addFound(begin + i, key_offset, [&] __attribute__((always_inline)) { return matchWordOf<Maps>(result); });
-            });
+        if constexpr (ring)
+        {
+            /// The ring does not build keys. For a key type that builds them, the prepare step builds the keys of the batch.
+            join.prepareKeysOfFirstDisjunct(args);
+            Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(args, on_row, flags);
+        }
+        else
+            Lookup::template run<TYPE, Maps, fast_path, /*row_list=*/false, /*keep_key_getter=*/true>(args, on_row);
     }
     return adder.finish();
 }
 
-template <typename Handling, bool fast_path>
+/// Null where `Lookup` has no search for the key type.
+template <typename Handling, bool fast_path, typename Lookup>
 AddMatchesFn selectFindKeysAndAddMatches(HashJoin::Type key_type)
 {
+    const auto of_type = [&]<HashJoin::Type TYPE>() -> AddMatchesFn
+    {
+        if constexpr (Lookup::template supports<TYPE, typename Handling::Maps>)
+            return &findKeysAndAddMatches<TYPE, fast_path, Handling, Lookup>;
+        else
+            return nullptr;
+    };
     switch (key_type)
     {
 #define M(TYPE) \
     case HashJoin::Type::TYPE: \
-        return &findKeysAndAddMatches<HashJoin::Type::TYPE, fast_path, Handling, PrefetchingLookup>;
+        return of_type.template operator()<HashJoin::Type::TYPE>();
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
     }
@@ -891,8 +913,15 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
     /// `later` is true for the disjuncts after the first.
     const auto select_find_keys = [&](bool later, FindKeysMode mode)
     {
-        functions.find_keys[later][0] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, /*fast_path=*/false);
-        functions.find_keys[later][1] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, /*fast_path=*/true);
+        for (const bool fast_path : {false, true})
+        {
+            functions.find_keys[later][fast_path] = selectFindKeys<Maps, PrefetchingLookup>(key_type, mode, fast_path);
+            /// The ring has no search that stops at the row limit. It has one copy for buckets in the Robin Hood mode.
+            functions.find_keys_ring[0][later][fast_path] = selectFindKeys<Maps, AmacLookup<false>>(key_type, mode, fast_path);
+            functions.find_keys_ring[1][later][fast_path] = selectFindKeys<Maps, AmacLookup<true>>(key_type, mode, fast_path);
+            functions.prepare_keys[later][fast_path]
+                = selectPrepareKeys<Maps>(key_type, mode == FindKeysMode::WordsOfRowList, fast_path);
+        }
     };
 
     /// A join kind with `JoinFeatures::need_filter` always sets `AddedColumns::need_filter`, so it needs no copy of a function
@@ -939,8 +968,21 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
 
     /// The pass reads `AddedColumns::need_filter` itself.
     functions.words_in_row_refs = true;
-    functions.find_keys_and_add_matches[0] = selectFindKeysAndAddMatches<typename Rules::Handling, false>(key_type);
-    functions.find_keys_and_add_matches[1] = selectFindKeysAndAddMatches<typename Rules::Handling, true>(key_type);
+    using Handling = typename Rules::Handling;
+    functions.find_keys_and_add_matches[0] = selectFindKeysAndAddMatches<Handling, false, PrefetchingLookup>(key_type);
+    functions.find_keys_and_add_matches[1] = selectFindKeysAndAddMatches<Handling, true, PrefetchingLookup>(key_type);
+    /// The pass with the AMAC ring, which retires the rows in row order, for a block that the ring takes. A handling with a
+    /// used flag per key takes the ring that keeps the key offsets and prefetches the flags.
+    constexpr AmacRetire retire
+        = Handling::used_flag_action == UsedFlagAction::None ? AmacRetire::InOrder : AmacRetire::InOrderWithFlags;
+    using Ring = AmacLookup<false, retire>;
+    using RobinHoodRing = AmacLookup<true, retire>;
+    functions.find_keys_and_add_matches_ring[0][0] = selectFindKeysAndAddMatches<Handling, false, Ring>(key_type);
+    functions.find_keys_and_add_matches_ring[0][1] = selectFindKeysAndAddMatches<Handling, true, Ring>(key_type);
+    functions.find_keys_and_add_matches_ring[1][0] = selectFindKeysAndAddMatches<Handling, false, RobinHoodRing>(key_type);
+    functions.find_keys_and_add_matches_ring[1][1] = selectFindKeysAndAddMatches<Handling, true, RobinHoodRing>(key_type);
+    for (const bool fast_path : {false, true})
+        functions.prepare_keys[0][fast_path] = selectPrepareKeys<Maps>(key_type, /*row_list=*/false, fast_path);
     return functions;
 }
 }
