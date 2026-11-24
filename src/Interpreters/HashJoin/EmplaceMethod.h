@@ -30,10 +30,8 @@ struct InsertKeysArgs
     bool enable_prefetch = false;
     /// The insert adds its count of new keys here, also when it throws: the keys added before the throw stay in the map.
     std::atomic<size_t> & num_keys;
-    /// For a key getter that builds many keys at once (`PreparedJoinKeys`): the skip bytes of the block, and, if set, the
-    /// keys that the slot scatter of the parallel layout built for every row of the block that it routed (`buildAllKeys`).
+    /// For a key getter that builds many keys at once (`PreparedJoinKeys`): the skip bytes of the block.
     const UInt8 * skip = nullptr;
-    const PaddedPODArray<UInt128> * prebuilt_keys = nullptr;
 
     /// What storing a row reads. The `ASOF` fields are set only for `MapsAsof`.
     UInt32 block_no = 0;

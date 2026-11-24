@@ -14,7 +14,6 @@
 
 namespace ProfileEvents
 {
-    extern const Event JoinBuildPostProcessingMicroseconds;
     extern const Event JoinBuildTableRowCount;
     extern const Event JoinProbeTableRowCount;
     extern const Event JoinResultRowCount;
@@ -438,7 +437,8 @@ void FillingRightJoinSideTransform::work()
 {
     if (post_build_phase)
     {
-        ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::JoinBuildPostProcessingMicroseconds);
+        /// For a `HashJoin` this runs the build itself (`HashJoin::finishBuild`) before the post-build steps, which
+        /// `HashJoin::runPostBuildOptimizations` times as `JoinBuildPostProcessingMicroseconds`.
         join->runPostBuildPhase();
         return;
     }
