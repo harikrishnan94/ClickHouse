@@ -14,7 +14,7 @@
 #include <utility>
 
 /// The AMAC lookup method of the hash join probe: `amacRun` (`AmacRing.h`) drives a find policy that walks the cells of the
-/// `TwoLevelHashTable` maps of the join.
+/// hash maps of the join, through their single or partitioned view (`JoinPartitionView.h`).
 namespace DB::JoinProbe
 {
 
@@ -65,14 +65,14 @@ enum class AmacRetire : UInt8
 /// the window usually retires as soon as it finishes, so without the wait its flag would have no time to arrive.
 constexpr UInt32 amac_flag_lag_lookups = 16;
 
-/** The policy that `amacRun` drives to find keys in a `TwoLevelHashTable` map of the join. The lookups finish out of order.
+/** The policy that `amacRun` drives to find keys in a view of a hash map of the join. The lookups finish out of order.
   * A visit learns the result of its row when it reads its key's cell or learns that the key is missing, so nothing reads the
   * cell again. Out of order, the visit calls `on_row` then. In order, it puts the result into the window, and `on_row` sees
   * the rows when they retire, in row order.
   *
-  * With one bucket, a visit wraps at the bounds that the policy holds in its frame. With several buckets, a slot also has the
-  * index of its bucket, and a visit reads the bounds from `buckets`. With `robin_hood`, a slot also has the distance that it
-  * has walked. `row_list` is a template parameter, so `indexAt` has no branch.
+  * On the single view, a visit wraps at the bounds that the policy holds in its frame. On the partitioned view, a slot also has
+  * the index of its partition, and a visit reads the bounds from the 16-byte descriptors in `buckets`. With `robin_hood`, a
+  * slot also has the distance that it has walked. `row_list` is a template parameter, so `indexAt` has no branch.
   */
 template <typename KeyGetter, typename Map, bool robin_hood, bool fast_path, bool row_list, AmacRetire retire, typename OnRow>
 struct AmacFindPolicy
@@ -80,15 +80,14 @@ struct AmacFindPolicy
     static constexpr bool in_order = retire != AmacRetire::OutOfOrder;
     static constexpr bool with_flags = retire == AmacRetire::InOrderWithFlags;
     using Cell = typename Map::cell_type;
-    using Bucket = typename Map::BucketCells;
-    static constexpr bool one_bucket = Map::NUM_BUCKETS == 1;
+    using Bucket = JoinPartitionDesc<Cell>;
+    static constexpr bool one_bucket = !Map::partitioned;
     static constexpr bool store_hash = cell_stores_hash<Cell>;
     static constexpr HashTableNoState no_state{};
     /// `AmacLookup::run` splits the rows into chunks of at most this many rows, so that the row index in a slot fits in 16
     /// bits. Any size up to 65536 would do.
     static constexpr size_t chunk_rows_max = 1uz << 13;
-    static_assert(Map::NUM_BUCKETS <= 256);
-    static_assert(!robin_hood || !one_bucket, "Only the buckets of a map of several buckets switch to the Robin Hood mode");
+    static_assert(!robin_hood || !one_bucket, "Only the maps of a partitioned view switch to the Robin Hood mode");
 
     /// A slot can keep a string key, a view into the key column, because the string holder copies a key into the arena only
     /// for an insert.
@@ -120,10 +119,11 @@ struct AmacFindPolicy
     };
     using TableRing = std::conditional_t<store_hash, RingWithHash, RingBase>;
 
-    /// A map of several buckets: the bucket that the slot walks, an index into `buckets`.
+    /// A partitioned view: the partition that the slot walks, an index into `buckets`. Two bytes, for up to 2^15 partitions;
+    /// the padded ring takes as many bytes as with one byte.
     struct BucketRing : public TableRing
     {
-        std::array<UInt8, amac_ring_size> bucket{};
+        std::array<UInt16, amac_ring_size> bucket{};
     };
 
     /// Buckets in the Robin Hood mode: how many cells the slot has walked from the home cell of its key.
@@ -166,9 +166,13 @@ struct AmacFindPolicy
         std::conditional_t<std::is_trivially_copyable_v<KeyGetter>, KeyGetter, KeyGetter &>>;
     KeyGetterField key_getter;
     const Map & map;
-    /// `Map::bucket_cells`, which `computeBucketPrefix` fills when the table is frozen. For a map of one bucket, `table` is
-    /// a copy of its only entry, so that a visit reads the bounds from the frame.
+    /// For the partitioned view: the descriptors and the cell prefix sums that `freeze` fills, and the partition shift and mask.
+    /// They are fields of the frame-local policy, so the loop does not reload them. For the single view, `table` is a copy of
+    /// its only descriptor, so that a visit reads the bounds from the frame.
     const Bucket * buckets = nullptr;
+    const size_t * prefixes = nullptr;
+    size_t shift = 0;
+    size_t pmask = 0;
     Bucket table{};
     size_t first = 0;              /// a range: the block row of the chunk's first row
     const UInt64 * list = nullptr; /// a row list: the block rows of the chunk
@@ -229,7 +233,7 @@ struct AmacFindPolicy
             on_row(position_base + i, indexAt(i), AmacNotFound<Cell>{});
     }
 
-    /// The cell is not the zero cell, so its offset is its position over all buckets plus one, as `offsetInternal` gives.
+    /// The cell is not the zero cell, so its offset is its position over all partitions plus one, as `offsetInternal` gives.
     ALWAYS_INLINE void hit(Ring & ring, size_t s, const Cell * cell)
     {
         const size_t i = ring.row[s];
@@ -241,7 +245,7 @@ struct AmacFindPolicy
         const Bucket & bucket = bucketOf(ring, s);
         size_t offset = static_cast<size_t>(cell - bucket.cells) + 1;
         if constexpr (!one_bucket)
-            offset += bucket.prefix;
+            offset += prefixes[ring.bucket[s]];
         if constexpr (with_flags)
         {
             /// For reading: the join reads a flag first, and writes it only if no other row has claimed the key.
@@ -356,8 +360,8 @@ struct AmacFindPolicy
         size_t bucket_no = 0;
         if constexpr (!one_bucket)
         {
-            bucket_no = Map::getBucketFromHash(hash);
-            ring.bucket[s] = static_cast<UInt8>(bucket_no);
+            bucket_no = (hash >> shift) & pmask;
+            ring.bucket[s] = static_cast<UInt16>(bucket_no);
         }
         if constexpr (robin_hood)
             ring.distance[s] = 0;
@@ -408,7 +412,7 @@ struct AmacFindPolicy
             /// does not apply in the key's home cell.
             const size_t place = static_cast<size_t>(cell - bucket.cells);
             const size_t distance = ring.distance[s];
-            /// The subtraction wraps when the home cell is after `place` in the buffer; the mask takes it modulo the bucket size.
+            /// The subtraction wraps when the home cell is after `place` in the buffer; the mask takes it modulo the table size.
             if (distance && (common::subIgnoreOverflow(place, hashOf(*cell)) & bucket.mask) < distance)
             {
                 miss(ring, s);
@@ -416,7 +420,8 @@ struct AmacFindPolicy
             }
             ring.distance[s] = static_cast<UInt32>(distance + 1);
         }
-        if (++cell == bucket.cells_end) [[unlikely]]
+        /// The end comes from the descriptor. Wrapping by masking the cell index instead would cost a division by the cell size.
+        if (++cell == bucket.cells + bucket.mask + 1) [[unlikely]]
             cell = bucket.cells;
         ring.cell[s] = cell;
         prefetchCell(cell);
@@ -424,19 +429,20 @@ struct AmacFindPolicy
     }
 };
 
-/// The `TwoLevelHashTable` maps of the join, with one bucket or several: `freezeForProbing` lists the cells of their
-/// buckets. The direct-addressed maps (`key8`, `key16`, `range*`) have no collision chain to overlap.
+/// The views of the hash maps of the join: `freezeForProbing` fills their descriptors. The direct-addressed maps (`key8`,
+/// `key16`, `range*`) have no collision chain to overlap.
 template <typename Map>
 concept AmacWalkableMap = requires(const Map & map)
 {
-    { map.bucket_cells.data() } -> std::same_as<const typename Map::BucketCells *>;
+    { map.desc(0) } -> std::same_as<const JoinPartitionDesc<typename Map::cell_type> &>;
+    { Map::partitioned } -> std::convertible_to<bool>;
 };
 
-/// Whether the buckets of the map can switch to the Robin Hood mode.
+/// Whether the maps of the view can switch to the Robin Hood mode: only those of a partitioned view.
 template <typename Map>
 constexpr bool amac_buckets_switch_to_robin_hood = false;
-template <AmacWalkableMap Map>
-constexpr bool amac_buckets_switch_to_robin_hood<Map> = GrowerWithRobinHood<typename Map::Impl::grower_type>;
+template <typename Map>
+constexpr bool amac_buckets_switch_to_robin_hood<JoinPartitionedView<Map>> = GrowerWithRobinHood<typename Map::grower_type>;
 
 /// Whether the ring can look up the keys of `KeyGetter` in `Map`. The LowCardinality getter stays on `PrefetchingLookup`: it
 /// deduplicates lookups per dictionary index through its own cache, and a ring would bypass that cache. For the same reason,
@@ -454,8 +460,13 @@ struct AmacLookup
     static constexpr bool retires_rows_in_order = retire != AmacRetire::OutOfOrder;
 
     template <HashJoin::Type TYPE, typename Maps>
-    static constexpr bool supports = amac_probe_supported<
-        typename KeyGetterForType<TYPE, const JoinMapOf<TYPE, Maps>>::Type, JoinMapOf<TYPE, Maps>, robin_hood>;
+    using KeyGetterOf = typename KeyGetterForType<TYPE, const JoinMapOf<TYPE, Maps>>::Type;
+
+    /// Whether the ring can take one of the two forms of the key type. `HashJoinTable::takesAmacLookup` decides at run time,
+    /// and it never takes a form that the ring does not support.
+    template <HashJoin::Type TYPE, typename Maps>
+    static constexpr bool supports = amac_probe_supported<KeyGetterOf<TYPE, Maps>, JoinMapOf<TYPE, Maps>, robin_hood>
+        || amac_probe_supported<KeyGetterOf<TYPE, Maps>, JoinPartitionedFormOf<TYPE, Maps>, robin_hood>;
 
     /// No key getter for a key type whose keys the prepare step built. The other key getters that the ring supports hold
     /// no state for the block, so `keyGetterOf` builds them for each search.
@@ -469,21 +480,33 @@ struct AmacLookup
     }
 
     /// With `AmacRetire::InOrderWithFlags`, `found_flags` are the used flags of the join, which the ring prefetches.
+    /// The form of the table (single or partitioned) is chosen here, once per search.
     template <HashJoin::Type TYPE, typename Maps, bool fast_path, bool row_list, typename OnRow>
     ALWAYS_INLINE static size_t run(const FindKeysArgs & args, OnRow && on_row, const UInt8 * found_flags = nullptr)
     {
-        using Map = JoinMapOf<TYPE, Maps>;
+        return args.table.visitForm<TYPE, Maps>([&]<typename Form>(const Form & map) ALWAYS_INLINE -> size_t
+        {
+            if constexpr (!amac_probe_supported<KeyGetterOf<TYPE, Maps>, Form, robin_hood>)
+                UNREACHABLE();
+            else
+                return runOn<TYPE, Maps, fast_path, row_list>(args, map, on_row, found_flags);
+        });
+    }
+
+    template <HashJoin::Type TYPE, typename Maps, bool fast_path, bool row_list, typename Map, typename OnRow>
+    ALWAYS_INLINE static size_t runOn(const FindKeysArgs & args, const Map & map, OnRow && on_row, const UInt8 * found_flags)
+    {
         using Cell = typename Map::cell_type;
-        using KeyGetter = typename KeyGetterForType<TYPE, const Map>::Type;
+        using KeyGetter = KeyGetterOf<TYPE, Maps>;
         using Policy = AmacFindPolicy<KeyGetter, Map, robin_hood, fast_path, row_list, retire, std::decay_t<OnRow>>;
         constexpr bool is_asof_join = std::is_same_v<Maps, HashJoin::MapsAsof>;
         static_assert(std::is_void_v<decltype(on_row(0uz, 0uz, AmacNotFound<Cell>{}))>, "The ring cannot stop at a row");
 
         chassert(row_list == (args.rows.rows != nullptr));
         chassert((retire == AmacRetire::InOrderWithFlags) == (found_flags != nullptr));
-        const Map & map = args.table.mapOf<TYPE, Maps>();
-        chassert(map.bucket_cells.size() == Map::NUM_BUCKETS, "The table was not frozen");
-        chassert(map.robin_hood_buckets == (robin_hood ? Map::RobinHoodBuckets::All : Map::RobinHoodBuckets::None));
+        chassert(map.isFrozen(), "The table was not frozen");
+        if constexpr (Map::partitioned)
+            chassert(map.robinHoodMode() == (robin_hood ? Map::RobinHoodMode::All : Map::RobinHoodMode::None));
         decltype(auto) key_getter = keyGetterFor<Policy, KeyGetter, is_asof_join>(args);
 
         const size_t size = args.rows.size;
@@ -506,8 +529,7 @@ struct AmacLookup
             Policy policy{
                 .key_getter = key_getter,
                 .map = map,
-                .buckets = map.bucket_cells.data(),
-                .table = map.bucket_cells.front(),
+                .table = map.desc(0),
                 .first = args.rows.first + chunk_begin,
                 .list = row_list ? args.rows.rows + chunk_begin : nullptr,
                 .position_base = chunk_begin,
@@ -516,6 +538,13 @@ struct AmacLookup
                 .pool = pool,
                 .on_row = on_row,
                 .found_flags = found_flags};
+            if constexpr (Map::partitioned)
+            {
+                policy.buckets = map.descs();
+                policy.prefixes = map.prefixes();
+                policy.shift = map.partitionShift();
+                policy.pmask = map.partitionMask();
+            }
             /// Inlined, so that what `on_row` captured by reference stays in registers, like the fields of the frame-local policy.
             [[clang::always_inline]] amacRun(policy, chunk_rows);
         }

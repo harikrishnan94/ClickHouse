@@ -219,7 +219,9 @@ public:
     virtual IBlocksStreamPtr getDelayedBlocks() { return nullptr; }
     [[nodiscard]] virtual bool hasDelayedBlocks() const { return false; }
     /// Runtime counterpart of `hasDelayedBlocks`: whether the delayed blocks are processed at all.
-    /// Decided at latest in `onBuildPhaseFinish`, after that the returned value should not change.
+    /// Decided before the first probe block, after that the returned value should not change. A spill
+    /// between `onBuildPhaseFinish` and the build can still change it; its readers run only after the
+    /// build side has finished.
     [[nodiscard]] virtual bool isDelayedBlocksProcessingEnabled() const { return hasDelayedBlocks(); }
 
     [[nodiscard]] virtual IBlocksStreamPtr
@@ -229,7 +231,7 @@ public:
     /// This serves as a runtime check in JoiningTransform to decide whether to utilize the parallel processing of
     /// non-joined blocks. Only relevant for joins that support parallel processing of non-joined blocks.
     /// If the join supports parallel processing, it can still decide during build phase whether to utilize it or not.
-    /// The decision should be done at latest in onBuildPhaseFinish, after that the returned value should not change.
+    /// The decision is made before the first probe block, after that the returned value should not change.
     /// This is important for SpillingHashJoin, which can change algorithms runtime, and parallel non-joined blocks
     /// processing depends on the algorithm used.
     [[nodiscard]] virtual bool isParallelNonJoinedProcessingEnabled() const { return supportParallelNonJoinedBlocksProcessing(); }
