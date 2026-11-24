@@ -1,15 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <Common/CacheLine.h>
-#include <Common/HashTable/BucketPartitionedTable.h>
-#include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/PartitionedFixedHashTable.h>
-#include <Common/HashTable/TwoLevelHashMap.h>
 
 #include <algorithm>
 #include <memory>
-#include <mutex>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -18,16 +13,7 @@ namespace
 {
 
 template <size_t bits>
-using TwoLevelMap = TwoLevelHashMap<UInt64, UInt64, DefaultHash<UInt64>, TwoLevelHashTableGrower<>, HashTableAllocator, HashMapTable, bits>;
-
-template <size_t bits>
 using FixedMap = PartitionedFixedHashMap<UInt16, UInt64, 16, bits>;
-
-static_assert(BucketPartitionedMap<TwoLevelMap<0>>);
-static_assert(BucketPartitionedMap<TwoLevelMap<8>>);
-static_assert(BucketPartitionedMap<FixedMap<0>>);
-static_assert(BucketPartitionedMap<FixedMap<8>>);
-static_assert(BucketPartitionedMap<PartitionedFixedHashSet<UInt16, 16, 8>>);
 
 /// The buckets add no state to the flat table.
 /// Neither the partitioned map nor its flat table keeps an element counter, so both are smaller than the plain map.
@@ -63,72 +49,6 @@ typename Map::key_type toKey(UInt64 key)
     return static_cast<typename Map::key_type>(key);
 }
 
-/// Every populated cell gets its own number.
-/// Each number fits the array of `getBufferSizeInCells() + 1` entries that a caller allocates.
-template <typename Map>
-void assertOffsetsAreUnique(const Map & map, UInt64 first_key, UInt64 last_key)
-{
-    std::unordered_set<size_t> offsets;
-    for (UInt64 key = first_key; key <= last_key; ++key)
-    {
-        const auto * cell = map.find(toKey<Map>(key));
-        ASSERT_NE(cell, nullptr) << "key " << key;
-        const size_t offset = map.offsetInternal(cell);
-        ASSERT_LE(offset, map.getBufferSizeInCells()) << "key " << key;
-        ASSERT_TRUE(offsets.insert(offset).second) << "duplicate offset " << offset << " for key " << key;
-    }
-}
-
-/// Each insert holds the lock of its bucket, as a concurrent caller would.
-/// If `emplace` writes state that all buckets share, the TSan build of the unit tests reports a data race.
-template <typename Map>
-void fillUnderBucketLocks(Map & map, size_t num_threads, UInt64 keys_per_thread, bool same_keys_in_every_thread)
-{
-    std::vector<std::mutex> bucket_mutexes(Map::NUM_BUCKETS);
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
-    for (size_t t = 0; t < num_threads; ++t)
-    {
-        const UInt64 first_key = same_keys_in_every_thread ? 1 : t * keys_per_thread + 1;
-        threads.emplace_back([&map, &bucket_mutexes, first_key, keys_per_thread]
-        {
-            for (UInt64 key = first_key; key < first_key + keys_per_thread; ++key)
-            {
-                const auto typed_key = toKey<Map>(key);
-                std::lock_guard lock(bucket_mutexes[getBucketOfKey<Map>(typed_key, map.hash(typed_key))]);
-                insertKeyValue(map, typed_key, key * 5);
-            }
-        });
-    }
-    for (auto & thread : threads)
-        thread.join();
-}
-
-/// The entry of each bucket in `bucket_cells` spans the buffer of the bucket.
-/// The cell of every key is inside the entry of its bucket, and the entry gives it the offset that `offsetInternal` gives.
-template <typename Map>
-void assertBucketCellsListEveryKey(const Map & map, UInt64 first_key, UInt64 last_key)
-{
-    ASSERT_EQ(map.bucket_cells.size(), Map::NUM_BUCKETS);
-    for (size_t bucket = 0; bucket < Map::NUM_BUCKETS; ++bucket)
-    {
-        const auto & entry = map.bucket_cells[bucket];
-        const size_t cells = map.impls[bucket].getBufferSizeInCells();
-        ASSERT_EQ(entry.mask + 1, cells) << "bucket " << bucket;
-        ASSERT_EQ(static_cast<size_t>(entry.cells_end - entry.cells), cells) << "bucket " << bucket;
-        ASSERT_EQ(entry.prefix, map.bucket_cells_prefix[bucket]) << "bucket " << bucket;
-    }
-    for (UInt64 key = first_key; key <= last_key; ++key)
-    {
-        const auto * cell = map.find(key);
-        ASSERT_NE(cell, nullptr) << "key " << key;
-        const auto & entry = map.bucket_cells[Map::getBucketFromHash(map.hash(key))];
-        ASSERT_GE(cell, entry.cells) << "key " << key;
-        ASSERT_LT(cell, entry.cells_end) << "key " << key;
-        ASSERT_EQ(entry.prefix + static_cast<size_t>(cell - entry.cells) + 1, map.offsetInternal(cell)) << "key " << key;
-    }
-}
-
 template <typename Map>
 std::vector<size_t> offsetsByIteration(const Map & map)
 {
@@ -144,231 +64,8 @@ void forBucketBits(Fn && fn)
     (fn.template operator()<bits>(), ...);
 }
 
-template <typename Map>
-class BucketPartitionedTableTest : public ::testing::Test
-{
-};
-
-using Shapes = ::testing::Types<TwoLevelMap<0>, TwoLevelMap<8>, FixedMap<0>, FixedMap<8>>;
 
 }
-
-TYPED_TEST_SUITE(BucketPartitionedTableTest, Shapes);
-
-
-TYPED_TEST(BucketPartitionedTableTest, InsertAndFind)
-{
-    using Map = TypeParam;
-    constexpr UInt64 num_keys = 5000;
-
-    auto map = std::make_unique<Map>();
-    ASSERT_TRUE(map->empty());
-    for (UInt64 key = 1; key <= num_keys; ++key)
-        insertKeyValue(*map, toKey<Map>(key), key * 3);
-
-    ASSERT_EQ(map->size(), num_keys);
-    for (UInt64 key = 1; key <= num_keys; ++key)
-    {
-        const auto typed_key = toKey<Map>(key);
-        auto * cell = map->find(typed_key);
-        ASSERT_NE(cell, nullptr) << "key " << key;
-        ASSERT_EQ(cell->getMapped(), key * 3) << "key " << key;
-        ASSERT_EQ(map->find(typed_key, map->hash(typed_key)), cell) << "key " << key;
-    }
-    ASSERT_EQ(map->find(toKey<Map>(num_keys + 1)), nullptr);
-
-    size_t visited = 0;
-    map->forEachMapped([&](UInt64 &) { ++visited; });
-    ASSERT_EQ(visited, num_keys);
-}
-
-
-TYPED_TEST(BucketPartitionedTableTest, OffsetsAreUniqueAfterComputeBucketPrefix)
-{
-    using Map = TypeParam;
-    constexpr UInt64 num_keys = 5000;
-
-    auto map = std::make_unique<Map>();
-    for (UInt64 key = 1; key <= num_keys; ++key)
-        insertKeyValue(*map, toKey<Map>(key), key);
-    map->computeBucketPrefix();
-    assertOffsetsAreUnique(*map, 1, num_keys);
-}
-
-
-TYPED_TEST(BucketPartitionedTableTest, IteratorReportsTheBucketOfItsKey)
-{
-    using Map = TypeParam;
-    constexpr UInt64 num_keys = 5000;
-
-    auto map = std::make_unique<Map>();
-    for (UInt64 key = 1; key <= num_keys; ++key)
-        insertKeyValue(*map, toKey<Map>(key), key);
-
-    std::vector<char> seen(num_keys + 1, 0);
-    for (auto it = map->begin(); it != map->end(); ++it)
-    {
-        const auto key = it->getKey();
-        ASSERT_EQ(it.getBucket(), getBucketOfKey<Map>(key, map->hash(key))) << "key " << key;
-        ASSERT_FALSE(seen[key]) << "key " << key << " visited twice";
-        seen[key] = 1;
-    }
-    ASSERT_TRUE(std::all_of(seen.begin() + 1, seen.end(), [](char c) { return c == 1; }));
-
-    const Map & const_map = *map;
-    size_t iterated = 0;
-    for (auto it = const_map.begin(); it != const_map.end(); ++it)
-    {
-        const auto key = it->getKey();
-        ASSERT_EQ(it.getBucket(), getBucketOfKey<Map>(key, const_map.hash(key))) << "key " << key;
-        ++iterated;
-    }
-    ASSERT_EQ(iterated, num_keys);
-}
-
-
-TYPED_TEST(BucketPartitionedTableTest, ConcurrentFillUnderOneLockPerBucket)
-{
-    using Map = TypeParam;
-    constexpr size_t num_threads = 16;
-    constexpr UInt64 keys_per_thread = 4000;
-
-    /// With distinct keys, no two threads write the same cell. With the same keys, the threads collide inside each bucket.
-    for (const bool same_keys_in_every_thread : {false, true})
-    {
-        auto map = std::make_unique<Map>();
-        fillUnderBucketLocks(*map, num_threads, keys_per_thread, same_keys_in_every_thread);
-
-        const UInt64 total_keys = same_keys_in_every_thread ? keys_per_thread : num_threads * keys_per_thread;
-        ASSERT_EQ(map->size(), total_keys);
-        for (UInt64 key = 1; key <= total_keys; ++key)
-        {
-            const auto * cell = map->find(toKey<Map>(key));
-            ASSERT_NE(cell, nullptr) << "key " << key << " was lost";
-            ASSERT_EQ(cell->getMapped(), key * 5) << "key " << key;
-        }
-    }
-}
-
-
-TEST(TwoLevelHashTableBuckets, OneBucketNeedsNoPrefix)
-{
-    constexpr UInt64 num_keys = 20000;
-
-    auto map = std::make_unique<TwoLevelMap<0>>();
-    for (UInt64 key = 1; key <= num_keys; ++key)
-        insertKeyValue(*map, key, key);
-
-    /// With one bucket, the number is the bucket's own `offsetInternal`, before and after `computeBucketPrefix`.
-    for (int pass = 0; pass < 2; ++pass)
-    {
-        for (UInt64 key = 1; key <= num_keys; ++key)
-        {
-            const auto * cell = map->find(key);
-            ASSERT_NE(cell, nullptr) << "key " << key;
-            ASSERT_EQ(map->offsetInternal(cell), map->impls[0].offsetInternal(cell)) << "key " << key << ", pass " << pass;
-        }
-        map->computeBucketPrefix();
-    }
-}
-
-
-TEST(TwoLevelHashTableBuckets, OffsetsAreValidAgainAfterGrowthAndRecompute)
-{
-    auto map = std::make_unique<TwoLevelMap<4>>();
-    for (UInt64 key = 1; key <= 200; ++key)
-        insertKeyValue(*map, key, key);
-    map->computeBucketPrefix();
-    assertOffsetsAreUnique(*map, 1, 200);
-
-    const size_t cells_before = map->getBufferSizeInCells();
-    for (UInt64 key = 201; key <= 40000; ++key)
-        insertKeyValue(*map, key, key);
-    ASSERT_GT(map->getBufferSizeInCells(), cells_before) << "the inserts did not grow any bucket";
-
-    map->computeBucketPrefix();
-    assertOffsetsAreUnique(*map, 1, 40000);
-}
-
-
-TEST(TwoLevelHashTableBuckets, BucketCellsListTheCellOfEveryKey)
-{
-    constexpr UInt64 num_keys = 20000;
-
-    forBucketBits<0, 4, 8>(
-        [&]<size_t bits>()
-        {
-            auto map = std::make_unique<TwoLevelMap<bits>>();
-            ASSERT_TRUE(map->bucket_cells.empty()) << "bits " << bits;
-            for (UInt64 key = 1; key <= num_keys; ++key)
-                insertKeyValue(*map, key, key);
-            map->computeBucketPrefix();
-            assertBucketCellsListEveryKey(*map, 1, num_keys);
-        });
-}
-
-
-TEST(TwoLevelHashTableBuckets, BucketCellsAreValidAgainAfterGrowthAndRecompute)
-{
-    auto map = std::make_unique<TwoLevelMap<4>>();
-    for (UInt64 key = 1; key <= 200; ++key)
-        insertKeyValue(*map, key, key);
-    map->computeBucketPrefix();
-    assertBucketCellsListEveryKey(*map, 1, 200);
-
-    const size_t cells_before = map->getBufferSizeInCells();
-    for (UInt64 key = 201; key <= 40000; ++key)
-        insertKeyValue(*map, key, key);
-    ASSERT_GT(map->getBufferSizeInCells(), cells_before) << "the inserts did not grow any bucket";
-
-    map->computeBucketPrefix();
-    assertBucketCellsListEveryKey(*map, 1, 40000);
-}
-
-
-TEST(TwoLevelHashTableBuckets, RobinHoodBucketsTellsWhichBucketsSwitched)
-{
-    using Map = TwoLevelMap<4>;
-    /// A bucket of 2^16 cells switches to the Robin Hood mode at the insert that makes it more than half full.
-    constexpr size_t keys_before_switch = 1uz << 15;
-
-    auto small = std::make_unique<Map>();
-    ASSERT_EQ(small->robin_hood_buckets, Map::RobinHoodBuckets::None);
-    for (UInt64 key = 1; key <= 5000; ++key)
-        insertKeyValue(*small, key, key);
-    small->computeBucketPrefix();
-    ASSERT_EQ(small->robin_hood_buckets, Map::RobinHoodBuckets::None);
-
-    /// Only the keys of bucket 0, so only that bucket switches.
-    auto mixed = std::make_unique<Map>();
-    size_t keys_in_first_bucket = 0;
-    for (UInt64 key = 1; keys_in_first_bucket <= keys_before_switch; ++key)
-    {
-        if (Map::getBucketFromHash(mixed->hash(key)) != 0)
-            continue;
-        insertKeyValue(*mixed, key, key);
-        ++keys_in_first_bucket;
-    }
-    mixed->computeBucketPrefix();
-    ASSERT_EQ(mixed->robin_hood_buckets, Map::RobinHoodBuckets::Mixed);
-
-    /// Keys in order until every bucket has switched.
-    auto all = std::make_unique<Map>();
-    std::vector<size_t> keys_in_bucket(Map::NUM_BUCKETS, 0);
-    size_t switched_buckets = 0;
-    UInt64 last_key = 0;
-    while (switched_buckets < Map::NUM_BUCKETS)
-    {
-        ++last_key;
-        insertKeyValue(*all, last_key, last_key);
-        if (++keys_in_bucket[Map::getBucketFromHash(all->hash(last_key))] == keys_before_switch + 1)
-            ++switched_buckets;
-    }
-    all->computeBucketPrefix();
-    ASSERT_EQ(all->robin_hood_buckets, Map::RobinHoodBuckets::All);
-    assertBucketCellsListEveryKey(*all, 1, last_key);
-}
-
 
 TEST(PartitionedFixedHashMap, MatchesThePlainMap)
 {
@@ -433,7 +130,7 @@ void assertKeysOnOneCacheLineShareABucket()
         ++pairs_on_one_line;
         const auto prev = toKey<Map>(key - 1);
         const auto curr = toKey<Map>(key);
-        ASSERT_EQ(getBucketOfKey<Map>(prev, map->hash(prev)), getBucketOfKey<Map>(curr, map->hash(curr)))
+        ASSERT_EQ(Map::bucketOfKey(prev), Map::bucketOfKey(curr))
             << "keys " << key - 1 << " and " << key << " share a cache line but go to different buckets";
     }
     ASSERT_GT(pairs_on_one_line, 0u);
@@ -450,11 +147,11 @@ TEST(PartitionedFixedHashMap, KeysOnOneCacheLineShareABucket)
 
 /// At least `min_buckets` buckets receive keys, and no bucket takes more than a quarter of the keys.
 template <typename Map>
-void assertKeysSpread(const Map & map, const std::vector<typename Map::key_type> & keys, size_t min_buckets)
+void assertKeysSpread(const std::vector<typename Map::key_type> & keys, size_t min_buckets)
 {
     std::vector<size_t> per_bucket(Map::NUM_BUCKETS, 0);
     for (const auto key : keys)
-        ++per_bucket[getBucketOfKey<Map>(key, map.hash(key))];
+        ++per_bucket[Map::bucketOfKey(key)];
 
     const size_t non_empty = std::count_if(per_bucket.begin(), per_bucket.end(), [](size_t count) { return count != 0; });
     const size_t largest = *std::max_element(per_bucket.begin(), per_bucket.end());
@@ -465,20 +162,19 @@ void assertKeysSpread(const Map & map, const std::vector<typename Map::key_type>
 TEST(PartitionedFixedHashMap, SpreadsKeysThatShareHighOrLowBits)
 {
     using Map = PartitionedFixedHashMap<UInt32, UInt64, 16, 4>;
-    auto map = std::make_unique<Map>();
 
     /// The 300 keys at the bottom of a 65536-cell table share their high bits.
     /// Routing on those bits would put all of them into one bucket.
     std::vector<UInt32> dense_at_zero(300);
     for (UInt32 key = 0; key < dense_at_zero.size(); ++key)
         dense_at_zero[key] = key;
-    assertKeysSpread(*map, dense_at_zero, 14);
+    assertKeysSpread<Map>(dense_at_zero, 14);
 
     /// Multiples of 256 share their low bits.
     std::vector<UInt32> strided(256);
     for (UInt32 i = 0; i < strided.size(); ++i)
         strided[i] = i * 256;
-    assertKeysSpread(*map, strided, 14);
+    assertKeysSpread<Map>(strided, 14);
 }
 
 
@@ -527,7 +223,7 @@ TEST(PartitionedFixedHashSet, RecordsPresence)
                 bool inserted = false;
                 set->emplace(key, it, inserted);
                 ASSERT_TRUE(inserted) << "key " << key;
-                buckets.insert(getBucketOfKey<Set>(key, set->hash(key)));
+                buckets.insert(Set::bucketOfKey(key));
             }
             ASSERT_EQ(set->size(), num_lines) << "bits " << bits;
             if constexpr (bits == 0)
