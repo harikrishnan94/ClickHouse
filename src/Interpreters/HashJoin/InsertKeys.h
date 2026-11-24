@@ -10,7 +10,6 @@
 
 namespace ProfileEvents
 {
-extern const Event HashJoinPreallocatedElementsInHashTables;
 extern const Event JoinPackedStringKeysInline;
 extern const Event JoinPackedStringKeysHashed;
 }
@@ -47,11 +46,10 @@ struct PrefetchingEmplace
         /// Software prefetch during the build phase.
         constexpr bool can_prefetch = join_prefetch_supported<KeyGetter, Map>;
 
-        /// A two-level map skips the size check of `shouldUseJoinPrefetch`: summing its buckets would race with the resizes that
-        /// other threads do under their own slot locks.
+        /// One thread inserts into the map, so its size can be read here.
         bool use_prefetch = false;
         if constexpr (can_prefetch)
-            use_prefetch = Map::NUM_BUCKETS > 1 ? args.enable_prefetch : shouldUseJoinPrefetch(args.enable_prefetch, &map);
+            use_prefetch = shouldUseJoinPrefetch(args.enable_prefetch, &map);
 
         bool skipped_null_key = false;
 
@@ -62,9 +60,7 @@ struct PrefetchingEmplace
         [[maybe_unused]] const UInt8 * const skip = args.skip;
         if constexpr (prepared)
         {
-            if (args.prebuilt_keys && size)
-                key_getter.usePrebuiltKeys(*args.prebuilt_keys, row_of(0));
-            else if constexpr (row_list)
+            if constexpr (row_list)
                 key_getter.prepareAscendingRows({list, size}, skip);
             else
                 key_getter.prepareRange({first, first + size}, skip);
@@ -91,7 +87,11 @@ struct PrefetchingEmplace
                     const size_t row = row_of(k);
                     if (prepared && skip[row])
                         return;
-                    map.prefetch(key_getter.getKeyHolder(row, pool));
+                    /// A partitioned view has no descriptors before `freeze`, so it prefetches through its maps.
+                    if constexpr (requires { map.prefetchForInsert(key_getter.getKeyHolder(row, pool)); })
+                        map.prefetchForInsert(key_getter.getKeyHolder(row, pool));
+                    else
+                        map.prefetch(key_getter.getKeyHolder(row, pool));
                 }
             });
 
@@ -212,16 +212,11 @@ NO_INLINE BuildResult insertKeys(Map & map, KeyGetter & key_getter, const Insert
 namespace DB
 {
 
-namespace ErrorCodes
-{
-extern const int LOGICAL_ERROR;
-}
-
 template <typename Maps>
 BuildResult
 HashJoinTable::insert(const InsertSettings & settings, const InsertRows & rows, size_t stream, absl::FunctionRef<void(size_t)> add_bytes)
 {
-    /// An insert may move the cells of a bucket, and the AMAC lookup reads them from where `freezeForProbing` listed them.
+    /// An insert may move the cells of a partition, and the AMAC lookup reads them from where `freezeForProbing` listed them.
     chassert(!takes_amac_lookup, "A hash join table that the AMAC lookup may take got an insert after `freezeForProbing`");
     return dispatchType([&]<Type TYPE>() { return insertTyped<TYPE, Maps>(settings, rows, arena(stream), add_bytes); });
 }
@@ -230,35 +225,22 @@ template <HashJoin::Type TYPE, typename Maps>
 BuildResult HashJoinTable::insertTyped(
     const InsertSettings & settings, const InsertRows & rows, Arena & arena, absl::FunctionRef<void(size_t)> add_bytes)
 {
-    using Map = JoinMapOf<TYPE, Maps>;
+    /// The single form of the table, or its partitioned form, whose `emplace` routes each key into its partition: the
+    /// parallel layout fed by one build stream, and the `Join` engine never.
+    if constexpr (!std::is_void_v<JoinPartitionedFormOf<TYPE, Maps>>)
+    {
+        if (isPartitioned())
+            return insertInto<TYPE, Maps>(partitionedView<TYPE, Maps>(), settings, rows, arena, add_bytes);
+    }
+    return insertInto<TYPE, Maps>(singleView<TYPE, Maps>(), settings, rows, arena, add_bytes);
+}
+
+template <HashJoin::Type TYPE, typename Maps, typename Map>
+BuildResult HashJoinTable::insertInto(
+    Map & map, const InsertSettings & settings, const InsertRows & rows, Arena & arena, absl::FunctionRef<void(size_t)> add_bytes)
+{
     using KeyGetter = typename KeyGetterForType<TYPE, Map>::Type;
     constexpr bool is_asof_join = std::is_same_v<Maps, HashJoin::MapsAsof>;
-
-    Map & map = typedMap<TYPE, Maps>(*this);
-
-    std::vector<ScatteredBlock::Selector> scattered;
-    std::span<const ScatteredBlock::Selector> per_slot(&rows.selector, 1);
-    /// If the key getter can build its keys ahead, the scatter builds them here once, for the inserts of all slots.
-    PaddedPODArray<UInt128> prebuilt_keys;
-    /// Only the parallel layout has more than one slot, and only its maps have more than one bucket.
-    if constexpr (Map::NUM_BUCKETS > 1)
-    {
-        if (slots.size() > 1)
-        {
-            scattered = scatterBySlot<TYPE, is_asof_join>(map, rows, prebuilt_keys);
-            per_slot = scattered;
-        }
-    }
-    else
-        chassert(slots.size() == 1);
-    if constexpr (!PreparedKeyGetter<KeyGetter>)
-        chassert(prebuilt_keys.empty(), "Join keys were built ahead for a key getter that does not read them");
-    if (!prebuilt_keys.empty() && prebuilt_keys.size() != rows.key_columns.at(0)->size())
-        throw Exception(
-            ErrorCodes::LOGICAL_ERROR,
-            "{} join keys were built ahead for a block of {} rows",
-            prebuilt_keys.size(),
-            rows.key_columns.at(0)->size());
 
     KeyGetter key_getter = createJoinKeyGetter<KeyGetter, is_asof_join>(rows.key_columns, key_sizes);
 
@@ -269,7 +251,6 @@ BuildResult HashJoinTable::insertTyped(
         .pool = arena,
         .enable_prefetch = settings.enable_software_prefetch,
         .num_keys = num_keys,
-        .prebuilt_keys = prebuilt_keys.empty() ? nullptr : &prebuilt_keys,
         .block_no = rows.stored_block_no,
         .any_take_last_row = settings.any_take_last_row,
     };
@@ -279,14 +260,15 @@ BuildResult HashJoinTable::insertTyped(
         args.asof_type = *settings.asof_type;
         args.asof_inequality = settings.asof_inequality;
     }
-    /// The skip bytes of the block, for the inserts of all slots.
     if constexpr (PreparedKeyGetter<KeyGetter>)
         args.skip = key_getter.skipOrAllSelected(
             buildRowSkipData(rows.null_map, rows.join_mask, key_getter.skip_buffer, 0, key_getter.num_rows));
 
-    /// No other call allocates in `arena` meanwhile. The guard also counts what was allocated before a throw, as the slots do below.
+    /// One thread inserts into the table, and no other call allocates in `arena` meanwhile. The guard also counts what was
+    /// allocated before a throw: the rows before it stay in the map, and `StorageJoin` keeps serving them.
     const size_t arena_bytes_before = arena.allocatedBytes();
-    SCOPE_EXIT({ add_bytes(arena.allocatedBytes() - arena_bytes_before); });
+    const size_t buffer_bytes_before = map.getBufferSizeInBytes();
+    SCOPE_EXIT({ add_bytes(arena.allocatedBytes() - arena_bytes_before + map.getBufferSizeInBytes() - buffer_bytes_before); });
 
     BuildResult result;
     /// For ALL and ASOF join always insert values. A set map keeps no reference into the block, so unless
@@ -296,39 +278,23 @@ BuildResult HashJoinTable::insertTyped(
     else
         result.is_inserted = !std::is_same_v<Maps, HashJoin::MapsOne>;
 
-    auto insert_slot = [&](size_t slot)
+    const ScatteredBlock::Selector & selector = rows.selector;
+    BuildResult rows_result;
+    if (selector.isContinuousRange())
     {
-        const ScatteredBlock::Selector & selector = per_slot[slot];
-        const size_t bytes_before = slots.slotBytes(map, slot);
-        /// Under the slot lock so a concurrent limit check cannot miss this slot. Also when an insert throws: the
-        /// rows before it stay in the map, and `StorageJoin` keeps serving them.
-        SCOPE_EXIT({ add_bytes(slots.slotBytes(map, slot) - bytes_before); });
+        const auto range = selector.getRange();
+        args.rows = {.first = range.first, .size = range.second - range.first};
+        rows_result = JoinBuild::insertKeys<Maps, /*row_list=*/false, JoinBuild::PrefetchingEmplace>(map, key_getter, args);
+    }
+    else
+    {
+        const auto & indexes = selector.getIndexes().getData();
+        args.rows = {.rows = indexes.data(), .size = indexes.size()};
+        rows_result = JoinBuild::insertKeys<Maps, /*row_list=*/true, JoinBuild::PrefetchingEmplace>(map, key_getter, args);
+    }
+    result.is_inserted |= rows_result.is_inserted;
+    result.all_values_unique &= rows_result.all_values_unique;
 
-        if (const size_t reserved = slots.reserveOnFirstInsert(map, slot))
-            ProfileEvents::increment(ProfileEvents::HashJoinPreallocatedElementsInHashTables, reserved);
-
-        /// The slots of a block are inserted one after another, so they can share `args`.
-        BuildResult slot_result;
-        if (selector.isContinuousRange())
-        {
-            const auto range = selector.getRange();
-            args.rows = {.first = range.first, .size = range.second - range.first};
-            slot_result = JoinBuild::insertKeys<Maps, /*row_list=*/false, JoinBuild::PrefetchingEmplace>(map, key_getter, args);
-        }
-        else
-        {
-            const auto & indexes = selector.getIndexes().getData();
-            args.rows = {.rows = indexes.data(), .size = indexes.size()};
-            slot_result = JoinBuild::insertKeys<Maps, /*row_list=*/true, JoinBuild::PrefetchingEmplace>(map, key_getter, args);
-        }
-
-        result.is_inserted |= slot_result.is_inserted;
-        result.all_values_unique &= slot_result.all_values_unique;
-    };
-
-    slots.insert(per_slot, insert_slot);
-
-    /// `PrefetchingEmplace` takes a key getter that is not trivially copyable by reference, so these counts cover all slots.
     if constexpr (requires { key_getter.hashed_keys; })
     {
         ProfileEvents::increment(ProfileEvents::JoinPackedStringKeysInline, key_getter.emplaced_keys - key_getter.hashed_keys);

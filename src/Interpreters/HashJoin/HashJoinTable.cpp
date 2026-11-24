@@ -22,34 +22,6 @@ extern const int LOGICAL_ERROR;
 extern const int UNSUPPORTED_JOIN_KEYS;
 }
 
-namespace
-{
-
-HashJoin::Type toTwoLevelType(HashJoin::Type type)
-{
-    using Type = HashJoin::Type;
-
-    switch (type)
-    {
-        case Type::key8: return Type::two_level_key8;
-        case Type::key16: return Type::two_level_key16;
-        case Type::key32: return Type::two_level_key32;
-        case Type::key64: return Type::two_level_key64;
-        case Type::key_string: return Type::two_level_key_string;
-        case Type::key_fixed_string: return Type::two_level_key_fixed_string;
-        case Type::keys32: return Type::two_level_keys32;
-        case Type::keys64: return Type::two_level_keys64;
-        case Type::keys128: return Type::two_level_keys128;
-        case Type::keys256: return Type::two_level_keys256;
-        case Type::hashed: return Type::two_level_hashed;
-        case Type::key_packed_string: return Type::two_level_key_packed_string;
-        default:
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "Hash join map type {} has no two-level variant", type);
-    }
-}
-
-}
-
 HashJoinTable::HashJoinTable(
     Type key_class,
     Sizes key_sizes_,
@@ -57,17 +29,73 @@ HashJoinTable::HashJoinTable(
     JoinStrictness strictness,
     JoinMapsKind maps_kind,
     const HashJoinBuildLayout & layout,
-    bool robin_hood_allowed)
-    : key_type(layout.two_level ? toTwoLevelType(key_class) : key_class)
+    bool robin_hood_allowed_)
+    : key_type(key_class)
     , key_sizes(std::move(key_sizes_))
-    , slots(layout.num_slots)
+    , robin_hood_allowed(robin_hood_allowed_)
 {
     joinDispatchInit(kind, strictness, maps, maps_kind);
-    std::visit([&](auto & maps_) { maps_.create(key_type, robin_hood_allowed); }, maps);
+    std::visit([&](auto & maps_) { maps_.create(key_type); }, maps);
 
     arenas.reserve(layout.num_build_streams);
     for (size_t stream = 0; stream < layout.num_build_streams; ++stream)
         arenas.push_back(std::make_unique<Arena>());
+}
+
+void HashJoinTable::usePartitions(size_t partition_bits)
+{
+    chassert(!isPartitioned() && keys() == 0);
+    auto to_partitions = [&]<typename Table>(std::shared_ptr<Table> & table)
+    {
+        if constexpr (is_join_map_forms<Table>)
+        {
+            using Partitioned = typename Table::partitioned_type;
+            if constexpr (is_join_partitioned_view<Partitioned>)
+            {
+                table->partitioned = std::make_unique<Partitioned>(partition_bits, robin_hood_allowed);
+                table->partitioned->setReserveOnCreate(partition_reserve_keys);
+                num_partitions = 1uz << partition_bits;
+            }
+            else
+            {
+                table->partitioned = std::make_unique<Partitioned>();
+                num_partitions = Partitioned::NUM_BUCKETS;
+            }
+            table->single.reset();
+        }
+    };
+    std::visit([&](auto & maps_) { maps_.visit(key_type, to_partitions); }, maps);
+}
+
+void HashJoinTable::reserve(size_t keys_to_reserve)
+{
+    chassert(!isPartitioned());
+    auto reserve_single = [&]<typename Table>(const std::shared_ptr<Table> & table)
+    {
+        if constexpr (is_join_map_forms<Table>)
+        {
+            if constexpr (requires { table->single->reserve(keys_to_reserve); })
+                table->single->reserve(keys_to_reserve);
+        }
+        else if constexpr (requires { table->reserve(keys_to_reserve); })
+            table->reserve(keys_to_reserve);
+    };
+    std::visit([&](auto & maps_) { maps_.visit(key_type, reserve_single); }, maps);
+}
+
+void HashJoinTable::setPartitionReserveOnFirstInsert(size_t keys_per_partition)
+{
+    partition_reserve_keys = keys_per_partition;
+    auto set_reserve = [&]<typename Table>(const std::shared_ptr<Table> & table)
+    {
+        if constexpr (is_join_map_forms<Table>)
+        {
+            if constexpr (is_join_partitioned_view<typename Table::partitioned_type>)
+                if (table->partitioned)
+                    table->partitioned->setReserveOnCreate(keys_per_partition);
+        }
+    };
+    std::visit([&](auto & maps_) { maps_.visit(key_type, set_reserve); }, maps);
 }
 
 size_t HashJoinTable::arenaBytes() const
@@ -154,26 +182,40 @@ void insertKey(MutableColumns & columns, const KeyLayout & layout, std::string_v
 
 void HashJoinTable::freezeForProbing()
 {
-    bool buckets_in_one_mode = false;
-    auto finish_fill = [&]<typename Table>(const std::shared_ptr<Table> & table)
+    bool hashed_in_one_mode = false;
+    buckets_are_robin_hood = false;
+    auto freeze_form = [&]<typename Form>(Form & form)
+    {
+        if constexpr (is_partitioned_fixed_table<Form>)
+            form.restoreMinMaxOptimization();
+        else if constexpr (is_join_partitioned_view<Form>)
+        {
+            form.freeze();
+            hashed_in_one_mode = form.robinHoodMode() != Form::RobinHoodMode::Mixed;
+            buckets_are_robin_hood = form.robinHoodMode() == Form::RobinHoodMode::All;
+        }
+        else if constexpr (requires { form.freeze(); })
+        {
+            /// The single form never switches to the Robin Hood mode.
+            form.freeze();
+            hashed_in_one_mode = true;
+        }
+    };
+    auto freeze_table = [&]<typename Table>(const std::shared_ptr<Table> & table)
     {
         if (!table)
             return;
-        table->computeBucketPrefix();
-        if constexpr (is_partitioned_fixed_table<Table>)
-            table->restoreMinMaxOptimization();
+        if constexpr (is_join_map_forms<Table>)
+            table->visit(freeze_form);
         else
-        {
-            buckets_in_one_mode = table->robin_hood_buckets != Table::RobinHoodBuckets::Mixed;
-            buckets_are_robin_hood = table->robin_hood_buckets == Table::RobinHoodBuckets::All;
-        }
+            freeze_form(*table);
     };
-    std::visit([&](auto & maps_) { maps_.visit(key_type, finish_fill); }, maps);
+    std::visit([&](auto & maps_) { maps_.visit(key_type, freeze_table); }, maps);
     /// The ring overlaps the cache misses of its lookups. A table that fits in the L2 and the L3 together leaves it few misses
     /// to overlap, and there it is slower than the look-ahead prefetch of `PrefetchingLookup`: on Graviton4 (2 MiB of L2, 36 MiB
-    /// of L3), up to 18% slower for a table of one bucket with 2 to 32 MiB of cells.
+    /// of L3), up to 18% slower for a table of one partition with 2 to 32 MiB of cells.
     static const size_t min_bytes_for_amac_lookup = getL2CacheSize() + getCPUDataCacheSize(3);
-    takes_amac_lookup = buckets_in_one_mode && bufferBytes() >= min_bytes_for_amac_lookup;
+    takes_amac_lookup = hashed_in_one_mode && bufferBytes() >= min_bytes_for_amac_lookup;
 }
 
 size_t HashJoinTable::bufferBytes() const
@@ -190,7 +232,10 @@ size_t HashJoinTable::cellSize() const
 {
     return std::visit(
         [&](const auto & maps_)
-        { return maps_.visit(key_type, []<typename Table>(const std::shared_ptr<Table> &) { return sizeof(typename Table::cell_type); }); },
+        {
+            return maps_.visit(
+                key_type, []<typename Table>(const std::shared_ptr<Table> &) { return sizeof(typename Table::cell_type); });
+        },
         maps);
 }
 
@@ -208,7 +253,7 @@ bool HashJoinTable::tryConvertToFixedHashMapImpl(Maps & maps_)
 
     constexpr bool is_32 = std::is_same_v<Key, UInt32>;
     constexpr Type source_type = is_32 ? Type::key32 : Type::key64;
-    auto & source_map = *maps_.template mapOf<source_type>();
+    auto & source_map = *maps_.template mapOf<source_type>()->single;
 
     if (source_map.empty() || source_map.size() > MAX_RANGE)
         return false;
@@ -291,6 +336,8 @@ bool HashJoinTable::tryConvertToFixedHashMap(bool is_signed)
         {
             using Maps = std::decay_t<decltype(maps_)>;
             if constexpr (std::is_same_v<Maps, HashJoin::MapsAsof>)
+                return false;
+            else if (isPartitioned())
                 return false;
             else if (key_type == Type::key32)
                 return is_signed ? tryConvertToFixedHashMapImpl<true, UInt32>(maps_) : tryConvertToFixedHashMapImpl<false, UInt32>(maps_);
@@ -433,7 +480,11 @@ SharedFixedHashTableRuntimeFilter::ProbeFn HashJoinTable::makeSharedRuntimeFilte
                         dispatch.template operator()<Int8, UInt8>(map.key8, 0, 1ULL << 8);
                         break;
                     case Type::key16:
-                        dispatch.template operator()<Int16, UInt16>(map.key16, 0, 1ULL << 16);
+                        if (map.key16 && !map.key16->isPartitioned())
+                            dispatch.template operator()<Int16, UInt16>(
+                                std::shared_ptr<const typename std::decay_t<decltype(*map.key16)>::single_type>(map.key16, map.key16->single.get()),
+                                0,
+                                1ULL << 16);
                         break;
                     case Type::range8_key32:
                         dispatch.template operator()<Int32, UInt32>(map.range8_key32, key_range.min_key, key_range.size);
@@ -470,17 +521,18 @@ SharedFixedHashTableRuntimeFilter::ProbeFn HashJoinTable::makeSharedRuntimeFilte
 namespace
 {
 
-/// Calls `f(map)` on the `ASOF` map of type `type` if its buckets have buffers of their own. That leaves out a
-/// `PartitionedFixedHashTable`, which has one buffer for all its buckets, and a map with one bucket, which has nothing to split.
+/// Calls `f(view)` on the `ASOF` table of type `type` if it is a partitioned view. That leaves out the single form, which has
+/// nothing to split.
 template <typename F>
-void visitAsofMapWithBucketBuffers(const HashJoin::MapsVariant & maps, HashJoin::Type type, F && f)
+void visitAsofPartitionedView(const HashJoin::MapsVariant & maps, HashJoin::Type type, F && f)
 {
     if (const auto * asof_maps = std::get_if<HashJoin::MapsAsof>(&maps))
-        asof_maps->visit(type, [&]<typename Table>(const std::shared_ptr<Table> & map)
+        asof_maps->visit(type, [&]<typename Table>(const std::shared_ptr<Table> & table)
         {
-            if constexpr (!is_partitioned_fixed_table<Table> && Table::NUM_BUCKETS > 1)
-                if (map)
-                    f(*map);
+            if constexpr (is_join_map_forms<Table>)
+                if constexpr (is_join_partitioned_view<typename Table::partitioned_type>)
+                    if (table && table->partitioned)
+                        f(*table->partitioned);
         });
 }
 
@@ -489,23 +541,24 @@ void visitAsofMapWithBucketBuffers(const HashJoin::MapsVariant & maps, HashJoin:
 HashJoinTable::ParallelClearWork HashJoinTable::parallelClearWork() const
 {
     ParallelClearWork work;
-    visitAsofMapWithBucketBuffers(maps, key_type, [&]<typename Table>(const Table & map)
+    visitAsofPartitionedView(maps, key_type, [&](const auto & view)
     {
-        work.buckets += Table::NUM_BUCKETS;
-        work.keys += map.size();
+        work.buckets += view.numPartitions();
+        work.keys += view.size();
     });
     return work;
 }
 
 void HashJoinTable::clearInParallel(size_t num_jobs, absl::FunctionRef<void(std::function<void()>)> schedule)
 {
-    visitAsofMapWithBucketBuffers(maps, key_type, [&]<typename Table>(Table & table)
+    visitAsofPartitionedView(maps, key_type, [&](auto & view)
     {
-        for (size_t first_bucket = 0; first_bucket < num_jobs; ++first_bucket)
-            schedule([&table, first_bucket, num_jobs]
+        for (size_t first = 0; first < num_jobs; ++first)
+            schedule([&view, first, num_jobs]
             {
-                for (size_t bucket = first_bucket; bucket < Table::NUM_BUCKETS; bucket += num_jobs)
-                    table.impls[bucket].clearAndShrink();
+                for (size_t p = first; p < view.numPartitions(); p += num_jobs)
+                    if (auto * map = view.partitionOrNull(p))
+                        map->clearAndShrink();
             });
     });
 }
