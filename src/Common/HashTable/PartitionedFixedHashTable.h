@@ -9,10 +9,9 @@
 
 
 /** A `FixedHashTable` whose keys are split into buckets, for a caller that fills it from several
-  * threads under one lock per bucket. It satisfies `BucketPartitionedTable`, the interface such a caller
-  * relies on. It is not a drop-in `TwoLevelHashTable`: there is a single flat table, and the buckets
-  * only decide which lock a key is inserted under. It has no `iteratorAt`, and its iteration order does
-  * not follow the buckets, so a caller that scans by bucket must handle it separately.
+  * threads, one bucket per thread or one lock per bucket. There is a single flat table, and the buckets
+  * only decide which thread or lock inserts a key. Its iteration order does not follow the buckets, so a
+  * caller that scans by bucket filters on `getBucket`.
   * Cells, offsets and iteration are those of the flat table. With `BITS_FOR_BUCKET = 0` it is the flat table.
   *
   * The flat table places a key at the cell with that index. Routing on the high bits of a dense key
@@ -139,8 +138,6 @@ public:
             flat.forEachMapped(func);
     }
 
-    /// The flat table numbers its cells itself, so there are no prefix sums to compute.
-    void computeBucketPrefix() { }
     size_t offsetInternal(ConstLookupResult ptr) const { return flat.offsetInternal(ptr); }
 
     /// Call once no writer is left.
