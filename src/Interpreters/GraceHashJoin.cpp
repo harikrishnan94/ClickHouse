@@ -516,13 +516,7 @@ void GraceHashJoin::initialize(const Block & sample_block)
 
 JoinResultPtr GraceHashJoin::joinBlock(Block block)
 {
-    /// Check if hash join post build optimizations could be performed.
-    if (hash_join && getNumBuckets() <= 1)
-    {
-        std::lock_guard lock(hash_join_mutex);
-        hash_join->runPostBuildPhase();
-    }
-
+    /// A probe of the header comes before any build, so it must not finish the bucket join: `onBuildPhaseFinish` does.
     if (block.rows() == 0)
         return hash_join->joinBlock(block);
 
@@ -842,6 +836,11 @@ IBlocksStreamPtr GraceHashJoin::getDelayedBlocks()
             addBlockToJoinImpl(std::move(block), JoinBuildContext::serial());
         }
         hash_join->onBuildPhaseFinish();
+        {
+            /// Not held across `checkSizeLimits`, which takes the same lock.
+            std::lock_guard lock(hash_join_mutex);
+            hash_join->finishBuild();
+        }
 
         /// The same hard cap as during the build phase, now that this bucket's hash table is complete.
         /// `join_overflow_mode = 'break'` keeps this bucket, the way `HashJoin` keeps the block that crossed
@@ -863,14 +862,37 @@ IBlocksStreamPtr GraceHashJoin::getDelayedBlocks()
 
 GraceHashJoin::InMemoryJoinPtr GraceHashJoin::makeInMemoryJoin(const String & bucket_id, size_t reserve_num)
 {
-    /// One bucket: 256 buckets of empty buffers would count against `max_bytes_before_external_join` and could make
-    /// Grace rehash past `grace_hash_join_max_buckets`. The inserts are serialized, but each build stream finds its
-    /// lists by its own id, so the join gets `max_threads` of them.
+    /// One partition: the inserts are serialized, but each build stream finds its lists by its own id, so the join
+    /// gets `max_threads` of them.
     auto join = std::make_unique<HashJoin>(
-        table_join, right_sample_block, any_take_last_row, reserve_num, bucket_id, HashJoinBuildLayout::oneBucket(max_threads));
+        table_join, right_sample_block, any_take_last_row, reserve_num, bucket_id, HashJoinBuildLayout::serialLayout(max_threads));
     /// A bucket that outgrows memory is rebucketed, which reads its right blocks back out - and that
     /// can happen at any point, so these blocks are never dropped.
     join->keepRightBlocksForAnotherAlgorithm();
+    /// The split checks read the key count of the bucket while it waits.
+    join->estimateKeysFromFirstBlock();
+
+    /// The bucket join waits for its blocks, and its wait has to end before a limit check could fail on it. In legacy
+    /// mode `hasMemoryOverflow` checks the limits on this bucket alone. Otherwise `checkSizeLimits` counts the buckets
+    /// built before this one on top of it, so the wait ends at what they left of the limits.
+    const auto & size_limits = table_join->sizeLimits();
+    if (size_limits.hasLimits())
+    {
+        SizeLimits wait_limits = size_limits;
+        if (!table_join->legacyJoinSizeLimitsTriggerSpilling())
+        {
+            const auto remaining = [](size_t limit, size_t used) -> size_t
+            {
+                if (!limit)
+                    return 0;
+                /// 0 means no limit, so a limit that is used up becomes the smallest one.
+                return limit > used ? limit - used : 1;
+            };
+            wait_limits.max_rows = remaining(size_limits.max_rows, accounted_right_rows.load());
+            wait_limits.max_bytes = remaining(size_limits.max_bytes, accounted_right_bytes.load());
+        }
+        join->setWaitLimits(wait_limits);
+    }
     return join;
 }
 
@@ -899,6 +921,8 @@ void GraceHashJoin::repartitionCurrentBucket(size_t prev_keys_num, Block leftove
     /// `releaseJoinedBlocks` resets the join's data before it finishes allocating, so detach
     /// first: a throw must not leave `hash_join` pointing at a join whose data is gone.
     auto released_join = std::move(hash_join);
+    /// The memory scheduler can ask for a split between `onBuildPhaseFinish` and the probe.
+    const bool build_was_finished = released_join->isBuildFinished();
     auto right_blocks = released_join->releaseJoinedBlocks(/* restructure */ false);
     released_join.reset();
 
@@ -932,6 +956,13 @@ void GraceHashJoin::repartitionCurrentBucket(size_t prev_keys_num, Block leftove
 
     if (leftover.rows() > 0)
         hash_join->addBlockToJoin(leftover, leftover.rows(), context.callerChecksLimits());
+
+    /// The probe reads only a finished join. With two buckets or more there are no post-build optimizations.
+    if (build_was_finished)
+    {
+        hash_join->onBuildPhaseFinish();
+        hash_join->finishBuild();
+    }
 }
 
 ProcessorMemoryStats GraceHashJoin::getMemoryStats() const
@@ -1000,7 +1031,8 @@ void GraceHashJoin::addBlockToJoinImpl(Block block, JoinBuildContext context)
                 return;
         }
         auto prev_keys_num = hash_join->getTotalRowCount();
-        size_t pre_total_bytes = hash_join->getTotalByteCount();
+        /// While the bucket join waits, its table does not exist yet: the projection counts it.
+        size_t pre_total_bytes = hash_join->getProjectedByteCount();
 
         /// Pre-check: rehash when the in-memory bucket alone is already past half of the
         /// owner-supplied auto-spill cap. The inner `HashJoin::addBlockToJoin` grows its
@@ -1021,7 +1053,7 @@ void GraceHashJoin::addBlockToJoinImpl(Block block, JoinBuildContext context)
             hash_join->addBlockToJoin(current_block, current_block.rows(), context.callerChecksLimits());
             block_added = true;
             size_t hash_join_total_keys = hash_join->getTotalRowCount();
-            size_t hash_join_total_bytes = hash_join->getTotalByteCount();
+            size_t hash_join_total_bytes = hash_join->getProjectedByteCount();
             if (!hasMemoryOverflow(hash_join_total_keys, hash_join_total_bytes))
                 return;
         }
@@ -1057,5 +1089,14 @@ void GraceHashJoin::onBuildPhaseFinish()
         return;
 
     hash_join->onBuildPhaseFinish();
+
+    std::lock_guard lock(hash_join_mutex);
+    /// Here and not in a post-build phase: a spill between `prepare` and `work` would replace the bucket join by one
+    /// that nobody finishes.
+    hash_join->finishBuild();
+    /// A table that holds one bucket of several cannot convert to a fixed table or publish a runtime filter that is
+    /// valid for the whole right table.
+    if (getNumBuckets() <= 1)
+        hash_join->runPostBuildOptimizations();
 }
 }
