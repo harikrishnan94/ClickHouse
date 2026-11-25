@@ -13,8 +13,8 @@
 
 #include <type_traits>
 
-/// The single pass and the match steps of the hash join probe, and `selectFunctions`. Only `HashJoinMethodsImpl.h` includes
-/// it, so only the files that instantiate the methods of a join kind compile it.
+/// The single pass and the match steps of the hash join probe, `selectFunctions` and `probeBlock`. Only
+/// `HashJoinMethodsImpl.h` includes it, so only the files that instantiate the methods of a join kind compile it.
 namespace DB
 {
 namespace ErrorCodes
@@ -316,12 +316,12 @@ struct MatchRules
 /// Adds the output of a join with one disjunct, one row at a time and in row order, as the pass finds the keys. For a row whose
 /// key was found, it applies the used flag action to the key's cell offset and picks the ASOF row. A lost claim, or no ASOF
 /// row, makes the row a miss. Then it writes the filter, the replication offset and the row ref. The row refs are kept in
-/// order at the front of `JoinRightColumns::match_words`.
+/// order at the front of `JoinRightColumnsData::match_words`.
 template <typename Handling>
 class MatchAdder
 {
 public:
-    ALWAYS_INLINE explicit MatchAdder(JoinRightColumns & join_)
+    ALWAYS_INLINE explicit MatchAdder(JoinRightColumnsData & join_)
         : join(join_)
         , first_row(join_.batch_first_row)
         , kept_words(join_.match_words)
@@ -466,7 +466,7 @@ private:
         }
     }
 
-    JoinRightColumns & join;
+    JoinRightColumnsData & join;
     const size_t first_row;
     MatchWord * kept_words;
     const bool record_row_refs;
@@ -487,7 +487,7 @@ private:
 /// word is enough to reach them. A right row that two disjuncts reach is added once. Stops before a row once the output has
 /// reached the row limit, and returns how many rows of the batch it finished.
 template <typename Rules>
-NO_INLINE size_t addMatchesOfDisjuncts(JoinRightColumns & join)
+NO_INLINE size_t addMatchesOfDisjuncts(JoinRightColumnsData & join)
 {
     using Features = typename Rules::Features;
     constexpr bool need_filter = Features::need_filter;
@@ -609,7 +609,7 @@ NO_INLINE size_t addMatchesOfDisjuncts(JoinRightColumns & join)
 /// the pairs for which the additional filter expression is not true. Stops before a row once the pairs of the call have
 /// reached the row limit, and returns how many rows of the batch it finished.
 template <typename Rules, bool need_filter>
-NO_INLINE size_t addMatchesWithAdditionalFilter(JoinRightColumns & join)
+NO_INLINE size_t addMatchesWithAdditionalFilter(JoinRightColumnsData & join)
 {
     using Features = typename Rules::Features;
     static_assert(Features::is_maps_all);
@@ -860,7 +860,7 @@ NO_INLINE size_t addMatchesWithAdditionalFilter(JoinRightColumns & join)
 /// stored and loaded again. It searches the block in search batches, with one adder for the whole block. There is one
 /// instance per key type and match handling. Join kinds with the same handling share it.
 template <HashJoin::Type TYPE, bool fast_path, typename Handling, typename Lookup>
-NO_INLINE size_t findKeysAndAddMatches(JoinRightColumns & join)
+NO_INLINE size_t findKeysAndAddMatches(JoinRightColumnsData & join)
 {
     using Maps = typename Handling::Maps;
     static_assert(Lookup::retires_rows_in_order, "`MatchAdder` adds rows in row order");
@@ -902,20 +902,20 @@ AddMatchesFn selectFindKeysAndAddMatches(HashJoin::Type key_type)
     UNREACHABLE();
 }
 
+/// Picks the functions of a join for one block, with `fast_path` from `canUseFastPath` and `need_filter` from
+/// `AddedColumns::need_filter`. Per block, it always sees the current key type and strictness: both may change after the
+/// build filled the tables.
 template <JoinKind KIND, JoinStrictness STRICTNESS, typename Maps>
-JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_disjuncts, bool has_additional_filter)
+Functions selectFunctions(HashJoin::Type key_type, size_t num_disjuncts, bool has_additional_filter, bool fast_path, bool need_filter)
 {
     using Rules = MatchRules<KIND, STRICTNESS, Maps>;
     using Features = typename Rules::Features;
 
-    JoinRightColumns::Functions functions;
-    /// `later` is true for the disjuncts after the first. A template, so that it is instantiated only where it is called. An
-    /// ASOF join never calls it, so its file does not instantiate `selectFindKeys` for `MapsAsof`.
-    const auto select_find_keys = [&]<typename SearchMaps = Maps>(bool later, FindKeysMode mode)
-    {
-        functions.find_keys[later][0] = selectFindKeys<SearchMaps, PrefetchingLookup>(key_type, mode, /*fast_path=*/false);
-        functions.find_keys[later][1] = selectFindKeys<SearchMaps, PrefetchingLookup>(key_type, mode, /*fast_path=*/true);
-    };
+    Functions functions;
+    /// A template, so that it is instantiated only where it is called. An ASOF join never calls it, so its file does not
+    /// instantiate `selectFindKeys` for `MapsAsof`.
+    const auto select_find_keys = [&]<typename SearchMaps = Maps>(FindKeysMode mode)
+    { return selectFindKeys<SearchMaps, PrefetchingLookup>(key_type, mode, fast_path); };
 
     /// A join kind with `JoinFeatures::need_filter` always sets `AddedColumns::need_filter`, so it needs no copy of a function
     /// for `need_filter` = false.
@@ -927,16 +927,17 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
             /// only adds pairs.
             functions.records_key_offsets
                 = Features::need_flags && !Features::right && !Features::full && !Features::is_anti_join && num_disjuncts == 1;
-            select_find_keys(
-                false,
+            functions.find_keys_first = select_find_keys(
                 functions.records_key_offsets ? FindKeysMode::WordsAndKeyOffsetsUpToRowLimit : FindKeysMode::WordsUpToRowLimit);
-            select_find_keys(true, FindKeysMode::Words);
+            functions.find_keys_later = select_find_keys(FindKeysMode::Words);
             /// The filter runs once per batch, so the batches have no cap of their own. The first batch of a call still has at
             /// most as many rows as the limit, and each later batch doubles.
             functions.max_batch_rows = std::numeric_limits<size_t>::max();
-            if constexpr (!Features::need_filter)
-                functions.add_matches[0] = &addMatchesWithAdditionalFilter<Rules, false>;
-            functions.add_matches[1] = &addMatchesWithAdditionalFilter<Rules, true>;
+            if constexpr (Features::need_filter)
+                functions.add_matches = need_filter ? &addMatchesWithAdditionalFilter<Rules, true> : nullptr;
+            else
+                functions.add_matches
+                    = !need_filter ? &addMatchesWithAdditionalFilter<Rules, false> : &addMatchesWithAdditionalFilter<Rules, true>;
             return functions;
         }
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Additional filter expression is not supported for this JOIN");
@@ -948,12 +949,14 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
         {
             /// With replication, the key search of the first disjunct stops once the right rows it found reach the row limit.
             /// The match step adds at least that many rows for those left rows, unless it skips right rows that another left
-            /// row claimed. Then the output of the batch stays below the limit, and `run` goes on with the next batch.
-            select_find_keys(false, Features::need_replication ? FindKeysMode::WordsUpToRowLimit : FindKeysMode::Words);
-            select_find_keys(true, Rules::stops_at_first_match ? FindKeysMode::WordsOfRowList : FindKeysMode::Words);
+            /// row claimed. Then the output of the batch stays below the limit, and `runProbe` goes on with the next batch.
+            functions.find_keys_first
+                = select_find_keys(Features::need_replication ? FindKeysMode::WordsUpToRowLimit : FindKeysMode::Words);
+            functions.find_keys_later = select_find_keys(Rules::stops_at_first_match ? FindKeysMode::WordsOfRowList : FindKeysMode::Words);
             /// Several disjuncts have no required right keys (see the `HashJoin` constructor), so only the copy with the join
             /// kind's own `need_filter` can run.
-            functions.add_matches[Features::need_filter] = &addMatchesOfDisjuncts<Rules>;
+            if (need_filter == Features::need_filter)
+                functions.add_matches = &addMatchesOfDisjuncts<Rules>;
             functions.max_batch_rows = max_disjunct_batch_rows;
             functions.stops_at_first_match = Rules::stops_at_first_match;
             return functions;
@@ -963,9 +966,29 @@ JoinRightColumns::Functions selectFunctions(HashJoin::Type key_type, size_t num_
 
     /// The pass reads `AddedColumns::need_filter` itself.
     functions.words_in_row_refs = true;
-    functions.find_keys_and_add_matches[0] = selectFindKeysAndAddMatches<typename Rules::Handling, false>(key_type);
-    functions.find_keys_and_add_matches[1] = selectFindKeysAndAddMatches<typename Rules::Handling, true>(key_type);
+    functions.add_matches = !fast_path ? selectFindKeysAndAddMatches<typename Rules::Handling, false>(key_type)
+                                       : selectFindKeysAndAddMatches<typename Rules::Handling, true>(key_type);
     return functions;
+}
+
+/// Probes the rows of `selector` with the functions of the join kind for this block (see `runProbe`). Instantiated with the
+/// methods of each join kind in its own file, such as `InnerHashJoinAll.cpp`.
+template <JoinKind KIND, JoinStrictness STRICTNESS, typename Maps>
+size_t probeBlock(
+    HashJoin::Type key_type,
+    Tables tables,
+    JoinStuff::JoinUsedFlags & used_flags,
+    AddedColumns & added_columns,
+    LeftBlockState & left_block_state,
+    const ScatteredBlock::Selector & selector)
+{
+    const auto functions = selectFunctions<KIND, STRICTNESS, Maps>(
+        key_type,
+        tables.size(),
+        added_columns.additional_filter_expression != nullptr,
+        canUseFastPath(left_block_state),
+        added_columns.need_filter);
+    return runProbe(functions, tables, used_flags, added_columns, left_block_state, selector);
 }
 }
 
